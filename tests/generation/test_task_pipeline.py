@@ -315,8 +315,8 @@ class BusinessDataArtifactsTest(unittest.TestCase):
 
     def test_materialized_source_rows_keep_public_dataset_origin(self):
         governance = {
-            "origin": "public_dataset", "provider": "heywhale",
-            "source_url": "https://www.heywhale.com/home/dataset/example",
+            "origin": "public_dataset", "provider": "data_gov_hk",
+            "source_url": "https://data.gov.hk/sc-data/dataset/example",
             "source_sha256": "a" * 64, "license": None,
             "contains_real_user_data": "undetermined",
             "intended_use": "agentic_rl_training_material",

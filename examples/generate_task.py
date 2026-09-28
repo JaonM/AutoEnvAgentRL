@@ -175,7 +175,7 @@ def main() -> int:
     parser.add_argument("--generation-source", choices=("dataset", "graph"), default="dataset",
                         help="默认从数据集生成；graph 为旧知识图谱路径")
     parser.add_argument("--dataset-ref", help="指定 Kaggle owner/slug；缺省时从已核验清单选取")
-    parser.add_argument("--dataset-file", type=Path, help="指定本地表格或 ZIP/GZIP/TAR 压缩文件；可用于已获取的和鲸等数据集")
+    parser.add_argument("--dataset-file", type=Path, help="指定本地表格或 ZIP/GZIP/TAR 压缩文件")
     parser.add_argument("--dataset-url", help="本地数据文件的原始数据集来源链接")
     parser.add_argument("--dataset-platform", choices=("kaggle", "data_gov_hk", "balanced"),
                         default="kaggle", help="数据集来源；balanced 要求偶数任务并按 1:1 分配")

@@ -21,7 +21,6 @@ SYNTHETIC_ORIGIN = {
 }
 PUBLIC_DATASET_HOSTS = {
     "kaggle": {"kaggle.com", "www.kaggle.com"},
-    "heywhale": {"heywhale.com", "www.heywhale.com"},
     "data_gov_hk": {"data.gov.hk"},
 }
 

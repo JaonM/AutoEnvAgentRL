@@ -63,10 +63,10 @@ class DataGovernanceTest(unittest.TestCase):
             self.assertEqual(report["credential_findings"], [])
             self.assertEqual(report["providers"]["agent"]["host"], "agent.example")
 
-    def test_kaggle_and_heywhale_rows_are_eligible_with_matching_provenance(self):
+    def test_kaggle_and_data_gov_hk_rows_are_eligible_with_matching_provenance(self):
         for provider, url in (
             ("kaggle", "https://www.kaggle.com/datasets/owner/orders"),
-            ("heywhale", "https://www.heywhale.com/home/dataset/example"),
+            ("data_gov_hk", "https://data.gov.hk/sc-data/dataset/example"),
         ):
             with self.subTest(provider=provider), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -106,8 +106,8 @@ class DataGovernanceTest(unittest.TestCase):
     def test_zip_dataset_member_is_bound_to_public_source(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source = {"provider": "heywhale",
-                      "source_url": "https://www.heywhale.com/home/dataset/example",
+            source = {"provider": "data_gov_hk",
+                      "source_url": "https://data.gov.hk/sc-data/dataset/example",
                       "source_sha256": "a" * 64, "source_format": ".zip",
                       "source_member": "tables/orders.csv", "license": None}
             self.make_root(root, governance={"data_governance": {
