@@ -22,11 +22,12 @@ SYNTHETIC_ORIGIN = {
 PUBLIC_DATASET_HOSTS = {
     "kaggle": {"kaggle.com", "www.kaggle.com"},
     "heywhale": {"heywhale.com", "www.heywhale.com"},
+    "data_gov_hk": {"data.gov.hk"},
 }
 
 
 def valid_data_origin(governance: Any, task: Mapping[str, Any]) -> bool:
-    """Accept synthetic fixtures or attributed Kaggle/Heywhale source rows."""
+    """Accept synthetic fixtures or attributed public dataset source rows."""
     if not isinstance(governance, Mapping):
         return False
     if dict(governance) == SYNTHETIC_ORIGIN:

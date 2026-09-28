@@ -177,6 +177,8 @@ def main() -> int:
     parser.add_argument("--dataset-ref", help="指定 Kaggle owner/slug；缺省时从已核验清单选取")
     parser.add_argument("--dataset-file", type=Path, help="指定本地表格或 ZIP/GZIP/TAR 压缩文件；可用于已获取的和鲸等数据集")
     parser.add_argument("--dataset-url", help="本地数据文件的原始数据集来源链接")
+    parser.add_argument("--dataset-platform", choices=("kaggle", "data_gov_hk", "balanced"),
+                        default="kaggle", help="数据集来源；balanced 要求偶数任务并按 1:1 分配")
     parser.add_argument("--dataset-max-gb", type=float, default=5.0,
                         help="数据源压缩文件、单个表格及解压内容的大小上限，默认 5 GB")
     parser.add_argument("--hops", type=int, default=3, help="随机路径最大跳数，实际范围为 0 到该值，默认 3")
@@ -250,6 +252,11 @@ def main() -> int:
         parser.error("--dataset-max-gb 必须大于 0 且不超过 100")
     if args.generation_source == "dataset" and args.dataset_ref and args.dataset_file:
         parser.error("--dataset-ref 与 --dataset-file 不能同时使用")
+    if args.generation_source == "dataset" and args.dataset_platform == "balanced":
+        if args.count % 2 or args.dataset_ref or args.dataset_file:
+            parser.error("balanced 需要偶数任务且不能指定单个数据集")
+    if args.generation_source == "dataset" and args.dataset_platform == "data_gov_hk" and args.dataset_ref:
+        parser.error("DATA.GOV.HK 来源不能使用 Kaggle --dataset-ref")
     if args.generation_source == "dataset" and args.task_type not in (None, "QA"):
         parser.error("数据集生成目前只支持 --task-type QA")
     if args.generation_source == "dataset" and args.task_intent not in (None, "query", "compare"):
@@ -321,9 +328,16 @@ def main() -> int:
             )
         )
         sample_seeds = [run_rng.randrange(0, 2**63) for _ in reserved_tasks]
+        if args.generation_source == "dataset":
+            from env_factory.generation.dataset_source_registry import balanced_platforms
+            platforms = (balanced_platforms(args.count, rng=run_rng)
+                         if args.dataset_platform == "balanced"
+                         else [args.dataset_platform] * args.count)
+        else:
+            platforms = [None] * args.count
         generation_provider = provider_identity(llm.base_url, llm.model)
-        for batch_index, ((task_number, task_dir), training_category, sample_seed) in enumerate(
-            zip(reserved_tasks, routes, sample_seeds), start=1
+        for batch_index, ((task_number, task_dir), training_category, sample_seed, platform) in enumerate(
+            zip(reserved_tasks, routes, sample_seeds, platforms), start=1
         ):
             _write_json(task_dir / "sample_manifest.json", {
                 "version": "2.0",
@@ -336,6 +350,7 @@ def main() -> int:
                 "requested_task_style": args.task_style,
                 "requested_task_type": args.task_type,
                 "generation_source": args.generation_source,
+                "dataset_platform": platform,
                 "dataset_ref": args.dataset_ref,
                 "dataset_file": str(args.dataset_file) if args.dataset_file else None,
                 "hops": args.hops if args.generation_source == "graph" else None,
@@ -356,7 +371,7 @@ def main() -> int:
         with ThreadPoolExecutor(max_workers=min(args.max_workers, args.count)) as executor:
             def generate_one(
                 batch_index: int, task_number: int, task_dir: Path,
-                training_category: str, sample_seed: int,
+                training_category: str, sample_seed: int, platform: str | None,
             ):
                 logging.getLogger(__name__).info(
                     "task generation started: batch=%d/%d task_id=task-%d",
@@ -378,6 +393,7 @@ def main() -> int:
                                 task_intent=args.task_intent,
                                 training_category=training_category,
                                 seed=attempt_seed,
+                                **({"dataset_platform": platform} if platform else {}),
                             )
                         _write_task_artifact(task_dir, task, training_category)
                         _validate_generated_candidate(task_dir)
@@ -416,7 +432,7 @@ def main() -> int:
             futures = {
                 executor.submit(
                     generate_one, batch_index, task_number, task_dir,
-                    routes[batch_index - 1], sample_seeds[batch_index - 1]
+                    routes[batch_index - 1], sample_seeds[batch_index - 1], platforms[batch_index - 1]
                 ): (
                     batch_index, task_number, task_dir, routes[batch_index - 1]
                 )

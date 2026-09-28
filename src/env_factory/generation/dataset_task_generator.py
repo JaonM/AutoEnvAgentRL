@@ -16,6 +16,9 @@ from urllib.parse import urlparse
 
 from env_factory.generation.task_generator import TaskGenerationError, TaskGenerator
 from env_factory.generation.dataset_formats import SUPPORTED_SOURCE_EXTENSIONS, source_extension
+from env_factory.generation.dataset_source_registry import (
+    eligible_hk_ids, verified_hk_source,
+)
 from env_factory.generation.dataset_table_reader import DEFAULT_MAX_SOURCE_BYTES, sample_table, selected_member
 from env_factory.graph.knowledge_graph import TaskType
 from env_factory.task_pipeline import TaskGenerationPipeline
@@ -26,10 +29,10 @@ PROJECT = Path(__file__).resolve().parents[3]
 KAGGLE_ROOT = PROJECT / "data" / "sources" / "kaggle"
 DEFAULT_ALLOWLIST = PROJECT / "config" / "dataset_generation_allowlist.json"
 logger = logging.getLogger(__name__)
-PRIVATE_COLUMNS = re.compile(r"name|email|phone|address|passport|ssn|birth|contact|comment|review", re.I)
-KEY_COLUMNS = re.compile(r"(^id$|[_ -]id$|order|booking|invoice|transaction|record|ticket)", re.I)
-GROUP_COLUMNS = re.compile(r"category|type|region|city|status|product|department|store|channel", re.I)
-VALUE_COLUMNS = re.compile(r"price|amount|cost|sales|quantity|revenue|fare|total|stock|units", re.I)
+PRIVATE_COLUMNS = re.compile(r"name|email|phone|address|passport|ssn|birth|contact|comment|review|姓名|邮箱|电话|手机|住址|地址|身份证|护照|出生|联系人|评论", re.I)
+KEY_COLUMNS = re.compile(r"(^id$|[_ -]id$|order|booking|invoice|transaction|record|ticket|订单号|交易号|预订号|票号|单号|流水号|编号)", re.I)
+GROUP_COLUMNS = re.compile(r"category|type|region|city|status|product|department|store|channel|类别|分类|地区|城市|状态|商品|部门|店铺|渠道|目的地", re.I)
+VALUE_COLUMNS = re.compile(r"price|amount|cost|sales|quantity|revenue|fare|total|stock|units|金额|价格|费用|销售额|收入|数量|总价|票价|成本|库存", re.I)
 
 
 def _sha256(path: Path) -> str:
@@ -42,14 +45,17 @@ def _sha256(path: Path) -> str:
 
 def _column_name(value: str) -> str:
     result = re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
-    if not result or result[0].isdigit():
-        result = "field_" + result
+    if not result or result[0].isdigit() or any(ord(char) > 127 for char in value):
+        result = ("field_" + result + "_" if result else "field_") + hashlib.sha256(
+            value.encode("utf-8")
+        ).hexdigest()[:10]
     return result
 
 
 def _number(value: str) -> float | None:
     try:
-        number = float(value.replace(",", "").replace("$", "").strip())
+        number = float(value.replace(",", "").replace("$", "")
+                       .replace("¥", "").replace("￥", "").strip())
     except (ValueError, AttributeError):
         return None
     return number if math.isfinite(number) else None
@@ -73,16 +79,17 @@ def _columns(headers: list[str], rows: list[dict[str, str]]) -> tuple[str, str, 
 
     keys = [h for h in headers if KEY_COLUMNS.search(h) and not PRIVATE_COLUMNS.search(h)
             and all(str(row.get(h) or "").strip() for row in rows)
-            and len({str(row[h]).strip() for row in rows}) == len(rows)]
+            and len({str(row[h]).strip() for row in rows}) >= max(2, len(rows) // 4)]
     key = min(keys, key=lambda h: rank(h, (r"booking_id", r"order_id", r"transaction_id",
                                            r"invoice", r"record_id", r"_id$")), default=None)
     groups = [h for h in headers if h != key and GROUP_COLUMNS.search(h)
               and not PRIVATE_COLUMNS.search(h)
               and 2 <= len({str(row.get(h) or "").strip() for row in rows}) <= 40
               and all(str(row.get(h) or "").strip() for row in rows)]
-    group = min(groups, key=lambda h: rank(h, (r"destination_city", r"category", r"status",
+    group = min(groups, key=lambda h: (rank(h, (r"destination_city", r"category", r"status",
                                               r"region", r"product", r"department", r"store",
-                                              r"channel", r"city", r"type")), default=None)
+                                              r"channel", r"city", r"type")),
+                                       abs(len({str(row[h]).strip() for row in rows}) - 8)), default=None)
     numeric_fields = [h for h in headers if h not in (key, group) and VALUE_COLUMNS.search(h)
                       and not PRIVATE_COLUMNS.search(h)
                       and all(_number(str(row.get(h) or "")) is not None for row in rows)
@@ -291,12 +298,33 @@ class DatasetTaskGenerator:
         self.pipeline = TaskGenerationPipeline(llm, script_count=user_script_count,
                                                noise_tool_max=noise_tool_max)
 
-    def _source(self, rng: random.Random) -> tuple[Path, str, str, str | None]:
+    def _source(self, rng: random.Random, platform: str = "kaggle") -> tuple[Path, str, str, str | None]:
         if self.dataset_file:
             if not self.dataset_file.is_file():
                 raise TaskGenerationError(f"dataset file not found: {self.dataset_file}")
             return (self.dataset_file, self.dataset_file.stem,
                     self.source_url or self.dataset_file.resolve().as_uri(), None)
+        if platform == "data_gov_hk":
+            candidates = eligible_hk_ids()
+            if not candidates:
+                raise TaskGenerationError("DATA.GOV.HK catalog has no approved datasets")
+            dataset_id = rng.choice(candidates)
+            source = verified_hk_source(dataset_id)
+            if source is None:
+                result = subprocess.run([
+                    sys.executable, str(PROJECT / "scripts" / "diagnostics" / "download_data_gov_hk_dataset.py"),
+                    dataset_id, "--max-bytes", str(self.max_source_bytes),
+                ], capture_output=True, text=True, check=False)
+                if result.returncode:
+                    raise TaskGenerationError(
+                        f"DATA.GOV.HK download failed for {dataset_id}: {result.stderr[-500:]}"
+                    )
+                source = verified_hk_source(dataset_id)
+            if source is None:
+                raise TaskGenerationError(f"DATA.GOV.HK source verification failed: {dataset_id}")
+            return source
+        if platform != "kaggle":
+            raise TaskGenerationError(f"unsupported dataset platform: {platform}")
         ref = self.dataset_ref
         approved = None
         if ref is None:
@@ -352,7 +380,7 @@ class DatasetTaskGenerator:
     def generate(self, hops: int = 0, task_type: str | None = None,
                  task_style: str | None = None, artifact_dir: str | Path | None = None,
                  task_intent: str | None = None, training_category: str = "multi_step_agentic",
-                 seed: int | None = None) -> Task:
+                 seed: int | None = None, dataset_platform: str = "kaggle") -> Task:
         del hops
         if task_type and task_type != TaskType.QA.value:
             raise TaskGenerationError("dataset generation currently supports task type QA")
@@ -363,12 +391,14 @@ class DatasetTaskGenerator:
         source_error: TaskGenerationError | None = None
         for _ in range(1 if self.dataset_ref or self.dataset_file else 6):
             try:
-                source, title, source_url, license_name = self._source(rng)
+                source, title, source_url, license_name = self._source(rng, dataset_platform)
                 headers, original_rows = _sample_source(
                     source, max_source_bytes=getattr(self, "max_source_bytes", DEFAULT_MAX_SOURCE_BYTES)
                 )
                 key_col, group_col, numeric_col = _columns(headers, original_rows)
-                selected = _choose_rows(original_rows, key_col, group_col, numeric_col,
+                distinct_rows = list({str(row[key_col]).strip(): row for row in reversed(original_rows)}.values())
+                distinct_rows.reverse()
+                selected = _choose_rows(distinct_rows, key_col, group_col, numeric_col,
                                         training_category, rng)
                 break
             except TaskGenerationError as exc:
@@ -454,7 +484,7 @@ class DatasetTaskGenerator:
                          "verified_reward_facts": facts}
         hostname = (urlparse(source_url).hostname or "").lower()
         provider = ("kaggle" if hostname in {"kaggle.com", "www.kaggle.com"}
-                    else "heywhale" if hostname in {"heywhale.com", "www.heywhale.com"}
+                    else "data_gov_hk" if hostname == "data.gov.hk"
                     else None)
         governance = {
             "origin": "public_dataset" if provider else "local_dataset_unverified",

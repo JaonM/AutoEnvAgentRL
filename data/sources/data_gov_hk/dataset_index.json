@@ -1,0 +1,16 @@
+{
+  "source": "https://data.gov.hk/sc-data/api/3/action/package_show",
+  "terms": "https://data.gov.hk/sc/terms-and-conditions",
+  "datasets": [
+    {
+      "id": "cc-pricewatch-pricewatch",
+      "url": "https://data.gov.hk/sc-data/dataset/cc-pricewatch-pricewatch",
+      "title": "格价资讯通",
+      "resource_url": "https://online-price-watch.consumer.org.hk/opw/opendata/pricewatch_zh-Hans.csv",
+      "resource_format": ".csv",
+      "resource_language": "zh-Hans",
+      "license": "DATA.GOV.HK Terms and Conditions of Use; attribution required",
+      "approved": true
+    }
+  ]
+}

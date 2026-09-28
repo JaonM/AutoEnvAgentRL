@@ -18,11 +18,14 @@ data/*
 data/sources/*
 !data/sources/kaggle/
 !data/sources/heywhale/
+!data/sources/data_gov_hk/
 data/sources/kaggle/*
 !data/sources/kaggle/task_dataset_index.json
 data/sources/heywhale/*
 !data/sources/heywhale/dataset_index.json
 !data/sources/heywhale/chinese_dataset_index.json
+data/sources/data_gov_hk/*
+!data/sources/data_gov_hk/dataset_index.json
 
 # Generated tasks
 output/

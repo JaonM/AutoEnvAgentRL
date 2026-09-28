@@ -59,6 +59,21 @@ def test_csv_source_supports_all_three_training_routes(tmp_path: Path) -> None:
             )
 
 
+def test_chinese_price_source_selects_business_fields_with_repeated_product_ids(tmp_path: Path) -> None:
+    source = tmp_path / "pricewatch.csv"
+    with source.open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=["货品编号", "货品分类2", "超市代号", "价格"])
+        writer.writeheader()
+        for number in range(30):
+            for store in ("A", "B"):
+                writer.writerow({"货品编号": f"P{number:04d}",
+                                 "货品分类2": "面包" if number < 15 else "蛋糕",
+                                 "超市代号": store, "价格": number + (1 if store == "A" else 2)})
+    headers, rows = _sample_source(source)
+    assert _columns(headers, rows) == ("货品编号", "货品分类2", "价格")
+    assert len({_column_name(header) for header in headers}) == len(headers)
+
+
 def test_kaggle_source_selects_non_csv_manifest_file(tmp_path: Path, monkeypatch) -> None:
     import env_factory.generation.dataset_task_generator as module
 
