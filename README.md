@@ -26,7 +26,7 @@ python3 scripts/diagnostics/download_kaggle_dataset.py madhavw/travel-and-touris
 
 目录页 `https://www.kaggle.com/datasets` 需要先选定具体数据集。旅游数据集已接入[数据集优先任务生成试验](docs/travel_dataset_trial.md)；其他数据集需先分析字段与许可，再设计任务、工具及奖励。
 
-中文数据源使用 [DATA.GOV.HK](https://data.gov.hk/sc-data/dataset) 的公开目录。已核验来源列在 `data/sources/data_gov_hk/dataset_index.json`，原始文件按需下载并校验哈希。
+中文数据源使用 [DATA.GOV.HK](https://data.gov.hk/sc-data/dataset) 的公开目录。`data/sources/data_gov_hk/dataset_index.json` 已收录完整的 3,822 个数据集目录项；其中通过审核的来源才进入任务生成。原始文件按需下载并校验哈希。运行 `python3 scripts/diagnostics/index_data_gov_hk_datasets.py` 可刷新目录，刷新不会自动批准新来源。
 
 ## 构建知识图谱
 
