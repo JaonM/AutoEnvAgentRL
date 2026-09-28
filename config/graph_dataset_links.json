@@ -1,8 +1,15 @@
 {
   "version": 1,
+  "discovery_terms": {
+    "买衣服": ["clothing", "apparel", "garment"],
+    "零售消费核对": ["retail sales", "retail orders", "transactions"],
+    "食": ["食品", "餐饮", "面包", "超市"],
+    "商品价格核对": ["价格", "格价", "物价"]
+  },
   "links": [
     {
       "scene": "买衣服",
+      "business_label": "服装",
       "dataset_key": "kaggle:mohammadtalib786/retail-sales-dataset",
       "source_sha256": "924860cb2e8571373d1a29d658c6da212e8d158663f722416d5008f525c39b00",
       "group_field": "Product Category",
@@ -11,12 +18,14 @@
     },
     {
       "scene": "零售消费核对",
+      "business_label": "零售交易",
       "dataset_key": "kaggle:mohammadtalib786/retail-sales-dataset",
       "source_sha256": "924860cb2e8571373d1a29d658c6da212e8d158663f722416d5008f525c39b00",
       "evidence": "已核验原始零售表的交易号、商品类别和成交金额字段。"
     },
     {
       "scene": "食",
+      "business_label": "面包",
       "dataset_key": "data_gov_hk:cc-pricewatch-pricewatch",
       "source_sha256": "cdfe3933a2455e2e0d6ad73d1f9e82f02d75ccb176d2517c16644ba84991a603",
       "group_field": "货品分类2",
@@ -25,6 +34,7 @@
     },
     {
       "scene": "商品价格核对",
+      "business_label": "商品",
       "dataset_key": "data_gov_hk:cc-pricewatch-pricewatch",
       "source_sha256": "cdfe3933a2455e2e0d6ad73d1f9e82f02d75ccb176d2517c16644ba84991a603",
       "evidence": "已核验简体中文原始价格表的货品编号、货品分类与价格字段。"

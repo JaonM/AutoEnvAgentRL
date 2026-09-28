@@ -14,6 +14,7 @@ class NodeType(str, Enum):
     DATASET = "dataset"
     RESOURCE = "resource"
     FIELD = "field"
+    TOPIC = "topic"
 
 
 class SceneRelation(str, Enum):
@@ -110,6 +111,7 @@ class KnowledgeGraphSchema:
     node_types: tuple[NodeType, ...] = (
         NodeType.SCENE, NodeType.TASK_TYPE, NodeType.DATASET,
         NodeType.RESOURCE, NodeType.FIELD,
+        NodeType.TOPIC,
     )
     scene_relations: tuple[SceneRelation, ...] = (
         SceneRelation.HIERARCHY,

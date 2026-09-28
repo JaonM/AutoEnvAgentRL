@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import logging
 import os
 import random
+import re
 from typing import Any
 
 from dotenv import load_dotenv
@@ -46,6 +47,7 @@ class SceneDatasetLink:
     evidence: str
     group_field: str | None = None
     group_value: str | None = None
+    business_label: str | None = None
 
 
 class Neo4jGraphStore:
@@ -120,6 +122,104 @@ class Neo4jGraphStore:
                 "CREATE CONSTRAINT field_key IF NOT EXISTS "
                 "FOR (node:Field) REQUIRE node.key IS UNIQUE"
             ).consume()
+            session.run(
+                "CREATE CONSTRAINT topic_key IF NOT EXISTS "
+                "FOR (node:Topic) REQUIRE node.key IS UNIQUE"
+            ).consume()
+
+    def upsert_catalog_datasets(self, rows: Iterable[dict[str, Any]], *, batch_size: int = 500) -> int:
+        """Index catalog metadata in bounded transactions without approving raw data."""
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        query = (
+            "UNWIND $rows AS row "
+            "MERGE (dataset:Dataset {key: row.key}) "
+            "SET dataset.catalog_title = row.title, dataset.source_url = row.url, "
+            "dataset.provider = row.provider, dataset.category = row.category, "
+            "dataset.catalog_approved = row.approved, dataset.catalog_source = row.platform, "
+            "dataset.catalog_license = row.license, "
+            "dataset.resource_count = row.resource_count, dataset.resource_formats = row.resource_formats "
+            "WITH dataset, row WHERE row.topic_key <> '' "
+            "MERGE (topic:Topic {key: row.topic_key}) "
+            "SET topic.name = row.topic_name, topic.platform = row.platform "
+            "MERGE (dataset)-[:IN_TOPIC]->(topic)"
+        )
+        count = 0
+        batch: list[dict[str, Any]] = []
+        with self.driver.session(database=self.database) as session:
+            for row in rows:
+                batch.append(row)
+                if len(batch) == batch_size:
+                    session.run(query, rows=batch).consume()
+                    count += len(batch)
+                    batch = []
+            if batch:
+                session.run(query, rows=batch).consume()
+                count += len(batch)
+        return count
+
+    def set_scene_discovery_terms(self, scene_name: str, terms: tuple[str, ...]) -> None:
+        with self.driver.session(database=self.database) as session:
+            session.run(
+                "MATCH (scene:Scene {id: $scene_id}) SET scene.discovery_terms = $terms",
+                scene_id=normalize_scene_name(scene_name), terms=list(terms),
+            ).consume()
+
+    def catalog_candidates_for_scene(self, scene_name: str, *, limit: int = 20) -> tuple[dict[str, Any], ...]:
+        """Find metadata candidates sharing a topic with reviewed scene sources."""
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        scene_id = normalize_scene_name(scene_name)
+        with self.driver.session(database=self.database) as session:
+            seed = session.run(
+                "MATCH (scene:Scene {id: $scene_id})-[:SUPPORTED_BY]->(dataset:Dataset) "
+                "RETURN collect(coalesce(dataset.catalog_title, dataset.title)) AS titles, "
+                "scene.discovery_terms AS discovery_terms",
+                scene_id=scene_id,
+            ).single()
+            terms = (list(seed["discovery_terms"]) if seed and seed["discovery_terms"]
+                     else self._catalog_candidate_terms(scene_name, seed["titles"] if seed else ()))
+            if not terms:
+                return ()
+            records = session.run(
+                "MATCH (scene:Scene {id: $scene_id})-[:SUPPORTED_BY]->(:Dataset)-[:IN_TOPIC]->(topic:Topic) "
+                "MATCH (candidate:Dataset)-[:IN_TOPIC]->(topic) "
+                "WHERE NOT (scene)-[:SUPPORTED_BY]->(candidate) "
+                "AND any(term IN $terms WHERE toLower(candidate.catalog_title) CONTAINS term) "
+                "WITH DISTINCT candidate, topic, "
+                "size([term IN $terms WHERE toLower(candidate.catalog_title) CONTAINS term]) AS relevance "
+                "RETURN candidate.key AS key, candidate.catalog_title AS title, "
+                "candidate.source_url AS url, topic.name AS topic, "
+                "candidate.catalog_approved AS approved "
+                "ORDER BY relevance DESC, candidate.key LIMIT $limit",
+                scene_id=scene_id, terms=terms, limit=limit,
+            )
+            return tuple(dict(record) for record in records)
+
+    @staticmethod
+    def _catalog_candidate_terms(scene_name: str, titles: Iterable[str]) -> list[str]:
+        """Use specific title words; broad catalog categories alone are weak evidence."""
+        ignored = {"dataset", "data", "information", "business", "records",
+                   "数据", "资料", "信息", "业务", "核对", "一览"}
+        terms: set[str] = set()
+        for text in (scene_name, *titles):
+            if not isinstance(text, str):
+                continue
+            terms.update(word.casefold() for word in re.findall(r"[A-Za-z]{4,}", text)
+                         if word.casefold() not in ignored)
+            for block in re.findall(r"[\u4e00-\u9fff]{2,}", text):
+                terms.update(block[index:index + 2] for index in range(len(block) - 1)
+                             if block[index:index + 2] not in ignored)
+        return sorted(terms)
+
+    def catalog_dataset_counts(self) -> dict[str, int]:
+        """Count materialized catalog entries by source, excluding graph-only nodes."""
+        with self.driver.session(database=self.database) as session:
+            records = session.run(
+                "MATCH (dataset:Dataset) WHERE dataset.catalog_source IS NOT NULL "
+                "RETURN dataset.catalog_source AS platform, count(dataset) AS total"
+            )
+            return {str(record["platform"]): int(record["total"]) for record in records}
 
     def upsert_dataset(self, node: DatasetNode) -> None:
         with self.driver.session(database=self.database) as session:
@@ -161,10 +261,12 @@ class Neo4jGraphStore:
                 "MERGE (scene)-[relation:SUPPORTED_BY]->(dataset) "
                 "SET relation.source_sha256 = $source_sha256, relation.evidence = $evidence, "
                 "relation.group_field = $group_field, relation.group_value = $group_value, "
+                "relation.business_label = $business_label, "
                 "relation.reviewed = true, relation.managed_by = 'graph_dataset_links'",
                 scene_id=normalize_scene_name(link.scene_name), dataset_key=link.dataset_key,
                 source_sha256=link.source_sha256, evidence=link.evidence,
                 group_field=link.group_field, group_value=link.group_value,
+                business_label=link.business_label,
             ).consume()
 
     def reconcile_reviewed_links(self, links: tuple[SceneDatasetLink, ...]) -> None:
@@ -190,7 +292,8 @@ class Neo4jGraphStore:
                 "RETURN scene.name AS scene_name, scene.words AS scene_words, "
                 "dataset.key AS dataset_key, relation.source_sha256 AS source_sha256, "
                 "relation.evidence AS evidence, relation.group_field AS group_field, "
-                "relation.group_value AS group_value",
+                "relation.group_value AS group_value, "
+                "relation.business_label AS business_label",
                 prefix=platform + ":",
             )
             return tuple((
@@ -199,6 +302,7 @@ class Neo4jGraphStore:
                     str(record["scene_name"]), str(record["dataset_key"]),
                     str(record["source_sha256"]), str(record["evidence"]),
                     record["group_field"], record["group_value"],
+                    record["business_label"],
                 ),
             ) for record in records)
 

@@ -9,7 +9,8 @@ from env_factory.generation.dataset_task_generator import (
     DatasetTaskGenerator, TaskGenerationError, _choose_rows, _description, _project,
 )
 from env_factory.graph.dataset_planner import (
-    GraphDatasetTaskGenerator, reviewed_links, sync_reviewed_links, verify_link_source,
+    GraphDatasetTaskGenerator, catalog_rows, reviewed_links, sync_catalog_datasets,
+    sync_reviewed_links, verify_link_source,
 )
 from env_factory.graph.graph_builder import SceneDatasetLink
 from env_factory.graph.knowledge_graph import SceneNode
@@ -24,6 +25,8 @@ class RecordingStore:
         self.fields = []
         self.relations = []
         self.reconciled = ()
+        self.catalog = ()
+        self.discovery = {}
 
     def verify_connectivity(self):
         pass
@@ -49,6 +52,13 @@ class RecordingStore:
     def reconcile_reviewed_links(self, links):
         self.reconciled = links
 
+    def upsert_catalog_datasets(self, rows):
+        self.catalog = tuple(rows)
+        return len(self.catalog)
+
+    def set_scene_discovery_terms(self, scene, terms):
+        self.discovery[scene] = terms
+
     def supported_dataset_links(self, platform):
         return tuple((SceneNode(link.scene_name), link) for link in self.links
                      if link.dataset_key.startswith(platform + ":"))
@@ -65,6 +75,18 @@ def test_reviewed_relations_are_backed_by_approved_raw_sources():
         assert source.is_file()
 
 
+def test_complete_catalogs_are_metadata_only_until_source_review():
+    rows = catalog_rows()
+    assert len(rows) == 13_822
+    assert sum(row["platform"] == "kaggle" for row in rows) == 10_000
+    assert sum(row["platform"] == "data_gov_hk" for row in rows) == 3_822
+    assert sum(row["approved"] for row in rows) == 2
+    assert len({row["key"] for row in rows}) == len(rows)
+    store = RecordingStore()
+    assert sync_catalog_datasets(store, rows) == len(rows)
+    assert not store.relations
+
+
 def test_graph_sync_writes_only_verified_source_relations():
     store = RecordingStore()
     assert sync_reviewed_links(store) == 4
@@ -76,6 +98,7 @@ def test_graph_sync_writes_only_verified_source_relations():
     assert len(store.resources) == 4
     assert {field.role for field in store.fields} == {"identifier", "group", "value"}
     assert store.reconciled == reviewed_links()
+    assert store.discovery["商品价格核对"] == ("价格", "格价", "物价")
 
 
 def test_graph_generator_ignores_unreviewed_relationships():

@@ -18,6 +18,70 @@ from env_factory.graph.knowledge_graph import DatasetNode, FieldNode, ResourceNo
 
 
 DEFAULT_LINKS = PROJECT / "config" / "graph_dataset_links.json"
+KAGGLE_INDEX = PROJECT / "data" / "sources" / "kaggle" / "task_dataset_index.json"
+HK_INDEX = PROJECT / "data" / "sources" / "data_gov_hk" / "dataset_index.json"
+
+
+def catalog_rows(
+    kaggle_index: Path = KAGGLE_INDEX, hk_index: Path = HK_INDEX,
+    allowlist: Path = DEFAULT_ALLOWLIST,
+) -> tuple[dict[str, Any], ...]:
+    """Read both checked-in catalogs as metadata, preserving separate approval."""
+    kaggle = json.loads(kaggle_index.read_text(encoding="utf-8"))
+    hk = json.loads(hk_index.read_text(encoding="utf-8"))
+    approved_kaggle = {
+        row["ref"]: row["license"]
+        for row in json.loads(allowlist.read_text(encoding="utf-8"))["datasets"]
+    }
+    for name, document in (("Kaggle", kaggle), ("DATA.GOV.HK", hk)):
+        if (not isinstance(document.get("datasets"), list)
+                or document.get("count") != len(document["datasets"])):
+            raise TaskGenerationError(f"{name} catalog count does not match its dataset entries")
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in kaggle["datasets"]:
+        ref = item.get("ref")
+        if not isinstance(ref, str) or not ref or "/" not in ref:
+            raise TaskGenerationError("Kaggle catalog contains an invalid ref")
+        topic = str(item.get("matched_query") or "").strip().casefold()
+        row = {"key": f"kaggle:{ref}", "platform": "kaggle",
+               "title": str(item.get("title") or ref),
+               "url": f"https://www.kaggle.com/datasets/{ref}",
+               "provider": ref.split("/", 1)[0], "category": topic,
+               "approved": approved_kaggle.get(ref) == item.get("license")
+               and ref in approved_kaggle,
+               "license": str(item.get("license") or ""),
+               "resource_count": 0, "resource_formats": [],
+               "topic_key": f"kaggle:{topic}" if topic else "", "topic_name": topic}
+        rows.append(row)
+    for item in hk["datasets"]:
+        dataset_id = item.get("id")
+        if not isinstance(dataset_id, str) or not dataset_id:
+            raise TaskGenerationError("DATA.GOV.HK catalog contains an invalid id")
+        topic = str(item.get("category") or "").strip()
+        row = {"key": f"data_gov_hk:{dataset_id}", "platform": "data_gov_hk",
+               "title": str(item.get("title") or dataset_id),
+               "url": str(item.get("url") or ""),
+               "provider": str(item.get("provider") or ""), "category": topic,
+               "approved": item.get("approved") is True,
+               "license": str(item.get("license") or ""),
+               "resource_count": int(item.get("resource_count") or 0),
+               "resource_formats": list(item.get("resource_formats") or []),
+               "topic_key": f"data_gov_hk:{topic}" if topic else "", "topic_name": topic}
+        rows.append(row)
+    for row in rows:
+        if row["key"] in seen:
+            raise TaskGenerationError(f"duplicate catalog dataset key: {row['key']}")
+        seen.add(row["key"])
+    return tuple(rows)
+
+
+def sync_catalog_datasets(store: Neo4jGraphStore, rows: tuple[dict[str, Any], ...] | None = None) -> int:
+    """Load the complete local catalogs into Neo4j without creating reviewed links."""
+    selected = rows if rows is not None else catalog_rows()
+    store.verify_connectivity()
+    store.ensure_schema()
+    return store.upsert_catalog_datasets(selected)
 
 
 def reviewed_links(path: Path = DEFAULT_LINKS) -> tuple[SceneDatasetLink, ...]:
@@ -29,14 +93,30 @@ def reviewed_links(path: Path = DEFAULT_LINKS) -> tuple[SceneDatasetLink, ...]:
     for row in document["links"]:
         link = SceneDatasetLink(
             row["scene"], row["dataset_key"], row["source_sha256"], row["evidence"],
-            row.get("group_field"), row.get("group_value"),
+            row.get("group_field"), row.get("group_value"), row.get("business_label"),
         )
         if (not link.scene_name.strip() or not link.evidence.strip()
                 or (link.group_field is None) != (link.group_value is None)
+                or not isinstance(link.business_label, str) or len(link.business_label.strip()) < 2
                 or len(link.source_sha256) != 64):
             raise TaskGenerationError("graph dataset link has invalid evidence or field constraint")
         result.append(link)
     return tuple(result)
+
+
+def discovery_terms(path: Path = DEFAULT_LINKS) -> dict[str, tuple[str, ...]]:
+    document = json.loads(path.read_text(encoding="utf-8"))
+    mapping = document.get("discovery_terms", {})
+    if not isinstance(mapping, dict):
+        raise TaskGenerationError("graph discovery terms must be a mapping")
+    result = {}
+    for scene, terms in mapping.items():
+        if (not isinstance(scene, str) or not isinstance(terms, list)
+                or not terms or any(not isinstance(term, str) or len(term.strip()) < 2
+                                 for term in terms)):
+            raise TaskGenerationError("graph discovery terms contain an invalid scene or term")
+        result[scene] = tuple(dict.fromkeys(term.strip().casefold() for term in terms))
+    return result
 
 
 def verify_link_source(link: SceneDatasetLink, *, llm: Any = None) -> tuple[Path, str, str, str | None]:
@@ -93,6 +173,8 @@ def sync_reviewed_links(store: Neo4jGraphStore, links: tuple[SceneDatasetLink, .
         for role, field in (("identifier", key), ("group", group), ("value", numeric)):
             store.upsert_field(FieldNode(f"{resource_key}:{field}", resource_key, field, role))
         store.link_scene_dataset(link)
+    for scene, terms in discovery_terms().items():
+        store.set_scene_discovery_terms(scene, terms)
     store.reconcile_reviewed_links(selected)
     return len(selected)
 
