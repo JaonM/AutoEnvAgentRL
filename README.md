@@ -32,6 +32,17 @@ python3 scripts/diagnostics/download_indexed_datasets.py --scope all \
 python3 scripts/diagnostics/download_indexed_datasets.py --status
 ```
 
+只下载指定的索引项，可重复传入 `--dataset`：
+
+```bash
+python3 scripts/diagnostics/download_indexed_datasets.py \
+  --dataset kaggle:lalit7881/warehouse-and-retail-sales \
+  --dataset data_gov_hk:cc-pricewatch-pricewatch --dry-run
+# 确认清单后去掉 --dry-run 即开始下载
+```
+
+`--dataset` 使用索引键 `kaggle:owner/slug` 或 `data_gov_hk:id`，按传入顺序处理；明确指定的数据集可以来自未准入候选，但下载不会批准其用于任务。不能与 `--offset`、`--limit` 同用。
+
 下载器逐条记录到 `data/sources/download_state.jsonl`，重跑会校验本地文件并跳过完整数据集。Kaggle 原始文件保存在版本目录；DATA.GOV.HK 的全部资源保存在 `data/sources/data_gov_hk_bulk/<id>/raw/`。预算或磁盘余量不足时停止并返回非零状态，失败条目记录原因。索引包含候选，不代表许可、隐私和任务适配审核通过；下载不会自动批准数据集进入任务生成。
 
 目录页 `https://www.kaggle.com/datasets` 需要先选定具体数据集。旅游数据集已接入[数据集优先任务生成试验](docs/travel_dataset_trial.md)；其他数据集需先分析字段与许可，再设计任务、工具及奖励。

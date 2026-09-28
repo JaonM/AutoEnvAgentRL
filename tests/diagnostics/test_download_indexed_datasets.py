@@ -30,6 +30,14 @@ def test_select_all_indexed_sources_and_approved_subset(tmp_path: Path) -> None:
     assert len(module.selected_items("both", "all", kaggle, hk, allow)) == 4
     assert [row["ref" if source == "kaggle" else "id"] for source, row in
             module.selected_items("both", "approved", kaggle, hk, allow)] == ["a/one", "hk-two"]
+    assert module.requested_items(["data_gov_hk:hk-one", "kaggle:b/two"], "both", kaggle, hk) == [
+        ("data_gov_hk", {"id": "hk-one", "approved": False}),
+        ("kaggle", {"ref": "b/two", "license": "CC0"}),
+    ]
+    with pytest.raises(ValueError, match="absent from"):
+        module.requested_items(["data_gov_hk:hk-one"], "kaggle", kaggle, hk)
+    with pytest.raises(ValueError, match="duplicate"):
+        module.requested_items(["kaggle:a/one", "kaggle:a/one"], "both", kaggle, hk)
 
 
 def test_resume_checks_hash_and_indexed_license(tmp_path: Path) -> None:

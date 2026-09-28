@@ -24,4 +24,17 @@ python3 scripts/diagnostics/download_indexed_datasets.py --scope all \
 python3 scripts/diagnostics/download_indexed_datasets.py --status
 ```
 
+只处理指定数据集时使用重复的 `--dataset` 参数，先用 `--dry-run` 核对：
+
+```bash
+python3 scripts/diagnostics/download_indexed_datasets.py \
+  --dataset kaggle:lalit7881/warehouse-and-retail-sales \
+  --dataset data_gov_hk:cc-pricewatch-pricewatch --dry-run
+python3 scripts/diagnostics/download_indexed_datasets.py \
+  --dataset kaggle:lalit7881/warehouse-and-retail-sales \
+  --dataset data_gov_hk:cc-pricewatch-pricewatch
+```
+
+格式必须是 `kaggle:owner/slug` 或 `data_gov_hk:id`，且键必须存在于对应索引。显式指定时可选择未准入的目录候选，不受默认 `--scope approved` 限制；传入顺序即下载顺序。未知键会报错，不会触发下载；`--dataset` 不能与 `--offset`、`--limit` 同用。
+
 默认范围为已准入来源；`--scope all` 才覆盖索引全部候选。可用 `--platform kaggle`、`--offset`、`--limit` 划分批次。脚本校验 SHA-256、路径和 Kaggle 索引许可，记录每个来源的最近状态；重新执行会核验并跳过已完成数据。下载超限、失效链接或许可变化会记入状态文件，需要逐项处理。DATA.GOV.HK 会按官方实时元数据下载每个资源，保存于 `data/sources/data_gov_hk_bulk/`。远端 API、实时馈送等可能无法作为完整静态文件下载，失败会留痕；目录候选不会因下载而自动获准用于任务或训练。

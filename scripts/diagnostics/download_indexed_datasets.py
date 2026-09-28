@@ -70,6 +70,26 @@ def selected_items(platform: str, scope: str, kaggle_index: Path = KAGGLE_INDEX,
     return [("kaggle", row) for row in kaggle] + [("data_gov_hk", row) for row in hk]
 
 
+def requested_items(dataset_keys: list[str], platform: str,
+                    kaggle_index: Path = KAGGLE_INDEX,
+                    hk_index: Path = HK_INDEX) -> list[tuple[str, dict]]:
+    """Resolve explicit catalog keys in command-line order, independent of approval scope."""
+    catalog = {
+        f"{source}:{row['ref' if source == 'kaggle' else 'id']}": (source, row)
+        for source, row in selected_items(platform, "all", kaggle_index, hk_index)
+    }
+    result = []
+    seen = set()
+    for key in dataset_keys:
+        if key in seen:
+            raise ValueError(f"duplicate --dataset: {key}")
+        if key not in catalog:
+            raise ValueError(f"--dataset is absent from the selected platform's index: {key}")
+        result.append(catalog[key])
+        seen.add(key)
+    return result
+
+
 def _safe_member(root: Path, name: str) -> Path:
     relative = Path(name)
     if not name or relative.is_absolute() or ".." in relative.parts or relative.parts[0] == ".":
@@ -352,6 +372,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--platform", choices=("both", "kaggle", "data_gov_hk"), default="both")
     parser.add_argument("--scope", choices=("approved", "all"), default="approved")
+    parser.add_argument("--dataset", action="append", metavar="PLATFORM:ID",
+                        help="download one indexed dataset; repeat for several, e.g. kaggle:owner/slug")
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--limit", type=int)
     parser.add_argument("--max-dataset-gb", type=float, default=5.0)
@@ -373,8 +395,16 @@ def main() -> int:
             or min(args.max_dataset_gb, args.max_total_gb) <= 0 or args.reserve_gb < 0
             or args.retries < 0):
         parser.error("offset, limit and byte budgets must be valid positive values")
-    items = selected_items(args.platform, args.scope, args.kaggle_index, args.hk_index)
-    items = items[args.offset:args.offset + args.limit if args.limit is not None else None]
+    if args.dataset and (args.offset or args.limit is not None):
+        parser.error("--dataset cannot be combined with --offset or --limit")
+    try:
+        if args.dataset:
+            items = requested_items(args.dataset, args.platform, args.kaggle_index, args.hk_index)
+        else:
+            items = selected_items(args.platform, args.scope, args.kaggle_index, args.hk_index)
+            items = items[args.offset:args.offset + args.limit if args.limit is not None else None]
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.dry_run:
         for platform, row in items:
             print(f"{platform}:{row['ref' if platform == 'kaggle' else 'id']}")
