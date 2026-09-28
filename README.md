@@ -24,6 +24,16 @@ python3 scripts/diagnostics/index_kaggle_tasks.py --target 10000
 python3 scripts/diagnostics/download_kaggle_dataset.py madhavw/travel-and-tourism
 ```
 
+按已提交索引下载全部候选（Kaggle 与 DATA.GOV.HK，共 13,822 条）：
+
+```bash
+python3 scripts/diagnostics/download_indexed_datasets.py --scope all \
+  --max-dataset-gb 100 --max-total-gb 1400 --reserve-gb 100
+python3 scripts/diagnostics/download_indexed_datasets.py --status
+```
+
+下载器逐条记录到 `data/sources/download_state.jsonl`，重跑会校验本地文件并跳过完整数据集。Kaggle 原始文件保存在版本目录；DATA.GOV.HK 的全部资源保存在 `data/sources/data_gov_hk_bulk/<id>/raw/`。预算或磁盘余量不足时停止并返回非零状态，失败条目记录原因。索引包含候选，不代表许可、隐私和任务适配审核通过；下载不会自动批准数据集进入任务生成。
+
 目录页 `https://www.kaggle.com/datasets` 需要先选定具体数据集。旅游数据集已接入[数据集优先任务生成试验](docs/travel_dataset_trial.md)；其他数据集需先分析字段与许可，再设计任务、工具及奖励。
 
 中文数据源使用 [DATA.GOV.HK](https://data.gov.hk/sc-data/dataset) 的公开目录。`data/sources/data_gov_hk/dataset_index.json` 已收录完整的 3,822 个数据集目录项；其中通过审核的来源才进入任务生成。原始文件按需下载并校验哈希。运行 `python3 scripts/diagnostics/index_data_gov_hk_datasets.py` 可刷新目录，刷新不会自动批准新来源。
@@ -110,7 +120,7 @@ WIKIPEDIA_DUMP_DB=data/wikipedia.sqlite3
 
 当前数据集入口支持 CSV、TSV、JSON、JSONL/NDJSON、XLSX、Parquet、SQLite，以及 ZIP/GZIP/TAR 压缩包和 `QA` 类型，需要数据中存在可辨识的业务 ID、可重复的分组字段及可核算的数值字段；不满足条件的候选会拒绝并记录原因。来源哈希、所选原始字段与答案键写入 `source_selection.json`。
 
-`./scripts/build_graph.sh` 在扩展 Scene 后同步本地 10,000 条 Kaggle 与 3,822 条 DATA.GOV.HK 目录项，核验原始文件并写入 `config/graph_dataset_links.json` 中的 Scene→Dataset 关系；`--datasets-only` 可跳过维基与 LLM 扩展，`--datasets-only --links-only` 跳过目录同步并构建关系；`--skip-llm-dataset-links` 只同步注册表。`uv run python scripts/diagnostics/sync_graph_dataset_links.py --suggest-scene 商品价格核对` 可查看同主题候选，目录候选仍需审核后才可进入关系注册表。图谱包含 `Scene → Dataset → Resource → Field`、`Dataset → Topic`，并通过 `parent_scene` 把原始分组支持的细分 Scene 连到上位场景；图谱保存来源哈希和字段角色，不复制业务行。当前已核验十个原始来源、55 条场景关系，本机 766 个 Scene 中 45 个有数据支撑；13,822 条目录项不会自动获得任务生成资格。默认图谱路径按来源比例选择场景，运行时再次核对准入、哈希及字段；`--dataset-platform balanced --count 2` 按 1:1 分配。原关键词图谱路径由 `--generation-source graph_keywords --hops 3 --task-type Event` 显式调用，原数据集路径由 `--generation-source dataset` 显式调用。图谱数据路径覆盖三种训练路由，并可从较高/较低比较，以及同类业务最高、最低、平均值或数量中选择可核算目标。限定单一分组的关系只用于直接回答，避免泄漏工具任务的隐藏类别。 外部 LLM 会针对已准入原始来源，从现有 Scene 中提议关系；脚本只接受精确的 Scene 名称、可核验的原始分组值、固定来源哈希及简短业务称呼，并把提议与模型名写入关系注册表。`--llm-links-dry-run` 可先查看候选；`--llm-dataset-key kaggle:owner/slug` 可只处理一个来源。LLM 提议的业务语义仍需人工抽检，关系上的 `review_method` 标明其来源。
+`./scripts/build_graph.sh` 在扩展 Scene 后同步本地 10,000 条 Kaggle 与 3,822 条 DATA.GOV.HK 目录项，核验原始文件并写入 `config/graph_dataset_links.json` 中的 Scene→Dataset 关系；`--datasets-only` 可跳过维基与 LLM 扩展，`--datasets-only --links-only` 跳过目录同步并构建关系；`--skip-llm-dataset-links` 只同步注册表。`uv run python scripts/diagnostics/sync_graph_dataset_links.py --suggest-scene 商品价格核对` 可查看同主题候选，目录候选仍需审核后才可进入关系注册表。图谱包含 `Scene → Dataset → Resource → Field`、`Dataset → Topic`，并通过 `parent_scene` 把原始分组支持的细分 Scene 连到上位场景；图谱保存来源哈希和字段角色，不复制业务行。当前已核验十个原始来源、55 条场景关系，本机 766 个 Scene 中 45 个有数据支撑；13,822 条目录项不会自动获得任务生成资格。默认图谱路径按来源比例选择场景，运行时再次核对准入、哈希及字段；`--dataset-platform balanced --count 2` 按 1:1 分配。原关键词图谱路径由 `--generation-source graph_keywords --hops 3 --task-type Event` 显式调用，原数据集路径由 `--generation-source dataset` 显式调用。图谱数据路径覆盖三种训练路由，并可从较高/较低比较，以及同类业务最高、最低、平均值或数量中选择可核算目标。限定单一分组的关系只用于直接回答，避免泄漏工具任务的隐藏类别。 外部 LLM 会针对已准入原始来源，从现有 Scene 中提议关系；脚本只接受精确的 Scene 名称、可核验的原始分组值、固定来源哈希及简短业务称呼，经过第二轮 LLM 语义复核后再把提议与模型名写入关系注册表。`--datasets-only --llm-links-dry-run` 使用本机已缓存的原始文件只读展示候选；`--llm-dataset-key kaggle:owner/slug` 可只处理一个来源。LLM 提议的业务语义仍需人工抽检，关系上的 `review_method` 标明其来源。
 
 端到端实验默认沿图谱规划路径生成开发轮次与留出集；可用 `scripts/loop_experiment.py --generation-source dataset` 运行原数据集路径。
 
