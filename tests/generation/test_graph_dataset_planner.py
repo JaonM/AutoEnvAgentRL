@@ -27,6 +27,8 @@ class RecordingStore:
         self.reconciled = ()
         self.catalog = ()
         self.discovery = {}
+        self.scene_edges = []
+        self.reconciled_scene_edges = ()
 
     def verify_connectivity(self):
         pass
@@ -49,6 +51,12 @@ class RecordingStore:
     def link_scene_dataset(self, link):
         self.relations.append(link)
 
+    def link_scene_extension(self, parent, child):
+        self.scene_edges.append((parent, child))
+
+    def reconcile_scene_extensions(self, pairs):
+        self.reconciled_scene_edges = pairs
+
     def reconcile_reviewed_links(self, links):
         self.reconciled = links
 
@@ -66,7 +74,7 @@ class RecordingStore:
 
 def test_reviewed_relations_are_backed_by_approved_raw_sources():
     links = reviewed_links()
-    assert len(links) == 4
+    assert len(links) == 22
     assert {link.dataset_key.split(":", 1)[0] for link in links} == {
         "kaggle", "data_gov_hk",
     }
@@ -80,7 +88,7 @@ def test_complete_catalogs_are_metadata_only_until_source_review():
     assert len(rows) == 13_822
     assert sum(row["platform"] == "kaggle" for row in rows) == 10_000
     assert sum(row["platform"] == "data_gov_hk" for row in rows) == 3_822
-    assert sum(row["approved"] for row in rows) == 2
+    assert sum(row["approved"] for row in rows) == 4
     assert len({row["key"] for row in rows}) == len(rows)
     store = RecordingStore()
     assert sync_catalog_datasets(store, rows) == len(rows)
@@ -89,16 +97,38 @@ def test_complete_catalogs_are_metadata_only_until_source_review():
 
 def test_graph_sync_writes_only_verified_source_relations():
     store = RecordingStore()
-    assert sync_reviewed_links(store) == 4
-    assert len(store.scenes) == len(store.relations) == 4
+    assert sync_reviewed_links(store) == 22
+    assert len(store.relations) == 22
+    assert len(store.scene_edges) == 16
+    assert store.reconciled_scene_edges == tuple(store.scene_edges)
     assert {node.key for node in store.datasets} == {
         "kaggle:mohammadtalib786/retail-sales-dataset",
+        "kaggle:ankitbansal06/retail-orders",
+        "kaggle:sophietwohey/synthetic-hotel-dataset",
         "data_gov_hk:cc-pricewatch-pricewatch",
     }
-    assert len(store.resources) == 4
+    assert len(store.resources) == 22
     assert {field.role for field in store.fields} == {"identifier", "group", "value"}
     assert store.reconciled == reviewed_links()
     assert store.discovery["商品价格核对"] == ("价格", "格价", "物价")
+
+
+def test_hotel_relation_uses_pinned_reservations_table():
+    link = next(link for link in reviewed_links()
+                if link.dataset_key == "kaggle:sophietwohey/synthetic-hotel-dataset")
+    source, *_ = verify_link_source(link)
+    assert source.name == "reservations.csv"
+
+
+def test_stale_source_hash_rejects_batch_before_graph_mutation():
+    good = reviewed_links()[0]
+    stale = SceneDatasetLink(good.scene_name, good.dataset_key, "0" * 64,
+                             good.evidence, good.group_field, good.group_value,
+                             good.business_label)
+    store = RecordingStore()
+    with pytest.raises(TaskGenerationError, match="not approved"):
+        sync_reviewed_links(store, (good, stale))
+    assert not store.relations and not store.scenes
 
 
 def test_graph_generator_ignores_unreviewed_relationships():

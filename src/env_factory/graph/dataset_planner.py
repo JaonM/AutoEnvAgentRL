@@ -9,7 +9,7 @@ from typing import Any
 
 from env_factory.generation.dataset_task_generator import (
     DEFAULT_ALLOWLIST, PROJECT, DatasetTaskGenerator, TaskGenerationError,
-    _columns, _sample_source, _sha256,
+    _columns, _number, _sample_source, _sha256,
 )
 from env_factory.generation.dataset_formats import source_extension
 from env_factory.generation.dataset_source_registry import eligible_hk_ids
@@ -90,6 +90,8 @@ def reviewed_links(path: Path = DEFAULT_LINKS) -> tuple[SceneDatasetLink, ...]:
     if document.get("version") != 1 or not isinstance(document.get("links"), list):
         raise TaskGenerationError("graph dataset link registry is invalid")
     result = []
+    pairs = set()
+    extensions = []
     for row in document["links"]:
         link = SceneDatasetLink(
             row["scene"], row["dataset_key"], row["source_sha256"], row["evidence"],
@@ -100,8 +102,28 @@ def reviewed_links(path: Path = DEFAULT_LINKS) -> tuple[SceneDatasetLink, ...]:
                 or not isinstance(link.business_label, str) or len(link.business_label.strip()) < 2
                 or len(link.source_sha256) != 64):
             raise TaskGenerationError("graph dataset link has invalid evidence or field constraint")
+        pair = (link.scene_name, link.dataset_key)
+        if pair in pairs:
+            raise TaskGenerationError(f"duplicate graph Scene -> Dataset relation: {pair}")
+        pairs.add(pair)
+        parent = row.get("parent_scene")
+        if parent is not None and (not isinstance(parent, str) or not parent.strip()
+                                   or parent == link.scene_name or not link.group_field):
+            raise TaskGenerationError("graph scene extension needs a parent and observed group")
+        if parent:
+            extensions.append((parent, link.dataset_key))
         result.append(link)
+    if any(parent not in pairs for parent in extensions):
+        raise TaskGenerationError("graph scene extension parent lacks a source-backed relation")
     return tuple(result)
+
+
+def scene_extension_parents(path: Path = DEFAULT_LINKS) -> dict[tuple[str, str], str]:
+    """Return reviewed parent scenes for source-backed, group-specific extensions."""
+    document = json.loads(path.read_text(encoding="utf-8"))
+    reviewed_links(path)
+    return {(row["scene"], row["dataset_key"]): row["parent_scene"]
+            for row in document["links"] if row.get("parent_scene")}
 
 
 def discovery_terms(path: Path = DEFAULT_LINKS) -> dict[str, tuple[str, ...]]:
@@ -148,8 +170,10 @@ def verify_link_source(link: SceneDatasetLink, *, llm: Any = None) -> tuple[Path
         raise TaskGenerationError("graph Kaggle approval version, URL or license changed")
     if link.group_field:
         headers, rows = _sample_source(source[0])
-        _, group, _ = _columns(headers, rows)
-        if group != link.group_field or sum(row[group] == link.group_value for row in rows) < 3:
+        _, group, numeric = _columns(headers, rows)
+        members = [row for row in rows if row[group] == link.group_value]
+        if (group != link.group_field or len(members) < 3
+                or len({_number(row[numeric]) for row in members}) < 2):
             raise TaskGenerationError("graph relation has no support in raw source fields")
     return source
 
@@ -157,11 +181,18 @@ def verify_link_source(link: SceneDatasetLink, *, llm: Any = None) -> tuple[Path
 def sync_reviewed_links(store: Neo4jGraphStore, links: tuple[SceneDatasetLink, ...] | None = None) -> int:
     """Install only relations that still match source bytes and source approval."""
     selected = links if links is not None else reviewed_links()
+    # Check every source before mutating the graph, so a stale hash cannot
+    # leave a half-updated registry in Neo4j.
+    sources = [(link, verify_link_source(link)) for link in selected]
+    parents = scene_extension_parents()
     store.verify_connectivity()
     store.ensure_schema()
-    for link in selected:
-        source, title, url, _ = verify_link_source(link)
+    for link, (source, title, url, _) in sources:
         store.upsert_scene(SceneNode(link.scene_name))
+        parent = parents.get((link.scene_name, link.dataset_key))
+        if parent:
+            store.upsert_scene(SceneNode(parent))
+            store.link_scene_extension(parent, link.scene_name)
         store.upsert_dataset(DatasetNode(link.dataset_key, title, url, link.source_sha256))
         resource_key = f"{link.dataset_key}:{link.source_sha256}"
         store.upsert_resource(ResourceNode(
@@ -176,6 +207,8 @@ def sync_reviewed_links(store: Neo4jGraphStore, links: tuple[SceneDatasetLink, .
     for scene, terms in discovery_terms().items():
         store.set_scene_discovery_terms(scene, terms)
     store.reconcile_reviewed_links(selected)
+    store.reconcile_scene_extensions(tuple((parent, link.scene_name) for link in selected
+                                           if (parent := parents.get((link.scene_name, link.dataset_key)))))
     return len(selected)
 
 

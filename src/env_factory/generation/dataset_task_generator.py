@@ -386,6 +386,9 @@ class DatasetTaskGenerator:
                 raise TaskGenerationError("approved dataset list is empty")
             approved = rng.choice(approved_sources)
             ref = approved["ref"]
+        elif DEFAULT_ALLOWLIST.is_file():
+            approved_sources = json.loads(DEFAULT_ALLOWLIST.read_text(encoding="utf-8"))["datasets"]
+            approved = next((row for row in approved_sources if row.get("ref") == ref), None)
         if not isinstance(ref, str) or not re.fullmatch(r"[A-Za-z0-9_-]+/[A-Za-z0-9_-]+", ref):
             raise TaskGenerationError("dataset ref must be Kaggle owner/slug")
         source_dir = KAGGLE_ROOT / ref
@@ -417,7 +420,10 @@ class DatasetTaskGenerator:
             if manifest.get("license") != approved["license"]:
                 raise TaskGenerationError(f"approved dataset license changed: {ref}")
             approved_hash = approved.get("source_sha256") or approved.get("csv_sha256")
-            source_files = [path for path in source_files if _sha256(path) == approved_hash]
+            pinned_path = approved.get("source_path")
+            source_files = [path for path in source_files
+                            if (not pinned_path or path.relative_to(manifest_path.parent / "raw").as_posix() == pinned_path)
+                            and _sha256(path) == approved_hash]
             if not source_files:
                 raise TaskGenerationError(f"approved dataset source hash changed: {ref}")
         preference = {suffix: index for index, suffix in enumerate((

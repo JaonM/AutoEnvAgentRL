@@ -281,6 +281,29 @@ class Neo4jGraphStore:
                 pairs=pairs,
             ).consume()
 
+    def link_scene_extension(self, parent: str, child: str) -> None:
+        """Create a hierarchy edge managed by the source-backed scene registry."""
+        with self.driver.session(database=self.database) as session:
+            session.run(
+                "MATCH (parent:Scene {id: $parent}) "
+                "MATCH (child:Scene {id: $child}) "
+                "MERGE (parent)-[relation:HIERARCHY]->(child) "
+                "SET relation.managed_by = 'graph_dataset_links'",
+                parent=normalize_scene_name(parent), child=normalize_scene_name(child),
+            ).consume()
+
+    def reconcile_scene_extensions(self, pairs: tuple[tuple[str, str], ...]) -> None:
+        """Remove stale hierarchy edges created by the source-backed registry."""
+        normalized = [[normalize_scene_name(parent), normalize_scene_name(child)]
+                      for parent, child in pairs]
+        with self.driver.session(database=self.database) as session:
+            session.run(
+                "MATCH (parent:Scene)-[relation:HIERARCHY]->(child:Scene) "
+                "WHERE relation.managed_by = 'graph_dataset_links' "
+                "AND NOT [parent.id, child.id] IN $pairs DELETE relation",
+                pairs=normalized,
+            ).consume()
+
     def supported_dataset_links(self, platform: str) -> tuple[tuple[SceneNode, SceneDatasetLink], ...]:
         """Return only reviewed links for a requested source platform."""
         if platform not in {"kaggle", "data_gov_hk"}:
@@ -310,7 +333,9 @@ class Neo4jGraphStore:
         with self.driver.session(database=self.database) as session:
             session.run(
                 "MERGE (scene:Scene {id: $id}) "
-                "SET scene.name = $name, scene.words = $words, "
+                "SET scene.name = $name, "
+                "scene.words = CASE WHEN size($words) > 0 THEN $words "
+                "ELSE coalesce(scene.words, []) END, "
                 "scene.expanded = coalesce(scene.expanded, false) OR $expanded, "
                 "scene.expanded_words = CASE WHEN $expanded THEN "
                 "reduce(result = coalesce(scene.expanded_words, []), word IN $expanded_words | "

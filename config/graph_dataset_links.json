@@ -1,10 +1,37 @@
 {
   "version": 1,
   "discovery_terms": {
-    "买衣服": ["clothing", "apparel", "garment"],
-    "零售消费核对": ["retail sales", "retail orders", "transactions"],
-    "食": ["食品", "餐饮", "面包", "超市"],
-    "商品价格核对": ["价格", "格价", "物价"]
+    "买衣服": [
+      "clothing",
+      "apparel",
+      "garment"
+    ],
+    "零售消费核对": [
+      "retail sales",
+      "retail orders",
+      "transactions"
+    ],
+    "食": [
+      "食品",
+      "餐饮",
+      "面包",
+      "超市"
+    ],
+    "商品价格核对": [
+      "价格",
+      "格价",
+      "物价"
+    ],
+    "订单商品成本核对": [
+      "retail orders",
+      "cost price",
+      "商品成本"
+    ],
+    "酒店预订收入核对": [
+      "hotel reservations",
+      "room revenue",
+      "客房收入"
+    ]
   },
   "links": [
     {
@@ -38,6 +65,180 @@
       "dataset_key": "data_gov_hk:cc-pricewatch-pricewatch",
       "source_sha256": "cdfe3933a2455e2e0d6ad73d1f9e82f02d75ccb176d2517c16644ba84991a603",
       "evidence": "已核验简体中文原始价格表的货品编号、货品分类与价格字段。"
+    },
+    {
+      "scene": "订单商品成本核对",
+      "business_label": "商品成本",
+      "dataset_key": "kaggle:ankitbansal06/retail-orders",
+      "source_sha256": "1ba03b2b0ec790764d89062f94b966e5883a328b52d9ee64db59a65d149592ca",
+      "evidence": "已核验 orders.csv 的 Order Id、Category、cost price；cost price 是商品成本价，不能当作订单总额。"
+    },
+    {
+      "scene": "酒店预订收入核对",
+      "business_label": "客房收入",
+      "dataset_key": "kaggle:sophietwohey/synthetic-hotel-dataset",
+      "source_sha256": "611e6c34d80909ad0d6842c10903d66ce6061fe93e7a7b586912f5a3018cead9",
+      "evidence": "已固定 reservations.csv，核验 reservation_id、room_category、room_revenue；该数据源标注为合成酒店数据。"
+    },
+    {
+      "scene": "服装消费核对",
+      "parent_scene": "零售消费核对",
+      "business_label": "服装",
+      "dataset_key": "kaggle:mohammadtalib786/retail-sales-dataset",
+      "source_sha256": "924860cb2e8571373d1a29d658c6da212e8d158663f722416d5008f525c39b00",
+      "group_field": "Product Category",
+      "group_value": "Clothing",
+      "evidence": "原始文件前 500 行中 Product Category=Clothing 至少出现 3 次；与 零售消费核对 的业务字段及数值字段一致。"
+    },
+    {
+      "scene": "电子产品消费核对",
+      "parent_scene": "零售消费核对",
+      "business_label": "电子产品",
+      "dataset_key": "kaggle:mohammadtalib786/retail-sales-dataset",
+      "source_sha256": "924860cb2e8571373d1a29d658c6da212e8d158663f722416d5008f525c39b00",
+      "group_field": "Product Category",
+      "group_value": "Electronics",
+      "evidence": "原始文件前 500 行中 Product Category=Electronics 至少出现 3 次；与 零售消费核对 的业务字段及数值字段一致。"
+    },
+    {
+      "scene": "美妆消费核对",
+      "parent_scene": "零售消费核对",
+      "business_label": "美妆产品",
+      "dataset_key": "kaggle:mohammadtalib786/retail-sales-dataset",
+      "source_sha256": "924860cb2e8571373d1a29d658c6da212e8d158663f722416d5008f525c39b00",
+      "group_field": "Product Category",
+      "group_value": "Beauty",
+      "evidence": "原始文件前 500 行中 Product Category=Beauty 至少出现 3 次；与 零售消费核对 的业务字段及数值字段一致。"
+    },
+    {
+      "scene": "办公用品成本核对",
+      "parent_scene": "订单商品成本核对",
+      "business_label": "办公用品",
+      "dataset_key": "kaggle:ankitbansal06/retail-orders",
+      "source_sha256": "1ba03b2b0ec790764d89062f94b966e5883a328b52d9ee64db59a65d149592ca",
+      "group_field": "Category",
+      "group_value": "Office Supplies",
+      "evidence": "原始文件前 500 行中 Category=Office Supplies 至少出现 3 次；与 订单商品成本核对 的业务字段及数值字段一致。"
+    },
+    {
+      "scene": "家具商品成本核对",
+      "parent_scene": "订单商品成本核对",
+      "business_label": "家具",
+      "dataset_key": "kaggle:ankitbansal06/retail-orders",
+      "source_sha256": "1ba03b2b0ec790764d89062f94b966e5883a328b52d9ee64db59a65d149592ca",
+      "group_field": "Category",
+      "group_value": "Furniture",
+      "evidence": "原始文件前 500 行中 Category=Furniture 至少出现 3 次；与 订单商品成本核对 的业务字段及数值字段一致。"
+    },
+    {
+      "scene": "科技商品成本核对",
+      "parent_scene": "订单商品成本核对",
+      "business_label": "科技商品",
+      "dataset_key": "kaggle:ankitbansal06/retail-orders",
+      "source_sha256": "1ba03b2b0ec790764d89062f94b966e5883a328b52d9ee64db59a65d149592ca",
+      "group_field": "Category",
+      "group_value": "Technology",
+      "evidence": "原始文件前 500 行中 Category=Technology 至少出现 3 次；与 订单商品成本核对 的业务字段及数值字段一致。"
+    },
+    {
+      "scene": "普通客房收入核对",
+      "parent_scene": "酒店预订收入核对",
+      "business_label": "普通客房",
+      "dataset_key": "kaggle:sophietwohey/synthetic-hotel-dataset",
+      "source_sha256": "611e6c34d80909ad0d6842c10903d66ce6061fe93e7a7b586912f5a3018cead9",
+      "group_field": "room_category",
+      "group_value": "Standard",
+      "evidence": "原始文件前 500 行中 room_category=Standard 至少出现 3 次；与 酒店预订收入核对 的业务字段及数值字段一致。"
+    },
+    {
+      "scene": "豪华客房收入核对",
+      "parent_scene": "酒店预订收入核对",
+      "business_label": "豪华客房",
+      "dataset_key": "kaggle:sophietwohey/synthetic-hotel-dataset",
+      "source_sha256": "611e6c34d80909ad0d6842c10903d66ce6061fe93e7a7b586912f5a3018cead9",
+      "group_field": "room_category",
+      "group_value": "Deluxe",
+      "evidence": "原始文件前 500 行中 room_category=Deluxe 至少出现 3 次；与 酒店预订收入核对 的业务字段及数值字段一致。"
+    },
+    {
+      "scene": "套房收入核对",
+      "parent_scene": "酒店预订收入核对",
+      "business_label": "套房",
+      "dataset_key": "kaggle:sophietwohey/synthetic-hotel-dataset",
+      "source_sha256": "611e6c34d80909ad0d6842c10903d66ce6061fe93e7a7b586912f5a3018cead9",
+      "group_field": "room_category",
+      "group_value": "Suite",
+      "evidence": "原始文件前 500 行中 room_category=Suite 至少出现 3 次；与 酒店预订收入核对 的业务字段及数值字段一致。"
+    },
+    {
+      "scene": "行政套房收入核对",
+      "parent_scene": "酒店预订收入核对",
+      "business_label": "行政套房",
+      "dataset_key": "kaggle:sophietwohey/synthetic-hotel-dataset",
+      "source_sha256": "611e6c34d80909ad0d6842c10903d66ce6061fe93e7a7b586912f5a3018cead9",
+      "group_field": "room_category",
+      "group_value": "Junior Suite",
+      "evidence": "原始文件前 500 行中 room_category=Junior Suite 至少出现 3 次；与 酒店预订收入核对 的业务字段及数值字段一致。"
+    },
+    {
+      "scene": "总统套房收入核对",
+      "parent_scene": "酒店预订收入核对",
+      "business_label": "总统套房",
+      "dataset_key": "kaggle:sophietwohey/synthetic-hotel-dataset",
+      "source_sha256": "611e6c34d80909ad0d6842c10903d66ce6061fe93e7a7b586912f5a3018cead9",
+      "group_field": "room_category",
+      "group_value": "Presidential Suite",
+      "evidence": "原始文件前 500 行中 room_category=Presidential Suite 至少出现 3 次；与 酒店预订收入核对 的业务字段及数值字段一致。"
+    },
+    {
+      "scene": "早餐谷物价格核对",
+      "parent_scene": "商品价格核对",
+      "business_label": "早餐谷物",
+      "dataset_key": "data_gov_hk:cc-pricewatch-pricewatch",
+      "source_sha256": "cdfe3933a2455e2e0d6ad73d1f9e82f02d75ccb176d2517c16644ba84991a603",
+      "group_field": "货品分类2",
+      "group_value": "谷类早餐",
+      "evidence": "原始文件前 500 行中 货品分类2=谷类早餐 至少出现 3 次；与 商品价格核对 的业务字段及数值字段一致。"
+    },
+    {
+      "scene": "牛奶饮品价格核对",
+      "parent_scene": "商品价格核对",
+      "business_label": "牛奶饮品",
+      "dataset_key": "data_gov_hk:cc-pricewatch-pricewatch",
+      "source_sha256": "cdfe3933a2455e2e0d6ad73d1f9e82f02d75ccb176d2517c16644ba84991a603",
+      "group_field": "货品分类2",
+      "group_value": "牛奶 / 牛奶饮品",
+      "evidence": "原始文件前 500 行中 货品分类2=牛奶 / 牛奶饮品 至少出现 3 次；与 商品价格核对 的业务字段及数值字段一致。"
+    },
+    {
+      "scene": "蜂蜜糖浆价格核对",
+      "parent_scene": "商品价格核对",
+      "business_label": "蜂蜜糖浆",
+      "dataset_key": "data_gov_hk:cc-pricewatch-pricewatch",
+      "source_sha256": "cdfe3933a2455e2e0d6ad73d1f9e82f02d75ccb176d2517c16644ba84991a603",
+      "group_field": "货品分类2",
+      "group_value": "蜂蜜 / 蜜糖 / 糖浆",
+      "evidence": "原始文件前 500 行中 货品分类2=蜂蜜 / 蜜糖 / 糖浆 至少出现 3 次；与 商品价格核对 的业务字段及数值字段一致。"
+    },
+    {
+      "scene": "面包酱价格核对",
+      "parent_scene": "商品价格核对",
+      "business_label": "面包酱",
+      "dataset_key": "data_gov_hk:cc-pricewatch-pricewatch",
+      "source_sha256": "cdfe3933a2455e2e0d6ad73d1f9e82f02d75ccb176d2517c16644ba84991a603",
+      "group_field": "货品分类2",
+      "group_value": "面包酱",
+      "evidence": "原始文件前 500 行中 货品分类2=面包酱 至少出现 3 次；与 商品价格核对 的业务字段及数值字段一致。"
+    },
+    {
+      "scene": "蛋糕价格核对",
+      "parent_scene": "商品价格核对",
+      "business_label": "蛋糕",
+      "dataset_key": "data_gov_hk:cc-pricewatch-pricewatch",
+      "source_sha256": "cdfe3933a2455e2e0d6ad73d1f9e82f02d75ccb176d2517c16644ba84991a603",
+      "group_field": "货品分类2",
+      "group_value": "蛋糕",
+      "evidence": "原始文件前 500 行中 货品分类2=蛋糕 至少出现 3 次；与 商品价格核对 的业务字段及数值字段一致。"
     }
   ]
 }

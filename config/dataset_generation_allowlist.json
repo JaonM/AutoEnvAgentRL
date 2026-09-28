@@ -5,6 +5,20 @@
       "version": 1,
       "license": "CC0: Public Domain",
       "csv_sha256": "924860cb2e8571373d1a29d658c6da212e8d158663f722416d5008f525c39b00"
+    },
+    {
+      "ref": "ankitbansal06/retail-orders",
+      "version": 4,
+      "license": "CC0: Public Domain",
+      "source_path": "orders.csv",
+      "source_sha256": "1ba03b2b0ec790764d89062f94b966e5883a328b52d9ee64db59a65d149592ca"
+    },
+    {
+      "ref": "sophietwohey/synthetic-hotel-dataset",
+      "version": 1,
+      "license": "CC0: Public Domain",
+      "source_path": "reservations.csv",
+      "source_sha256": "611e6c34d80909ad0d6842c10903d66ce6061fe93e7a7b586912f5a3018cead9"
     }
   ]
 }
