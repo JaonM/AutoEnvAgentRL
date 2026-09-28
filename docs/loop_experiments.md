@@ -1,6 +1,6 @@
 # 循环工程实验
 
-`scripts/run_sandbox_build_loop.py` 使用可恢复实验调度器。默认不复用历史高分，构建模型仍固定为 `gpt-5.6-luna`。
+`scripts/run_sandbox_build_loop.py` 使用可恢复实验调度器。默认不复用历史高分，构建与独立审查模型固定为 `gpt-6-luna`。
 
 正式良品率实验建议每轮生成 10 个新任务，固定使用
 `direct_response=20%`、`simple_agentic=30%`、`multi_step_agentic=50%`。
@@ -47,13 +47,14 @@ Pilot 通过只表示可以进入更大规模认证，
   镜像并通过安全容器 smoke test；不能用 `none` 生成生产认证。pilot 可显式设置
   `--sandbox-runtime none`，但其结果仍只表示候选流程验证。并发 worker 使用互不相同的本地镜像 tag；
   smoke evidence 写入后立即移除临时镜像，避免大规模留出集发生 tag 串样或耗尽 Docker 存储。
+  基础镜像可复用本机缓存，但必须具有匹配仓库和平台的内容摘要；Docker 构建或 smoke test 失败会保留失败状态。
 - `--rollout-episodes 3 --rollout-steps 20` 控制开发阶段每个沙箱的轨迹次数和步数。开发阶段默认只要求至少
   一条成功证据；`--rollout-min-success-rate` 可提高该门槛。生产留出集默认使用 10 次 episode 和
   `--holdout-rollout-success-rate 0.6666666666666666`。
 - live 模式的最终 10 分由离线可执行证据占 9 分、真实 rollout 占 1 分组成；任何 live 硬失败仍直接取消训练资格，不能依靠离线高分抵消。
 - 离线评分通过后、任何外部模型调用前，流水线先运行数据治理审计并生成 `data_governance.json`。
-  缺少合成数据来源声明、发现凭证或无法确定 Agent/User/Judge provider 时停止该样本；疑似 PII 会被记录，
-  只有明确声明为合成 fixture 时才允许继续。该技术审计不替代实际外部端点所需的组织授权。
+  缺少有效数据来源声明、发现凭证或无法确定 Agent/User/Judge provider 时停止该样本；疑似 PII 会被记录。
+  合成 fixture 及带来源和哈希的 Kaggle / 和鲸数据均可继续。该技术审计不替代实际外部端点所需的组织授权。
 - live rollout 通过后会以 `SANDBOX_EVALUATOR_MOCK=0` 执行奖励反事实校准，写入
   `agentic_training_value_live.json`。真实 evaluator 的成功轨迹、失败轨迹、无工具、错参数、跳步、乱序和
   噪声轨迹不满足奖励分离时，样本仍不合格；离线 mock 报告不能替代该证据。
@@ -78,12 +79,34 @@ Pilot 通过只表示可以进入更大规模认证，
 `round-*/round_report.json` 保存任务状态；`history.json` 同时保存生成完成率、任务良品率、
 条件构建良品率、端到端良品率、合格样本均分、分类型统计和停止原因。
 
+开发阶段可从单个冻结实验的逐请求记录重算分路由良品率与失败码分布：
+
+```bash
+uv run python scripts/diagnostics/report_development_yield.py \
+  output/loop_experiment_v1/history.json \
+  --output output/loop_experiment_v1/development_yield.json
+```
+
+报告只用于开发诊断，不能代替生产认证。构建器在 `status.json.failed_phase` 保留最终失败门禁；
+实验调度器据此区分业务构建、语义审查、运行时完整性、mutation 和 Docker 等失败。
+Code Agent 本地 app-server 启动失败会写入 `failure_code=INFRA` 并立即停止该样本的构建重试，
+不计作模型生成的业务沙箱缺陷。
+历史实验缺少 `failed_phase` 时仍保留原来的通用 `BUILD_BUSINESS` 归因，不根据日志猜测或改写旧证据。
+任务评分与构建前检查共用必需 HTTP 端点清单；缺少 Trainer `/v1/state` 等端点时，
+保留描述性质量分，但取消训练资格并以 `TASK_RUNTIME_INTERFACE` 在 Code Agent 启动前拒绝。
+任务生成器在每次候选完成后先写出 `task.json`，运行同一构建前检查；任务质量、验收 fixture 或工具链 schema
+不合格的候选进入该路由的剩余重采样次数，不发布为成功任务。构建前检查对成功轨迹中的 capture/`$ref`
+执行保守的 schema 兼容性分析：若上游输出必含下游明确禁止的字段，以 `TASK_TOOL_CHAIN_SCHEMA` 拒绝，
+避免 Code Agent 在不可变契约上反复修复。动态键对象的 `additionalProperties` schema 由外层契约检查和
+共享运行时一致接受，并在调用时验证动态值类型。
+
 ## 模型默认值
 
 Rollout Agent 按字段优先使用 `ROLLOUT_LLM_API_KEY`、`ROLLOUT_LLM_BASE_URL`、`ROLLOUT_LLM_MODEL`
 和 `ROLLOUT_LLM_TIMEOUT_SECONDS`；缺失或空值回退到任务生成使用的对应 `LLM_*`。User Simulator 和
 奖励 LLM 同样优先使用 `SANDBOX_LLM_*` 并逐字段回退到 `LLM_*`。显式配置某个字段不会覆盖其他字段，
 三个角色的 provider 身份分别冻结和审计；缺少实际所需角色的模型或密钥时明确报错，不静默使用 mock。
+正式认证的前置检查还要求 Rollout Agent 与 User/Judge 的 provider 主机和模型名称均不同，且签名私钥与受信公钥配对。
 
 CLI 从项目 `.env` 加载环境变量；独立沙箱/容器应由启动器注入这些变量，不复制 `.env` 或密钥进入沙箱文件。离线模式仍强制 mock。
 
@@ -138,3 +161,70 @@ OpenSSL、模型/runtime 配置、签名密钥配对及工作区余量；默认�
 任务会在每个训练类别内按近重复任务家族确定性分层为 80% train、10% validation、10% test；同一家族及
 一个任务的所有 episode/transition 共享同一 split。生产包要求每个类别覆盖三个 split，且任务家族不得
 跨类别或跨 split，防止模板变体泄漏到下游评估集。
+
+## 2026-09-27 开发诊断
+
+两轮源码冻结的 30 请求开发批次分别保存在
+`output/development_task_yield_20260927_frozen30/` 和
+`output/development_task_yield_20260927_fix1_30/`。两轮均生成 21/30 个可构建任务，
+Wilson 95% 下界约为 0.52，未达到 0.85 的开发目标。第一轮多步 Agentic 为 8/15；
+加入公开素材 fixture 和联合类型参数修复后，第二轮多步 Agentic 为 6/15，简单 Agentic 为 9/9，
+直接回答为 6/6。两轮 seed 不同，不能把类别变化直接归因于代码改动。
+
+每轮在生成结果出来前按固定哈希规则选定 10 个构建探针。第一轮 6 个生成成功且全部通过构建；
+第二轮 8 个生成成功，6 个通过构建、2 个在第三轮修复后仍因验收失败而终止。
+两轮固定样本的端到端结果均为 6/10，验证模式均为 `offline_mock`，不含 live rollout。
+具体样本、失败代码、模型、离线分数和 Docker 证据见各轮的 `task_yield_summary.json` 与
+`build_probe_summary.json`。这些诊断结果不构成生产认证。
+
+针对多步瓶颈的第三轮冻结实验保存在 `output/development_multi_step_20260927_fix2_15/`：
+15 个多步请求仅 5 个生成成功，Wilson 95% 下界约 0.152。10 个失败中，3 个公开输入已足够、
+3 个上下游工具投影字段不兼容、2 个初始状态已满足目标、1 个素材内容占位、1 个必需对象为空。
+事前选定的 5 个构建探针中 3 个生成成功，但只有 1 个在修复后通过离线评分与 Docker 校验；
+另外 2 个在第三轮修复后仍于验收阶段失败。端到端结果为 1/5。该实验表明多步任务需要
+ 跨任务描述、业务数据、工具 schema、声明式实现和可执行验收的字段契约，单点 fixture 修复
+ 不足以提升生产良品率。
+
+第四轮冻结实验保存在 `output/development_multi_step_20260927_fix3_15/`。针对上轮问题加入
+跨工具投影缺口审计与有限修复后，15 个多步请求有 9 个通过生成门禁，Wilson 95% 下界约
+0.357；源码摘要与批次启动时一致。6 个最终失败包括 2 个工具链 schema 不兼容，以及缺少
+真实 capture/$ref 依赖、缺少高风险主题权威来源、使用未配置的外部能力、写入工具参数无法编译，
+各 1 个。事前按哈希选定的 5 个构建探针中只有 2 个生成成功；两者均经最多 3 轮修复后通过
+独立语义审查、10 分离线评分和 Docker 无网络冒烟测试，端到端为 2/5。第 3 轮修复后仍可
+执行一次只读完整验收，因此状态中的 `attempt=4` 不代表第 4 轮代码修复。两轮 seed 不同，
+不能把良品率变化直接归因于投影修复；本轮仍是开发诊断，未执行 live rollout。
+
+后续构建中，`develop_sandbox_with_agent.sh --max-attempts` 对每个开发节点及每个独立缺陷
+分别计数，不再用整个沙箱共享的修复轮数。每轮仍先完整验收、只修一个有证据的根因，再执行
+语法、测试、缺陷专项验证和完整验收；同一缺陷达到上限后本候选失败。缺陷计数写入
+`defect_attempts.json`，`--resume` 保留计数，从零重建则清空。该变更需要新的冻结批次验证
+实际良品率，不能回填第四轮结果。
+
+第五轮冻结实验 `output/development_multi_step_20260927_fix4_15/` 把编译后的 `capture/$ref`
+schema 检查前移到成功轨迹生成。15 个多步请求仍只有 9 个生成成功，最终失败不再出现
+`TASK_TOOL_CHAIN_SCHEMA`，但数据约束、空表、占位参数、未提供来源和 stateful 写入契约
+仍各有失败。事前选定 5 个构建探针，4 个生成成功、3 个被构建脚本判为通过（均为 10 分
+离线评分及 Docker 冒烟通过），原始端到端为 3/5。额外奖励审计证明其中 2 个不可计为
+可信合格样本：task-2 的过程指标对一份字面 CSV 给分，调换有效数据行后分数由 1.0
+降为 0.0；task-5 的回答质量依赖由任务实现替换 `EpisodeStore.replay` 后注入，未声明于
+原始奖励契约。审计后的端到端为 1/5。task-1 的成功场景引用了上游未投影的字段，
+导致验收 400；构建 Agent 无法通过修改受保护契约修复。独立语义审查曾放行上述奖励
+问题，因此下一轮必须增加确定性奖励反事实和捕获路径门禁，不能只依赖审查模型。
+
+第五轮后的生成侧修正已针对这三个可复现根因：捕获路径必须在上游输出 schema 中声明；
+非 stateful 任务的 outcome 奖励必须显式依赖最终回答；对长篇字面工具参数给分的过程指标，
+仅在后续指标捕获其解析结果时才能删除并重新归一化权重。最终任务组装和构建预检都检查
+奖励契约。旧 task-2、task-5 分别触发 `TASK_LITERAL_PROCESS_REWARD` 和
+`TASK_TERMINAL_REWARD_UNDECLARED`，旧 task-3 通过该检查。这是门禁回归证据，
+尚未证明新生成批次的合格率改善；下一轮需要冻结源码做同 seed 配对回归，
+并对通过样本执行奖励反事实、离线评分和 Docker 验证。
+
+离线和 live 奖励校准新增 `wrong_final_answer` 反事实：保持成功轨迹中的工具调用不变，
+仅把最终答复替换为与任务无关的内容；非 stateful 任务必须按已声明的终局结果权重出现
+足够的奖励下降，认证器也复核同一条证据。旧 task-3 的离线奖励由 1.0 降到 0.3，
+符合其 0.7 的终局权重。单表数据生成现在会在跨表阶段前定向修复空数据、重复主键、
+非空字段和 CHECK 约束错误。第六轮同 seed 开发批次已预备指纹和探针，但因外部模型
+数据外发与 API 费用的自动审批拒绝，未启动、没有新的良品率证据。
+同 seed 批次完成后可运行 `scripts/diagnostics/compare_development_batches.py BASELINE CANDIDATE`；
+比较器先核对逐请求 seed/路由身份和预选探针，再分别报告生成通过状态迁移、失败类型迁移、
+原始构建迁移和有审计证据覆盖的端到端迁移，避免只展示某一类缺陷下降。

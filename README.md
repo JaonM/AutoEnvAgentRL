@@ -1,5 +1,7 @@
 # env-factory
 
+代码入口和模块边界见 [代码结构](docs/code_structure.md)。
+
 任务生成与沙箱构建的可恢复循环、真实模型 rollout 和模型默认配置见 [循环工程实验](docs/loop_experiments.md)。
 
 项目当前以“生产级 Agentic RL 训练素材准备”为认证边界；指标、证据和结果语义见
@@ -7,6 +9,24 @@
 的任务、环境、轨迹与奖励素材，不宣称能够直接开训、RL 已完成或训练后模型已经提升。
 
 生成契约、工具实现、持久化及验收的最新边界见 [一致性改造说明](docs/runtime_integrity.md)，其中区分静态评分、离线回归与真实训练 rollout 证据。
+
+## 下载 Kaggle 业务数据
+
+先建立[任务数据目录索引](docs/kaggle_catalog.md)，只读取公开元数据，不下载业务文件：
+
+```bash
+python3 scripts/diagnostics/index_kaggle_tasks.py --target 10000
+```
+
+生成任务时再指定公开数据集的 `owner/slug` 或完整数据集链接，按版本保存到本地 `data/sources/kaggle/`，并记录来源、许可与 SHA-256：
+
+```bash
+python3 scripts/diagnostics/download_kaggle_dataset.py madhavw/travel-and-tourism
+```
+
+目录页 `https://www.kaggle.com/datasets` 需要先选定具体数据集。旅游数据集已接入[数据集优先任务生成试验](docs/travel_dataset_trial.md)；其他数据集需先分析字段与许可，再设计任务、工具及奖励。
+
+中文数据集候选可查阅[和鲸目录索引](docs/heywhale_catalog.md)。索引只保存公开元数据，生成任务前再核对许可和实际文件。
 
 ## 构建知识图谱
 
@@ -78,21 +98,22 @@ WIKIPEDIA_DUMP_DB=data/wikipedia.sqlite3
 
 ## 生成长程任务
 
-从 `SAME_EVENT_ELEMENT` 关系中随机抽取指定跳数的路径，并使用 LLM 生成任务描述：
+默认从已核验许可和文件哈希的 Kaggle 数据集清单选源，生成时按需下载数据源文件。更广的本地索引用于发现候选，未经核验的候选不会自动发送给模型。生成器选取源数据中的唯一记录 ID、可分组字段和数值字段，以原始行构造直接回答、单工具或多步工具任务；模型只改写用户话术，原有流水线继续生成工具、奖励与验收：
 
 ```bash
-./scripts/generate_task.sh --hops 3 --task-type Event
+./scripts/generate_task.sh --count 3
+./scripts/generate_task.sh --dataset-ref madhavw/travel-and-tourism --training-category multi_step_agentic
+./scripts/generate_task.sh --dataset-file /path/to/data.zip --dataset-url https://example.com/source --dataset-max-gb 10
 ```
 
-`--task-type` 支持 `QA`、`Event`、`Coding`、`Chat`、`Research`，可用英文逗号多选，例如 `--task-type QA,Event,Research`；每个任务会从指定类型中随机选择一个，省略时从全部类型随机选择。
-`--hops 3` 表示每个任务随机选择 0、1、2 或 3 跳路径；0 跳表示随机选择一个 Scene 节点。
-环境模式由 Pipeline 自动规划，不提供人工 `environment-mode` 参数。纯文本提取、总结、分类、转换和解释任务可使用 `stateless` 空业务数据环境；只有任务明确依赖只读资料或持久化状态时才生成业务实体、表和 rows。
-任务描述会根据图谱路径和任务意图计算复杂度（`simple`、`standard`、`complex`），并据此控制描述和环境规模；可通过 `--task-style` 固定表达风格。
+当前数据集入口支持 CSV、TSV、JSON、JSONL/NDJSON、XLSX、Parquet、SQLite，以及 ZIP/GZIP/TAR 压缩包和 `QA` 类型，需要数据中存在唯一 ID、可重复的分组字段及可核算的数值字段；不满足条件的候选会拒绝并记录原因。和鲸目录只提供元数据，取得许可且取得实际文件后，可用 `--dataset-file` 接入。来源哈希、所选原始字段与答案键写入 `source_selection.json`。使用 `--generation-source graph --hops 3 --task-type Event` 可显式调用原知识图谱路径，该路径仍需要 Neo4j。
+
+详细流程、支持范围和实测结果见[数据集驱动任务生成](docs/dataset_task_generation.md)。
 任务生成完成后，会继续根据任务描述和环境生成 `rule-based/model-based` 观测指标，写入 `Task.metrics`。为提高工具选择训练的辨别能力，默认生成 2–3 个噪声工具并覆盖相关无关与完全无关两类；噪声工具由共享运行时提供无任务关键副作用的通用实现，不占用业务 handler 实现成本，也不产生任务进度奖励。工具生成前会把动作分类为环境操作、Agent 推理和 Agent 回答，只有环境操作可以暴露为工具。任务规模不再绑定具体构建模型，结构有效性由 schema、契约、任务级 readiness、外层验收和训练素材准备就绪门禁统一判断。
 
-沙箱通过普通 acceptance、outer conformance 和 mutation testing 后，还必须通过 `scripts/validate_training_readiness.py` 的 RL 环境硬门禁。该门禁执行结构化成功、失败、噪声及反事实轨迹，检查奖励可分离性、确定性和公开 observation 泄漏，并输出 `training_readiness.json`。
-默认在 `output/task_artifacts/task-N/task.json` 写入每个任务的最终文件；可通过 `--output` 指定输出根目录。每次运行会扫描已有 `task-N`，从当前最大编号的下一号开始追加，绝不覆盖已有任务；并发进程通过原子目录预留避免编号冲突。Pipeline 运行日志默认追加写入 `output/task_generation.log`，也会输出到终端，可通过 `--log-file` 指定其他文件。日志记录任务级和阶段级开始、重试、成功、失败、耗时、产物路径和进度，不记录 Prompt 或凭据。任务默认并发生成 4 个，可通过 `--max-workers` 调整并发数。Neo4j 路径查询默认 10 秒超时，可通过 `--path-query-timeout` 调整。
-使用 `--count N` 可批量新增 N 个独立的 `task-N` 目录；失败任务会清理本次预留目录，但不会修改任何历史任务。
+沙箱通过普通 acceptance、outer conformance 和 mutation testing 后，还必须通过 `scripts/sandbox/validate_training_readiness.py` 的 RL 环境硬门禁。该门禁执行结构化成功、失败、噪声及反事实轨迹，检查奖励可分离性、确定性和公开 observation 泄漏，并输出 `training_readiness.json`。
+默认在 `output/task_artifacts/task-N/task.json` 写入每个任务的最终文件；可通过 `--output` 指定输出根目录。每次运行会扫描已有 `task-N`，从当前最大编号的下一号开始追加，绝不覆盖已有任务；并发进程通过原子目录预留避免编号冲突。Pipeline 运行日志默认追加写入 `output/task_generation.log`，也会输出到终端，可通过 `--log-file` 指定其他文件。日志记录任务级和阶段级开始、重试、成功、失败、耗时、产物路径和进度，不记录 Prompt 或凭据。任务默认并发生成 4 个，可通过 `--max-workers` 调整并发数。图谱路径的 Neo4j 查询默认 10 秒超时，可通过 `--path-query-timeout` 调整。
+使用 `--count N` 可批量新增 N 个独立的 `task-N` 目录；失败任务保留采样身份和失败归因证据，不会修改任何历史任务。
 
 ### 任务质量评分与过滤
 
@@ -125,18 +146,18 @@ uv run python examples/score_tasks.py output/task_artifacts \
 
 ### 沙箱离线评分与过滤
 
-`scripts/score_sandbox_offline.py` 不调用模型或网络，重新执行业务验收、pytest、契约一致性、运行时通用性、outer conformance、五类 mutation 和 training-readiness，并用可执行成功/失败轨迹代替模型语义审查。报告同样分离 `score` 与 `eligible`；任一关键门禁失败都会令 `eligible=false`，不会篡改描述性分数。
+`scripts/sandbox/score_sandbox_offline.py` 不调用模型或网络，重新执行业务验收、pytest、契约一致性、运行时通用性、outer conformance、五类 mutation 和 training-readiness，并用可执行成功/失败轨迹代替模型语义审查。报告同样分离 `score` 与 `eligible`；任一关键门禁失败都会令 `eligible=false`，不会篡改描述性分数。
 
 评分单个沙箱：
 
 ```bash
-uv run python scripts/score_sandbox_offline.py output/sandbox_loop/round-10/task-92
+uv run python scripts/sandbox/score_sandbox_offline.py output/sandbox_loop/round-10/task-92
 ```
 
 批量扫描目录并生成过滤报告：
 
 ```bash
-uv run python scripts/score_sandbox_offline.py output/sandbox_loop/round-10 \
+uv run python scripts/sandbox/score_sandbox_offline.py output/sandbox_loop/round-10 \
   --threshold 8 \
   --output output/offline_sandbox_scores.json
 ```
