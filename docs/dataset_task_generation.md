@@ -4,6 +4,8 @@
 
 `./scripts/generate_task.sh` 默认走知识图谱＋数据集路径：先从已审核的场景关系选源，生成时核对原始文件、许可、字段和哈希。Kaggle 的 10,000 条索引和 DATA.GOV.HK 的 3,822 条索引可用 `uv run python scripts/diagnostics/sync_graph_dataset_links.py` 导入图谱作为目录元数据；目录收录不等于允许生成。DATA.GOV.HK 目录记录中文标题、提供机构、类别、资源名称及格式，目前只有“格价资讯通”原始来源获批准。`--dataset-platform balanced --count 2` 按 1:1 分配两种来源。若需原数据集路径，显式使用 `--generation-source dataset`；此时可通过 `--dataset-ref owner/slug` 或 `--dataset-file path.xlsx --dataset-url URL` 固定来源。原始文件按需下载到忽略 Git 的 `data/sources/`；JSON 目录索引纳入 Git。
 
+图谱构建入口 `./scripts/build_graph.sh` 现在顺序执行 Scene 扩展、完整目录同步、关系注册表核验和 Scene→Dataset 写入。已有 Scene 只需补数据时可运行 `./scripts/build_graph.sh --datasets-only`；目录未变时再加 `--links-only`。候选目录只能用来发现可能的来源；每个准入数据集需固定版本、许可、具体原始文件路径和 SHA-256，再验证唯一 ID、分组、数值字段及组内样本。`config/graph_dataset_links.json` 中的 `parent_scene` 把确有原始分组值支撑的细分 Scene 连接到上位 Scene；关系在写图谱前全部重新核验，任务生成前也会复核。当前已核验两个零售、一个合成酒店和一个香港商品价格来源，共 22 条关系；其中 16 条是分组场景。酒店数据固定使用 `reservations.csv`，不会因同一数据集另有住客资料表而自动换表。扩展更多数据源仍需人工判断业务语义和来源适配性。
+
 当前入口先读取表格文件前 500 行，选择唯一记录 ID、可重复的业务分组字段和数值字段；只将所需原始列及行投影到任务业务表，不合成业务值。数据集用于构造后台业务表、工具真值和奖励答案键，不作为用户任务的叙述主题。首先由 `dataset_business_scenario` 阶段根据图谱场景、数据集标题、安全列和少量投影样本分析业务实体、用户角色与业务场景；然后由 `dataset_task_design` 阶段根据审核关系中的业务称呼和任务路由生成用户请求，并校验题面体现所选场景。直接回答任务在公开材料中提供 A/B 两笔业务信息及比较值；单工具与多步任务只提供起始业务标识。用户可自然说“这笔”“这单”，无须说“附上的凭证”。原始数据集标题、字段名和记录 ID 不写进请求正文。单工具按标识查后台业务表；多步任务先查询分组，再查询同类最高、最低、平均值或数量。答案由选中源行确定性计算，作为奖励答案键。后续 Pipeline 生成环境、工具、奖励和验收契约，并运行任务构建性门禁。
 
 每个任务目录中的 `source_selection.json` 记录来源、原始文件 SHA-256、业务场景分析、投影列、选中记录 ID 和答案键；图谱路径还记录所用场景、数据集键和关系依据。`task.json` 的 `artifacts.dataset_source` 保留来源、哈希及许可标识。生成前会拒绝可能包含联系方式或长文本的投影值。失败的候选与路由尝试写入 `sample_manifest.json`。现阶段支持 CSV、TSV、JSON、JSONL/NDJSON、XLSX、Parquet、SQLite 与包含这些文件的压缩包中具备上述三类字段的只读 `QA` 任务。旧关键词图谱路径可用 `--generation-source graph_keywords` 显式调用。

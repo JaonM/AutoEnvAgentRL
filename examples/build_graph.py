@@ -15,12 +15,19 @@ from env_factory import (
     LocalWikipediaClient,
     SeedGraphExpander,
 )
+from env_factory.graph.dataset_planner import (
+    catalog_rows, reviewed_links, sync_catalog_datasets, sync_reviewed_links,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="构建并持久化任务知识图谱")
+    parser.add_argument("--datasets-only", action="store_true",
+                        help="跳过 Wikipedia/LLM Scene 扩展，仅构建数据集目录与已审核场景关系")
+    parser.add_argument("--links-only", action="store_true",
+                        help="跳过 13,822 条数据集目录同步，仅核验并同步场景关系")
     parser.add_argument("--rounds", type=int, default=None, help="最大扩展轮次，默认使用配置值 3")
     parser.add_argument(
         "--max-scene-nodes",
@@ -130,44 +137,58 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s - %(message)s",
     )
     args = parse_args()
-    seeds = load_seed_words()
-    config = GraphExpansionConfig(
-        max_scene_nodes=args.max_scene_nodes,
-        max_search_requests=args.max_search_requests,
-        max_rounds=args.rounds or 3,
-        term_batch_size=args.term_batch_size,
-        max_terms_per_seed=args.max_terms_per_seed,
-        merge_batch_size=args.merge_batch_size,
-        relation_batch_size=args.relation_batch_size,
-        relation_candidate_limit=args.relation_candidate_limit,
-    )
-
-    llm = LLMClient.from_env("LLM", timeout=float(os.getenv("LLM_TIMEOUT", "60")))
-    dump_db = os.getenv("WIKIPEDIA_DUMP_DB")
-    search = (
-        LocalWikipediaClient(dump_db)
-        if dump_db
-        else WikipediaClient(timeout=float(os.getenv("WIKIPEDIA_TIMEOUT", "10")))
-    )
-    expander = SeedGraphExpander(
-        search,
-        llm,
-        max_workers=args.max_workers,
-        config=config,
-    )
+    groups = ()
+    edges = 0
+    added_seeds = 0
+    if not args.datasets_only:
+        seeds = load_seed_words()
+        config = GraphExpansionConfig(
+            max_scene_nodes=args.max_scene_nodes,
+            max_search_requests=args.max_search_requests,
+            max_rounds=args.rounds or 3,
+            term_batch_size=args.term_batch_size,
+            max_terms_per_seed=args.max_terms_per_seed,
+            merge_batch_size=args.merge_batch_size,
+            relation_batch_size=args.relation_batch_size,
+            relation_candidate_limit=args.relation_candidate_limit,
+        )
+        llm = LLMClient.from_env("LLM", timeout=float(os.getenv("LLM_TIMEOUT", "60")))
+        dump_db = os.getenv("WIKIPEDIA_DUMP_DB")
+        search = (
+            LocalWikipediaClient(dump_db)
+            if dump_db
+            else WikipediaClient(timeout=float(os.getenv("WIKIPEDIA_TIMEOUT", "10")))
+        )
+        expander = SeedGraphExpander(search, llm, max_workers=args.max_workers, config=config)
 
     with Neo4jGraphStore(database=os.getenv("NEO4J_DATABASE", "neo4j")) as store:
         store.verify_connectivity()
-        logging.getLogger(__name__).info("开始写入 Neo4j 图谱")
-        builder, groups = expander.expand_and_build(store, seeds, rounds=args.rounds)
-
-    added_seeds = append_seed_words(
-        tuple(word for group in groups for word in (group.name, *group.words))
-    )
+        if not args.datasets_only:
+            logging.getLogger(__name__).info("开始扩展 Scene 图谱")
+            builder, groups = expander.expand_and_build(store, seeds, rounds=args.rounds)
+            edges = len(builder.edges())
+            added_seeds = append_seed_words(
+                tuple(word for group in groups for word in (group.name, *group.words))
+            )
+        catalog_count = 0 if args.links_only else sync_catalog_datasets(store)
+        if not args.links_only:
+            expected = {platform: sum(row["platform"] == platform for row in catalog_rows())
+                        for platform in ("kaggle", "data_gov_hk")}
+            if store.catalog_dataset_counts() != expected:
+                raise RuntimeError("Neo4j dataset catalog does not match committed indexes")
+        link_count = sync_reviewed_links(store)
+        persisted = {link for platform in ("kaggle", "data_gov_hk")
+                     for _, link in store.supported_dataset_links(platform)}
+        if not set(reviewed_links()).issubset(persisted):
+            raise RuntimeError("Neo4j did not persist every reviewed Scene -> Dataset relation")
+        scene_count = len(store.get_scene_nodes())
+        supported_scenes = len({link.scene_name for link in persisted})
 
     print(
-        f"图谱构建完成：{len(groups)} 个 scene 节点，{len(builder.edges())} 条关系，"
-        f"新增种子词 {added_seeds} 个"
+        f"图谱构建完成：扩展 {len(groups)} 个 Scene、{edges} 条 Scene 关系，"
+        f"新增种子词 {added_seeds} 个；同步目录 {catalog_count} 条、"
+        f"已核验 Scene→Dataset 关系 {link_count} 条；"
+        f"有数据支持的 Scene {supported_scenes}/{scene_count}"
     )
 
 
