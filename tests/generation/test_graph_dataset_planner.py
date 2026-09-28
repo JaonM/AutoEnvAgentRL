@@ -75,7 +75,7 @@ class RecordingStore:
 
 def test_reviewed_relations_are_backed_by_approved_raw_sources():
     links = reviewed_links()
-    assert len(links) == 54
+    assert len(links) == 55
     assert {link.dataset_key.split(":", 1)[0] for link in links} == {
         "kaggle", "data_gov_hk",
     }
@@ -89,7 +89,7 @@ def test_complete_catalogs_are_metadata_only_until_source_review():
     assert len(rows) == 13_822
     assert sum(row["platform"] == "kaggle" for row in rows) == 10_000
     assert sum(row["platform"] == "data_gov_hk" for row in rows) == 3_822
-    assert sum(row["approved"] for row in rows) == 9
+    assert sum(row["approved"] for row in rows) == 10
     assert len({row["key"] for row in rows}) == len(rows)
     store = RecordingStore()
     assert sync_catalog_datasets(store, rows) == len(rows)
@@ -98,8 +98,8 @@ def test_complete_catalogs_are_metadata_only_until_source_review():
 
 def test_graph_sync_writes_only_verified_source_relations():
     store = RecordingStore()
-    assert sync_reviewed_links(store) == 54
-    assert len(store.relations) == 54
+    assert sync_reviewed_links(store) == 55
+    assert len(store.relations) == 55
     assert len(store.scene_edges) == 43
     assert store.reconciled_scene_edges == tuple(store.scene_edges)
     assert {node.key for node in store.datasets} == {
@@ -111,9 +111,10 @@ def test_graph_sync_writes_only_verified_source_relations():
         "kaggle:alexhuitron/supermarket-sales",
         "kaggle:mehmettahiraslan/customer-shopping-dataset",
         "kaggle:arunkumaroraon/indian-sales-transactions-dataset-2025",
+        "kaggle:vinamratas29/bangalore-food-delivery-orders-clean-dataset",
         "data_gov_hk:cc-pricewatch-pricewatch",
     }
-    assert len(store.resources) == 54
+    assert len(store.resources) == 55
     assert {field.role for field in store.fields} == {"identifier", "group", "value"}
     assert store.reconciled == reviewed_links()
     assert store.discovery["商品价格核对"] == ("价格", "格价", "物价")
@@ -124,6 +125,14 @@ def test_hotel_relation_uses_pinned_reservations_table():
                 if link.dataset_key == "kaggle:sophietwohey/synthetic-hotel-dataset")
     source, *_ = verify_link_source(link)
     assert source.name == "reservations.csv"
+
+
+def test_food_delivery_relation_uses_order_type_and_delivery_duration():
+    link = next(link for link in reviewed_links() if link.scene_name == "点外卖"
+                and "food-delivery-orders" in link.dataset_key)
+    source, *_ = verify_link_source(link)
+    headers, rows = _sample_source(source)
+    assert _columns(headers, rows) == ("ID", "Type_of_order", "delivery_time_mins")
 
 
 def test_stale_source_hash_rejects_batch_before_graph_mutation():

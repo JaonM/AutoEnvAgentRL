@@ -54,6 +54,13 @@
       "license": "CC0: Public Domain",
       "source_path": "sales_data.csv",
       "source_sha256": "3119677e8e57f5b82adceb2f1f1845d5760f50a6bc6264657b12d402b5f94e46"
+    },
+    {
+      "ref": "vinamratas29/bangalore-food-delivery-orders-clean-dataset",
+      "version": 1,
+      "license": "CC0: Public Domain",
+      "source_path": "orders_clean2.csv",
+      "source_sha256": "06b9bc98863d2345a9ae41844f8592961b637e2d46fe066495ed2983ce5c35dd"
     }
   ]
 }

@@ -85,7 +85,7 @@ def sync_catalog_datasets(store: Neo4jGraphStore, rows: tuple[dict[str, Any], ..
 
 
 def reviewed_links(path: Path = DEFAULT_LINKS) -> tuple[SceneDatasetLink, ...]:
-    """Load the explicitly reviewed mappings; metadata catalog rows do not qualify."""
+    """Load source-verified mappings, preserving manual or LLM review provenance."""
     document = json.loads(path.read_text(encoding="utf-8"))
     if document.get("version") != 1 or not isinstance(document.get("links"), list):
         raise TaskGenerationError("graph dataset link registry is invalid")
@@ -96,10 +96,12 @@ def reviewed_links(path: Path = DEFAULT_LINKS) -> tuple[SceneDatasetLink, ...]:
         link = SceneDatasetLink(
             row["scene"], row["dataset_key"], row["source_sha256"], row["evidence"],
             row.get("group_field"), row.get("group_value"), row.get("business_label"),
+            row.get("review_method", "manual"),
         )
         if (not link.scene_name.strip() or not link.evidence.strip()
                 or (link.group_field is None) != (link.group_value is None)
                 or not isinstance(link.business_label, str) or len(link.business_label.strip()) < 2
+                or link.review_method not in {"manual", "llm_source_grounded_v1"}
                 or len(link.source_sha256) != 64):
             raise TaskGenerationError("graph dataset link has invalid evidence or field constraint")
         pair = (link.scene_name, link.dataset_key)

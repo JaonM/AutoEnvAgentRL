@@ -48,6 +48,7 @@ class SceneDatasetLink:
     group_field: str | None = None
     group_value: str | None = None
     business_label: str | None = None
+    review_method: str = "manual"
 
 
 class Neo4jGraphStore:
@@ -262,11 +263,13 @@ class Neo4jGraphStore:
                 "SET relation.source_sha256 = $source_sha256, relation.evidence = $evidence, "
                 "relation.group_field = $group_field, relation.group_value = $group_value, "
                 "relation.business_label = $business_label, "
+                "relation.review_method = $review_method, "
                 "relation.reviewed = true, relation.managed_by = 'graph_dataset_links'",
                 scene_id=normalize_scene_name(link.scene_name), dataset_key=link.dataset_key,
                 source_sha256=link.source_sha256, evidence=link.evidence,
                 group_field=link.group_field, group_value=link.group_value,
                 business_label=link.business_label,
+                review_method=link.review_method,
             ).consume()
 
     def reconcile_reviewed_links(self, links: tuple[SceneDatasetLink, ...]) -> None:
@@ -316,7 +319,8 @@ class Neo4jGraphStore:
                 "dataset.key AS dataset_key, relation.source_sha256 AS source_sha256, "
                 "relation.evidence AS evidence, relation.group_field AS group_field, "
                 "relation.group_value AS group_value, "
-                "relation.business_label AS business_label",
+                "relation.business_label AS business_label, "
+                "relation.review_method AS review_method",
                 prefix=platform + ":",
             )
             return tuple((
@@ -325,7 +329,7 @@ class Neo4jGraphStore:
                     str(record["scene_name"]), str(record["dataset_key"]),
                     str(record["source_sha256"]), str(record["evidence"]),
                     record["group_field"], record["group_value"],
-                    record["business_label"],
+                    record["business_label"], record["review_method"] or "manual",
                 ),
             ) for record in records)
 

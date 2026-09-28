@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 PRIVATE_COLUMNS = re.compile(r"name|email|phone|address|passport|ssn|birth|contact|comment|review|姓名|邮箱|电话|手机|住址|地址|身份证|护照|出生|联系人|评论", re.I)
 KEY_COLUMNS = re.compile(r"(^id$|[_ -]id$|order|booking|invoice|transaction|record|ticket|订单号|交易号|预订号|票号|单号|流水号|编号)", re.I)
 GROUP_COLUMNS = re.compile(r"category|type|region|city|status|product|department|store|channel|类别|分类|地区|城市|状态|商品|部门|店铺|渠道|目的地", re.I)
-VALUE_COLUMNS = re.compile(r"price|amount|cost|sales|quantity|revenue|fare|total|stock|units|金额|价格|费用|销售额|收入|数量|总价|票价|成本|库存", re.I)
+VALUE_COLUMNS = re.compile(r"price|amount|cost|sales|quantity|revenue|fare|total|stock|units|delivery_time|duration|金额|价格|费用|销售额|收入|数量|总价|票价|成本|库存|配送时长", re.I)
 
 
 def _sha256(path: Path) -> str:
@@ -86,7 +86,7 @@ def _columns(headers: list[str], rows: list[dict[str, str]]) -> tuple[str, str, 
               and not PRIVATE_COLUMNS.search(h)
               and 2 <= len({str(row.get(h) or "").strip() for row in rows}) <= 40
               and all(str(row.get(h) or "").strip() for row in rows)]
-    group = min(groups, key=lambda h: (rank(h, (r"destination_city", r"category", r"status",
+    group = min(groups, key=lambda h: (rank(h, (r"destination_city", r"category", r"type_of_order", r"status",
                                               r"region", r"product", r"department", r"store",
                                               r"channel", r"city", r"type")),
                                        abs(len({str(row[h]).strip() for row in rows}) - 8)), default=None)
@@ -97,7 +97,7 @@ def _columns(headers: list[str], rows: list[dict[str, str]]) -> tuple[str, str, 
     numeric = min(numeric_fields, key=lambda h: rank(h, (r"total.*(cost|price|amount)", r"total.*sales",
                                                        r"revenue", r"price", r"fare", r"cost",
                                                        r"sales", r"amount", r"quantity", r"stock",
-                                                       r"discount")), default=None)
+                                                       r"delivery_time", r"duration", r"discount")), default=None)
     if not all((key, group, numeric)):
         raise TaskGenerationError("dataset lacks a unique ID, repeated category and numeric business value")
     return key, group, numeric
@@ -594,6 +594,7 @@ class DatasetTaskGenerator:
                 "group_value": graph_link.group_value, "extreme": extreme,
                 "comparison": comparison,
                 "business_label": graph_link.business_label,
+                "review_method": graph_link.review_method,
             }
         hostname = (urlparse(source_url).hostname or "").lower()
         provider = ("kaggle" if hostname in {"kaggle.com", "www.kaggle.com"}

@@ -544,6 +544,15 @@
       "group_field": "Category",
       "group_value": "Furniture",
       "evidence": "sales_data.csv 前 500 行中 Category=Furniture 有 229 行，Unit_Price 至少有两个不同数值；与 商品价格核对 的业务含义一致。"
+    },
+    {
+      "scene": "点外卖",
+      "business_label": "外卖订单",
+      "dataset_key": "kaggle:vinamratas29/bangalore-food-delivery-orders-clean-dataset",
+      "source_sha256": "06b9bc98863d2345a9ae41844f8592961b637e2d46fe066495ed2983ce5c35dd",
+      "evidence": "外部 LLM 将现有场景与已核验来源的整体业务活动关联；orders_clean2.csv 包含 ID、Type_of_order、delivery_time_mins。语义依据：Type_of_order 区分订单类型，delivery_time_mins 记录配送时长，可回答外卖订单配送时效问题",
+      "review_method": "llm_source_grounded_v1",
+      "llm_model": "deepseek-flash"
     }
   ]
 }
