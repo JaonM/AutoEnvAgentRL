@@ -308,7 +308,7 @@ def main() -> int:
         path_query_timeout=args.path_query_timeout,
     ) if args.generation_source in ("graph", "graph_keywords") else nullcontext(None))
     with store_context as store:
-        if args.generation_source == "graph":
+        if args.generation_source in ("graph", "graph_keywords"):
             sync_reviewed_links(store)
         generator = (TaskGenerator(
             store, llm, user_script_count=args.user_script_count,

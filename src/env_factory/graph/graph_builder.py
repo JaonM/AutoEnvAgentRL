@@ -506,7 +506,7 @@ class Neo4jGraphStore:
     def random_scene_event_path(
         self, hops: int, *, attempts: int = 8, rng: random.Random | None = None
     ) -> tuple[SceneNode, ...]:
-        """Return a random Scene node or simple event-element path."""
+        """Return a path whose every Scene has a reviewed dataset relation."""
 
         if hops < 0 or hops > 20:
             raise ValueError("hops must be between 0 and 20")
@@ -515,15 +515,18 @@ class Neo4jGraphStore:
         random_source = rng or random
         logger.debug("开始随机抽取 Scene 路径：跳数=%d，最大尝试次数=%d", hops, attempts)
         with self.driver.session(database=self.database) as session:
+            total = session.run(
+                "MATCH (scene:Scene)-[support:SUPPORTED_BY]->(:Dataset) "
+                "WHERE support.reviewed = true RETURN count(DISTINCT scene) AS total"
+            ).single()["total"]
+            if not total:
+                logger.warning("随机抽取 Scene 路径失败：没有已审核数据集支撑的 Scene")
+                return ()
             for _ in range(attempts):
-                total = session.run(
-                    "MATCH (scene:Scene) RETURN count(scene) AS total"
-                ).single()["total"]
-                if not total:
-                    logger.warning("随机抽取 Scene 路径失败：图谱中没有 Scene 节点")
-                    return ()
                 start = session.run(
-                    "MATCH (selected:Scene) "
+                    "MATCH (selected:Scene)-[support:SUPPORTED_BY]->(:Dataset) "
+                    "WHERE support.reviewed = true "
+                    "WITH DISTINCT selected ORDER BY selected.id "
                     "RETURN selected.id AS id "
                     "SKIP $offset LIMIT 1",
                     offset=random_source.randrange(total),
@@ -533,7 +536,9 @@ class Neo4jGraphStore:
                     return ()
                 if hops == 0:
                     record = session.run(
-                        "MATCH (scene:Scene {id: $start_id}) "
+                        "MATCH (scene:Scene {id: $start_id})-"
+                        "[support:SUPPORTED_BY]->(:Dataset) "
+                        "WHERE support.reviewed = true "
                         "RETURN scene.name AS name, scene.words AS words",
                         start_id=start["id"],
                     ).single()
@@ -548,7 +553,9 @@ class Neo4jGraphStore:
                     Query(
                         f"MATCH p=(start:Scene {{id: $start_id}})-[:SAME_EVENT_ELEMENT*1..{hops}]-(end:Scene) "
                         f"WHERE length(p) = {hops} AND all(node IN nodes(p) "
-                        "WHERE single(other IN nodes(p) WHERE other = node)) "
+                        "WHERE single(other IN nodes(p) WHERE other = node) "
+                        "AND EXISTS { MATCH (node)-[support:SUPPORTED_BY]->(:Dataset) "
+                        "WHERE support.reviewed = true }) "
                         "RETURN [node IN nodes(p) | {name: node.name, words: node.words}] AS path "
                         "LIMIT 100",
                         timeout=self.path_query_timeout,

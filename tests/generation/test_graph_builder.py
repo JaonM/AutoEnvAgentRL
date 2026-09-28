@@ -1,6 +1,7 @@
 import unittest
+import random
 
-from env_factory import KnowledgeGraphBuilder, SceneRelation, TaskType
+from env_factory import KnowledgeGraphBuilder, Neo4jGraphStore, SceneRelation, TaskType
 
 
 class RecordingStore:
@@ -24,6 +25,54 @@ class RecordingStore:
 
 
 class KnowledgeGraphBuilderTest(unittest.TestCase):
+    def test_scene_sampler_queries_only_reviewed_dataset_supported_nodes(self) -> None:
+        class Result:
+            def __init__(self, rows):
+                self.rows = rows
+
+            def single(self):
+                return self.rows[0] if self.rows else None
+
+            def __iter__(self):
+                return iter(self.rows)
+
+        class Session:
+            queries = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def run(self, query, **kwargs):
+                statement = query.text if hasattr(query, "text") else query
+                self.queries.append(statement)
+                if "count(DISTINCT scene)" in statement:
+                    return Result([{"total": 1}])
+                if "RETURN selected.id" in statement:
+                    return Result([{"id": "订单"}])
+                if "RETURN scene.name" in statement:
+                    return Result([{"name": "订单", "words": []}])
+                return Result([{"path": [{"name": "订单", "words": []},
+                                         {"name": "消费核对", "words": []}]}])
+
+        class Driver:
+            def __init__(self):
+                self.active = Session()
+
+            def session(self, **kwargs):
+                return self.active
+
+        driver = Driver()
+        store = Neo4jGraphStore(driver=driver)
+        self.assertEqual(store.random_scene_event_path(0, rng=random.Random(1))[0].name, "订单")
+        self.assertEqual(len(store.random_scene_event_path(1, rng=random.Random(1))), 2)
+        self.assertTrue(all("SUPPORTED_BY" in query for query in driver.active.queries))
+        self.assertTrue(all("reviewed = true" in query for query in driver.active.queries))
+        self.assertIn("EXISTS { MATCH (node)-[support:SUPPORTED_BY]",
+                      driver.active.queries[-1])
+
     def test_aliases_are_merged(self) -> None:
         builder = KnowledgeGraphBuilder()
         builder.add_scene("外卖", words=["点外卖", "叫外卖"])
