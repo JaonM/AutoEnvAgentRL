@@ -6,6 +6,7 @@ import hashlib
 import json
 import random
 import re
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -35,7 +36,9 @@ def balanced_platforms(count: int, *, rng: random.Random) -> list[str]:
     return platforms
 
 
-def hk_catalog(index_path: Path = HK_INDEX) -> dict[str, dict[str, Any]]:
+@lru_cache(maxsize=8)
+def _cached_hk_catalog(index_path: Path, mtime_ns: int, size: int) -> dict[str, dict[str, Any]]:
+    del mtime_ns, size
     try:
         document = json.loads(index_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -45,6 +48,14 @@ def hk_catalog(index_path: Path = HK_INDEX) -> dict[str, dict[str, Any]]:
         raise TaskGenerationError("DATA.GOV.HK catalog has no datasets")
     return {str(row["id"]): row for row in rows
             if isinstance(row, dict) and isinstance(row.get("id"), str)}
+
+
+def hk_catalog(index_path: Path = HK_INDEX) -> dict[str, dict[str, Any]]:
+    try:
+        stat = index_path.stat()
+    except OSError as exc:
+        raise TaskGenerationError("DATA.GOV.HK catalog is unavailable") from exc
+    return _cached_hk_catalog(index_path.resolve(), stat.st_mtime_ns, stat.st_size)
 
 
 def eligible_hk_ids(*, index_path: Path = HK_INDEX) -> list[str]:
