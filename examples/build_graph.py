@@ -32,7 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-llm-dataset-links", action="store_true",
                         help="跳过外部 LLM 的 Scene→Dataset 匹配，只同步关系注册表")
     parser.add_argument("--llm-links-dry-run", action="store_true",
-                        help="只打印 LLM 新关系；其他既有图谱同步步骤仍照常运行")
+                        help="只读试运行 LLM 新关系；需与 --datasets-only 一起使用")
     parser.add_argument("--llm-max-links-per-dataset", type=int, default=4,
                         help="每个已核验数据源最多保留的 LLM 新关系数，默认 4")
     parser.add_argument("--llm-max-datasets", type=int, default=None,
@@ -150,6 +150,8 @@ def main() -> None:
     args = parse_args()
     if args.skip_llm_dataset_links and args.llm_links_dry_run:
         raise ValueError("--skip-llm-dataset-links and --llm-links-dry-run conflict")
+    if args.llm_links_dry_run and not args.datasets_only:
+        raise ValueError("--llm-links-dry-run requires --datasets-only to avoid graph writes")
     groups = ()
     edges = 0
     added_seeds = 0
@@ -176,6 +178,21 @@ def main() -> None:
 
     with Neo4jGraphStore(database=os.getenv("NEO4J_DATABASE", "neo4j")) as store:
         store.verify_connectivity()
+        if args.llm_links_dry_run:
+            linker_llm = LLMClient.from_env("LLM", timeout=float(os.getenv("LLM_TIMEOUT", "60")))
+            proposals = propose_llm_links(
+                linker_llm, store.get_scene_nodes(),
+                max_new_per_dataset=args.llm_max_links_per_dataset,
+                max_datasets=args.llm_max_datasets,
+                only_dataset_keys=args.llm_dataset_key,
+                require_local_sources=True,
+            )
+            for item in proposals:
+                print(f"LLM 候选：{item['scene']} → {item['dataset_key']} "
+                      f"({item.get('group_value') or '全部分组'})，"
+                      f"业务称呼：{item['business_label']}，依据：{item['evidence']}")
+            print(f"只读试运行完成：{len(proposals)} 条通过校验的新候选")
+            return
         if not args.datasets_only:
             logging.getLogger(__name__).info("开始扩展 Scene 图谱")
             builder, groups = expander.expand_and_build(store, seeds, rounds=args.rounds)
@@ -199,13 +216,7 @@ def main() -> None:
                 max_datasets=args.llm_max_datasets,
                 only_dataset_keys=args.llm_dataset_key,
             )
-            if args.llm_links_dry_run:
-                for item in proposals:
-                    print(f"LLM 候选：{item['scene']} → {item['dataset_key']} "
-                          f"({item.get('group_value') or '全部分组'})，"
-                          f"业务称呼：{item['business_label']}，依据：{item['evidence']}")
-            else:
-                new_link_count = append_llm_links(proposals)
+            new_link_count = append_llm_links(proposals)
         link_count = sync_reviewed_links(store)
         persisted = {link for platform in ("kaggle", "data_gov_hk")
                      for _, link in store.supported_dataset_links(platform)}

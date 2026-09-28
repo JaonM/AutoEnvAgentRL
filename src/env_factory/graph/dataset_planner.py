@@ -101,7 +101,8 @@ def reviewed_links(path: Path = DEFAULT_LINKS) -> tuple[SceneDatasetLink, ...]:
         if (not link.scene_name.strip() or not link.evidence.strip()
                 or (link.group_field is None) != (link.group_value is None)
                 or not isinstance(link.business_label, str) or len(link.business_label.strip()) < 2
-                or link.review_method not in {"manual", "llm_source_grounded_v1"}
+                or link.review_method not in {"manual", "llm_source_grounded_v1",
+                                              "llm_source_grounded_v2"}
                 or len(link.source_sha256) != 64):
             raise TaskGenerationError("graph dataset link has invalid evidence or field constraint")
         pair = (link.scene_name, link.dataset_key)
