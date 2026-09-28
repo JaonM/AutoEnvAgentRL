@@ -120,7 +120,7 @@ EnvFactory 的当前认证边界是 `production_prepared_for_agentic_rl`：证�
   token usage 和 provider response ID 的 SHA-256；不保存 prompt、响应正文、凭证或原始 response ID。
   认证器从冻结的 `sample_manifest.json` 独立重建该快照，拒绝模型身份、attempt 顺序、seed、任务类别或
   响应计数不一致的样本。该溯源证明素材由声明的生成流程产生，不证明模型输出本身正确。
-- 每个任务必须声明业务数据来源：模型生成的合成数据，或带有来源 URL、源文件 SHA-256 与许可标识的 Kaggle / 和鲸数据。真实 rollout 前执行出站载荷
+- 每个任务必须声明业务数据来源：模型生成的合成数据，或带有来源 URL、源文件 SHA-256 与许可标识的 Kaggle / DATA.GOV.HK 数据。真实 rollout 前执行出站载荷
   审计，记录 Agent、User Simulator 和 Reward Judge 的 provider 身份与可见字段，扫描凭证及疑似 PII；
   发现凭证、缺少有效来源声明或缺少 provider 身份时禁止外发并取消样本资格。
   最终认证不会信任流水线写出的审计结论，而是对冻结的任务与业务 fixture 重新扫描，并要求命中路径、
@@ -150,7 +150,7 @@ EnvFactory 的当前认证边界是 `production_prepared_for_agentic_rl`：证�
 
 `audit_data_governance.py` 在任何 live rollout 前验证任务的数据来源声明，扫描会进入公开任务、工具定义和
 业务 fixture 的凭证与疑似 PII，并将目标 provider、允许的出站面和禁止出站字段写入
-`data_governance.json`。生产素材采用零命中策略：无论来源是合成数据还是 Kaggle / 和鲸，任何凭证或疑似 PII
+`data_governance.json`。生产素材采用零命中策略：无论来源是合成数据还是 Kaggle / DATA.GOV.HK，任何凭证或疑似 PII
 都会阻止外部模型处理与 Bundle 发布。报告只保存命中类型与 JSON 路径，不回写疑似敏感值；Bundle
 验证器会对便携任务和 fixture 独立重扫，不能通过清空治理报告绕过。扫描不依赖文件扩展名：`data/`
 中的 CSV、TSV、YAML 及其他 UTF-8 fixture 与 JSON/JSONL 使用同一规则；无法解码的二进制业务数据

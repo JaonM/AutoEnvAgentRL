@@ -26,7 +26,7 @@ python3 scripts/diagnostics/download_kaggle_dataset.py madhavw/travel-and-touris
 
 目录页 `https://www.kaggle.com/datasets` 需要先选定具体数据集。旅游数据集已接入[数据集优先任务生成试验](docs/travel_dataset_trial.md)；其他数据集需先分析字段与许可，再设计任务、工具及奖励。
 
-中文数据集候选可查阅[和鲸目录索引](docs/heywhale_catalog.md)。索引只保存公开元数据，生成任务前再核对许可和实际文件。
+中文数据源使用 [DATA.GOV.HK](https://data.gov.hk/sc-data/dataset) 的公开目录。已核验来源列在 `data/sources/data_gov_hk/dataset_index.json`，原始文件按需下载并校验哈希。
 
 ## 构建知识图谱
 
@@ -103,10 +103,12 @@ WIKIPEDIA_DUMP_DB=data/wikipedia.sqlite3
 ```bash
 ./scripts/generate_task.sh --count 3
 ./scripts/generate_task.sh --dataset-ref madhavw/travel-and-tourism --training-category multi_step_agentic
+./scripts/generate_task.sh --dataset-platform data_gov_hk --count 1
+./scripts/generate_task.sh --dataset-platform balanced --count 2
 ./scripts/generate_task.sh --dataset-file /path/to/data.zip --dataset-url https://example.com/source --dataset-max-gb 10
 ```
 
-当前数据集入口支持 CSV、TSV、JSON、JSONL/NDJSON、XLSX、Parquet、SQLite，以及 ZIP/GZIP/TAR 压缩包和 `QA` 类型，需要数据中存在唯一 ID、可重复的分组字段及可核算的数值字段；不满足条件的候选会拒绝并记录原因。和鲸目录只提供元数据，取得许可且取得实际文件后，可用 `--dataset-file` 接入。来源哈希、所选原始字段与答案键写入 `source_selection.json`。使用 `--generation-source graph --hops 3 --task-type Event` 可显式调用原知识图谱路径，该路径仍需要 Neo4j。
+当前数据集入口支持 CSV、TSV、JSON、JSONL/NDJSON、XLSX、Parquet、SQLite，以及 ZIP/GZIP/TAR 压缩包和 `QA` 类型，需要数据中存在可辨识的业务 ID、可重复的分组字段及可核算的数值字段；不满足条件的候选会拒绝并记录原因。来源哈希、所选原始字段与答案键写入 `source_selection.json`。使用 `--generation-source graph --hops 3 --task-type Event` 可显式调用原知识图谱路径，该路径仍需要 Neo4j。
 
 详细流程、支持范围和实测结果见[数据集驱动任务生成](docs/dataset_task_generation.md)。
 任务生成完成后，会继续根据任务描述和环境生成 `rule-based/model-based` 观测指标，写入 `Task.metrics`。为提高工具选择训练的辨别能力，默认生成 2–3 个噪声工具并覆盖相关无关与完全无关两类；噪声工具由共享运行时提供无任务关键副作用的通用实现，不占用业务 handler 实现成本，也不产生任务进度奖励。工具生成前会把动作分类为环境操作、Agent 推理和 Agent 回答，只有环境操作可以暴露为工具。任务规模不再绑定具体构建模型，结构有效性由 schema、契约、任务级 readiness、外层验收和训练素材准备就绪门禁统一判断。

@@ -54,7 +54,7 @@ Pilot 通过只表示可以进入更大规模认证，
 - live 模式的最终 10 分由离线可执行证据占 9 分、真实 rollout 占 1 分组成；任何 live 硬失败仍直接取消训练资格，不能依靠离线高分抵消。
 - 离线评分通过后、任何外部模型调用前，流水线先运行数据治理审计并生成 `data_governance.json`。
   缺少有效数据来源声明、发现凭证或无法确定 Agent/User/Judge provider 时停止该样本；疑似 PII 会被记录。
-  合成 fixture 及带来源和哈希的 Kaggle / 和鲸数据均可继续。该技术审计不替代实际外部端点所需的组织授权。
+  合成 fixture 及带来源和哈希的 Kaggle / DATA.GOV.HK 数据均可继续。该技术审计不替代实际外部端点所需的组织授权。
 - live rollout 通过后会以 `SANDBOX_EVALUATOR_MOCK=0` 执行奖励反事实校准，写入
   `agentic_training_value_live.json`。真实 evaluator 的成功轨迹、失败轨迹、无工具、错参数、跳步、乱序和
   噪声轨迹不满足奖励分离时，样本仍不合格；离线 mock 报告不能替代该证据。
