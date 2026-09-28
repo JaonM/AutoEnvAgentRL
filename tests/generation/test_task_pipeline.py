@@ -1967,6 +1967,23 @@ class RewardContractTest(unittest.TestCase):
         success = next(item for item in scenarios if item["kind"] == "goal_success")
         self.assertIn("agent_response", [step["operation"] for step in success["steps"]])
 
+    def test_baseline_binds_business_argument_through_declared_selector(self):
+        tools = [{"type": "function", "function": {
+            "name": "lookup_product", "parameters": {"type": "object", "properties": {
+                "product_id": {"type": "string"},
+            }, "required": ["product_id"]},
+        }}]
+        scenarios = TaskGenerationPipeline._build_business_scenario_baseline(
+            task_description={"expected_result": "查到价格"}, tools=tools, noise_tools=[],
+            data_tables=[{"table_name": "products", "rows": [{"field_abc": "P00001"}]}],
+            tool_implementations=[{"tool_name": "lookup_product", "operation": "select",
+                                   "table": "products", "selector": {"product_id": "field_abc"}}],
+            training_category="simple_agentic",
+        )
+        success = next(item for item in scenarios if item["kind"] == "goal_success")
+        call = next(step for step in success["steps"] if step["operation"] == "tool_call")
+        self.assertEqual(call["arguments"], {"product_id": "P00001"})
+
     def test_deterministic_baseline_expands_mutations_for_each_goal_row(self):
         tools = [
             {"type": "function", "function": {

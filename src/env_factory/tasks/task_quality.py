@@ -331,6 +331,15 @@ def score_task(task: dict[str, Any], *, task_id: str = "task", path: str = "", m
         or (training_category == "multi_step_agentic" and (len(success_business_calls) < 2 or not dependency_edge))
     )
     eligibility_failures: list[str] = []
+    artifacts = task.get("artifacts") if isinstance(task.get("artifacts"), dict) else {}
+    manifest = artifacts.get("data_manifest") if isinstance(artifacts.get("data_manifest"), dict) else {}
+    governance = manifest.get("data_governance")
+    if artifacts.get("dataset_source") is not None or (
+        isinstance(governance, dict) and governance.get("origin") == "public_dataset"
+    ):
+        from env_factory.evidence.data_governance import valid_data_origin
+        if not valid_data_origin(governance, task):
+            eligibility_failures.append("数据集来源与业务数据清单不一致")
     missing_endpoints = missing_system_endpoints(requirements.get("runtime_interface"))
     if missing_endpoints:
         eligibility_failures.append(

@@ -534,6 +534,7 @@ class ExperimentTest(unittest.TestCase):
                 task.write_text(json.dumps({"task": index}))
                 results.append({
                     "task_path": str(task), "sample_seed": 10_000 + index,
+                    "dataset_platform": "kaggle" if index % 2 == 0 else "data_gov_hk",
                     "score": 9, "passed": True, "category": "multi_step_agentic",
                     "task_score": {"eligible": True, "score": 9},
                     "sandbox_score": {"passed": True, "score": 9},
@@ -548,6 +549,14 @@ class ExperimentTest(unittest.TestCase):
                 rollout_success_target=2 / 3, previous_seeds={1, 2, 3},
             )
             self.assertTrue(summary["target_met"])
+            self.assertTrue(summary["source_balance_verified"])
+            results[0]["dataset_platform"] = "data_gov_hk"
+            unbalanced = loop.summarize_holdout(
+                results, 8, expected_count=30, end_to_end_target=.7,
+                rollout_success_target=2 / 3, previous_seeds={1, 2, 3},
+            )
+            self.assertFalse(unbalanced["target_met"])
+            results[0]["dataset_platform"] = "kaggle"
             results[0]["live_rollout"]["agent_success_rate"] = 1 / 3
             self.assertFalse(loop.summarize_holdout(
                 results, 8, expected_count=30, end_to_end_target=.7,

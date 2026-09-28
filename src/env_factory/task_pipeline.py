@@ -3217,6 +3217,17 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                 fixture_rows=fixture_rows,
             )
             implementation = implementation_by_tool.get(function["name"], {})
+            # Business tool argument names often differ from source table columns.
+            # Bind schema placeholders through the declared selector before asking
+            # the model to invent a value for an executable acceptance trace.
+            selector_mapping = implementation.get("selector", {})
+            for argument_name, column_name in (selector_mapping.items()
+                                               if isinstance(selector_mapping, dict) else []):
+                if (argument_name in fixture_arguments and isinstance(column_name, str)
+                        and isinstance(fixture_arguments[argument_name], str)
+                        and fixture_arguments[argument_name].startswith("任务输入中的")
+                        and fixture_values.get(column_name)):
+                    fixture_arguments[argument_name] = fixture_values[column_name][0]
             predicates = [
                 item for item in goal_predicates
                 if isinstance(item, dict) and item.get("table") == implementation.get("table")

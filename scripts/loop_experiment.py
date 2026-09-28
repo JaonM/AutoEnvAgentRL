@@ -443,6 +443,11 @@ def summarize_holdout(
         item for item in results
         if item.get("passed") is True and item.get("score", 0) >= threshold
     ]
+    source_counts = {platform: sum(item.get("dataset_platform") == platform for item in results)
+                     for platform in ("kaggle", "data_gov_hk")}
+    source_balance_verified = (len(results) == expected_count and expected_count % 2 == 0
+                               and all(count == expected_count // 2
+                                       for count in source_counts.values()))
     seeds = [item.get("sample_seed") for item in results]
     task_digests = []
     for item in results:
@@ -478,6 +483,8 @@ def summarize_holdout(
         "holdout_expected": expected_count,
         "holdout_minimum_materialized": minimum_materialized,
         "fresh_tasks_verified": fresh_tasks_verified,
+        "source_counts": source_counts,
+        "source_balance_verified": source_balance_verified,
         "rollout_success_target": rollout_success_target,
         "qualified_rollout_floor_met": qualified_rollout_floor_met,
         "all_episodes_environment_clean": all_episodes_environment_clean,
@@ -485,6 +492,7 @@ def summarize_holdout(
     })
     summary["target_met"] = (
         fresh_tasks_verified
+        and source_balance_verified
         and summary["end_to_end_rate"] >= end_to_end_target
         and qualified_rollout_floor_met
         and all_episodes_environment_clean
@@ -944,6 +952,7 @@ def run_round(project, root, config, report):
                 report["generation"] = run_process([
                     sys.executable, str(project / "examples/generate_task.py"),
                     "--count", str(config["generate_count"]), "--max-workers", str(config["max_concurrency"]),
+                    "--dataset-platform", "balanced",
                     "--seed", str(config.get("experiment_seed", 0) + report["round"] - 1),
                     "--hops", str(config.get("generation_hops", 3)),
                     "--route-attempts", str(config.get("route_attempts", 3)),
@@ -976,6 +985,7 @@ def run_round(project, root, config, report):
                             "sample_manifest": str(manifest_path),
                             "category": sample.get("training_category", "unknown"),
                             "sample_seed": sample.get("sample_seed"),
+                            "dataset_platform": sample.get("dataset_platform"),
                         })
                         continue
                     failure_path = manifest_path.parent / "failure.json"
@@ -987,6 +997,7 @@ def run_round(project, root, config, report):
                         failure_code=detail.get("failure_class", "GEN_SEMANTIC"),
                         category=sample.get("training_category", "unknown"),
                         sample_manifest=str(manifest_path), sample_seed=sample.get("sample_seed"),
+                        dataset_platform=sample.get("dataset_platform"),
                     )
                 else:
                     result = failure("generation", "sample manifest missing; see generation log",
@@ -1018,13 +1029,16 @@ def run_round(project, root, config, report):
                 result.setdefault("sample_manifest", job["sample_manifest"])
             if job.get("sample_seed") is not None:
                 result.setdefault("sample_seed", job["sample_seed"])
+            if job.get("dataset_platform") is not None:
+                result.setdefault("dataset_platform", job["dataset_platform"])
             return result
         except Exception as exc:
             return failure("infrastructure", f"{type(exc).__name__}: {exc}",
                            task_path=str(task_path), output=str(output),
                            category=job.get("category", "unknown"),
                            sample_manifest=job.get("sample_manifest"),
-                           sample_seed=job.get("sample_seed"))
+                           sample_seed=job.get("sample_seed"),
+                           dataset_platform=job.get("dataset_platform"))
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=config["max_concurrency"]) as pool:
         futures = {}
@@ -1132,6 +1146,8 @@ def main():
     if (args.max_rounds < 0 or not 0 <= args.threshold < 10
             or args.generate_count < 0 or not 0 <= args.generation_hops <= 20):
         parser.error("invalid rounds, threshold or generation count")
+    if args.generate_count % 2 or args.holdout_count % 2:
+        parser.error("balanced Kaggle/DATA.GOV.HK batches require even generation and holdout counts")
     if not 0 <= args.infrastructure_retries <= 3:
         parser.error("infrastructure retries must be between 0 and 3")
     for key in ("max_concurrency", "max_attempts", "route_attempts", "consecutive_rounds",

@@ -63,6 +63,18 @@ def valid_task():
 
 
 class TaskQualityTest(unittest.TestCase):
+    def test_public_dataset_without_matching_governance_is_ineligible(self):
+        task = valid_task()
+        task["artifacts"] = {"dataset_source": {
+            "provider": "data_gov_hk",
+            "source_url": "https://data.gov.hk/sc-data/dataset/example",
+            "source_sha256": "a" * 64,
+            "source_format": ".csv", "source_member": None, "license": "open",
+        }}
+        report = score_task(task)
+        self.assertFalse(report.eligible)
+        self.assertIn("数据集来源与业务数据清单不一致", report.eligibility_failures)
+
     def _write_manifest_task(self, root: Path, *, child_parent_id: int) -> Path:
         task = valid_task()
         task["artifacts"] = {"data_manifest": {
