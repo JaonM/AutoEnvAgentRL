@@ -82,22 +82,18 @@ LOG_LEVEL=INFO
 构建成功后，本轮发现的 scene 词语会自动追加到该文件；Neo4j 中已标记为扩展完成的词语下次会跳过。
 `LOG_LEVEL` 支持 `DEBUG`、`INFO`、`WARNING` 等级别，默认使用 `INFO`。
 
-执行默认图谱构建：
+统一入口默认增量构建 Scene、数据集目录与关系。`.env` 配置了 `WIKIPEDIA_DUMP_DB` 时自动使用本地索引；未配置时搜索在线 Wikipedia。原始业务数据优先使用已下载文件，语义匹配仍调用 `.env` 中的 LLM 端点。
 
 ```bash
 ./scripts/build_graph.sh
+./scripts/build_graph.sh --data-only
+./scripts/build_graph.sh --links-only
+./scripts/build_graph.sh --dataset kaggle:aditirai2607/super-market-dataset
 ```
 
-使用本地 Wikipedia 索引和已下载原始数据增量构建：
+`--data-only` 跳过 Scene 扩展；`--links-only` 只更新关系；`--dataset` 自动识别已准入或未准入的索引来源，并只处理该来源。目录指纹和各来源的原始文件、Scene 指纹保存在 Neo4j，重跑跳过未变化内容。默认每轮最多审核 20 个新下载来源，可用 `--max-datasets N` 调整。`--offline` 强制使用本地索引与原始文件，`--online` 强制在线搜索 Wikipedia，`--skip-approved-llm` 可跳过已准入来源的模型匹配。运行 `./scripts/build_graph.sh --help` 查看简明参数。
 
-```bash
-./scripts/build_graph_offline.sh --datasets-only --max-local-datasets 20
-# 只审核一个已下载来源
-./scripts/build_graph_offline.sh --datasets-only --links-only \
-  --local-dataset-key kaggle:aditirai2607/super-market-dataset
-```
-
-离线入口要求 `.env` 配置 `WIKIPEDIA_DUMP_DB` 才能扩展 Scene；`--datasets-only` 跳过扩展。目录指纹和各来源的原始文件、Scene 指纹保存在 Neo4j，重跑跳过未变化内容；每轮默认最多审核 20 个新下载来源。Wikipedia 与业务数据均从本机读取，语义匹配仍调用 `.env` 中的 LLM 端点。未准入来源只生成 `CANDIDATE_SUPPORTED_BY`，不供训练任务选择。
+未准入来源只生成 `CANDIDATE_SUPPORTED_BY`，不供训练任务选择。
 
 查看候选及晋升指定 Scene：
 
@@ -121,7 +117,7 @@ uv run python scripts/diagnostics/promote_local_graph_link.py \
   --max-workers 2
 ```
 
-脚本会并发调用 Wikipedia Action API，批量调用 LLM 抽取词语，增量合并 scene 节点和关系，最后写入 Neo4j。`task_type` 节点默认写入全部枚举值。
+脚本根据 `.env` 选择本地或在线 Wikipedia，批量调用 LLM 抽取词语，增量合并 Scene 节点和关系，最后写入 Neo4j。`task_type` 节点默认写入全部枚举值。
 
 ### 大规模构建
 
