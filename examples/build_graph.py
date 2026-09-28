@@ -36,12 +36,16 @@ def parse_args() -> argparse.Namespace:
                         help="目录指纹未变时跳过同步；Scene 扩展仍按 Neo4j 检查点续跑")
     parser.add_argument("--offline", action="store_true",
                         help="要求使用本地 Wikipedia 索引；数据集只读本地文件，LLM 仍使用配置端点")
+    parser.add_argument("--online-wikipedia", action="store_true",
+                        help="即使已配置本地索引，也使用在线 Wikipedia 搜索")
     parser.add_argument("--local-dataset-links", action="store_true",
                         help="为已下载但未准入的候选数据集增量构建非训练用途的 Scene 关系")
     parser.add_argument("--max-local-datasets", type=int, default=20,
                         help="本轮最多新审核的本地数据集数，默认 20")
     parser.add_argument("--local-dataset-key", action="append",
                         help="仅审核指定的已下载数据集键，可重复传入")
+    parser.add_argument("--dataset-key", action="append",
+                        help="指定索引中的数据集键；自动按已准入或候选关系处理，可重复传入")
     parser.add_argument("--skip-llm-dataset-links", action="store_true",
                         help="跳过外部 LLM 的 Scene→Dataset 匹配，只同步关系注册表")
     parser.add_argument("--llm-links-dry-run", action="store_true",
@@ -163,12 +167,25 @@ def main() -> None:
     args = parse_args()
     if args.skip_llm_dataset_links and args.llm_links_dry_run:
         raise ValueError("--skip-llm-dataset-links and --llm-links-dry-run conflict")
+    if args.offline and args.online_wikipedia:
+        raise ValueError("--offline and --online-wikipedia conflict")
     if args.llm_links_dry_run and not args.datasets_only:
         raise ValueError("--llm-links-dry-run requires --datasets-only to avoid graph writes")
     if args.max_local_datasets <= 0:
         raise ValueError("--max-local-datasets must be positive")
     if args.local_dataset_key and not args.local_dataset_links:
         raise ValueError("--local-dataset-key requires --local-dataset-links")
+    if args.dataset_key and (args.local_dataset_key or args.llm_dataset_key):
+        raise ValueError("--dataset-key cannot be combined with source-specific dataset keys")
+    targeted_approved: list[str] | None = None
+    targeted_local: list[str] | None = None
+    if args.dataset_key:
+        catalog = {row["key"]: row for row in catalog_rows()}
+        missing = set(args.dataset_key) - set(catalog)
+        if missing:
+            raise ValueError(f"dataset keys are absent from the indexes: {sorted(missing)}")
+        targeted_approved = [key for key in dict.fromkeys(args.dataset_key) if catalog[key]["approved"]]
+        targeted_local = [key for key in dict.fromkeys(args.dataset_key) if not catalog[key]["approved"]]
     groups = ()
     edges = 0
     added_seeds = 0
@@ -185,7 +202,7 @@ def main() -> None:
             relation_candidate_limit=args.relation_candidate_limit,
         )
         llm = LLMClient.from_env("LLM", timeout=float(os.getenv("LLM_TIMEOUT", "60")))
-        dump_db = os.getenv("WIKIPEDIA_DUMP_DB")
+        dump_db = None if args.online_wikipedia else os.getenv("WIKIPEDIA_DUMP_DB")
         if args.offline and not dump_db:
             raise ValueError("--offline requires WIKIPEDIA_DUMP_DB")
         search = (
@@ -203,7 +220,7 @@ def main() -> None:
                 linker_llm, store.get_scene_nodes(),
                 max_new_per_dataset=args.llm_max_links_per_dataset,
                 max_datasets=args.llm_max_datasets,
-                only_dataset_keys=args.llm_dataset_key,
+                only_dataset_keys=targeted_approved if targeted_approved is not None else args.llm_dataset_key,
                 require_local_sources=True,
             )
             for item in proposals:
@@ -236,26 +253,26 @@ def main() -> None:
                 if store.catalog_dataset_counts() != expected:
                     raise RuntimeError("Neo4j dataset catalog does not match committed indexes")
         new_link_count = 0
-        if not args.skip_llm_dataset_links:
+        if not args.skip_llm_dataset_links and (targeted_approved is None or targeted_approved):
             linker_llm = (llm if not args.datasets_only else
                           LLMClient.from_env("LLM", timeout=float(os.getenv("LLM_TIMEOUT", "60"))))
             proposals = propose_llm_links(
                 linker_llm, store.get_scene_nodes(),
                 max_new_per_dataset=args.llm_max_links_per_dataset,
                 max_datasets=args.llm_max_datasets,
-                only_dataset_keys=args.llm_dataset_key,
+                only_dataset_keys=targeted_approved if targeted_approved is not None else args.llm_dataset_key,
                 require_local_sources=args.offline,
             )
             new_link_count = append_llm_links(proposals)
         link_count = sync_reviewed_links(store, require_local=args.offline)
         local_stats = None
-        if args.local_dataset_links:
+        if args.local_dataset_links and (targeted_local is None or targeted_local):
             local_llm = (llm if not args.datasets_only else
                          LLMClient.from_env("LLM", timeout=float(os.getenv("LLM_TIMEOUT", "60"))))
             local_stats = build_local_candidate_links(
                 store, local_llm, store.get_scene_nodes(), rows or catalog_rows(),
                 max_datasets=args.max_local_datasets,
-                only_keys=args.local_dataset_key,
+                only_keys=targeted_local if targeted_local is not None else args.local_dataset_key,
             )
         persisted = {link for platform in ("kaggle", "data_gov_hk")
                      for _, link in store.supported_dataset_links(platform)}
