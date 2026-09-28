@@ -239,6 +239,311 @@
       "group_field": "货品分类2",
       "group_value": "蛋糕",
       "evidence": "原始文件前 500 行中 货品分类2=蛋糕 至少出现 3 次；与 商品价格核对 的业务字段及数值字段一致。"
+    },
+    {
+      "scene": "零售消费核对",
+      "business_label": "线上订单",
+      "dataset_key": "kaggle:prince7489/online-retail-transactions-dataset",
+      "source_sha256": "603db2928c36414c86a19d4a73c76a66b23e031d582ecd5b7d06e5979bb82575",
+      "evidence": "核验 Online_Retail_Transactions.csv 前 500 行：Order_ID 为业务标识，Category 为分组，Total_Amount_INR 为数值指标；固定版本、许可与 SHA-256。"
+    },
+    {
+      "scene": "数码商品消费核对",
+      "parent_scene": "零售消费核对",
+      "business_label": "数码商品",
+      "dataset_key": "kaggle:prince7489/online-retail-transactions-dataset",
+      "source_sha256": "603db2928c36414c86a19d4a73c76a66b23e031d582ecd5b7d06e5979bb82575",
+      "group_field": "Category",
+      "group_value": "Gadgets",
+      "evidence": "Online_Retail_Transactions.csv 前 500 行中 Category=Gadgets 有 176 行，Total_Amount_INR 至少有两个不同数值；与 零售消费核对 的业务含义一致。"
+    },
+    {
+      "scene": "电子产品消费核对",
+      "parent_scene": "零售消费核对",
+      "business_label": "电子产品",
+      "dataset_key": "kaggle:prince7489/online-retail-transactions-dataset",
+      "source_sha256": "603db2928c36414c86a19d4a73c76a66b23e031d582ecd5b7d06e5979bb82575",
+      "group_field": "Category",
+      "group_value": "Electronics",
+      "evidence": "Online_Retail_Transactions.csv 前 500 行中 Category=Electronics 有 171 行，Total_Amount_INR 至少有两个不同数值；与 零售消费核对 的业务含义一致。"
+    },
+    {
+      "scene": "配件消费核对",
+      "parent_scene": "零售消费核对",
+      "business_label": "配件",
+      "dataset_key": "kaggle:prince7489/online-retail-transactions-dataset",
+      "source_sha256": "603db2928c36414c86a19d4a73c76a66b23e031d582ecd5b7d06e5979bb82575",
+      "group_field": "Category",
+      "group_value": "Accessories",
+      "evidence": "Online_Retail_Transactions.csv 前 500 行中 Category=Accessories 有 153 行，Total_Amount_INR 至少有两个不同数值；与 零售消费核对 的业务含义一致。"
+    },
+    {
+      "scene": "商品价格核对",
+      "business_label": "商品单价",
+      "dataset_key": "kaggle:mahmoudmansour22/retail-store-sales-transactions-20222024",
+      "source_sha256": "d864ad79b451d73fb602f38f2dbdf3c43c7738e9fc860a8d2f746e33f77e7e22",
+      "evidence": "核验 retail_store_sales.csv 前 500 行：transaction_id 为业务标识，category 为分组，unit_price 为数值指标；固定版本、许可与 SHA-256。"
+    },
+    {
+      "scene": "图书价格核对",
+      "parent_scene": "商品价格核对",
+      "business_label": "图书",
+      "dataset_key": "kaggle:mahmoudmansour22/retail-store-sales-transactions-20222024",
+      "source_sha256": "d864ad79b451d73fb602f38f2dbdf3c43c7738e9fc860a8d2f746e33f77e7e22",
+      "group_field": "category",
+      "group_value": "Books",
+      "evidence": "retail_store_sales.csv 前 500 行中 category=Books 有 77 行，unit_price 至少有两个不同数值；与 商品价格核对 的业务含义一致。"
+    },
+    {
+      "scene": "汽车用品价格核对",
+      "parent_scene": "商品价格核对",
+      "business_label": "汽车用品",
+      "dataset_key": "kaggle:mahmoudmansour22/retail-store-sales-transactions-20222024",
+      "source_sha256": "d864ad79b451d73fb602f38f2dbdf3c43c7738e9fc860a8d2f746e33f77e7e22",
+      "group_field": "category",
+      "group_value": "Automotive",
+      "evidence": "retail_store_sales.csv 前 500 行中 category=Automotive 有 67 行，unit_price 至少有两个不同数值；与 商品价格核对 的业务含义一致。"
+    },
+    {
+      "scene": "运动户外用品价格核对",
+      "parent_scene": "商品价格核对",
+      "business_label": "运动户外用品",
+      "dataset_key": "kaggle:mahmoudmansour22/retail-store-sales-transactions-20222024",
+      "source_sha256": "d864ad79b451d73fb602f38f2dbdf3c43c7738e9fc860a8d2f746e33f77e7e22",
+      "group_field": "category",
+      "group_value": "Sports & Outdoors",
+      "evidence": "retail_store_sales.csv 前 500 行中 category=Sports & Outdoors 有 65 行，unit_price 至少有两个不同数值；与 商品价格核对 的业务含义一致。"
+    },
+    {
+      "scene": "服装价格核对",
+      "parent_scene": "商品价格核对",
+      "business_label": "服装",
+      "dataset_key": "kaggle:mahmoudmansour22/retail-store-sales-transactions-20222024",
+      "source_sha256": "d864ad79b451d73fb602f38f2dbdf3c43c7738e9fc860a8d2f746e33f77e7e22",
+      "group_field": "category",
+      "group_value": "Clothing",
+      "evidence": "retail_store_sales.csv 前 500 行中 category=Clothing 有 63 行，unit_price 至少有两个不同数值；与 商品价格核对 的业务含义一致。"
+    },
+    {
+      "scene": "个护美妆价格核对",
+      "parent_scene": "商品价格核对",
+      "business_label": "个护美妆",
+      "dataset_key": "kaggle:mahmoudmansour22/retail-store-sales-transactions-20222024",
+      "source_sha256": "d864ad79b451d73fb602f38f2dbdf3c43c7738e9fc860a8d2f746e33f77e7e22",
+      "group_field": "category",
+      "group_value": "Beauty & Personal Care",
+      "evidence": "retail_store_sales.csv 前 500 行中 category=Beauty & Personal Care 有 63 行，unit_price 至少有两个不同数值；与 商品价格核对 的业务含义一致。"
+    },
+    {
+      "scene": "家居厨具价格核对",
+      "parent_scene": "商品价格核对",
+      "business_label": "家居厨具",
+      "dataset_key": "kaggle:mahmoudmansour22/retail-store-sales-transactions-20222024",
+      "source_sha256": "d864ad79b451d73fb602f38f2dbdf3c43c7738e9fc860a8d2f746e33f77e7e22",
+      "group_field": "category",
+      "group_value": "Home & Kitchen",
+      "evidence": "retail_store_sales.csv 前 500 行中 category=Home & Kitchen 有 60 行，unit_price 至少有两个不同数值；与 商品价格核对 的业务含义一致。"
+    },
+    {
+      "scene": "玩具游戏价格核对",
+      "parent_scene": "商品价格核对",
+      "business_label": "玩具游戏",
+      "dataset_key": "kaggle:mahmoudmansour22/retail-store-sales-transactions-20222024",
+      "source_sha256": "d864ad79b451d73fb602f38f2dbdf3c43c7738e9fc860a8d2f746e33f77e7e22",
+      "group_field": "category",
+      "group_value": "Toys & Games",
+      "evidence": "retail_store_sales.csv 前 500 行中 category=Toys & Games 有 59 行，unit_price 至少有两个不同数值；与 商品价格核对 的业务含义一致。"
+    },
+    {
+      "scene": "电子产品价格核对",
+      "parent_scene": "商品价格核对",
+      "business_label": "电子产品",
+      "dataset_key": "kaggle:mahmoudmansour22/retail-store-sales-transactions-20222024",
+      "source_sha256": "d864ad79b451d73fb602f38f2dbdf3c43c7738e9fc860a8d2f746e33f77e7e22",
+      "group_field": "category",
+      "group_value": "Electronics",
+      "evidence": "retail_store_sales.csv 前 500 行中 category=Electronics 有 46 行，unit_price 至少有两个不同数值；与 商品价格核对 的业务含义一致。"
+    },
+    {
+      "scene": "零售消费核对",
+      "business_label": "超市消费",
+      "dataset_key": "kaggle:alexhuitron/supermarket-sales",
+      "source_sha256": "66cce598b052eab009814a7148f75de985f98852b58a97b8a815c3b9f679661d",
+      "evidence": "核验 supermarket_sales.csv 前 500 行：invoice_id 为业务标识，product_line 为分组，revenue 为数值指标；固定版本、许可与 SHA-256。"
+    },
+    {
+      "scene": "电子配件消费核对",
+      "parent_scene": "零售消费核对",
+      "business_label": "电子配件",
+      "dataset_key": "kaggle:alexhuitron/supermarket-sales",
+      "source_sha256": "66cce598b052eab009814a7148f75de985f98852b58a97b8a815c3b9f679661d",
+      "group_field": "product_line",
+      "group_value": "Electronic accessories",
+      "evidence": "supermarket_sales.csv 前 500 行中 product_line=Electronic accessories 有 86 行，revenue 至少有两个不同数值；与 零售消费核对 的业务含义一致。"
+    },
+    {
+      "scene": "食品饮料消费核对",
+      "parent_scene": "零售消费核对",
+      "business_label": "食品饮料",
+      "dataset_key": "kaggle:alexhuitron/supermarket-sales",
+      "source_sha256": "66cce598b052eab009814a7148f75de985f98852b58a97b8a815c3b9f679661d",
+      "group_field": "product_line",
+      "group_value": "Food and beverages",
+      "evidence": "supermarket_sales.csv 前 500 行中 product_line=Food and beverages 有 86 行，revenue 至少有两个不同数值；与 零售消费核对 的业务含义一致。"
+    },
+    {
+      "scene": "运动旅行用品消费核对",
+      "parent_scene": "零售消费核对",
+      "business_label": "运动旅行用品",
+      "dataset_key": "kaggle:alexhuitron/supermarket-sales",
+      "source_sha256": "66cce598b052eab009814a7148f75de985f98852b58a97b8a815c3b9f679661d",
+      "group_field": "product_line",
+      "group_value": "Sports and travel",
+      "evidence": "supermarket_sales.csv 前 500 行中 product_line=Sports and travel 有 85 行，revenue 至少有两个不同数值；与 零售消费核对 的业务含义一致。"
+    },
+    {
+      "scene": "时尚配饰消费核对",
+      "parent_scene": "零售消费核对",
+      "business_label": "时尚配饰",
+      "dataset_key": "kaggle:alexhuitron/supermarket-sales",
+      "source_sha256": "66cce598b052eab009814a7148f75de985f98852b58a97b8a815c3b9f679661d",
+      "group_field": "product_line",
+      "group_value": "Fashion accessories",
+      "evidence": "supermarket_sales.csv 前 500 行中 product_line=Fashion accessories 有 85 行，revenue 至少有两个不同数值；与 零售消费核对 的业务含义一致。"
+    },
+    {
+      "scene": "家居生活用品消费核对",
+      "parent_scene": "零售消费核对",
+      "business_label": "家居生活用品",
+      "dataset_key": "kaggle:alexhuitron/supermarket-sales",
+      "source_sha256": "66cce598b052eab009814a7148f75de985f98852b58a97b8a815c3b9f679661d",
+      "group_field": "product_line",
+      "group_value": "Home and lifestyle",
+      "evidence": "supermarket_sales.csv 前 500 行中 product_line=Home and lifestyle 有 81 行，revenue 至少有两个不同数值；与 零售消费核对 的业务含义一致。"
+    },
+    {
+      "scene": "健康美容消费核对",
+      "parent_scene": "零售消费核对",
+      "business_label": "健康美容",
+      "dataset_key": "kaggle:alexhuitron/supermarket-sales",
+      "source_sha256": "66cce598b052eab009814a7148f75de985f98852b58a97b8a815c3b9f679661d",
+      "group_field": "product_line",
+      "group_value": "Health and beauty",
+      "evidence": "supermarket_sales.csv 前 500 行中 product_line=Health and beauty 有 77 行，revenue 至少有两个不同数值；与 零售消费核对 的业务含义一致。"
+    },
+    {
+      "scene": "商品价格核对",
+      "business_label": "商品价格",
+      "dataset_key": "kaggle:mehmettahiraslan/customer-shopping-dataset",
+      "source_sha256": "f14b3afbbac8cf1d373e15c8848a9558a3ea8dffd06c02664d7cd47285edbafd",
+      "evidence": "核验 customer_shopping_data.csv 前 500 行：invoice_no 为业务标识，category 为分组，price 为数值指标；固定版本、许可与 SHA-256。"
+    },
+    {
+      "scene": "服装价格核对",
+      "parent_scene": "商品价格核对",
+      "business_label": "服装",
+      "dataset_key": "kaggle:mehmettahiraslan/customer-shopping-dataset",
+      "source_sha256": "f14b3afbbac8cf1d373e15c8848a9558a3ea8dffd06c02664d7cd47285edbafd",
+      "group_field": "category",
+      "group_value": "Clothing",
+      "evidence": "customer_shopping_data.csv 前 500 行中 category=Clothing 有 162 行，price 至少有两个不同数值；与 商品价格核对 的业务含义一致。"
+    },
+    {
+      "scene": "食品饮料价格核对",
+      "parent_scene": "商品价格核对",
+      "business_label": "食品饮料",
+      "dataset_key": "kaggle:mehmettahiraslan/customer-shopping-dataset",
+      "source_sha256": "f14b3afbbac8cf1d373e15c8848a9558a3ea8dffd06c02664d7cd47285edbafd",
+      "group_field": "category",
+      "group_value": "Food & Beverage",
+      "evidence": "customer_shopping_data.csv 前 500 行中 category=Food & Beverage 有 83 行，price 至少有两个不同数值；与 商品价格核对 的业务含义一致。"
+    },
+    {
+      "scene": "化妆品价格核对",
+      "parent_scene": "商品价格核对",
+      "business_label": "化妆品",
+      "dataset_key": "kaggle:mehmettahiraslan/customer-shopping-dataset",
+      "source_sha256": "f14b3afbbac8cf1d373e15c8848a9558a3ea8dffd06c02664d7cd47285edbafd",
+      "group_field": "category",
+      "group_value": "Cosmetics",
+      "evidence": "customer_shopping_data.csv 前 500 行中 category=Cosmetics 有 79 行，price 至少有两个不同数值；与 商品价格核对 的业务含义一致。"
+    },
+    {
+      "scene": "玩具价格核对",
+      "parent_scene": "商品价格核对",
+      "business_label": "玩具",
+      "dataset_key": "kaggle:mehmettahiraslan/customer-shopping-dataset",
+      "source_sha256": "f14b3afbbac8cf1d373e15c8848a9558a3ea8dffd06c02664d7cd47285edbafd",
+      "group_field": "category",
+      "group_value": "Toys",
+      "evidence": "customer_shopping_data.csv 前 500 行中 category=Toys 有 50 行，price 至少有两个不同数值；与 商品价格核对 的业务含义一致。"
+    },
+    {
+      "scene": "鞋类价格核对",
+      "parent_scene": "商品价格核对",
+      "business_label": "鞋类",
+      "dataset_key": "kaggle:mehmettahiraslan/customer-shopping-dataset",
+      "source_sha256": "f14b3afbbac8cf1d373e15c8848a9558a3ea8dffd06c02664d7cd47285edbafd",
+      "group_field": "category",
+      "group_value": "Shoes",
+      "evidence": "customer_shopping_data.csv 前 500 行中 category=Shoes 有 46 行，price 至少有两个不同数值；与 商品价格核对 的业务含义一致。"
+    },
+    {
+      "scene": "纪念品价格核对",
+      "parent_scene": "商品价格核对",
+      "business_label": "纪念品",
+      "dataset_key": "kaggle:mehmettahiraslan/customer-shopping-dataset",
+      "source_sha256": "f14b3afbbac8cf1d373e15c8848a9558a3ea8dffd06c02664d7cd47285edbafd",
+      "group_field": "category",
+      "group_value": "Souvenir",
+      "evidence": "customer_shopping_data.csv 前 500 行中 category=Souvenir 有 31 行，price 至少有两个不同数值；与 商品价格核对 的业务含义一致。"
+    },
+    {
+      "scene": "图书价格核对",
+      "parent_scene": "商品价格核对",
+      "business_label": "图书",
+      "dataset_key": "kaggle:mehmettahiraslan/customer-shopping-dataset",
+      "source_sha256": "f14b3afbbac8cf1d373e15c8848a9558a3ea8dffd06c02664d7cd47285edbafd",
+      "group_field": "category",
+      "group_value": "Books",
+      "evidence": "customer_shopping_data.csv 前 500 行中 category=Books 有 26 行，price 至少有两个不同数值；与 商品价格核对 的业务含义一致。"
+    },
+    {
+      "scene": "电子产品价格核对",
+      "parent_scene": "商品价格核对",
+      "business_label": "电子产品",
+      "dataset_key": "kaggle:mehmettahiraslan/customer-shopping-dataset",
+      "source_sha256": "f14b3afbbac8cf1d373e15c8848a9558a3ea8dffd06c02664d7cd47285edbafd",
+      "group_field": "category",
+      "group_value": "Technology",
+      "evidence": "customer_shopping_data.csv 前 500 行中 category=Technology 有 23 行，price 至少有两个不同数值；与 商品价格核对 的业务含义一致。"
+    },
+    {
+      "scene": "商品价格核对",
+      "business_label": "商品单价",
+      "dataset_key": "kaggle:arunkumaroraon/indian-sales-transactions-dataset-2025",
+      "source_sha256": "3119677e8e57f5b82adceb2f1f1845d5760f50a6bc6264657b12d402b5f94e46",
+      "evidence": "核验 sales_data.csv 前 500 行：Order_ID 为业务标识，Category 为分组，Unit_Price 为数值指标；固定版本、许可与 SHA-256。"
+    },
+    {
+      "scene": "电子产品价格核对",
+      "parent_scene": "商品价格核对",
+      "business_label": "电子产品",
+      "dataset_key": "kaggle:arunkumaroraon/indian-sales-transactions-dataset-2025",
+      "source_sha256": "3119677e8e57f5b82adceb2f1f1845d5760f50a6bc6264657b12d402b5f94e46",
+      "group_field": "Category",
+      "group_value": "Electronics",
+      "evidence": "sales_data.csv 前 500 行中 Category=Electronics 有 271 行，Unit_Price 至少有两个不同数值；与 商品价格核对 的业务含义一致。"
+    },
+    {
+      "scene": "家具价格核对",
+      "parent_scene": "商品价格核对",
+      "business_label": "家具",
+      "dataset_key": "kaggle:arunkumaroraon/indian-sales-transactions-dataset-2025",
+      "source_sha256": "3119677e8e57f5b82adceb2f1f1845d5760f50a6bc6264657b12d402b5f94e46",
+      "group_field": "Category",
+      "group_value": "Furniture",
+      "evidence": "sales_data.csv 前 500 行中 Category=Furniture 有 229 行，Unit_Price 至少有两个不同数值；与 商品价格核对 的业务含义一致。"
     }
   ]
 }

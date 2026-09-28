@@ -6,7 +6,8 @@ from unittest.mock import patch
 import pytest
 
 from env_factory.generation.dataset_task_generator import (
-    DatasetTaskGenerator, TaskGenerationError, _choose_rows, _description, _project,
+    DatasetTaskGenerator, TaskGenerationError, _choose_rows, _columns,
+    _description, _project, _sample_source,
 )
 from env_factory.graph.dataset_planner import (
     GraphDatasetTaskGenerator, catalog_rows, reviewed_links, sync_catalog_datasets,
@@ -74,7 +75,7 @@ class RecordingStore:
 
 def test_reviewed_relations_are_backed_by_approved_raw_sources():
     links = reviewed_links()
-    assert len(links) == 22
+    assert len(links) == 54
     assert {link.dataset_key.split(":", 1)[0] for link in links} == {
         "kaggle", "data_gov_hk",
     }
@@ -88,7 +89,7 @@ def test_complete_catalogs_are_metadata_only_until_source_review():
     assert len(rows) == 13_822
     assert sum(row["platform"] == "kaggle" for row in rows) == 10_000
     assert sum(row["platform"] == "data_gov_hk" for row in rows) == 3_822
-    assert sum(row["approved"] for row in rows) == 4
+    assert sum(row["approved"] for row in rows) == 9
     assert len({row["key"] for row in rows}) == len(rows)
     store = RecordingStore()
     assert sync_catalog_datasets(store, rows) == len(rows)
@@ -97,17 +98,22 @@ def test_complete_catalogs_are_metadata_only_until_source_review():
 
 def test_graph_sync_writes_only_verified_source_relations():
     store = RecordingStore()
-    assert sync_reviewed_links(store) == 22
-    assert len(store.relations) == 22
-    assert len(store.scene_edges) == 16
+    assert sync_reviewed_links(store) == 54
+    assert len(store.relations) == 54
+    assert len(store.scene_edges) == 43
     assert store.reconciled_scene_edges == tuple(store.scene_edges)
     assert {node.key for node in store.datasets} == {
         "kaggle:mohammadtalib786/retail-sales-dataset",
         "kaggle:ankitbansal06/retail-orders",
         "kaggle:sophietwohey/synthetic-hotel-dataset",
+        "kaggle:prince7489/online-retail-transactions-dataset",
+        "kaggle:mahmoudmansour22/retail-store-sales-transactions-20222024",
+        "kaggle:alexhuitron/supermarket-sales",
+        "kaggle:mehmettahiraslan/customer-shopping-dataset",
+        "kaggle:arunkumaroraon/indian-sales-transactions-dataset-2025",
         "data_gov_hk:cc-pricewatch-pricewatch",
     }
-    assert len(store.resources) == 22
+    assert len(store.resources) == 54
     assert {field.role for field in store.fields} == {"identifier", "group", "value"}
     assert store.reconciled == reviewed_links()
     assert store.discovery["商品价格核对"] == ("价格", "格价", "物价")
@@ -129,6 +135,27 @@ def test_stale_source_hash_rejects_batch_before_graph_mutation():
     with pytest.raises(TaskGenerationError, match="not approved"):
         sync_reviewed_links(store, (good, stale))
     assert not store.relations and not store.scenes
+
+
+def test_all_reviewed_relations_have_usable_task_rows():
+    """A reviewed relation must support every training route it advertises."""
+    for link in reviewed_links():
+        source, *_ = verify_link_source(link)
+        headers, rows = _sample_source(source)
+        key, group, numeric = _columns(headers, rows)
+        if link.group_field:
+            rows = [row for row in rows if row[group] == link.group_value]
+        unique_rows = list({row[key]: row for row in reversed(rows)}.values())
+        unique_rows.reverse()
+        routes = [("direct_response", "minimum")]
+        if not link.group_field:
+            routes += [("simple_agentic", "minimum")]
+            routes += [("multi_step_agentic", operation)
+                       for operation in ("minimum", "maximum", "average", "count")]
+        for category, operation in routes:
+            selected = _choose_rows(unique_rows, key, group, numeric, category,
+                                    random.Random(17), extreme=operation)
+            assert selected, (link.scene_name, link.dataset_key, category, operation)
 
 
 def test_graph_generator_ignores_unreviewed_relationships():
