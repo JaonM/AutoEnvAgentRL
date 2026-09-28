@@ -103,10 +103,10 @@ LOG_LEVEL=INFO
 
 ```bash
 uv run python scripts/diagnostics/promote_local_graph_link.py \
-  --dataset-key kaggle:aditirai2607/super-market-dataset
+  --dataset-key kaggle:anirudhchauhan/retail-store-inventory-forecasting-dataset
 uv run python scripts/diagnostics/promote_local_graph_link.py \
-  --dataset-key kaggle:aditirai2607/super-market-dataset \
-  --scene 电子产品消费核对
+  --dataset-key kaggle:anirudhchauhan/retail-store-inventory-forecasting-dataset \
+  --scene 玩具价格核对
 ```
 
 晋升前须将该来源的版本、许可和具体文件哈希加入准入配置；脚本会重新校验原始文件与 Scene 字段，通过后才写入 `SUPPORTED_BY`。候选匹配本身不等于准入。
