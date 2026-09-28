@@ -12,8 +12,17 @@ wheels/
 # Local project secrets
 .env
 
-# Local Wikipedia dumps and indexes
-data/
+# Keep dataset catalog metadata in Git; downloaded data and crawl checkpoints stay local.
+data/*
+!data/sources/
+data/sources/*
+!data/sources/kaggle/
+!data/sources/heywhale/
+data/sources/kaggle/*
+!data/sources/kaggle/task_dataset_index.json
+data/sources/heywhale/*
+!data/sources/heywhale/dataset_index.json
+!data/sources/heywhale/chinese_dataset_index.json
 
 # Generated tasks
 output/
