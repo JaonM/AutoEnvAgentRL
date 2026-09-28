@@ -238,6 +238,17 @@ class Neo4jGraphStore:
             )
             return tuple(dict(row) for row in rows)
 
+    def remove_local_link_candidates(self, dataset_key: str, scenes: tuple[str, ...]) -> None:
+        ids = [normalize_scene_name(scene) for scene in scenes]
+        with self.driver.session(database=self.database) as session:
+            session.run(
+                "MATCH (scene:Scene)-[edge:CANDIDATE_SUPPORTED_BY]->"
+                "(dataset:Dataset {key: $dataset_key}) "
+                "WHERE edge.managed_by = 'local_dataset_linker' AND scene.id IN $scene_ids "
+                "DELETE edge",
+                dataset_key=dataset_key, scene_ids=ids,
+            ).consume()
+
     def set_scene_discovery_terms(self, scene_name: str, terms: tuple[str, ...]) -> None:
         with self.driver.session(database=self.database) as session:
             session.run(

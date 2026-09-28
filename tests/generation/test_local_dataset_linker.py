@@ -13,7 +13,8 @@ import pytest
 from env_factory.generation.dataset_task_generator import TaskGenerationError
 from env_factory.graph.knowledge_graph import SceneNode
 from env_factory.graph.local_dataset_linker import (
-    _numeric_semantics_match, build_local_candidate_links, propose_local_candidates, usable_table,
+    _numeric_semantics_match, build_local_candidate_links, downloaded_manifests,
+    propose_local_candidates, usable_table,
 )
 
 
@@ -125,6 +126,16 @@ def test_requested_local_dataset_must_exist(tmp_path: Path) -> None:
             only_keys=("kaggle:missing/data",),
             kaggle_root=tmp_path / "kaggle", hk_root=tmp_path / "hk",
         )
+
+
+def test_latest_local_kaggle_version_is_selected_once(tmp_path: Path) -> None:
+    root = tmp_path / "kaggle"
+    _download(root)
+    newer = root / "shop/orders/v2"
+    newer.mkdir(parents=True)
+    (newer / "source_manifest.json").write_text("{}", encoding="utf-8")
+    assert downloaded_manifests(root, tmp_path / "hk") == (
+        ("kaggle:shop/orders", newer / "source_manifest.json"),)
 
 
 def test_sales_values_do_not_support_cost_or_profit_scenes() -> None:

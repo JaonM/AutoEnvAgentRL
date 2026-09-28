@@ -56,6 +56,7 @@ def main() -> None:
         selected = promotion_rows(args.dataset_key, candidates, args.scene)
         added = append_llm_links(selected)
         synced = sync_reviewed_links(store, require_local=True)
+        store.remove_local_link_candidates(args.dataset_key, tuple(args.scene))
         print(json.dumps({"promoted": added, "reviewed_links_synced": synced},
                          ensure_ascii=False))
 

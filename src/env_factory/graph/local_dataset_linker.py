@@ -37,13 +37,19 @@ business_label 为 2 到 8 个汉字的业务对象称呼，reason 具体说明�
 def downloaded_manifests(kaggle_root: Path = KAGGLE_ROOT,
                          hk_root: Path = HK_BULK_ROOT) -> tuple[tuple[str, Path], ...]:
     """Find only complete downloads with manifests; ignore active staging directories."""
-    found = []
+    found: dict[str, Path] = {}
     for path in kaggle_root.glob("*/*/v*/source_manifest.json"):
         relative = path.relative_to(kaggle_root)
-        found.append((f"kaggle:{relative.parts[0]}/{relative.parts[1]}", path))
+        version = relative.parts[2]
+        if not version.startswith("v") or not version[1:].isdigit():
+            continue
+        key = f"kaggle:{relative.parts[0]}/{relative.parts[1]}"
+        current = found.get(key)
+        if current is None or int(version[1:]) > int(current.parent.name[1:]):
+            found[key] = path
     for path in hk_root.glob("*/source_manifest.json"):
-        found.append((f"data_gov_hk:{path.parent.name}", path))
-    return tuple(sorted(found))
+        found[f"data_gov_hk:{path.parent.name}"] = path
+    return tuple(sorted(found.items()))
 
 
 def usable_table(manifest_path: Path, dataset_key: str) -> tuple[Path, str, str, list[str], list[dict[str, str]]]:
