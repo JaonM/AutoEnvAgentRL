@@ -28,9 +28,10 @@ def download_dataset(dataset_id: str, *, root: Path = DEFAULT_ROOT,
     indexed = hk_catalog(index_path).get(dataset_id)
     if indexed is None or indexed.get("approved") is not True:
         raise ValueError("dataset is not in the approved DATA.GOV.HK catalog")
-    source = verified_hk_source(dataset_id, root=root, index_path=index_path)
+    source = verified_hk_source(dataset_id, root=root, index_path=index_path,
+                                bulk_root=root.parent / "data_gov_hk_bulk")
     if source is not None:
-        return json.loads((root / dataset_id / "source_manifest.json").read_text(encoding="utf-8"))
+        return json.loads((source[0].parent.parent / "source_manifest.json").read_text(encoding="utf-8"))
     request = urllib.request.Request(API + "?" + urllib.parse.urlencode({"id": dataset_id}),
                                      headers={"User-Agent": "EnvFactory/1.0", "Accept": "application/json"})
     with urllib.request.urlopen(request, timeout=30) as response:

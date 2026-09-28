@@ -16,6 +16,7 @@ from env_factory.generation.task_generator import TaskGenerationError
 
 PROJECT = Path(__file__).resolve().parents[3]
 HK_INDEX = PROJECT / "data/sources/data_gov_hk/dataset_index.json"
+HK_BULK_ROOT = PROJECT / "data/sources/data_gov_hk_bulk"
 SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
@@ -68,28 +69,34 @@ def eligible_hk_ids(*, index_path: Path = HK_INDEX) -> list[str]:
 
 def verified_hk_source(
     dataset_id: str, *, root: Path = HK_INDEX.parent, index_path: Path = HK_INDEX,
+    bulk_root: Path = HK_BULK_ROOT,
 ) -> tuple[Path, str, str, str | None] | None:
     """Read only files whose recorded digest and official catalog entry match."""
     indexed = hk_catalog(index_path).get(dataset_id)
     if indexed is None or indexed.get("approved") is not True:
         return None
-    manifest_path = root / dataset_id / "source_manifest.json"
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if (manifest.get("id") != dataset_id or manifest.get("source") != indexed.get("url")
-            or manifest.get("resource_url") != indexed.get("resource_url")):
-        return None
-    for entry in manifest.get("files", []):
-        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+    for manifest_path in (root / dataset_id / "source_manifest.json",
+                          bulk_root / dataset_id / "source_manifest.json"):
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
             continue
-        name = entry["path"]
-        if Path(name).name != name or source_extension(name) not in SUPPORTED_SOURCE_EXTENSIONS:
+        if manifest.get("id") != dataset_id or manifest.get("source") != indexed.get("url"):
             continue
-        path = manifest_path.parent / "raw" / name
-        if (path.is_file() and isinstance(entry.get("sha256"), str)
-                and SHA256.fullmatch(entry["sha256"])
-                and sha256_file(path) == entry["sha256"]):
-            return path, str(indexed.get("title") or path.stem), str(indexed["url"]), indexed.get("license")
+        if manifest_path.parent.parent == root and manifest.get("resource_url") != indexed.get("resource_url"):
+            continue
+        for entry in manifest.get("files", []):
+            if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+                continue
+            name = entry["path"]
+            if (Path(name).name != name or source_extension(name) not in SUPPORTED_SOURCE_EXTENSIONS
+                    or (manifest_path.parent.parent == bulk_root
+                        and entry.get("resource_url") != indexed.get("resource_url"))):
+                continue
+            path = manifest_path.parent / "raw" / name
+            if (path.is_file() and isinstance(entry.get("sha256"), str)
+                    and SHA256.fullmatch(entry["sha256"])
+                    and sha256_file(path) == entry["sha256"]):
+                return (path, str(indexed.get("title") or path.stem),
+                        str(indexed["url"]), indexed.get("license"))
     return None

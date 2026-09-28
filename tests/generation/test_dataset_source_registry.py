@@ -51,10 +51,29 @@ def test_downloaded_source_is_verified_against_catalog_and_manifest(tmp_path: Pa
                         fake_urlopen)
     manifest = download_dataset(DATASET_ID, root=root, index_path=index, max_bytes=100)
     assert manifest["files"][0]["sha256"] == hashlib.sha256(payload).hexdigest()
-    source = verified_hk_source(DATASET_ID, root=root, index_path=index)
+    source = verified_hk_source(DATASET_ID, root=root, index_path=index,
+                                bulk_root=tmp_path / "bulk")
     assert source is not None and source[0].read_bytes() == payload
     source[0].write_bytes(b"tampered")
-    assert verified_hk_source(DATASET_ID, root=root, index_path=index) is None
+    assert verified_hk_source(DATASET_ID, root=root, index_path=index,
+                              bulk_root=tmp_path / "bulk") is None
+
+
+def test_approved_bulk_download_can_be_verified_without_redownload(tmp_path: Path) -> None:
+    payload = b"id,category,price\n1,A,10\n2,A,20\n3,A,30\n"
+    index = tmp_path / "index.json"
+    _index(index)
+    bulk = tmp_path / "bulk" / DATASET_ID
+    (bulk / "raw").mkdir(parents=True)
+    (bulk / "raw/data.csv").write_bytes(payload)
+    (bulk / "source_manifest.json").write_text(json.dumps({
+        "id": DATASET_ID, "source": f"https://data.gov.hk/sc-data/dataset/{DATASET_ID}",
+        "files": [{"path": "data.csv", "resource_url": RESOURCE_URL,
+                   "sha256": hashlib.sha256(payload).hexdigest()}],
+    }), encoding="utf-8")
+    source = verified_hk_source(DATASET_ID, root=tmp_path / "approved",
+                                bulk_root=tmp_path / "bulk", index_path=index)
+    assert source is not None and source[0].read_bytes() == payload
 
 
 def test_download_rejects_changed_resource_metadata(tmp_path: Path, monkeypatch) -> None:
