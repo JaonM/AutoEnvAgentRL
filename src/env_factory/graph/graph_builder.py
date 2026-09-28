@@ -11,6 +11,9 @@ from dotenv import load_dotenv
 from neo4j import Driver, GraphDatabase, Query
 
 from env_factory.graph.knowledge_graph import (
+    DatasetNode,
+    FieldNode,
+    ResourceNode,
     SceneNode,
     SceneRelation,
     TaskType,
@@ -31,6 +34,18 @@ class SceneEdge:
     source: str
     target: str
     relation: SceneRelation
+
+
+@dataclass(frozen=True)
+class SceneDatasetLink:
+    """A reviewed scene-to-source relation with an optional observed group value."""
+
+    scene_name: str
+    dataset_key: str
+    source_sha256: str
+    evidence: str
+    group_field: str | None = None
+    group_value: str | None = None
 
 
 class Neo4jGraphStore:
@@ -93,6 +108,99 @@ class Neo4jGraphStore:
                 "CREATE CONSTRAINT task_type_id IF NOT EXISTS "
                 "FOR (node:TaskType) REQUIRE node.id IS UNIQUE"
             ).consume()
+            session.run(
+                "CREATE CONSTRAINT dataset_key IF NOT EXISTS "
+                "FOR (node:Dataset) REQUIRE node.key IS UNIQUE"
+            ).consume()
+            session.run(
+                "CREATE CONSTRAINT resource_key IF NOT EXISTS "
+                "FOR (node:Resource) REQUIRE node.key IS UNIQUE"
+            ).consume()
+            session.run(
+                "CREATE CONSTRAINT field_key IF NOT EXISTS "
+                "FOR (node:Field) REQUIRE node.key IS UNIQUE"
+            ).consume()
+
+    def upsert_dataset(self, node: DatasetNode) -> None:
+        with self.driver.session(database=self.database) as session:
+            session.run(
+                "MERGE (dataset:Dataset {key: $key}) "
+                "SET dataset.title = $title, dataset.source_url = $source_url, "
+                "dataset.source_sha256 = $source_sha256",
+                key=node.key, title=node.title, source_url=node.source_url,
+                source_sha256=node.source_sha256,
+            ).consume()
+
+    def upsert_resource(self, node: ResourceNode) -> None:
+        with self.driver.session(database=self.database) as session:
+            session.run(
+                "MATCH (dataset:Dataset {key: $dataset_key}) "
+                "MERGE (resource:Resource {key: $key}) "
+                "SET resource.source_sha256 = $source_sha256, "
+                "resource.source_format = $source_format "
+                "MERGE (dataset)-[:HAS_RESOURCE]->(resource)",
+                dataset_key=node.dataset_key, key=node.key,
+                source_sha256=node.source_sha256, source_format=node.source_format,
+            ).consume()
+
+    def upsert_field(self, node: FieldNode) -> None:
+        with self.driver.session(database=self.database) as session:
+            session.run(
+                "MATCH (resource:Resource {key: $resource_key}) "
+                "MERGE (field:Field {key: $key}) "
+                "SET field.name = $name, field.role = $role "
+                "MERGE (resource)-[:HAS_FIELD]->(field)",
+                resource_key=node.resource_key, key=node.key,
+                name=node.name, role=node.role,
+            ).consume()
+
+    def link_scene_dataset(self, link: SceneDatasetLink) -> None:
+        with self.driver.session(database=self.database) as session:
+            session.run(
+                "MATCH (scene:Scene {id: $scene_id}), (dataset:Dataset {key: $dataset_key}) "
+                "MERGE (scene)-[relation:SUPPORTED_BY]->(dataset) "
+                "SET relation.source_sha256 = $source_sha256, relation.evidence = $evidence, "
+                "relation.group_field = $group_field, relation.group_value = $group_value, "
+                "relation.reviewed = true, relation.managed_by = 'graph_dataset_links'",
+                scene_id=normalize_scene_name(link.scene_name), dataset_key=link.dataset_key,
+                source_sha256=link.source_sha256, evidence=link.evidence,
+                group_field=link.group_field, group_value=link.group_value,
+            ).consume()
+
+    def reconcile_reviewed_links(self, links: tuple[SceneDatasetLink, ...]) -> None:
+        """Remove only registry-managed edges no longer in the reviewed registry."""
+        pairs = [[normalize_scene_name(link.scene_name), link.dataset_key] for link in links]
+        with self.driver.session(database=self.database) as session:
+            session.run(
+                "MATCH (scene:Scene)-[relation:SUPPORTED_BY]->(dataset:Dataset) "
+                "WHERE relation.managed_by = 'graph_dataset_links' "
+                "AND NOT [scene.id, dataset.key] IN $pairs "
+                "DELETE relation",
+                pairs=pairs,
+            ).consume()
+
+    def supported_dataset_links(self, platform: str) -> tuple[tuple[SceneNode, SceneDatasetLink], ...]:
+        """Return only reviewed links for a requested source platform."""
+        if platform not in {"kaggle", "data_gov_hk"}:
+            raise ValueError(f"unsupported dataset platform: {platform}")
+        with self.driver.session(database=self.database) as session:
+            records = session.run(
+                "MATCH (scene:Scene)-[relation:SUPPORTED_BY]->(dataset:Dataset) "
+                "WHERE dataset.key STARTS WITH $prefix AND relation.reviewed = true "
+                "RETURN scene.name AS scene_name, scene.words AS scene_words, "
+                "dataset.key AS dataset_key, relation.source_sha256 AS source_sha256, "
+                "relation.evidence AS evidence, relation.group_field AS group_field, "
+                "relation.group_value AS group_value",
+                prefix=platform + ":",
+            )
+            return tuple((
+                SceneNode(str(record["scene_name"]), tuple(record["scene_words"] or ())),
+                SceneDatasetLink(
+                    str(record["scene_name"]), str(record["dataset_key"]),
+                    str(record["source_sha256"]), str(record["evidence"]),
+                    record["group_field"], record["group_value"],
+                ),
+            ) for record in records)
 
     def upsert_scene(self, node: SceneNode) -> None:
         with self.driver.session(database=self.database) as session:

@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "links": [
+    {
+      "scene": "买衣服",
+      "dataset_key": "kaggle:mohammadtalib786/retail-sales-dataset",
+      "source_sha256": "924860cb2e8571373d1a29d658c6da212e8d158663f722416d5008f525c39b00",
+      "group_field": "Product Category",
+      "group_value": "Clothing",
+      "evidence": "已核验原始零售表的 Product Category 字段包含 Clothing；Transaction ID 和 Total Amount 可支持服装消费核对。"
+    },
+    {
+      "scene": "零售消费核对",
+      "dataset_key": "kaggle:mohammadtalib786/retail-sales-dataset",
+      "source_sha256": "924860cb2e8571373d1a29d658c6da212e8d158663f722416d5008f525c39b00",
+      "evidence": "已核验原始零售表的交易号、商品类别和成交金额字段。"
+    },
+    {
+      "scene": "食",
+      "dataset_key": "data_gov_hk:cc-pricewatch-pricewatch",
+      "source_sha256": "cdfe3933a2455e2e0d6ad73d1f9e82f02d75ccb176d2517c16644ba84991a603",
+      "group_field": "货品分类2",
+      "group_value": "面包",
+      "evidence": "已核验简体中文原始价格表的货品分类2含面包，货品编号与价格可用于食品价格核对。"
+    },
+    {
+      "scene": "商品价格核对",
+      "dataset_key": "data_gov_hk:cc-pricewatch-pricewatch",
+      "source_sha256": "cdfe3933a2455e2e0d6ad73d1f9e82f02d75ccb176d2517c16644ba84991a603",
+      "evidence": "已核验简体中文原始价格表的货品编号、货品分类与价格字段。"
+    }
+  ]
+}
