@@ -88,6 +88,29 @@ LOG_LEVEL=INFO
 ./scripts/build_graph.sh
 ```
 
+使用本地 Wikipedia 索引和已下载原始数据增量构建：
+
+```bash
+./scripts/build_graph_offline.sh --datasets-only --max-local-datasets 20
+# 只审核一个已下载来源
+./scripts/build_graph_offline.sh --datasets-only --links-only \
+  --local-dataset-key kaggle:aditirai2607/super-market-dataset
+```
+
+离线入口要求 `.env` 配置 `WIKIPEDIA_DUMP_DB` 才能扩展 Scene；`--datasets-only` 跳过扩展。目录指纹和各来源的原始文件、Scene 指纹保存在 Neo4j，重跑跳过未变化内容；每轮默认最多审核 20 个新下载来源。Wikipedia 与业务数据均从本机读取，语义匹配仍调用 `.env` 中的 LLM 端点。未准入来源只生成 `CANDIDATE_SUPPORTED_BY`，不供训练任务选择。
+
+查看候选及晋升指定 Scene：
+
+```bash
+uv run python scripts/diagnostics/promote_local_graph_link.py \
+  --dataset-key kaggle:aditirai2607/super-market-dataset
+uv run python scripts/diagnostics/promote_local_graph_link.py \
+  --dataset-key kaggle:aditirai2607/super-market-dataset \
+  --scene 电子产品消费核对
+```
+
+晋升前须将该来源的版本、许可和具体文件哈希加入准入配置；脚本会重新校验原始文件与 Scene 字段，通过后才写入 `SUPPORTED_BY`。候选匹配本身不等于准入。
+
 指定扩展参数：
 
 ```bash
