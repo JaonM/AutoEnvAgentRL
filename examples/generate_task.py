@@ -35,6 +35,7 @@ from env_factory.tasks.task_routing import (
 from env_factory.evidence.data_governance import provider_identity
 from env_factory.llm import capture_llm_trace, summarize_llm_trace
 from env_factory.generation.dataset_task_generator import DatasetTaskGenerator
+from env_factory.graph.dataset_planner import GraphDatasetTaskGenerator
 
 
 _TASK_DIR_PATTERN = re.compile(r"task-(\d+)")
@@ -53,7 +54,7 @@ def _write_task_artifact(task_dir: Path, task: object, training_category: str) -
         key: pipeline_artifacts[key]
         for key in (
             "data_manifest", "user_simulation_manifest", "tools_manifest",
-            "media_generation", "generation_pipeline", "dataset_source",
+            "media_generation", "generation_pipeline", "dataset_source", "graph_plan",
         ) if key in pipeline_artifacts
     }
     task_path = task_dir / "task.json"
@@ -172,8 +173,8 @@ def _reserve_task_directories(artifact_root: Path, count: int) -> list[tuple[int
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="从数据集生成 Agentic RL 任务")
-    parser.add_argument("--generation-source", choices=("dataset", "graph"), default="dataset",
-                        help="默认从数据集生成；graph 为旧知识图谱路径")
+    parser.add_argument("--generation-source", choices=("dataset", "graph", "graph_keywords"), default="dataset",
+                        help="dataset 为原数据集路径；graph 为有数据支撑的图谱规划；graph_keywords 为旧关键词路径")
     parser.add_argument("--dataset-ref", help="指定 Kaggle owner/slug；缺省时从已核验清单选取")
     parser.add_argument("--dataset-file", type=Path, help="指定本地表格或 ZIP/GZIP/TAR 压缩文件")
     parser.add_argument("--dataset-url", help="本地数据文件的原始数据集来源链接")
@@ -252,17 +253,22 @@ def main() -> int:
         parser.error("--dataset-max-gb 必须大于 0 且不超过 100")
     if args.generation_source == "dataset" and args.dataset_ref and args.dataset_file:
         parser.error("--dataset-ref 与 --dataset-file 不能同时使用")
-    if args.generation_source == "dataset" and args.dataset_platform == "balanced":
+    if args.generation_source in ("dataset", "graph") and args.dataset_platform == "balanced":
         if args.count % 2 or args.dataset_ref or args.dataset_file:
             parser.error("balanced 需要偶数任务且不能指定单个数据集")
     if args.generation_source == "dataset" and args.dataset_platform == "data_gov_hk" and args.dataset_ref:
         parser.error("DATA.GOV.HK 来源不能使用 Kaggle --dataset-ref")
-    if args.generation_source == "dataset" and args.task_type not in (None, "QA"):
+    if args.generation_source in ("dataset", "graph") and args.task_type not in (None, "QA"):
         parser.error("数据集生成目前只支持 --task-type QA")
     if args.generation_source == "dataset" and args.task_intent not in (None, "query", "compare"):
         parser.error("数据集生成目前只支持 query 或 compare 意图")
-    if args.generation_source == "graph" and (args.dataset_ref or args.dataset_file or args.dataset_url):
-        parser.error("graph 路径不接受数据集参数")
+    if args.generation_source == "graph" and args.task_intent not in (None, "query", "compare", "calculate"):
+        parser.error("图谱数据生成目前只支持 query、compare 或 calculate 意图")
+    if (args.generation_source == "graph" and args.task_intent == "calculate"
+            and args.training_category not in (None, "multi_step_agentic")):
+        parser.error("图谱数据 calculate 意图目前只支持 multi_step_agentic")
+    if args.generation_source != "dataset" and (args.dataset_ref or args.dataset_file or args.dataset_url):
+        parser.error("图谱路径不接受指定单个数据集参数")
     try:
         training_mix = parse_training_mix(args.training_mix)
     except ValueError as exc:
@@ -287,7 +293,7 @@ def main() -> int:
     external_available = bool(os.getenv("SANDBOX_EXTERNAL_CAPABILITY_URL", "").strip()) or bool(
         external_fixture and Path(external_fixture).is_file()
     )
-    available_environment_modes = (("stateless", "reference_data") if args.generation_source == "dataset"
+    available_environment_modes = (("stateless", "reference_data") if args.generation_source in ("dataset", "graph")
                                    else ("stateless", "reference_data", "stateful") + (
                                        ("external_capability",) if external_available else ()))
     logging.getLogger(__name__).info(
@@ -300,12 +306,15 @@ def main() -> int:
     store_context = (Neo4jGraphStore(
         database=os.getenv("NEO4J_DATABASE", "neo4j"),
         path_query_timeout=args.path_query_timeout,
-    ) if args.generation_source == "graph" else nullcontext(None))
+    ) if args.generation_source in ("graph", "graph_keywords") else nullcontext(None))
     with store_context as store:
         generator = (TaskGenerator(
             store, llm, user_script_count=args.user_script_count,
             noise_tool_max=args.noise_tool_max,
             available_environment_modes=available_environment_modes,
+        ) if args.generation_source == "graph_keywords" else GraphDatasetTaskGenerator(
+            store, llm, max_source_bytes=int(args.dataset_max_gb * 1_000_000_000),
+            user_script_count=args.user_script_count, noise_tool_max=args.noise_tool_max,
         ) if args.generation_source == "graph" else DatasetTaskGenerator(
             llm, dataset_ref=args.dataset_ref, dataset_file=args.dataset_file,
             source_url=args.dataset_url, max_source_bytes=int(args.dataset_max_gb * 1_000_000_000),
@@ -321,14 +330,16 @@ def main() -> int:
                 args.count,
                 training_mix,
                 allowed_categories=(
-                    compatible_training_categories(args.task_intent)
+                    (("multi_step_agentic",) if args.generation_source == "graph"
+                     and args.task_intent == "calculate" else
+                     compatible_training_categories(args.task_intent))
                     if args.task_intent else None
                 ),
                 rng=run_rng,
             )
         )
         sample_seeds = [run_rng.randrange(0, 2**63) for _ in reserved_tasks]
-        if args.generation_source == "dataset":
+        if args.generation_source in ("dataset", "graph"):
             from env_factory.generation.dataset_source_registry import balanced_platforms
             platforms = (balanced_platforms(args.count, rng=run_rng)
                          if args.dataset_platform == "balanced"
@@ -353,7 +364,7 @@ def main() -> int:
                 "dataset_platform": platform,
                 "dataset_ref": args.dataset_ref,
                 "dataset_file": str(args.dataset_file) if args.dataset_file else None,
-                "hops": args.hops if args.generation_source == "graph" else None,
+                "hops": args.hops if args.generation_source == "graph_keywords" else None,
                 "available_environment_modes": list(available_environment_modes),
                 "generator_provider": generation_provider,
                 "generation_settings": {

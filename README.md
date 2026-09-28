@@ -108,7 +108,11 @@ WIKIPEDIA_DUMP_DB=data/wikipedia.sqlite3
 ./scripts/generate_task.sh --dataset-file /path/to/data.zip --dataset-url https://example.com/source --dataset-max-gb 10
 ```
 
-当前数据集入口支持 CSV、TSV、JSON、JSONL/NDJSON、XLSX、Parquet、SQLite，以及 ZIP/GZIP/TAR 压缩包和 `QA` 类型，需要数据中存在可辨识的业务 ID、可重复的分组字段及可核算的数值字段；不满足条件的候选会拒绝并记录原因。来源哈希、所选原始字段与答案键写入 `source_selection.json`。使用 `--generation-source graph --hops 3 --task-type Event` 可显式调用原知识图谱路径，该路径仍需要 Neo4j。
+当前数据集入口支持 CSV、TSV、JSON、JSONL/NDJSON、XLSX、Parquet、SQLite，以及 ZIP/GZIP/TAR 压缩包和 `QA` 类型，需要数据中存在可辨识的业务 ID、可重复的分组字段及可核算的数值字段；不满足条件的候选会拒绝并记录原因。来源哈希、所选原始字段与答案键写入 `source_selection.json`。
+
+有数据支撑的图谱路径先核验 `config/graph_dataset_links.json` 中已审核的场景关系，再执行 `uv run python scripts/diagnostics/sync_graph_dataset_links.py` 写入 Neo4j。图谱包含 `Scene → Dataset → Resource → Field` 关系：场景可以关联多个数据集，数据集也可以支持多个场景；节点只存目录键、原始文件哈希、字段角色和关系依据，不复制原始业务数据。运行 `./scripts/generate_task.sh --generation-source graph --dataset-platform balanced --count 2` 会按 1:1 来源比例，从图谱中有数据支撑的场景规划任务；运行时仍会核对来源准入、原始文件哈希和关系字段。当前已审核的是两个来源、四条场景关系；新增目录索引不会自动获得生成资格。原先只抽关键词的路径改由 `--generation-source graph_keywords --hops 3 --task-type Event` 调用。当前图谱数据路径复用已验证的三种训练路由与业务数据契约，并可从可见数值的较高/较低比较和同类业务的最高、最低、平均值或数量中选择可核算目标；平均值与数量任务使用 `calculate` 意图。限定单一分组的场景关系只用于直接回答，避免把工具任务的隐藏类别写进题面。更多业务动作仍需扩充数据契约与奖励验证。
+
+端到端实验可指定 `scripts/loop_experiment.py --generation-source graph`，让开发轮次及留出集沿同一图谱规划路径生成；运行前需同步图谱关系。
 
 详细流程、支持范围和实测结果见[数据集驱动任务生成](docs/dataset_task_generation.md)。
 任务生成完成后，会继续根据任务描述和环境生成 `rule-based/model-based` 观测指标，写入 `Task.metrics`。为提高工具选择训练的辨别能力，默认生成 2–3 个噪声工具并覆盖相关无关与完全无关两类；噪声工具由共享运行时提供无任务关键副作用的通用实现，不占用业务 handler 实现成本，也不产生任务进度奖励。工具生成前会把动作分类为环境操作、Agent 推理和 Agent 回答，只有环境操作可以暴露为工具。任务规模不再绑定具体构建模型，结构有效性由 schema、契约、任务级 readiness、外层验收和训练素材准备就绪门禁统一判断。

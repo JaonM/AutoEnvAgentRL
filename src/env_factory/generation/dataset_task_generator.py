@@ -104,7 +104,7 @@ def _columns(headers: list[str], rows: list[dict[str, str]]) -> tuple[str, str, 
 
 
 def _choose_rows(rows: list[dict[str, str]], key: str, group: str, numeric: str,
-                 category: str, rng: random.Random) -> list[dict[str, str]]:
+                 category: str, rng: random.Random, *, extreme: str = "minimum") -> list[dict[str, str]]:
     if category == "direct_response":
         pairs = [(a, b) for a in rows[:80] for b in rows[:80]
                  if a is not b and _number(a[numeric]) != _number(b[numeric])]
@@ -122,10 +122,15 @@ def _choose_rows(rows: list[dict[str, str]], key: str, group: str, numeric: str,
     if not eligible:
         raise TaskGenerationError("dataset has no group with a unique minimum and usable dependency")
     members = rng.choice(eligible)
-    lowest = min(members, key=lambda row: _number(row[numeric]))
-    higher = [row for row in members if _number(row[numeric]) > _number(lowest[numeric])]
-    starter = rng.choice(higher)
-    members = [starter, lowest] + [row for row in higher if row is not starter][:18]
+    if extreme in {"minimum", "maximum"}:
+        selected_extreme = (min if extreme == "minimum" else max)(
+            members, key=lambda row: _number(row[numeric]))
+        other = [row for row in members if _number(row[numeric]) != _number(selected_extreme[numeric])]
+        starter = rng.choice(other)
+        members = [starter, selected_extreme] + [row for row in other if row is not starter][:18]
+    else:
+        starter = rng.choice(members)
+        members = [starter] + [row for row in members if row is not starter][:19]
     others = [row for row in rows if row[group] != members[0][group]][:10]
     return members + others
 
@@ -167,7 +172,8 @@ def _business_terms(key: str, group: str, numeric: str) -> tuple[str, str, str, 
 
 
 def _description(category: str, rows: list[dict[str, Any]], key: str, group: str,
-                 numeric: str, title: str, scene: dict[str, str] | None = None) -> tuple[dict, dict]:
+                 numeric: str, title: str, scene: dict[str, str] | None = None,
+                 *, extreme: str = "minimum", comparison: str = "lower") -> tuple[dict, dict]:
     del title  # Source identity belongs in provenance and the private business model.
     first = rows[0]
     key_value, group_value, number_value = first[key], first[group], first[numeric]
@@ -181,19 +187,22 @@ def _description(category: str, rows: list[dict[str, Any]], key: str, group: str
               "requirements": {"input_modalities": ["text"], "output_format": "text"}}
     if category == "direct_response":
         second = rows[1]
-        cheaper = first if number_value < second[numeric] else second
+        selected = ((first if number_value < second[numeric] else second)
+                    if comparison == "lower" else
+                    (first if number_value > second[numeric] else second))
         difference = abs(number_value - second[numeric])
-        request = f"比较两笔{entity}的{value_label}，说出较低的一笔和差额。"
+        direction = "较低" if comparison == "lower" else "较高"
+        request = f"比较两笔{entity}的{value_label}，说出{direction}的一笔和差额。"
         public = [{"标签": label, value_label: row[numeric]}
                   for label, row in zip(("A", "B"), rows)]
-        lower_label = "A" if cheaper is first else "B"
-        facts = {"lower_label": lower_label, "difference": difference}
+        selected_label = "A" if selected is first else "B"
+        facts = {f"{comparison}_label": selected_label, "difference": difference}
         return ({**common, "task": request, "task_intent": "compare", "goal": request,
                  "public_input": {"initial_user_message": request, "materials": [{
-                     "name": f"两笔{entity}信息.json", "mime_type": "application/json",
+                     "name": f"两笔{entity}.json", "mime_type": "application/json",
                      "content": json.dumps(public, ensure_ascii=False),
                  }]}, "route_plan": {"environment_operations": []},
-                 "expected_result": f"{lower_label} 的{value_label}更低，相差 {difference:g}。",
+                 "expected_result": f"{selected_label} 的{value_label}{direction}，相差 {difference:g}。",
                  "complexity": "simple"}, facts)
     voucher = {"name": f"{entity}信息.json", "mime_type": "application/json",
                "content": json.dumps({identifier: key_value}, ensure_ascii=False)}
@@ -207,18 +216,39 @@ def _description(category: str, rows: list[dict[str, Any]], key: str, group: str
                  }]}, "expected_result": f"{group_label}为 {group_value}，{value_label}为 {number_value:g}。",
                  "complexity": "simple"}, facts)
     same = [row for row in rows if row[group] == group_value]
-    lowest = min(same, key=lambda row: row[numeric])
+    if extreme in {"average", "count"}:
+        if extreme == "average":
+            statistic = sum(row[numeric] for row in same) / len(same)
+            request = f"这笔{entity}属于哪个{group_label}？同类{entity}的平均{value_label}是多少？"
+            expected = f"{group_value}的平均{value_label}为 {statistic:g}。"
+            facts = {"starting_record_id": key_value, "group_value": group_value,
+                     "average_value": statistic}
+        else:
+            request = f"这笔{entity}属于哪个{group_label}？同类{entity}共有多少笔？"
+            expected = f"{group_value}共有 {len(same)} 笔{entity}。"
+            facts = {"starting_record_id": key_value, "group_value": group_value,
+                     "group_count": len(same)}
+        return ({**common, "task": request, "task_intent": "calculate", "goal": request,
+                 "public_input": {"initial_user_message": request, "materials": [voucher]},
+                 "route_plan": {"environment_operations": [
+                     {"action_name": "lookup_record", "purpose": "Read the group field of a private business record", "dependencies": []},
+                     {"action_name": "list_group_records", "purpose": "Read private records in the returned group to calculate the requested statistic",
+                      "dependencies": ["lookup_record"]},
+                 ]}, "expected_result": expected, "complexity": "standard"}, facts)
+    lowest = (min if extreme == "minimum" else max)(same, key=lambda row: row[numeric])
+    adjective = "最低" if extreme == "minimum" else "最高"
+    fact_prefix = "lowest" if extreme == "minimum" else "highest"
     request = (f"查询这笔{entity}的{group_label}，再找同类{entity}中"
-               f"{value_label}最低的那笔及其数值。")
+               f"{value_label}{adjective}的那笔及其数值。")
     facts = {"starting_record_id": key_value, "group_value": group_value,
-             "lowest_record_id": lowest[key], "lowest_value": lowest[numeric]}
+             f"{fact_prefix}_record_id": lowest[key], f"{fact_prefix}_value": lowest[numeric]}
     return ({**common, "task": request, "task_intent": "query", "goal": request,
              "public_input": {"initial_user_message": request, "materials": [voucher]},
              "route_plan": {"environment_operations": [
                  {"action_name": "lookup_record", "purpose": "Read the group field of a private business record", "dependencies": []},
                  {"action_name": "list_group_records", "purpose": "Search private business records using the group returned by lookup_record",
                   "dependencies": ["lookup_record"]},
-             ]}, "expected_result": f"{group_value}中{value_label}最低的是 {lowest[key]}，数值为 {lowest[numeric]:g}。",
+             ]}, "expected_result": f"{group_value}中{value_label}{adjective}的是 {lowest[key]}，数值为 {lowest[numeric]:g}。",
              "complexity": "standard"}, facts)
 
 
@@ -237,18 +267,26 @@ def _validate_scene(scene: dict[str, Any]) -> dict[str, str]:
     return result
 
 
-def _supported_business_need(category: str, scene: dict[str, str]) -> str:
+def _supported_business_need(category: str, scene: dict[str, str], *, extreme: str = "minimum",
+                             comparison: str = "lower") -> str:
     entity, group, value = (scene["entity_name"], scene["group_label"], scene["value_label"])
     if category == "direct_response":
-        return f"核对两笔{entity}的{value}差异"
+        direction = "较低" if comparison == "lower" else "较高"
+        return f"核对两笔{entity}的{value}差异，找出{direction}的一笔"
     if category == "simple_agentic":
         return f"核对这笔{entity}的{group}归属与{value}"
-    return f"了解这笔{entity}所属的{group}，并比较同类{entity}的最低{value}"
+    if extreme == "average":
+        return f"了解这笔{entity}所属的{group}，并计算同类{entity}的平均{value}"
+    if extreme == "count":
+        return f"了解这笔{entity}所属的{group}，并统计同类{entity}的数量"
+    adjective = "最低" if extreme == "minimum" else "最高"
+    return f"了解这笔{entity}所属的{group}，并比较同类{entity}的{adjective}{value}"
 
 
 def _validate_voice(message: str, original: str, category: str, rows: list[dict[str, Any]],
                     key: str, facts: dict[str, Any], title: str,
-                    scene: dict[str, str] | None = None) -> None:
+                    scene: dict[str, str] | None = None, *, extreme: str = "minimum",
+                    comparison: str = "lower") -> None:
     if not 12 <= len(message) <= 260 or message == original:
         raise TaskGenerationError("dataset task voice is invalid or unchanged")
     if re.search(r"数据集|\b(?:record|dataset)\b|记录|编号|附上|附件|凭证", message, re.I) or title in message:
@@ -271,9 +309,18 @@ def _validate_voice(message: str, original: str, category: str, rows: list[dict[
         raise TaskGenerationError("dataset task voice lacks a business motivation")
     if category == "direct_response" and not re.search(r"两笔|两单|两次|两个|这两|A.{0,8}B", message):
         raise TaskGenerationError("dataset task voice loses the two-item comparison")
-    if category == "multi_step_agentic" and not re.search(r"最低|最少|最便宜", message):
-        raise TaskGenerationError("dataset task voice loses the group minimum goal")
-    if category == "multi_step_agentic" and not re.search(r"哪(?:一)?(?:笔|单|条|个|次)", message):
+    if category == "direct_response":
+        desired = r"低|少|便宜" if comparison == "lower" else r"高|多|贵"
+        opposite = r"高|最多|最贵" if comparison == "lower" else r"低|最少|最便宜"
+        if not re.search(desired, message) or re.search(opposite, message):
+            raise TaskGenerationError("dataset task voice changes the comparison direction")
+    extreme_words = {
+        "minimum": r"最低|最少|最便宜", "maximum": r"最高|最多|最贵",
+        "average": r"平均|均值", "count": r"多少笔|几笔|数量|总共有多少|一共有多少",
+    }[extreme]
+    if category == "multi_step_agentic" and not re.search(extreme_words, message):
+        raise TaskGenerationError(f"dataset task voice loses the group {extreme} goal")
+    if category == "multi_step_agentic" and extreme in {"minimum", "maximum"} and not re.search(r"哪(?:一)?(?:笔|单|条|个|次)", message):
         raise TaskGenerationError("dataset task voice omits the minimum item's identity")
     hidden = ([str(facts["difference"])] if category == "direct_response"
               else [str(value) for name, value in facts.items()
@@ -289,9 +336,11 @@ class DatasetTaskGenerator:
 
     def __init__(self, llm: Any, *, dataset_ref: str | None = None,
                  dataset_file: Path | None = None, source_url: str | None = None,
+                 dataset_id: str | None = None,
                  max_source_bytes: int = DEFAULT_MAX_SOURCE_BYTES,
                  user_script_count: int = 3, noise_tool_max: int = 3) -> None:
         self.dataset_ref = dataset_ref
+        self.dataset_id = dataset_id
         self.dataset_file = dataset_file
         self.source_url = source_url
         self.max_source_bytes = max_source_bytes
@@ -308,7 +357,9 @@ class DatasetTaskGenerator:
             candidates = eligible_hk_ids()
             if not candidates:
                 raise TaskGenerationError("DATA.GOV.HK catalog has no approved datasets")
-            dataset_id = rng.choice(candidates)
+            dataset_id = self.dataset_id or rng.choice(candidates)
+            if dataset_id not in candidates:
+                raise TaskGenerationError(f"DATA.GOV.HK dataset is not approved: {dataset_id}")
             source = verified_hk_source(dataset_id)
             if source is None:
                 result = subprocess.run([
@@ -380,30 +431,49 @@ class DatasetTaskGenerator:
     def generate(self, hops: int = 0, task_type: str | None = None,
                  task_style: str | None = None, artifact_dir: str | Path | None = None,
                  task_intent: str | None = None, training_category: str = "multi_step_agentic",
-                 seed: int | None = None, dataset_platform: str = "kaggle") -> Task:
+                 seed: int | None = None, dataset_platform: str = "kaggle",
+                 graph_link: Any | None = None) -> Task:
         del hops
         if task_type and task_type != TaskType.QA.value:
             raise TaskGenerationError("dataset generation currently supports task type QA")
-        expected_intent = "compare" if training_category == "direct_response" else "query"
+        rng = random.Random(seed)
+        if graph_link and training_category == "multi_step_agentic":
+            operations = (("average", "count") if task_intent == "calculate" else
+                          ("minimum", "maximum") if task_intent == "query" else
+                          ("minimum", "maximum", "average", "count"))
+            extreme = rng.choice(operations)
+        else:
+            extreme = "minimum"
+        comparison = rng.choice(("lower", "higher")) if graph_link and training_category == "direct_response" else "lower"
+        expected_intent = ("compare" if training_category == "direct_response" else
+                           "calculate" if extreme in {"average", "count"} else "query")
         if task_intent and task_intent != expected_intent:
             raise TaskGenerationError(f"{training_category} requires task intent {expected_intent}")
-        rng = random.Random(seed)
         source_error: TaskGenerationError | None = None
-        for _ in range(1 if self.dataset_ref or self.dataset_file else 6):
+        for _ in range(1 if self.dataset_ref or self.dataset_id or self.dataset_file else 6):
             try:
                 source, title, source_url, license_name = self._source(rng, dataset_platform)
+                if graph_link and _sha256(source) != graph_link.source_sha256:
+                    raise TaskGenerationError("graph link source hash differs from reviewed source")
                 headers, original_rows = _sample_source(
                     source, max_source_bytes=getattr(self, "max_source_bytes", DEFAULT_MAX_SOURCE_BYTES)
                 )
                 key_col, group_col, numeric_col = _columns(headers, original_rows)
+                if graph_link and graph_link.group_field:
+                    if group_col != graph_link.group_field:
+                        raise TaskGenerationError("graph link group field is no longer selected")
+                    original_rows = [row for row in original_rows
+                                     if row[group_col] == graph_link.group_value]
+                    if len(original_rows) < 3:
+                        raise TaskGenerationError("graph link group value is absent from source")
                 distinct_rows = list({str(row[key_col]).strip(): row for row in reversed(original_rows)}.values())
                 distinct_rows.reverse()
                 selected = _choose_rows(distinct_rows, key_col, group_col, numeric_col,
-                                        training_category, rng)
+                                        training_category, rng, extreme=extreme)
                 break
             except TaskGenerationError as exc:
                 source_error = exc
-                if self.dataset_ref or self.dataset_file:
+                if self.dataset_ref or self.dataset_id or self.dataset_file:
                     raise
                 logger.warning("dataset candidate rejected before LLM: %s", exc)
         else:
@@ -418,6 +488,8 @@ class DatasetTaskGenerator:
             "group_label 和 value_label 为业务字段的自然称呼，user_role 和 business_situation 描述谁会在什么场景提出查询。"
             "entity_name 也不要包含‘记录’。不要在输出中使用数据集、CSV、表字段、沙箱或训练术语。",
             {"dataset_title": title,
+             "reviewed_graph_scene": graph_link.scene_name if graph_link else None,
+             "graph_relation_evidence": graph_link.evidence if graph_link else None,
              "available_columns": [key_col, group_col, numeric_col],
              "selected_fields": {"identifier": key_col, "group": group_col, "value": numeric_col},
              "safe_examples": _project(original_rows[:8], key_col, group_col, numeric_col),
@@ -425,7 +497,8 @@ class DatasetTaskGenerator:
                         "group_label": "string", "value_label": "string",
                         "user_role": "string", "business_situation": "string"}},
         ))
-        description, facts = _description(training_category, rows, key, group, numeric, title, scene)
+        description, facts = _description(training_category, rows, key, group, numeric, title,
+                                          scene, extreme=extreme, comparison=comparison)
         style = task_style or rng.choice(TaskGenerator.STYLES)
         if style not in TaskGenerator.STYLES:
             raise TaskGenerationError(f"unsupported task style: {style}")
@@ -435,6 +508,18 @@ class DatasetTaskGenerator:
                       if training_category == "simple_agentic" else
                       {"find_current_item_group": True, "find_same_group_minimum": True,
                        "report_minimum_item": True, "report_minimum_value": True})
+        if graph_link and training_category == "multi_step_agentic" and extreme == "maximum":
+            route_goal = {"find_current_item_group": True, "find_same_group_maximum": True,
+                          "report_maximum_item": True, "report_maximum_value": True}
+        if graph_link and training_category == "multi_step_agentic" and extreme == "average":
+            route_goal = {"find_current_item_group": True, "calculate_same_group_average": True,
+                          "report_average_value": True}
+        if graph_link and training_category == "multi_step_agentic" and extreme == "count":
+            route_goal = {"find_current_item_group": True, "count_same_group_items": True,
+                          "report_group_count": True}
+        if graph_link and training_category == "direct_response" and comparison == "higher":
+            route_goal = {"compare_two_visible_values": True, "report_higher_item": True,
+                          "report_exact_difference": True}
         design_system = (
             "你是该业务场景中的真实用户。根据 supported_business_need 和可支持的目标，"
             "用第一人称写两句自然中文：先说你正在做的业务核对或比较，再提出想知道的结果。"
@@ -443,15 +528,18 @@ class DatasetTaskGenerator:
             "不能引入营销、活动、利润、销售贡献等材料中没有的业务背景。"
             "不要写‘帮我查一下’‘帮我看看’‘再看看’等执行步骤，也不得写‘附上的凭证’‘附件’"
             "‘记录编号’、原始字段名、工具名、答案或评测术语。"
-            "直接回答只比较两笔可见值；单工具只问当前一笔的分组和数值；多步需要当前分组、"
-            "同组最低的那一笔及具体数值。不要用‘先…然后…’写成操作流程。"
+            "直接回答只比较两笔可见值，并遵循 supported_goal 中的比较方向；单工具只问当前一笔的分组和数值；多步需要当前分组、"
+            "多步任务需围绕当前分组完成 supported_goal 指定的同组极值、平均值或数量目标；"
+            "只有极值目标才询问对应的那一笔。不要用‘先…然后…’写成操作流程。"
             "只返回 JSON 对象 user_message。"
         )
         design_payload = {
             "style": style, "category": training_category,
+            "reviewed_graph_scene": graph_link.scene_name if graph_link else None,
             "business_scenario": {name: scene[name] for name in
                                   ("entity_name", "identifier_label", "group_label", "value_label", "user_role")},
-            "supported_business_need": _supported_business_need(training_category, scene),
+            "supported_business_need": _supported_business_need(training_category, scene,
+                                                                  extreme=extreme, comparison=comparison),
             "supported_goal": description["task"], "required_outputs": route_goal,
             "public_materials": description["public_input"]["materials"],
             "output": {"user_message": "string"},
@@ -463,7 +551,8 @@ class DatasetTaskGenerator:
             message = str(voice.get("user_message") or "").strip()
             try:
                 _validate_voice(message, description["task"], training_category,
-                                rows, key, facts, title, scene)
+                                rows, key, facts, title, scene, extreme=extreme,
+                                comparison=comparison)
                 break
             except TaskGenerationError as exc:
                 design_error = exc
@@ -482,6 +571,13 @@ class DatasetTaskGenerator:
                          "original_columns": [key_col, group_col, numeric_col],
                          "selected_ids": [row[key] for row in rows],
                          "verified_reward_facts": facts}
+        if graph_link:
+            source_record["graph_plan"] = {
+                "scene": graph_link.scene_name, "dataset_key": graph_link.dataset_key,
+                "evidence": graph_link.evidence, "group_field": graph_link.group_field,
+                "group_value": graph_link.group_value, "extreme": extreme,
+                "comparison": comparison,
+            }
         hostname = (urlparse(source_url).hostname or "").lower()
         provider = ("kaggle" if hostname in {"kaggle.com", "www.kaggle.com"}
                     else "data_gov_hk" if hostname == "data.gov.hk"
@@ -532,6 +628,8 @@ class DatasetTaskGenerator:
             keywords=[title[:60], group_col, numeric_col], task_type=TaskType.QA.value,
             style=style, task_intent=expected_intent,
             graph_context={"dataset": title, "source_url": source_url,
+                           "reviewed_scene": graph_link.scene_name if graph_link else None,
+                           "dataset_key": graph_link.dataset_key if graph_link else None,
                            "business_scenario": {name: scene[name] for name in
                                                  ("entity_name", "identifier_label",
                                                   "group_label", "value_label")}},
@@ -548,6 +646,8 @@ class DatasetTaskGenerator:
             "source_member": source_record["source_member"],
             "license": license_name, "provider": provider,
         }
+        if graph_link:
+            artifacts["graph_plan"] = source_record["graph_plan"]
         return Task(artifacts["task"], artifacts["environment"], artifacts["metrics"],
                     task_type=TaskType.QA, task_intent=artifacts["task_intent"],
                     complexity=artifacts["complexity"], artifacts=artifacts)
