@@ -401,6 +401,19 @@ class ManifestDataStore:
     def _check_constraint(cls, row: Mapping[str, Any], expression: str) -> bool:
         clauses = re.split(r"\s+AND\s+", expression.strip(), flags=re.I)
         for clause in clauses:
+            nullable_in_match = re.fullmatch(
+                r"\s*([A-Za-z_][A-Za-z0-9_]*)\s+IN\s*\((.*?)\)\s+OR\s+\1\s+IS\s+NULL\s*",
+                clause, flags=re.I,
+            )
+            if nullable_in_match:
+                field, raw_values = nullable_in_match.groups()
+                if field not in row:
+                    raise SandboxError(
+                        "DATA_SCHEMA_INVALID", f"CHECK references unknown field: {field}", 500
+                    )
+                if row[field] is None:
+                    continue
+                clause = f"{field} IN ({raw_values})"
             in_match = re.fullmatch(
                 r"\s*([A-Za-z_][A-Za-z0-9_]*)\s+IN\s*\((.*)\)\s*",
                 clause, flags=re.I,
@@ -779,8 +792,12 @@ def validate_json_schema(schema: Mapping[str, Any], value: Any, path: str = "arg
         if missing:
             raise SandboxError("INVALID_ARGUMENT", f"{path} is missing required properties", 400, missing)
         unknown = sorted(set(value) - set(properties))
-        if schema.get("additionalProperties") is False and unknown:
+        additional = schema.get("additionalProperties", True)
+        if additional is False and unknown:
             raise SandboxError("INVALID_ARGUMENT", f"{path} has unexpected properties", 400, unknown)
+        if isinstance(additional, Mapping):
+            for name in unknown:
+                validate_json_schema(additional, value[name], f"{path}.{name}")
         for name, child in properties.items():
             if name in value:
                 validate_json_schema(child, value[name], f"{path}.{name}")
@@ -1039,7 +1056,11 @@ class ContractRewardGate:
         causal_progress = (
             not unresolved
             and (
-                (category == "direct_response")
+                (
+                    category == "direct_response"
+                    and isinstance(context.get("final_agent_response"), str)
+                    and bool(context["final_agent_response"].strip())
+                )
                 or (category == "simple_agentic" and bool(required & called))
                 or (
                     category == "multi_step_agentic"

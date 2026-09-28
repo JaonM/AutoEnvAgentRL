@@ -14,13 +14,13 @@ import shutil
 import tempfile
 from typing import Any, Mapping
 
-from env_factory.material_artifacts import (
+from env_factory.evidence.material_artifacts import (
     MATERIAL_MANIFEST_VERSION,
     digest_json,
     docker_context_errors,
     portable_artifact_digests,
 )
-from env_factory.material_consumer import (
+from env_factory.evidence.material_consumer import (
     BUNDLE_MANIFEST,
     BUNDLE_SIGNATURE_FILE,
     BUNDLE_VERSION,
@@ -35,30 +35,30 @@ from env_factory.material_consumer import (
     consumer_record_errors,
     supports_bundle_feature,
 )
-from env_factory.material_attestation import (
+from env_factory.evidence.material_attestation import (
     sign_file,
     signed_metadata,
     verify_file,
 )
-from env_factory.model_response_provenance import response_provenance
-from env_factory.material_privacy import audit_rollout_privacy
-from env_factory.trajectory_schema import episode_errors, policy_transition
-from env_factory.execution_provenance import valid_execution_provenance
-from env_factory.task_similarity import task_family_ids
-from env_factory.generation_provenance import valid_generation_provenance
-from env_factory.runtime_provenance import valid_container_rollout_execution
-from env_factory.data_governance import (
+from env_factory.evidence.model_response_provenance import response_provenance
+from env_factory.evidence.material_privacy import audit_rollout_privacy
+from env_factory.evidence.trajectory_schema import episode_errors, policy_transition
+from env_factory.evidence.execution_provenance import valid_execution_provenance
+from env_factory.tasks.task_similarity import task_family_ids
+from env_factory.evidence.generation_provenance import valid_generation_provenance
+from env_factory.evidence.runtime_provenance import valid_container_rollout_execution
+from env_factory.evidence.data_governance import (
     valid_governance_report,
     valid_provider_binding,
 )
-from env_factory.certification_policy import valid_certification_policy
-from env_factory.experiment_contract import valid_experiment_contract
-from env_factory.task_portability import valid_task_lineage
-from env_factory.production_preflight import (
+from env_factory.evidence.certification_policy import valid_certification_policy
+from env_factory.evidence.experiment_contract import valid_experiment_contract
+from env_factory.tasks.task_portability import valid_task_lineage
+from env_factory.evidence.production_preflight import (
     REQUIRED_CHECKS,
     valid_production_preflight,
 )
-from env_factory.portable_metadata import (
+from env_factory.evidence.portable_metadata import (
     audit_portable_metadata,
     sanitize_portable_metadata,
 )
@@ -118,7 +118,9 @@ def _dataset_card(
     model_pairs: Counter[tuple[str, str]],
     successful_episodes: int,
     episode_count: int,
+    data_origins: Counter[str] | None = None,
 ) -> dict[str, Any]:
+    data_origins = data_origins or Counter({"model_generated_synthetic": len(items)})
     categories = Counter(str(item.get("category")) for item in items)
     splits = Counter(str(item.get("split")) for item in items)
     category_splits = Counter(
@@ -257,8 +259,12 @@ def _dataset_card(
             },
         },
         "data_boundary": {
-            "origin": "model_generated_synthetic",
-            "contains_real_user_data": False,
+            "origin": next(iter(data_origins)) if len(data_origins) == 1 else "mixed_verified_origins",
+            "origins": dict(sorted(data_origins.items())),
+            "contains_real_user_data": (
+                False if set(data_origins) == {"model_generated_synthetic"}
+                else "undetermined"
+            ),
             "policy_transitions": TRANSITIONS_FILE,
             "trainer_only_evidence": "environments/*/live_rollout.json",
             "visibility_contract": "bundle_manifest.json#transition_visibility",
@@ -611,6 +617,11 @@ def _export_bundle_uncommitted(
                 "files_sha256": copied,
             })
 
+    data_origins = Counter()
+    for item in exported_items:
+        task_path = output / item["environment_path"] / "task.json"
+        task_document = json.loads(task_path.read_text(encoding="utf-8"))
+        data_origins[task_document["artifacts"]["data_manifest"]["data_governance"]["origin"]] += 1
     portable_certification = _portable_certification(certification)
     portable_metadata_privacy = audit_portable_metadata(portable_certification)
     if not portable_metadata_privacy["safe"]:
@@ -634,6 +645,7 @@ def _export_bundle_uncommitted(
         model_pairs=model_pairs,
         successful_episodes=successful_episodes,
         episode_count=episode_count,
+        data_origins=data_origins,
     )
     (output / DATASET_CARD_FILE).write_text(
         json.dumps(card, ensure_ascii=False, indent=2) + "\n",
@@ -671,7 +683,7 @@ def _export_bundle_uncommitted(
         "attestation": attestation,
         "transition_visibility": {
             "version": "1.0",
-            "policy_projection": "env_factory.trajectory_schema.policy_transition",
+            "policy_projection": "env_factory.evidence.trajectory_schema.policy_transition",
             "trainer_only_evidence": "environments/*/live_rollout.json",
         },
         "trajectory_purpose": {
@@ -769,7 +781,7 @@ def verify_bundle(
         isinstance(visibility, Mapping)
         and visibility.get("version") == "1.0"
         and visibility.get("policy_projection")
-            == "env_factory.trajectory_schema.policy_transition"
+            == "env_factory.evidence.trajectory_schema.policy_transition"
     ):
         failures.append("transition_visibility")
     expected = manifest.get("files_sha256")
@@ -1027,6 +1039,7 @@ def verify_bundle(
         failures.append("bundle_items")
         items = []
     family_inputs = []
+    verified_data_origins: Counter[str] = Counter()
     for item in items:
         if not isinstance(item, Mapping):
             continue
@@ -1042,6 +1055,10 @@ def verify_bundle(
             "item_id": item_id,
             "task": task_document.get("task") if isinstance(task_document, Mapping) else None,
         })
+        if isinstance(task_document, Mapping):
+            origin = task_document.get("artifacts", {}).get("data_manifest", {}).get("data_governance", {}).get("origin")
+            if isinstance(origin, str):
+                verified_data_origins[origin] += 1
     try:
         recomputed_families = task_family_ids(family_inputs)
     except ValueError:
@@ -1806,9 +1823,17 @@ def verify_bundle(
         and dataset_card.get("data_boundary", {}).get("policy_transitions")
             == TRANSITIONS_FILE
         and dataset_card.get("data_boundary", {}).get("origin")
-            == "model_generated_synthetic"
+            == (next(iter(verified_data_origins)) if len(verified_data_origins) == 1 else "mixed_verified_origins")
+        and (
+            dataset_card.get("data_boundary", {}).get("origins")
+                == dict(sorted(verified_data_origins.items()))
+            or (version != BUNDLE_VERSION
+                and dataset_card.get("data_boundary", {}).get("origins") is None
+                and set(verified_data_origins) == {"model_generated_synthetic"})
+        )
         and dataset_card.get("data_boundary", {}).get("contains_real_user_data")
-            is False
+            == (False if set(verified_data_origins) == {"model_generated_synthetic"}
+                else "undetermined")
         and (
             not supports_bundle_feature(str(version), "trajectory_purpose")
             or (

@@ -9,7 +9,7 @@ import json
 import shutil
 from pathlib import Path
 
-from env_factory.task_quality import discover_task_files, error_report, score_file
+from env_factory.tasks.task_quality import discover_task_files, error_report, score_file
 
 
 def parse_args() -> argparse.Namespace:

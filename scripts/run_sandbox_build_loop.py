@@ -13,12 +13,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from score_sandbox import evidence_fingerprint
+from env_factory.sandbox_scoring import evidence_fingerprint
 
 
 DEFAULT_TASK_IDS = (45, 78, 92, 175)
-REQUIRED_MODEL = "gpt-5.6-luna"
+REQUIRED_MODEL = "gpt-6-luna"
 
 
 def next_round(root: Path) -> int:
@@ -64,7 +63,7 @@ def run_one(
         completed = subprocess.run(command, cwd=project, stdout=handle, stderr=subprocess.STDOUT, text=True)
     score_path = output / "sandbox_score.json"
     score_command = [
-        sys.executable, str(project / "scripts/score_sandbox.py"), str(output),
+        sys.executable, str(project / "scripts/sandbox/score_sandbox.py"), str(output),
         "--project", str(project), "--threshold", "8", "--output", str(score_path), "--execute",
     ]
     scored = subprocess.run(score_command, cwd=project, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)

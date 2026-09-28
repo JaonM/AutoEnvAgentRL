@@ -32,6 +32,7 @@ current_node_id=""
 current_attempt="0"
 current_defect_ids=""
 current_failure_category=""
+current_failure_code=""
 
 usage() {
   cat <<'EOF'
@@ -46,12 +47,12 @@ usage() {
   --output DIR       单任务工作目录；输入为 list 时作为输出根目录，默认沿用 task-N 编号
   --agent NAME       开发 Agent：codex、claude 或 opencode，默认：codex
   --review-agent NAME 独立语义审查 Agent：codex、claude 或 opencode，默认：codex
-  --model NAME       Codex 开发模型，例如 gpt-5.6-luna；默认使用 Codex 配置
+  --model NAME       Codex 开发模型，默认 gpt-6-luna
   --review-model NAME Codex 审查模型；默认沿用 --model，均未指定时使用 Codex 配置
   --runtime NAME     none 或 docker，默认：none
   --tag NAME         镜像名称，默认：env-factory-agent-sandbox
   --max-concurrency N 并发任务数，默认：2
-  --max-attempts N   单个沙箱开发最大重试次数，默认：3
+  --max-attempts N   每个开发节点及每个独立缺陷的最大修复次数，默认：3
   --resume           复用输出目录中的已有实现，跳过模块重开发并直接验收/修复
   --skip-auto-score  构建成功后不自动执行离线评分
   --sandbox-port N   Docker 宿主机映射端口，容器端口固定为 8000，默认：8080
@@ -109,7 +110,8 @@ if ! [[ "$sandbox_port" =~ ^[1-9][0-9]*$ ]] || (( sandbox_port > 65535 )); then
 fi
 case "$agent" in codex|claude|opencode) ;; *) echo "不支持的开发 Agent：$agent" >&2; exit 2 ;; esac
 case "$review_agent" in codex|claude|opencode) ;; *) echo "不支持的审查 Agent：$review_agent" >&2; exit 2 ;; esac
-if [[ -z "$review_model" ]]; then review_model="$model"; fi
+if [[ -z "$model" && "$agent" == "codex" ]]; then model="gpt-6-luna"; fi
+if [[ -z "$review_model" && "$review_agent" == "codex" ]]; then review_model="${model:-gpt-6-luna}"; fi
 if [[ -n "$model" && "$agent" != "codex" ]]; then
   echo "--model 当前仅适用于 --agent codex" >&2
   exit 2
@@ -246,6 +248,7 @@ prepare_task() {
     "$task_output/defects.json" "$task_output/last_delivery_error.txt" "$task_output/acceptance_failure.log"
   if [[ "$resume" != "true" ]]; then
     rm -f \
+      "$task_output/defect_attempts.json" \
       "$task_output/spec.md" "$task_output/action_plan.json" "$task_output/development_plan.json" "$task_output/tools.json" "$task_output/Dockerfile" \
       "$task_output/docker_build.sh" "$task_output/docker_run.sh" \
       "$task_output/acceptance.sh" "$task_output/IMPLEMENTATION_REPORT.md" \
@@ -261,7 +264,7 @@ prepare_task() {
 import sys
 from pathlib import Path
 
-from env_factory.task_portability import prepare_sandbox_task
+from env_factory.tasks.task_portability import prepare_sandbox_task
 
 prepare_sandbox_task(
     Path(sys.argv[1]), Path(sys.argv[2]), index=int(sys.argv[3])
@@ -298,17 +301,26 @@ PY
   chmod 444 "$task_output/BUILD_CONTRACT.json"
   scaffold_args=(--root "$task_output")
   if [[ "$resume" == "true" ]]; then scaffold_args+=(--preserve-implementation); fi
-  python3 "$project_dir/scripts/generate_sandbox_scaffold.py" "${scaffold_args[@]}"
+  python3 "$project_dir/scripts/sandbox/generate_sandbox_scaffold.py" "${scaffold_args[@]}"
   write_task_prompt "$task_output"
 }
 
 write_task_prompt() {
   local task_output="$1"
+  local validation_python="python3"
+  if [[ -x "$project_dir/.venv/bin/python3" ]]; then
+    validation_python="$project_dir/.venv/bin/python3"
+  fi
   cp "$project_dir/docs/sandbox_spec_prompt.md" "$task_output/TASK_PROMPT.md"
   cat >> "$task_output/TASK_PROMPT.md" <<EOF
 
 The complete task input is in ./task.json. The immutable outer-workflow contract is in ./BUILD_CONTRACT.json; it is the task.json projection with the top-level actions field removed. Treat it as authoritative for sandbox implementation. Implement the sandbox directly from BUILD_CONTRACT.json and the referenced artifacts. Do not create or depend on spec.md. EnvFactory generates an outer conformance plan after implementation; do not modify, replace, or treat the sandbox's acceptance.sh as authoritative.
 The project output directory is: $task_output
+For local validation use: $validation_python -m pytest -q. If a login shell resets PATH, use this interpreter directly; do not install dependencies from PyPI during sandbox development.
+EOF
+  # The rest is literal instruction text. Quoting the delimiter prevents
+  # backticked examples and shell variables from executing during preparation.
+  cat >> "$task_output/TASK_PROMPT.md" <<'EOF'
 
 Reward implementation is contract-driven and must not be simplified. Load every metric.evaluator and top-level metric_implementations entry from BUILD_CONTRACT.json. Compiled process and rule-based metrics use DeclarativeMetricEvaluator; only metrics still declared model-based use the external evaluator boundary. Do not use fixed tool positions, keyword presence, successful-call coverage, or a boolean final-document shortcut as a substitute. Acceptance must test passing and failing cases for every evaluator family, including wrong tool arguments, wrong numeric results, missing business changes, repeated invalid calls, and user-intent deviation. The reward endpoint must use the declared metric scores and reward_formula exactly.
 
@@ -328,7 +340,7 @@ The outer workflow has already generated app.py, task_impl.py, tools.json, requi
 
 Mutation testing is a mandatory executable acceptance gate, not documentation. Implement the declared SANDBOX_MUTATION_MODE environment variable with production default disabled and every declared mode: constant_tool_result, skip_business_write, constant_reward, ignore_tool_arguments, and bypass_trainer_auth. Each non-disabled mode must deliberately introduce the named defect in an externally observable way so the normal acceptance tests fail: constant_tool_result must make a valid tool case return an invalid/constant result; skip_business_write must suppress a business write that a success scenario requires; constant_reward must make /v1/reward disagree with the declared formula or omit valid components; ignore_tool_arguments must accept or process an invalid/different argument contrary to the tool schema; bypass_trainer_auth must allow an unauthenticated Trainer-only request. Do not expose a mutation endpoint and never enable a mutation mode in production. The outer workflow will run acceptance.sh and independent HTTP conformance checks once per mutation mode and will reject the build if any mutant survives. Ensure acceptance.sh itself starts the app with inherited environment variables and has assertions for every mutation mode.
 
-The executable acceptance script must invoke python3 (or the active interpreter via \"\$PYTHON\"), never the bare python command, because the outer environment may not provide a python alias. Its TCP-permission fallback must validate the same contract through the public business API and must not hard-code a task-specific field unless that field and expected value are present in BUILD_CONTRACT/task.json.
+The executable acceptance script must invoke python3 (or the active interpreter via "$PYTHON"), never the bare python command, because the outer environment may not provide a python alias. Its TCP-permission fallback must validate the same contract through the public business API and must not hard-code a task-specific field unless that field and expected value are present in BUILD_CONTRACT/task.json.
 
 Tool handlers enforce the JSON schema, not stronger restrictions inferred from descriptive examples: wording such as "fixed" does not create an enum. A read/search/lookup tool must remain read-only. For deliverable-only tasks with no mutating business tool, POST /v1/agent_response is the persisted deliverable boundary; do not make a read tool write a synthetic outcome row. For environment_plan.mode=external_capability, route task tools through ExternalCapabilityClient. It supports a configured HTTP provider, deterministic training fixtures, and an explicit data_unavailable response; never fabricate live external facts.
 Do not inspect replay/tool-call history inside a business handler to reject a call as PRECONDITION_FAILED or to enforce capability-DAG order. A downstream tool validates its declared arguments and current business state; shared ContractRewardGate and process metrics own causal ordering. This separation is mandatory so an Agent can recover from an early wrong-order call by later executing a valid dependency chain.
@@ -341,12 +353,21 @@ EOF
 
 run_code_agent() {
   local phase_prompt="$1"
+  local capture code
   case "$agent" in
     codex)
       codex_args=(exec --approve-for-me)
       if [[ -n "$model" ]]; then codex_args+=(--model "$model"); fi
       codex_args+=("$phase_prompt")
-      (cd "$output_path" && codex "${codex_args[@]}") </dev/null
+      capture="$(mktemp "${TMPDIR:-/tmp}/envfactory-agent-start.XXXXXX")"
+      (cd "$output_path" && codex "${codex_args[@]}") </dev/null 2>&1 | tee "$capture"
+      code="${PIPESTATUS[0]}"
+      if [[ "$code" -ne 0 ]] && grep -q 'failed to initialize in-process app-server client' "$capture"; then
+        current_failure_category="infrastructure"
+        current_failure_code="INFRA"
+      fi
+      rm -f "$capture"
+      return "$code"
       ;;
     claude)
       (cd "$output_path" && claude --dangerously-skip-permissions --print "$phase_prompt") </dev/null
@@ -365,7 +386,7 @@ write_status() {
   local status="$1"
   local exit_code="$2"
   local message="${3:-}"
-  python3 - "$output_path/status.json" "$status" "$exit_code" "$message" "$agent" "$runtime" "$current_phase" "$current_node_id" "$current_attempt" "$current_defect_ids" "$current_failure_category" "$model" "$review_model" <<'PY'
+  python3 - "$output_path/status.json" "$status" "$exit_code" "$message" "$agent" "$runtime" "$current_phase" "$current_node_id" "$current_attempt" "$current_defect_ids" "$current_failure_category" "$model" "$review_model" "${failed_phase:-}" "$current_failure_code" <<'PY'
 import json
 import sys
 from datetime import datetime, timezone
@@ -387,6 +408,8 @@ payload = {
     "failure_category": sys.argv[11] or None,
     "model": sys.argv[12] or None,
     "review_model": sys.argv[13] or None,
+    "failed_phase": sys.argv[14] or None,
+    "failure_code": sys.argv[15] or None,
     "finished_at": datetime.now(timezone.utc).isoformat(),
 }
 
@@ -490,21 +513,8 @@ if not isinstance(interface, dict) or interface.get("protocol") != "http":
 endpoints = interface.get("endpoints")
 if not isinstance(endpoints, list):
     raise SystemExit("runtime_interface.endpoints 必须是数组")
-required_endpoints = {
-    ("health", "GET", "/health"),
-    ("reset", "POST", "/v1/reset"),
-  ("observation", "GET", "/v1/observation"),
-  ("state", "GET", "/v1/state"),
-  ("tools", "GET", "/v1/tools"),
-  ("user_simulator", "POST", "/v1/user_simulator"),
-  ("reward", "GET", "/v1/reward"),
-  ("replay", "GET", "/v1/replay"),
-}
-actual_endpoints = {
-    (item.get("name"), item.get("method"), item.get("path"))
-    for item in endpoints if isinstance(item, dict)
-}
-if not required_endpoints <= actual_endpoints:
+from env_factory.contracts.runtime_contract import missing_system_endpoints
+if missing_system_endpoints(interface):
     raise SystemExit("runtime_interface 缺少系统或 reward endpoint")
 declared_tool_endpoints = [
     item for item in endpoints
@@ -658,7 +668,7 @@ validate_runtime_trace() {
     echo "运行时契约 trace 校验失败：缺少或为空 runtime_trace.jsonl" >&2
     return 1
   fi
-  python3 "$project_dir/scripts/validate_runtime_trace.py" \
+  python3 "$project_dir/scripts/sandbox/validate_runtime_trace.py" \
     --contract "$contract_path" \
     --trace "$trace_path"
 }
@@ -666,7 +676,7 @@ validate_runtime_trace() {
 validate_outer_conformance() {
   local outer_dir
   outer_dir="$(mktemp -d "${TMPDIR:-/tmp}/envfactory-outer-conformance.XXXXXX")"
-  if ! python3 "$project_dir/scripts/generate_outer_conformance.py" \
+  if ! python3 "$project_dir/scripts/sandbox/generate_outer_conformance.py" \
       --root "$output_path" --output "$outer_dir" --check; then
     rm -rf "$outer_dir"
     return 1
@@ -679,7 +689,7 @@ validate_mutation_tests() {
   local mutation_log mutation_status
   mutation_log="$output_path/mutation_report.log"
   set +e
-  python3 "$project_dir/scripts/run_mutation_tests.py" --root "$output_path" \
+  python3 "$project_dir/scripts/sandbox/run_mutation_tests.py" --root "$output_path" \
     >"$mutation_log" 2>&1
   mutation_status=$?
   set -e
@@ -690,7 +700,7 @@ validate_mutation_tests() {
 validate_training_readiness() {
   echo "执行 RL 训练素材环境准备就绪硬门禁"
   SANDBOX_TRAINER_API_KEY="${SANDBOX_TRAINER_API_KEY:-envfactory-readiness-key}" \
-    python3 "$project_dir/scripts/validate_training_readiness.py" \
+    python3 "$project_dir/scripts/sandbox/validate_training_readiness.py" \
       --root "$output_path" --output "$output_path/training_readiness.json"
 }
 
@@ -698,13 +708,13 @@ validate_agentic_training_value() {
   echo "执行 Agentic training value hard gate"
   SANDBOX_TRAINER_API_KEY="${SANDBOX_TRAINER_API_KEY:-envfactory-agentic-value-key}" \
   SANDBOX_EVALUATOR_MOCK="${SANDBOX_EVALUATOR_MOCK:-1}" \
-    python3 "$project_dir/scripts/validate_agentic_training_value.py" \
+    python3 "$project_dir/scripts/sandbox/validate_agentic_training_value.py" \
       --root "$output_path" --output "$output_path/agentic_training_value.json"
 }
 
 validate_runtime_genericity() {
   echo "执行运行时通用性/反硬编码校验"
-  python3 "$project_dir/scripts/validate_sandbox_runtime.py" --root "$output_path"
+  python3 "$project_dir/scripts/sandbox/validate_sandbox_runtime.py" --root "$output_path"
 }
 
 validate_semantic_review() {
@@ -730,6 +740,9 @@ stays within the Luna context budget.
 Compare task.json, BUILD_CONTRACT.json, the business data manifests, tools.json,
 app.py, runtime_llm.py, sandbox_runtime.py, tests, runtime_trace.jsonl, and the
 outer-conformance evidence.
+Business data and user simulation files may be ignored by Git; verify their
+presence with find or direct path checks. An empty rg --files result is not
+evidence that an ignored runtime artifact is missing.
 Treat defects.json and older review reports as non-authoritative hints only;
 use the current acceptance output, current mutation output, and current source
 files as evidence. If a finding contradicts a current executable result, do
@@ -900,12 +913,12 @@ for filename in ("task.json", "BUILD_CONTRACT.json", "tools.json", "runtime_trac
 report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 PY
   rm -f "$review_tmp"
-  python3 "$project_dir/scripts/validate_review_report.py" \
+  python3 "$project_dir/scripts/sandbox/validate_review_report.py" \
     --report "$output_path/review_report.json"
 }
 
 validate_development_plan() {
-  python3 "$project_dir/scripts/validate_development_plan.py" "$output_path/development_plan.json"
+  python3 "$project_dir/scripts/sandbox/validate_development_plan.py" "$output_path/development_plan.json"
 }
 
 validate_single_defect() {
@@ -920,6 +933,9 @@ You are an independent read-only defect verifier for an RL sandbox.
 
 Verify only defect __DEFECT_ID__ in the current sandbox. Read the current
 BUILD_CONTRACT.json, current source files, current tests, and the defect below.
+Git-ignored runtime data may be absent from rg --files. For missing-artifact
+claims, check the manifest paths directly with find data -type f or ls and
+inspect the declared files before deciding they are absent.
 Do not trust older review reports or defects.json. Run or inspect the smallest
 executable check that proves this exact defect is fixed. Do not modify files.
 Your read-only sandbox may prohibit temporary files, TCP binding, or pytest
@@ -1326,7 +1342,7 @@ validate_delivery() {
 
 run_agent_and_finalize_impl() {
   set_build_phase "buildability" "" 0 "" "正在执行任务可构建性预检"
-  if ! PYTHONDONTWRITEBYTECODE=1 python3 "$project_dir/scripts/assess_task_buildability.py" \
+  if ! PYTHONDONTWRITEBYTECODE=1 python3 "$project_dir/scripts/sandbox/assess_task_buildability.py" \
       --root "$output_path" --output "$output_path/buildability.json"; then
     echo "任务契约未通过可构建性预检；不会消耗 Code Agent 修复预算" >&2
     return 4
@@ -1336,7 +1352,7 @@ run_agent_and_finalize_impl() {
 
   if [[ "$resume" != "true" ]]; then
     set_build_phase "planning" "" 1 "" "正在生成确定性模块开发拓扑"
-    python3 "$project_dir/scripts/generate_development_plan.py" \
+    python3 "$project_dir/scripts/sandbox/generate_development_plan.py" \
       --contract "$output_path/BUILD_CONTRACT.json" \
       --output "$output_path/development_plan.json"
     validate_development_plan
@@ -1347,7 +1363,7 @@ run_agent_and_finalize_impl() {
     node_ids=("")
     while IFS= read -r node_id; do
       [[ -n "$node_id" ]] && node_ids+=("$node_id")
-    done < <(python3 "$project_dir/scripts/validate_development_plan.py" "$output_path/development_plan.json" --ids | tail -n +2)
+    done < <(python3 "$project_dir/scripts/sandbox/validate_development_plan.py" "$output_path/development_plan.json" --ids | tail -n +2)
     for node_id in "${node_ids[@]}"; do
     [[ -z "$node_id" ]] && continue
     node_done="false"
@@ -1355,11 +1371,11 @@ run_agent_and_finalize_impl() {
     for (( node_attempt = 1; node_attempt <= max_attempts; node_attempt++ )); do
       node_json=$(python3 -c 'import json,sys; plan=json.load(open(sys.argv[1], encoding="utf-8")); print(json.dumps(next(node for node in plan["nodes"] if node["id"] == sys.argv[2]), ensure_ascii=False, indent=2))' "$output_path/development_plan.json" "$node_id")
       set_build_phase "node_development" "$node_id" "$node_attempt" "" "正在开发模块节点：$node_id"
-      node_prompt="Read BUILD_CONTRACT.json, TASK_PROMPT.md, and the referenced artifacts. Current work is limited to one node; do not redesign validated modules or modify task.json, BUILD_CONTRACT.json, or development_plan.json.
+      node_prompt="Read the relevant fields of BUILD_CONTRACT.json, TASK_PROMPT.md, and referenced artifacts with focused queries; avoid dumping complete runtime and contract files. Current work is limited to one node; do not redesign validated modules or modify task.json, BUILD_CONTRACT.json, or development_plan.json.
 节点定义：
 $node_json
 
-Implement the task-specific behavior required by this node. Reuse runtime_llm.py and sandbox_runtime.py for platform behavior. Run every validation command declared by the node. If validation fails, fix the first root cause before continuing."
+Implement the task-specific behavior required by this node. Reuse runtime_llm.py and sandbox_runtime.py for platform behavior. Run every validation command declared by the node using the local validation interpreter named in TASK_PROMPT.md if bare python3 lacks pytest. Do not attempt a network package install. If validation fails, fix the first root cause before continuing."
       set +e
       platform_backup="$(snapshot_platform_assets)"
       run_code_agent "$node_prompt"
@@ -1375,6 +1391,9 @@ Implement the task-specific behavior required by this node. Reuse runtime_llm.py
       fi
       node_error="节点 $node_id 开发退出码：$node_status"
       echo "开发节点 $node_id 第 ${node_attempt}/${max_attempts} 次失败：$node_error" >&2
+      if [[ "$current_failure_code" == "INFRA" ]]; then
+        return 5
+      fi
     done
     if [[ "$node_done" != "true" ]]; then
       echo "$node_error" >&2
@@ -1388,7 +1407,8 @@ Implement the task-specific behavior required by this node. Reuse runtime_llm.py
 
   implementation_succeeded="false"
   implementation_error=""
-  for (( repair_attempt = 1; repair_attempt <= max_attempts; repair_attempt++ )); do
+  repair_attempt=0
+  while true; do
     set_build_phase "acceptance" "" "$repair_attempt" "" "正在执行完整业务验收"
     set +e
     delivery_error="$(validate_delivery 2>&1)"
@@ -1402,13 +1422,21 @@ Implement the task-specific behavior required by this node. Reuse runtime_llm.py
     printf '%s\n' "$implementation_error" > "$output_path/last_delivery_error.txt"
     extract_structured_defects >/dev/null
     current_defect_ids="$(defect_ids)"
-    defect_count="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1], encoding="utf-8"))))' "$output_path/defects.json")"
     # The development agent repairs one evidenced root cause at a time. Feeding all findings
     # into one turn causes broad rewrites and regressions; remaining defects
     # are rediscovered against the repaired implementation in the next round.
-    if (( defect_count > 1 )); then defect_count=1; fi
-    for (( defect_index = 0; defect_index < defect_count; defect_index++ )); do
-      defect="$(defect_json "$defect_index")"
+    # The budget is persisted per defect, since extract_structured_defects may
+    # reuse DEF-001 for a different root cause on the next validation pass.
+    if ! budget_line="$(python3 "$project_dir/scripts/sandbox/defect_attempt_budget.py" \
+      --state "$output_path/defect_attempts.json" --defects "$output_path/defects.json" \
+      --max-attempts "$max_attempts")"; then
+      echo "本次验收中的缺陷均达到各自 ${max_attempts} 次修复上限：$implementation_error" >&2
+      return 5
+    fi
+    read -r defect_index budget_id repair_attempt <<<"$budget_line"
+    defect="$(defect_json "$defect_index")"
+    echo "针对缺陷 $budget_id 执行第 ${repair_attempt}/${max_attempts} 次修复"
+    if [[ -n "$defect" ]]; then
       defect_id="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("id", "unknown"))' <<<"$defect")"
       set_build_phase "defect_repair" "$defect_id" "$repair_attempt" "$current_defect_ids" "正在修复结构化缺陷：$defect_id"
       before_defect_hash="$(implementation_hash)"
@@ -1429,6 +1457,9 @@ $defect
       set -e
       if [[ "$repair_status" -ne 0 ]]; then
         echo "缺陷 $defect_id 修复退出码：$repair_status" >&2
+        if [[ "$current_failure_code" == "INFRA" ]]; then
+          return 5
+        fi
       fi
       after_defect_hash="$(implementation_hash)"
       if [[ "$before_defect_hash" == "$after_defect_hash" ]]; then
@@ -1464,30 +1495,9 @@ PY
           repair_status=8
         fi
       fi
-    done
-    echo "结构化缺陷修复第 ${repair_attempt}/${max_attempts} 轮未通过：$implementation_error" >&2
-  done
-  # A repair made during the last allowed iteration has not yet gone through
-  # the full delivery gate. Always grant it one final, read-only validation;
-  # otherwise a successful last repair is incorrectly reported as exhausted.
-  if [[ "$implementation_succeeded" != "true" ]]; then
-    set_build_phase "acceptance" "" "$max_attempts" "$current_defect_ids" "正在执行末次修复后的最终业务验收"
-    set +e
-    delivery_error="$(validate_delivery 2>&1)"
-    delivery_status=$?
-    set -e
-    if [[ "$delivery_status" -eq 0 ]]; then
-      implementation_succeeded="true"
-      implementation_error=""
-    else
-      implementation_error="$delivery_error"
-      printf '%s\n' "$implementation_error" > "$output_path/last_delivery_error.txt"
     fi
-  fi
-  if [[ "$implementation_succeeded" != "true" ]]; then
-    echo "结构化缺陷修复连续 ${max_attempts} 轮未通过：$implementation_error" >&2
-    return 5
-  fi
+    echo "缺陷 $budget_id 第 ${repair_attempt}/${max_attempts} 次修复后重新验收" >&2
+  done
   echo "Code Agent 模块化开发和缺陷修复完成：$output_path"
   echo "执行 BUILD_CONTRACT/task.json 深度相等和工具合规复核"
   set_build_phase "contract_validation" "" "$repair_attempt" "$current_defect_ids" "正在校验构建契约和工具 schema"
@@ -1526,7 +1536,7 @@ PY
     return 5
   fi
   # 留一份可读验收证据；最终判定仍来自上面的临时目录重生成结果。
-  python3 "$project_dir/scripts/generate_outer_conformance.py" \
+  python3 "$project_dir/scripts/sandbox/generate_outer_conformance.py" \
     --root "$output_path" --output "$output_path/.outer_conformance" --check
 
   set_build_phase "docker_build" "" "$repair_attempt" "$current_defect_ids" "正在处理 Docker 构建"
@@ -1537,7 +1547,11 @@ PY
       build_args=(--context "$output_path" --tag "$current_tag" --port "$sandbox_port")
       if [[ -n "$env_file" ]]; then build_args+=(--env-file "$env_file"); fi
       if [[ "$start" == "true" ]]; then build_args+=(--start); fi
-      "$project_dir/scripts/build_docker_sandbox_image.sh" "${build_args[@]}"
+      if "$project_dir/scripts/build_docker_sandbox_image.sh" "${build_args[@]}"; then
+        :
+      else
+        return $?
+      fi
       ;;
     *)
       echo "不支持的 runtime：${runtime}；可选值为 none、docker"
@@ -1559,7 +1573,9 @@ run_agent_and_finalize() {
     exit_code=$?
   fi
   if [[ "$exit_code" -eq 0 ]]; then
+    failed_phase=""
     current_failure_category=""
+    current_failure_code=""
     current_phase="completed"
     current_node_id=""
     current_defect_ids=""
@@ -1567,7 +1583,7 @@ run_agent_and_finalize() {
     if [[ "$auto_score" == "true" ]]; then
       echo "执行构建后离线评分：$output_path/offline_sandbox_score.json"
       set +e
-      python3 "$project_dir/scripts/score_sandbox_offline.py" \
+      python3 "$project_dir/scripts/sandbox/score_sandbox_offline.py" \
         "$output_path" --project "$project_dir" \
         >"$output_path/offline_score.log" 2>&1
       score_status=$?
@@ -1579,7 +1595,9 @@ run_agent_and_finalize() {
       fi
     fi
   else
-    case "$current_phase" in
+    failed_phase="$current_phase"
+    if [[ "$current_failure_code" != "INFRA" ]]; then
+      case "$current_phase" in
       buildability)
         current_failure_category="task_contract_failure"
         ;;
@@ -1589,7 +1607,8 @@ run_agent_and_finalize() {
       *)
         current_failure_category="workflow_error"
         ;;
-    esac
+      esac
+    fi
     current_phase="failed"
     write_status "failed" "$exit_code" "沙箱环境构建失败，请查看 agent.log"
   fi
@@ -1600,6 +1619,8 @@ start_task() {
   local task_index="$1"
   local task_output="$2"
   output_path="$task_output"
+  failed_phase=""
+  current_failure_code=""
   current_tag="$tag"
   if (( task_count > 1 )); then
     current_tag="${tag}-task-$(printf '%03d' "$((task_index + 1))")"

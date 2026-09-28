@@ -11,17 +11,17 @@ from pathlib import Path
 import re
 from typing import Any, Callable, Mapping
 
-from env_factory.material_artifacts import (
+from env_factory.evidence.material_artifacts import (
     MATERIAL_MANIFEST_VERSION,
     SUPPORTED_MATERIAL_MANIFEST_VERSIONS,
     digest_json,
     evidence_artifact_digests,
     portable_artifact_digests,
 )
-from env_factory.execution_provenance import valid_execution_provenance
-from env_factory.generation_provenance import valid_generation_provenance
-from env_factory.certification_policy import valid_certification_policy
-from env_factory.experiment_contract import valid_experiment_contract
+from env_factory.evidence.execution_provenance import valid_execution_provenance
+from env_factory.evidence.generation_provenance import valid_generation_provenance
+from env_factory.evidence.certification_policy import valid_certification_policy
+from env_factory.evidence.experiment_contract import valid_experiment_contract
 
 
 V5_ITEM_FIELDS = {
@@ -230,7 +230,7 @@ def verify(
             # evaluator source tree.
             try:
                 if fingerprint is None:
-                    from score_sandbox import evidence_fingerprint
+                    from env_factory.sandbox_scoring import evidence_fingerprint
                     fingerprint = evidence_fingerprint
                 actual_fingerprint = fingerprint(root, project)
             except Exception as exc:  # verifier must report, not abort the batch

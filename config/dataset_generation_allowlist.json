@@ -1,0 +1,10 @@
+{
+  "datasets": [
+    {
+      "ref": "mohammadtalib786/retail-sales-dataset",
+      "version": 1,
+      "license": "CC0: Public Domain",
+      "csv_sha256": "924860cb2e8571373d1a29d658c6da212e8d158663f722416d5008f525c39b00"
+    }
+  ]
+}

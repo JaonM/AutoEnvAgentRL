@@ -116,6 +116,7 @@ fi
 candidates=("$base_image" "${mirrors[@]}")
 
 selected=""
+cached_base="false"
 manifest_file="$(mktemp "${TMPDIR:-/tmp}/env-factory-manifest.XXXXXX")"
 resolved_dockerfile="$(mktemp "${TMPDIR:-/tmp}/env-factory-dockerfile.XXXXXX")"
 package_inventory="$(mktemp "${TMPDIR:-/tmp}/env-factory-packages.XXXXXX")"
@@ -130,18 +131,28 @@ cleanup() {
 }
 trap cleanup EXIT
 read -r docker_os docker_arch < <(docker info --format '{{.OSType}} {{.Architecture}}')
-for candidate in "${candidates[@]}"; do
-  [[ -n "$candidate" ]] || continue
-  echo "验证基础镜像可达性：$candidate" >&2
-  if docker manifest inspect --verbose "$candidate" >"$manifest_file" 2>/dev/null; then
-    resolved="$(python3 "$script_dir/resolve_container_image.py" \
-      "$manifest_file" "$candidate" "$docker_os" "$docker_arch" || true)"
-    if [[ -n "$resolved" ]]; then
-      selected="$resolved"
-      break
-    fi
+if docker image inspect "$base_image" >"$manifest_file" 2>/dev/null; then
+  selected="$(python3 "$script_dir/sandbox/resolve_container_image.py" \
+    "$manifest_file" "$base_image" "$docker_os" "$docker_arch" --local-inspect || true)"
+  if [[ -n "$selected" ]]; then
+    cached_base="true"
+    echo "使用平台匹配且带仓库摘要的本地缓存基础镜像：$selected" >&2
   fi
-done
+fi
+if [[ -z "$selected" ]]; then
+  for candidate in "${candidates[@]}"; do
+    [[ -n "$candidate" ]] || continue
+    echo "验证基础镜像可达性：$candidate" >&2
+    if docker manifest inspect --verbose "$candidate" >"$manifest_file" 2>/dev/null; then
+      resolved="$(python3 "$script_dir/sandbox/resolve_container_image.py" \
+        "$manifest_file" "$candidate" "$docker_os" "$docker_arch" || true)"
+      if [[ -n "$resolved" ]]; then
+        selected="$resolved"
+        break
+      fi
+    fi
+  done
+fi
 if [[ -z "$selected" ]]; then
   echo "原始基础镜像及平替镜像无法解析为当前平台的内容摘要：$base_image" >&2
   exit 6
@@ -161,13 +172,15 @@ awk -v image="$selected" '
 # Make the portable source identical to the context whose image is measured.
 # In particular, COPY . . must not embed the earlier floating-tag Dockerfile.
 cp "$resolved_dockerfile" "$dockerfile"
-context_report="$(python3 "$script_dir/validate_docker_context.py" "$context")" || {
+context_report="$(python3 "$script_dir/sandbox/validate_docker_context.py" "$context")" || {
   echo "Docker 构建上下文不符合可移植/敏感文件隔离契约：$context" >&2
   exit 3
 }
 echo "$context_report"
 build_context_sha256="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["context_sha256"])' "$context_report")"
-docker build --pull --file "$dockerfile" --tag "$tag" "$context"
+pull_flag="--pull"
+if [[ "$cached_base" == "true" ]]; then pull_flag="--pull=false"; fi
+docker build "$pull_flag" --file "$dockerfile" --tag "$tag" "$context"
 # Keep a machine-readable image provenance record beside the sandbox.
 image_id="$(docker image inspect --format '{{.Id}}' "$tag")"
 image_user="$(docker image inspect --format '{{.Config.User}}' "$tag")"

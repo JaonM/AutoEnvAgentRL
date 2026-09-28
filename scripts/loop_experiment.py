@@ -20,15 +20,15 @@ import uuid
 from urllib.error import URLError
 from urllib.request import ProxyHandler, build_opener
 
-from env_factory.execution_provenance import (
+from env_factory.evidence.execution_provenance import (
     collect_execution_provenance,
     verify_execution_provenance,
 )
-from env_factory.task_similarity import task_partition_isolation
-from env_factory.task_portability import valid_task_lineage
-from env_factory.material_artifacts import digest_json
+from env_factory.tasks.task_similarity import task_partition_isolation
+from env_factory.tasks.task_portability import valid_task_lineage
+from env_factory.evidence.material_artifacts import digest_json
 
-MODEL = "gpt-5.6-luna"
+MODEL = "gpt-6-luna"
 ACTIVE_PROCESSES = set()
 ACTIVE_CONTAINER_CIDFILES = set()
 PROCESS_LOCK = threading.Lock()
@@ -320,6 +320,41 @@ def failure(stage, detail, **extra):
             "live_rollout_verified": False, **extra}
 
 
+BUILD_PHASE_FAILURES = {
+    "node_development": ("BUILD_MODULE", "sandbox_builder"),
+    "semantic_review": ("BUILD_SEMANTIC_REVIEW", "sandbox_builder"),
+    "defect_repair": ("BUILD_DEFECT_REPAIR", "sandbox_builder"),
+    "defect_validation": ("BUILD_DEFECT_VALIDATION", "sandbox_builder"),
+    "contract_validation": ("BUILD_CONTRACT", "sandbox_builder"),
+    "trace_validation": ("BUILD_TRACE", "sandbox_builder"),
+    "runtime_validation": ("BUILD_RUNTIME_INTEGRITY", "platform_runtime_boundary"),
+    "mutation_testing": ("BUILD_MUTATION", "sandbox_builder"),
+    "training_readiness": ("BUILD_TRAINING_READINESS", "sandbox_builder"),
+    "agentic_training_value": ("BUILD_AGENTIC_VALUE", "sandbox_builder"),
+    "docker_build": ("BUILD_DOCKER", "container_builder"),
+}
+
+
+def classify_build_failure(output):
+    """Use the builder's final gate instead of labeling every exit as business logic."""
+    try:
+        status = json.loads((output / "status.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if status.get("status") != "failed":
+        return {}
+    phase = status.get("failed_phase")
+    if not isinstance(phase, str) or not phase:
+        return {}
+    if status.get("failure_code") == "INFRA" and status.get("failure_category") == "infrastructure":
+        return {"build_failed_phase": phase, "failure_class": "infrastructure",
+                "failure_code": "INFRA", "repair_target": "runner_or_provider"}
+    code, target = BUILD_PHASE_FAILURES.get(
+        phase, ("BUILD_BUSINESS", "sandbox_builder")
+    )
+    return {"build_failed_phase": phase, "failure_code": code, "repair_target": target}
+
+
 def summarize(results, threshold, *, targets=None):
     total = len(results)
     qualified_items = [
@@ -531,7 +566,7 @@ def run_holdout(project, root, config, previous_reports, *, batch_number=1):
 
 
 def _build_one(project, task_path, output, config, seed=None):
-    from env_factory.task_quality import score_file
+    from env_factory.tasks.task_quality import score_file
     output.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
     task_score = score_file(task_path, min_score=config["threshold"]).to_dict()
@@ -592,7 +627,11 @@ def _build_one(project, task_path, output, config, seed=None):
                     failure_code=issue_codes[0] if issue_codes else "TASK_BUILDABILITY",
                     buildability=buildability, **common,
                 )
-        return failure("infrastructure" if built["timed_out"] else "build", "see build.log", **common)
+        if built["timed_out"]:
+            return failure("infrastructure", "see build.log", **common)
+        diagnosis = classify_build_failure(output)
+        stage = diagnosis.pop("failure_class", "build")
+        return failure(stage, "see build.log", **common, **diagnosis)
     try:
         task_lineage = json.loads((output / "task_lineage.json").read_text())
     except (OSError, json.JSONDecodeError):
@@ -609,7 +648,7 @@ def _build_one(project, task_path, output, config, seed=None):
             **common,
         )
     report_path = output / "score_summary.json"
-    scored = run_process([sys.executable, str(project / "scripts/score_sandbox_offline.py"), str(output),
+    scored = run_process([sys.executable, str(project / "scripts/sandbox/score_sandbox_offline.py"), str(output),
                           "--project", str(project), "--threshold", str(config["threshold"]),
                           "--output", str(report_path)], project, output / "score.log", config["score_timeout"])
     common["scoring"] = scored
@@ -629,7 +668,7 @@ def _build_one(project, task_path, output, config, seed=None):
         governance_path = output / "data_governance.json"
         governance_run = run_process([
             sys.executable,
-            str(project / "scripts/audit_data_governance.py"),
+            str(project / "scripts/rollout/audit_data_governance.py"),
             "--root", str(output),
             "--output", str(governance_path),
         ], project, output / "data_governance.log", config["score_timeout"])
@@ -660,7 +699,7 @@ def _build_one(project, task_path, output, config, seed=None):
             return result
         live_path = output / "live_rollout.json"
         live_command = [
-            sys.executable, str(project / "scripts/run_live_rollout.py"),
+            sys.executable, str(project / "scripts/rollout/run_live_rollout.py"),
             str(output), "--output", str(live_path),
             "--episodes", str(config["rollout_episodes"]),
             "--max-steps", str(config["rollout_steps"]),
@@ -734,7 +773,7 @@ def _build_one(project, task_path, output, config, seed=None):
             privacy_path = output / "trajectory_privacy.json"
             privacy_run = run_process([
                 sys.executable,
-                str(project / "scripts/audit_trajectory_privacy.py"),
+                str(project / "scripts/rollout/audit_trajectory_privacy.py"),
                 "--rollout", str(live_path),
                 "--output", str(privacy_path),
             ], project, output / "trajectory_privacy.log", config["score_timeout"])
@@ -770,7 +809,7 @@ def _build_one(project, task_path, output, config, seed=None):
             calibration_path = output / "agentic_training_value_live.json"
             calibration_command = [
                 sys.executable,
-                str(project / "scripts/validate_agentic_training_value.py"),
+                str(project / "scripts/sandbox/validate_agentic_training_value.py"),
                 "--root", str(output), "--output", str(calibration_path),
                 "--evaluator-mode", "live",
             ]
@@ -1035,7 +1074,10 @@ def main():
         help="第一阶段最大质量轮数；0 表示不设置轮数上限",
     )
     parser.add_argument("--max-concurrency", type=int, default=2)
-    parser.add_argument("--max-attempts", type=int, default=3)
+    parser.add_argument(
+        "--max-attempts", type=int, default=3,
+        help="每个沙箱开发节点及每个独立缺陷的最大修复次数",
+    )
     parser.add_argument(
         "--infrastructure-retries", type=int, default=1,
         help="构建进程超时后的自动 resume 次数；不用于业务缺陷重试",
@@ -1114,7 +1156,7 @@ def main():
     project = args.project.resolve()
     from dotenv import load_dotenv
     load_dotenv(project / ".env")
-    from env_factory.model_roles import resolve_model_roles
+    from env_factory.evidence.model_roles import resolve_model_roles
     model_roles = resolve_model_roles(os.environ)
     bundle_private_key = args.bundle_signing_private_key or (
         Path(os.environ["ENVFACTORY_BUNDLE_SIGNING_PRIVATE_KEY"])
@@ -1132,7 +1174,7 @@ def main():
                 "trusted public keys"
             )
         try:
-            from env_factory.material_attestation import (
+            from env_factory.evidence.material_attestation import (
                 private_key_public_identity,
                 public_key_identity,
             )
@@ -1174,7 +1216,7 @@ def main():
             parser.error("ENVFACTORY_MIN_FREE_GIB must be a positive number")
         if minimum_free_gib <= 0:
             parser.error("ENVFACTORY_MIN_FREE_GIB must be a positive number")
-        from env_factory.production_preflight import run_production_preflight
+        from env_factory.evidence.production_preflight import run_production_preflight
         production_preflight = run_production_preflight(
             project,
             root.parent,
@@ -1187,7 +1229,7 @@ def main():
         "project", "output", "task_root", "task_ids",
         "bundle_signing_private_key", "bundle_trusted_public_key",
     }}
-    from env_factory.data_governance import provider_identity
+    from env_factory.evidence.data_governance import provider_identity
     generation_provider = provider_identity(
         model_roles["generation"]["base_url"],
         model_roles["generation"]["model"],
@@ -1346,7 +1388,7 @@ def main():
                     "rounds": reports, "holdout": holdouts[0], "holdouts": holdouts,
                 }
                 if args.certification_profile == "production":
-                    from env_factory.production_preflight import (
+                    from env_factory.evidence.production_preflight import (
                         run_production_preflight,
                     )
                     from certify_training_materials import (

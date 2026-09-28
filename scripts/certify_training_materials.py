@@ -23,40 +23,41 @@ import tempfile
 import uuid
 from typing import Any, Iterable, Mapping
 
-from env_factory.material_artifacts import (
+from env_factory.evidence.material_artifacts import (
     MATERIAL_MANIFEST_VERSION,
     digest_json,
     evidence_artifact_digests,
     portable_artifact_digest,
     portable_artifact_digests,
 )
-from env_factory.material_privacy import audit_rollout_privacy
-from env_factory.trajectory_schema import complete_episode
-from env_factory.data_governance import (
+from env_factory.evidence.material_privacy import audit_rollout_privacy
+from env_factory.evidence.trajectory_schema import complete_episode
+from env_factory.evidence.data_governance import (
     FORBIDDEN_OUTBOUND,
     OUTBOUND_SURFACES,
     REQUIRED_OUTBOUND_SURFACES,
     valid_governance_report,
     valid_provider_binding as valid_governed_provider_binding,
 )
-from env_factory.container_provenance import verify_container_provenance
-from env_factory.certification_policy import (
+from env_factory.evidence.container_provenance import verify_container_provenance
+from env_factory.evidence.certification_policy import (
     canonical_certification_policy,
     policy_for_experiment,
 )
-from env_factory.execution_provenance import verify_execution_provenance
-from env_factory.experiment_contract import (
+from env_factory.evidence.execution_provenance import verify_execution_provenance
+from env_factory.evidence.experiment_contract import (
     build_experiment_contract,
     valid_experiment_contract,
 )
-from env_factory.task_similarity import near_duplicate_rate, task_partition_isolation
-from env_factory.generation_provenance import generation_provenance_snapshot
-from env_factory.runtime_provenance import valid_container_rollout_execution
+from env_factory.tasks.task_similarity import near_duplicate_rate, task_partition_isolation
+from env_factory.evidence.generation_provenance import generation_provenance_snapshot
+from env_factory.evidence.runtime_provenance import valid_container_rollout_execution
 from env_factory.sandbox_scoring import valid_score_report
-from env_factory.task_quality import score_file
-from env_factory.material_consumer import BUNDLE_VERSION
-from env_factory.model_response_provenance import response_provenance
-from env_factory.production_preflight import (
+from env_factory.tasks.task_quality import score_file
+from env_factory.contracts.reward_contract import terminal_outcome_weight
+from env_factory.evidence.material_consumer import BUNDLE_VERSION
+from env_factory.evidence.model_response_provenance import response_provenance
+from env_factory.evidence.production_preflight import (
     REQUIRED_CHECKS,
     run_production_preflight,
     valid_production_preflight,
@@ -179,7 +180,7 @@ def run_sandbox_revalidation(
             output = Path(directory) / "score_summary.json"
             command = [
                 sys.executable,
-                str(project / "scripts/score_sandbox_offline.py"),
+                str(project / "scripts/sandbox/score_sandbox_offline.py"),
                 str(root),
                 "--project", str(project),
                 "--threshold", str(policy["score_threshold"]),
@@ -343,6 +344,14 @@ def valid_reward_calibration(
         if isinstance(step, Mapping) and step.get("operation") == "tool_call"
     ]
     required = {"goal_success", "goal_failure"}
+    terminal_weight = terminal_outcome_weight(dict(task))
+    if terminal_weight > 0:
+        if not any(
+            isinstance(step, Mapping) and step.get("operation") == "agent_response"
+            for step in steps
+        ):
+            return False
+        required.add("wrong_final_answer")
     if tool_required and any(
         isinstance(step, Mapping) and step.get("operation") == "agent_response"
         for step in steps
@@ -374,6 +383,18 @@ def valid_reward_calibration(
         return False
     for name in required - {"goal_success"}:
         case = cases.get(name)
+        if name == "wrong_final_answer":
+            reward = case.get("reward") if isinstance(case, Mapping) else None
+            required_drop = max(0.05, 0.5 * terminal_weight)
+            if (
+                not isinstance(case, Mapping)
+                or case.get("status") != "completed"
+                or not isinstance(reward, (int, float))
+                or isinstance(reward, bool)
+                or positive["reward"] - reward < required_drop - 1e-9
+            ):
+                return False
+            continue
         if not isinstance(case, Mapping) or case.get("status") not in {
             "completed", "rejected",
         }:
