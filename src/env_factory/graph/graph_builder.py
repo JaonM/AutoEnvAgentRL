@@ -127,6 +127,10 @@ class Neo4jGraphStore:
                 "CREATE CONSTRAINT topic_key IF NOT EXISTS "
                 "FOR (node:Topic) REQUIRE node.key IS UNIQUE"
             ).consume()
+            session.run(
+                "CREATE CONSTRAINT graph_build_state_key IF NOT EXISTS "
+                "FOR (node:GraphBuildState) REQUIRE node.key IS UNIQUE"
+            ).consume()
 
     def upsert_catalog_datasets(self, rows: Iterable[dict[str, Any]], *, batch_size: int = 500) -> int:
         """Index catalog metadata in bounded transactions without approving raw data."""
@@ -158,6 +162,81 @@ class Neo4jGraphStore:
                 session.run(query, rows=batch).consume()
                 count += len(batch)
         return count
+
+    def catalog_fingerprint(self) -> str | None:
+        """Return the fingerprint of the last completed catalog sync."""
+        with self.driver.session(database=self.database) as session:
+            record = session.run(
+                "MATCH (state:GraphBuildState {key: 'dataset_catalog'}) "
+                "RETURN state.fingerprint AS fingerprint"
+            ).single()
+            return str(record["fingerprint"]) if record and record["fingerprint"] else None
+
+    def set_catalog_fingerprint(self, fingerprint: str) -> None:
+        with self.driver.session(database=self.database) as session:
+            session.run(
+                "MERGE (state:GraphBuildState {key: 'dataset_catalog'}) "
+                "SET state.fingerprint = $fingerprint",
+                fingerprint=fingerprint,
+            ).consume()
+
+    def local_link_fingerprint(self, dataset_key: str) -> str | None:
+        with self.driver.session(database=self.database) as session:
+            record = session.run(
+                "MATCH (state:GraphBuildState {key: $key}) "
+                "RETURN state.fingerprint AS fingerprint",
+                key=f"local_link:{dataset_key}",
+            ).single()
+            return str(record["fingerprint"]) if record and record["fingerprint"] else None
+
+    def save_local_link_candidates(self, dataset_key: str, fingerprint: str,
+                                   source_sha256: str, candidates: tuple[dict[str, str], ...]) -> None:
+        """Replace one source's provisional edges and mark its completed audit."""
+        scene_ids = [normalize_scene_name(row["scene"]) for row in candidates]
+        with self.driver.session(database=self.database) as session:
+            if session.run("MATCH (dataset:Dataset {key: $key}) RETURN dataset.key AS key",
+                           key=dataset_key).single() is None:
+                raise ValueError(f"dataset catalog node is missing: {dataset_key}")
+            session.run(
+                "MATCH (scene:Scene)-[edge:CANDIDATE_SUPPORTED_BY]->"
+                "(dataset:Dataset {key: $dataset_key}) "
+                "WHERE edge.managed_by = 'local_dataset_linker' "
+                "AND NOT scene.id IN $scene_ids DELETE edge",
+                dataset_key=dataset_key, scene_ids=scene_ids,
+            ).consume()
+
+            for row in candidates:
+                session.run(
+                    "MATCH (scene:Scene {id: $scene_id}), "
+                    "(dataset:Dataset {key: $dataset_key}) "
+                    "MERGE (scene)-[edge:CANDIDATE_SUPPORTED_BY]->(dataset) "
+                    "SET edge.source_sha256 = $source_sha256, "
+                    "edge.evidence = $evidence, edge.business_label = $business_label, "
+                    "edge.group_field = $group_field, edge.group_value = $group_value, "
+                    "edge.reviewed = false, edge.managed_by = 'local_dataset_linker'",
+                    scene_id=normalize_scene_name(row["scene"]), dataset_key=dataset_key,
+                    source_sha256=source_sha256, evidence=row["evidence"],
+                    business_label=row["business_label"],
+                    group_field=row.get("group_field"), group_value=row.get("group_value"),
+                ).consume()
+            session.run(
+                "MERGE (state:GraphBuildState {key: $key}) "
+                "SET state.fingerprint = $fingerprint",
+                key=f"local_link:{dataset_key}", fingerprint=fingerprint,
+            ).consume()
+
+    def local_link_candidates(self, dataset_key: str) -> tuple[dict[str, Any], ...]:
+        with self.driver.session(database=self.database) as session:
+            rows = session.run(
+                "MATCH (scene:Scene)-[edge:CANDIDATE_SUPPORTED_BY]->"
+                "(dataset:Dataset {key: $dataset_key}) "
+                "WHERE edge.managed_by = 'local_dataset_linker' "
+                "RETURN scene.name AS scene, edge.source_sha256 AS source_sha256, "
+                "edge.evidence AS evidence, edge.business_label AS business_label, "
+                "edge.group_field AS group_field, edge.group_value AS group_value",
+                dataset_key=dataset_key,
+            )
+            return tuple(dict(row) for row in rows)
 
     def set_scene_discovery_terms(self, scene_name: str, terms: tuple[str, ...]) -> None:
         with self.driver.session(database=self.database) as session:

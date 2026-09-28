@@ -8,11 +8,11 @@ from pathlib import Path
 from typing import Any
 
 from env_factory.generation.dataset_task_generator import (
-    DEFAULT_ALLOWLIST, PROJECT, DatasetTaskGenerator, TaskGenerationError,
+    DEFAULT_ALLOWLIST, KAGGLE_ROOT, PROJECT, DatasetTaskGenerator, TaskGenerationError,
     _columns, _number, _sample_source, _sha256,
 )
 from env_factory.generation.dataset_formats import source_extension
-from env_factory.generation.dataset_source_registry import eligible_hk_ids
+from env_factory.generation.dataset_source_registry import eligible_hk_ids, verified_hk_source
 from env_factory.graph.graph_builder import Neo4jGraphStore, SceneDatasetLink
 from env_factory.graph.knowledge_graph import DatasetNode, FieldNode, ResourceNode, SceneNode
 
@@ -144,12 +144,15 @@ def discovery_terms(path: Path = DEFAULT_LINKS) -> dict[str, tuple[str, ...]]:
     return result
 
 
-def verify_link_source(link: SceneDatasetLink, *, llm: Any = None) -> tuple[Path, str, str, str | None]:
+def verify_link_source(link: SceneDatasetLink, *, llm: Any = None,
+                       require_local: bool = False) -> tuple[Path, str, str, str | None]:
     """Recheck approval, raw hash and observed field values before graph use."""
     platform, separator, source_id = link.dataset_key.partition(":")
     if not separator or not source_id:
         raise TaskGenerationError("graph dataset key is invalid")
     if platform == "kaggle":
+        if require_local and not any((KAGGLE_ROOT / source_id).glob("v*/source_manifest.json")):
+            raise TaskGenerationError(f"offline graph source is not downloaded: {link.dataset_key}")
         approved = json.loads(DEFAULT_ALLOWLIST.read_text(encoding="utf-8"))["datasets"]
         approval = next((row for row in approved if row.get("ref") == source_id and
                          (row.get("source_sha256") or row.get("csv_sha256")) == link.source_sha256), None)
@@ -157,6 +160,8 @@ def verify_link_source(link: SceneDatasetLink, *, llm: Any = None) -> tuple[Path
             raise TaskGenerationError("graph Kaggle source is not approved at this hash")
         generator = DatasetTaskGenerator(llm, dataset_ref=source_id)
     elif platform == "data_gov_hk":
+        if require_local and verified_hk_source(source_id) is None:
+            raise TaskGenerationError(f"offline graph source is not downloaded: {link.dataset_key}")
         if source_id not in eligible_hk_ids():
             raise TaskGenerationError("graph DATA.GOV.HK source is not approved")
         generator = DatasetTaskGenerator(llm, dataset_id=source_id)
@@ -181,12 +186,13 @@ def verify_link_source(link: SceneDatasetLink, *, llm: Any = None) -> tuple[Path
     return source
 
 
-def sync_reviewed_links(store: Neo4jGraphStore, links: tuple[SceneDatasetLink, ...] | None = None) -> int:
+def sync_reviewed_links(store: Neo4jGraphStore, links: tuple[SceneDatasetLink, ...] | None = None,
+                        *, require_local: bool = False) -> int:
     """Install only relations that still match source bytes and source approval."""
     selected = links if links is not None else reviewed_links()
     # Check every source before mutating the graph, so a stale hash cannot
     # leave a half-updated registry in Neo4j.
-    sources = [(link, verify_link_source(link)) for link in selected]
+    sources = [(link, verify_link_source(link, require_local=require_local)) for link in selected]
     parents = scene_extension_parents()
     store.verify_connectivity()
     store.ensure_schema()
