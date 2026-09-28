@@ -1879,6 +1879,7 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             key_steps=key_steps,
             metrics=rewards["metrics"],
             reward_formula=rewards["reward_formula"],
+            tool_implementations=tool_implementations,
         )
         acceptance_payload = {
             "goal_contract": semantic_goal,
@@ -2584,6 +2585,7 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
         key_steps: list[dict[str, Any]],
         metrics: list[dict[str, Any]],
         reward_formula: dict[str, Any],
+        tool_implementations: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         tool_cases: list[dict[str, Any]] = []
         fixture_values, fixture_rows = cls._business_fixture_context(
@@ -2603,18 +2605,33 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                 {"item": item, "average_daily_sales": sum(values) / len(values)}
                 for item, values in totals.items()
             ])
+        implementation_by_tool = {
+            item.get("tool_name"): item for item in (tool_implementations or [])
+            if isinstance(item, dict) and isinstance(item.get("tool_name"), str)
+        }
         for tool in tools:
             function = tool["function"]
             parameters = function["parameters"]
             required = list(parameters.get("required", []))
+            arguments_template = cls._schema_fixture(
+                parameters, fixture_values=fixture_values, fixture_rows=fixture_rows,
+            )
+            implementation = implementation_by_tool.get(function["name"], {})
+            for mapping_name in ("selector", "changes", "values"):
+                mapping = implementation.get(mapping_name)
+                if not isinstance(mapping, dict):
+                    continue
+                for argument_name, column_name in mapping.items():
+                    if (isinstance(arguments_template, dict)
+                            and isinstance(arguments_template.get(argument_name), str)
+                            and arguments_template[argument_name].startswith("任务输入中的")
+                            and isinstance(column_name, str) and fixture_values.get(column_name)):
+                        arguments_template[argument_name] = fixture_values[column_name][0]
             tool_cases.append({
                 "case_id": f"{function['name']}.valid_shape",
                 "tool_name": function["name"],
                 "kind": "schema_and_business_smoke",
-                "arguments_template": cls._schema_fixture(
-                    parameters, fixture_values=fixture_values,
-                    fixture_rows=fixture_rows,
-                ),
+                "arguments_template": arguments_template,
                 "expected": {"status_class": [200], "must_not_return": ["observation", "reward"]},
             })
             if required:

@@ -227,6 +227,20 @@ class BusinessDataArtifactsTest(unittest.TestCase):
             {"item": "舞鞋", "average_daily_sales": 5.0},
         ])
 
+    def test_acceptance_probe_binds_tool_argument_to_source_column(self):
+        parameters = {"type": "object", "properties": {
+            "product_id": {"type": "string"},
+        }, "required": ["product_id"]}
+        contract = TaskGenerationPipeline._build_acceptance_contract(
+            task_description={"task": "查询价格"}, data_manifest={},
+            data_tables=[{"table_name": "products", "rows": [{"field_abc": "P00001"}]}],
+            actions=[], tools=[{"function": {"name": "lookup_product", "parameters": parameters}}],
+            key_steps=[], metrics=[], reward_formula={},
+            tool_implementations=[{"tool_name": "lookup_product", "operation": "select",
+                                   "table": "products", "selector": {"product_id": "field_abc"}}],
+        )
+        self.assertEqual(contract["argument_probes"][0]["arguments"], {"product_id": "P00001"})
+
     def test_acceptance_probe_uses_top_level_public_json_array(self):
         rows = [
             {"款式": "运动T恤", "尺寸": "M", "材质": "涤纶"},
