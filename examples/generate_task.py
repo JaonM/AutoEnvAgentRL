@@ -35,7 +35,7 @@ from env_factory.tasks.task_routing import (
 from env_factory.evidence.data_governance import provider_identity
 from env_factory.llm import capture_llm_trace, summarize_llm_trace
 from env_factory.generation.dataset_task_generator import DatasetTaskGenerator
-from env_factory.graph.dataset_planner import GraphDatasetTaskGenerator
+from env_factory.graph.dataset_planner import GraphDatasetTaskGenerator, sync_reviewed_links
 
 
 _TASK_DIR_PATTERN = re.compile(r"task-(\d+)")
@@ -173,8 +173,8 @@ def _reserve_task_directories(artifact_root: Path, count: int) -> list[tuple[int
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="从数据集生成 Agentic RL 任务")
-    parser.add_argument("--generation-source", choices=("dataset", "graph", "graph_keywords"), default="dataset",
-                        help="dataset 为原数据集路径；graph 为有数据支撑的图谱规划；graph_keywords 为旧关键词路径")
+    parser.add_argument("--generation-source", choices=("dataset", "graph", "graph_keywords"), default="graph",
+                        help="默认 graph：有数据支撑的图谱规划；dataset 为原数据集路径；graph_keywords 为旧关键词路径")
     parser.add_argument("--dataset-ref", help="指定 Kaggle owner/slug；缺省时从已核验清单选取")
     parser.add_argument("--dataset-file", type=Path, help="指定本地表格或 ZIP/GZIP/TAR 压缩文件")
     parser.add_argument("--dataset-url", help="本地数据文件的原始数据集来源链接")
@@ -308,6 +308,8 @@ def main() -> int:
         path_query_timeout=args.path_query_timeout,
     ) if args.generation_source in ("graph", "graph_keywords") else nullcontext(None))
     with store_context as store:
+        if args.generation_source == "graph":
+            sync_reviewed_links(store)
         generator = (TaskGenerator(
             store, llm, user_script_count=args.user_script_count,
             noise_tool_max=args.noise_tool_max,

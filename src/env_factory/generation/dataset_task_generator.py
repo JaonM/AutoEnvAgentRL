@@ -489,6 +489,7 @@ class DatasetTaskGenerator:
             "entity_name 也不要包含‘记录’。不要在输出中使用数据集、CSV、表字段、沙箱或训练术语。",
             {"dataset_title": title,
              "reviewed_graph_scene": graph_link.scene_name if graph_link else None,
+             "required_business_label": graph_link.business_label if graph_link else None,
              "graph_relation_evidence": graph_link.evidence if graph_link else None,
              "available_columns": [key_col, group_col, numeric_col],
              "selected_fields": {"identifier": key_col, "group": group_col, "value": numeric_col},
@@ -522,7 +523,8 @@ class DatasetTaskGenerator:
                           "report_exact_difference": True}
         design_system = (
             "你是该业务场景中的真实用户。根据 supported_business_need 和可支持的目标，"
-            "用第一人称写两句自然中文：先说你正在做的业务核对或比较，再提出想知道的结果。"
+            "用第一人称写一到两句自然中文：交代真实业务动机，再提出想知道的结果；"
+            "背景不要重复结果问题中的比较或核对动作，也不要连续复述同一对象短语。"
             "运行界面已向助手展示 public_materials 中的业务信息，用户可以说‘这单’‘这笔’‘这两笔’，"
             "无需解释附件、凭证、数据集或编号。业务动机仅限 supported_business_need 的含义，"
             "不能引入营销、活动、利润、销售贡献等材料中没有的业务背景。"
@@ -533,9 +535,15 @@ class DatasetTaskGenerator:
             "只有极值目标才询问对应的那一笔。不要用‘先…然后…’写成操作流程。"
             "只返回 JSON 对象 user_message。"
         )
+        if graph_link:
+            design_system += (
+                f"这次图谱场景经原始数据核验，用户表达必须自然包含‘{graph_link.business_label}’，"
+                "用于体现所选业务场景；不要提图谱节点、数据集或技术来源。"
+            )
         design_payload = {
             "style": style, "category": training_category,
             "reviewed_graph_scene": graph_link.scene_name if graph_link else None,
+            "required_business_label": graph_link.business_label if graph_link else None,
             "business_scenario": {name: scene[name] for name in
                                   ("entity_name", "identifier_label", "group_label", "value_label", "user_role")},
             "supported_business_need": _supported_business_need(training_category, scene,
@@ -553,6 +561,8 @@ class DatasetTaskGenerator:
                 _validate_voice(message, description["task"], training_category,
                                 rows, key, facts, title, scene, extreme=extreme,
                                 comparison=comparison)
+                if graph_link and graph_link.business_label not in message:
+                    raise TaskGenerationError("graph task voice loses the reviewed business scene")
                 break
             except TaskGenerationError as exc:
                 design_error = exc
@@ -577,6 +587,7 @@ class DatasetTaskGenerator:
                 "evidence": graph_link.evidence, "group_field": graph_link.group_field,
                 "group_value": graph_link.group_value, "extreme": extreme,
                 "comparison": comparison,
+                "business_label": graph_link.business_label,
             }
         hostname = (urlparse(source_url).hostname or "").lower()
         provider = ("kaggle" if hostname in {"kaggle.com", "www.kaggle.com"}

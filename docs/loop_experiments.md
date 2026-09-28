@@ -1,6 +1,7 @@
 # 循环工程实验
 
 `scripts/run_sandbox_build_loop.py` 使用可恢复实验调度器。默认不复用历史高分，构建与独立审查模型固定为 `gpt-6-luna`。
+新任务默认沿知识图谱＋已审核数据集路径生成；`--generation-source dataset` 可显式运行旧数据集路径。Kaggle 与 DATA.GOV.HK 目录元数据可先用 `scripts/diagnostics/sync_graph_dataset_links.py` 导入 Neo4j，实验生成时会再次核对已审核关系和原始数据。
 
 正式良品率实验建议每轮生成 10 个新任务，固定使用
 `direct_response=20%`、`simple_agentic=30%`、`multi_step_agentic=50%`。

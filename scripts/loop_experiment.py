@@ -952,7 +952,7 @@ def run_round(project, root, config, report):
                 report["generation"] = run_process([
                     sys.executable, str(project / "examples/generate_task.py"),
                     "--count", str(config["generate_count"]), "--max-workers", str(config["max_concurrency"]),
-                    "--generation-source", config.get("generation_source", "dataset"),
+                    "--generation-source", config.get("generation_source", "graph"),
                     "--dataset-platform", "balanced",
                     "--seed", str(config.get("experiment_seed", 0) + report["round"] - 1),
                     "--hops", str(config.get("generation_hops", 3)),
@@ -1077,7 +1077,7 @@ def main():
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--task-ids", default=None)
     source.add_argument("--generate-count", type=int, default=0)
-    parser.add_argument("--generation-source", choices=("dataset", "graph"), default="dataset",
+    parser.add_argument("--generation-source", choices=("dataset", "graph"), default="graph",
                         help="实验生成路径；graph 使用已审核的图谱与数据集关系")
     parser.add_argument("--generation-hops", type=int, default=3)
     parser.add_argument("--route-attempts", type=int, default=3)

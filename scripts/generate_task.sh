@@ -10,7 +10,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 fi
 
 if [[ ! -f .env ]]; then
-  echo "未找到 .env，请先配置 LLM 参数；使用 --generation-source graph 时还需配置 Neo4j。" >&2
+  echo "未找到 .env，请先配置 LLM 和 Neo4j 参数。" >&2
   exit 1
 fi
 
