@@ -10,7 +10,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 fi
 
 if [[ ! -f .env ]]; then
-  echo "未找到 .env，请先复制 .env.example 并配置 Neo4j；完整 Scene 扩展还需 Wikipedia 和 LLM 参数。" >&2
+  echo "未找到 .env，请先复制 .env.example 并配置 Neo4j 与外部 LLM；完整 Scene 扩展还需 Wikipedia 参数。" >&2
   exit 1
 fi
 
