@@ -10,44 +10,23 @@
 
 生成契约、工具实现、持久化及验收的最新边界见 [一致性改造说明](docs/runtime_integrity.md)，其中区分静态评分、离线回归与真实训练 rollout 证据。
 
-## 下载 Kaggle 业务数据
+## 主链路：Code Agent 生成任务并构建沙箱
 
-先建立[任务数据目录索引](docs/kaggle_catalog.md)，只读取公开元数据，不下载业务文件：
-
-```bash
-python3 scripts/diagnostics/index_kaggle_tasks.py --target 10000
-```
-
-生成任务时再指定公开数据集的 `owner/slug` 或完整数据集链接，按版本保存到本地 `data/sources/kaggle/`，并记录来源、许可与 SHA-256：
+默认作者、沙箱构建与独立审查均使用 `GPT-6-luna`。任务从真实 Scene 图谱路径生成，
+经过前置验证后进入沙箱构建、离线评分和 live 训练门禁。准备好下文 `.env`、Neo4j、
+已认证的 `codex` CLI 与 Docker，并执行 `uv sync` 后运行：
 
 ```bash
-python3 scripts/diagnostics/download_kaggle_dataset.py madhavw/travel-and-tourism
+./scripts/run_pipeline.sh --help
+./scripts/run_pipeline.sh --dry-run
+./scripts/run_pipeline.sh --output output/my_batch
 ```
 
-按已提交索引下载全部候选（Kaggle 与 DATA.GOV.HK，共 13,822 条）：
-
-```bash
-python3 scripts/diagnostics/download_indexed_datasets.py --scope all \
-  --max-dataset-gb 100 --max-total-gb 1400 --reserve-gb 100
-python3 scripts/diagnostics/download_indexed_datasets.py --status
-```
-
-只下载指定的索引项，可重复传入 `--dataset`：
-
-```bash
-python3 scripts/diagnostics/download_indexed_datasets.py \
-  --dataset kaggle:lalit7881/warehouse-and-retail-sales \
-  --dataset data_gov_hk:cc-pricewatch-pricewatch --dry-run
-# 确认清单后去掉 --dry-run 即开始下载
-```
-
-`--dataset` 使用索引键 `kaggle:owner/slug` 或 `data_gov_hk:id`，按传入顺序处理；明确指定的数据集可以来自未准入候选，但下载不会批准其用于任务。不能与 `--offset`、`--limit` 同用。
-
-下载器逐条记录到 `data/sources/download_state.jsonl`，重跑会校验本地文件并跳过完整数据集。Kaggle 原始文件保存在版本目录；DATA.GOV.HK 的全部资源保存在 `data/sources/data_gov_hk_bulk/<id>/raw/`。预算或磁盘余量不足时停止并返回非零状态，失败条目记录原因。索引包含候选，不代表许可、隐私和任务适配审核通过；下载不会自动批准数据集进入任务生成。
-
-目录页 `https://www.kaggle.com/datasets` 需要先选定具体数据集。旅游数据集已接入[数据集优先任务生成试验](docs/travel_dataset_trial.md)；其他数据集需先分析字段与许可，再设计任务、工具及奖励。
-
-中文数据源使用 [DATA.GOV.HK](https://data.gov.hk/sc-data/dataset) 的公开目录。`data/sources/data_gov_hk/dataset_index.json` 已收录完整的 3,822 个数据集目录项；其中通过审核的来源才进入任务生成。原始文件按需下载并校验哈希。运行 `python3 scripts/diagnostics/index_data_gov_hk_datasets.py` 可刷新目录，刷新不会自动批准新来源。
+默认单轮 **5 个样本**、并发上限 **4**、`pilot` 候选验证、Docker 与 live 验收；
+不启用 5 分钟硬截止。默认类别比例 20/30/50，生成阶段防卡死超时 600 秒。
+参数、产物位置、恢复方式和退出码见脚本 `--help`；完整调度参数用 `--engine-help`。
+最终消费 `status.json.training_ready == true`，构建 `success` 不能替代训练验收。
+`pilot` 环境通过门禁不等同于 production 批次认证或已验证学习收益。
 
 ## 构建知识图谱
 
@@ -82,30 +61,15 @@ LOG_LEVEL=INFO
 构建成功后，本轮发现的 scene 词语会自动追加到该文件；Neo4j 中已标记为扩展完成的词语下次会跳过。
 `LOG_LEVEL` 支持 `DEBUG`、`INFO`、`WARNING` 等级别，默认使用 `INFO`。
 
-统一入口默认增量构建 Scene、数据集目录与关系。`.env` 配置了 `WIKIPEDIA_DUMP_DB` 时自动使用本地索引；未配置时搜索在线 Wikipedia。原始业务数据优先使用已下载文件，语义匹配仍调用 `.env` 中的 LLM 端点。
+统一入口构建 Scene 图谱。配置 `WIKIPEDIA_DUMP_DB` 时使用本地 Wikipedia 索引；否则搜索在线 Wikipedia。LLM 抽取与关系判断使用 `.env` 中的端点。
 
 ```bash
 ./scripts/build_graph.sh
-./scripts/build_graph.sh --data-only
-./scripts/build_graph.sh --links-only
-./scripts/build_graph.sh --dataset kaggle:aditirai2607/super-market-dataset
+./scripts/build_graph.sh --offline
+./scripts/build_graph.sh --online-wikipedia
 ```
 
-`--data-only` 跳过 Scene 扩展；`--links-only` 只更新关系；`--dataset` 自动识别已准入或未准入的索引来源，并只处理该来源。目录指纹和各来源的原始文件、Scene 指纹保存在 Neo4j，重跑跳过未变化内容。默认每轮最多审核 20 个新下载来源，可用 `--max-datasets N` 调整。`--offline` 强制使用本地索引与原始文件，`--online` 强制在线搜索 Wikipedia，`--skip-approved-llm` 可跳过已准入来源的模型匹配。运行 `./scripts/build_graph.sh --help` 查看简明参数。
-
-未准入来源只生成 `CANDIDATE_SUPPORTED_BY`，不供训练任务选择。
-
-查看候选及晋升指定 Scene：
-
-```bash
-uv run python scripts/diagnostics/promote_local_graph_link.py \
-  --dataset-key kaggle:anirudhchauhan/retail-store-inventory-forecasting-dataset
-uv run python scripts/diagnostics/promote_local_graph_link.py \
-  --dataset-key kaggle:anirudhchauhan/retail-store-inventory-forecasting-dataset \
-  --scene 玩具价格核对
-```
-
-晋升前须将该来源的版本、许可和具体文件哈希加入准入配置；脚本会重新校验原始文件与 Scene 字段，通过后才写入 `SUPPORTED_BY`。候选匹配本身不等于准入。
+运行 `./scripts/build_graph.sh --help` 查看参数。
 
 指定扩展参数：
 
@@ -138,29 +102,29 @@ WIKIPEDIA_DUMP_DB=data/wikipedia.sqlite3
 
 ## 生成长程任务
 
-任务生成的图谱 Scene 只从已审核的 `SUPPORTED_BY` 数据集关系中选择。默认 `graph` 路径会复核关系注册表与原始文件；显式的 `graph_keywords` 路径也只采样每个节点都具有已审核数据集关系的路径。仅有目录节点或 `CANDIDATE_SUPPORTED_BY` 候选关系的 Scene 不进入采样池。若指定跳数没有合格路径，关键词路径沿用较短路径回退；连单节点都不可用时明确报错。
-
-默认从知识图谱中选择有已审核数据集支撑的业务场景，按需下载并核验原始数据。Kaggle 与 DATA.GOV.HK 的完整目录索引作为图谱元数据供候选发现，未经原始数据审核的目录项不会直接进入任务生成。生成器选取源数据中的唯一记录 ID、可分组字段和数值字段，以原始行构造直接回答、单工具或多步工具任务；模型根据场景和真实字段表达用户需求，后续流水线生成工具、奖励与验收：
+任务生成默认使用 Code Agent，从 Scene 图谱路径设计业务数据、工具、奖励与参考轨迹，
+由共享编译器执行前置验证，再物化交付物。仅生成任务可运行：
 
 ```bash
-./scripts/generate_task.sh --count 3
-./scripts/generate_task.sh --generation-source dataset --dataset-ref madhavw/travel-and-tourism --training-category multi_step_agentic
-./scripts/generate_task.sh --dataset-platform data_gov_hk --count 1
-./scripts/generate_task.sh --dataset-platform balanced --count 2
-./scripts/generate_task.sh --generation-source dataset --dataset-file /path/to/data.zip --dataset-url https://example.com/source --dataset-max-gb 10
+./scripts/generate_task.sh --count 5
+./scripts/generate_task.sh --training-category multi_step_agentic --count 5
 ```
 
-当前数据集入口支持 CSV、TSV、JSON、JSONL/NDJSON、XLSX、Parquet、SQLite，以及 ZIP/GZIP/TAR 压缩包和 `QA` 类型，需要数据中存在可辨识的业务 ID、可重复的分组字段及可核算的数值字段；不满足条件的候选会拒绝并记录原因。来源哈希、所选原始字段与答案键写入 `source_selection.json`。
+`spec` 与 `legacy` 保留为显式选择的兼容/对照后端：
 
-`./scripts/build_graph.sh` 在扩展 Scene 后同步本地 10,000 条 Kaggle 与 3,822 条 DATA.GOV.HK 目录项，核验原始文件并写入 `config/graph_dataset_links.json` 中的 Scene→Dataset 关系；`--datasets-only` 可跳过维基与 LLM 扩展，`--datasets-only --links-only` 跳过目录同步并构建关系；`--skip-llm-dataset-links` 只同步注册表。`uv run python scripts/diagnostics/sync_graph_dataset_links.py --suggest-scene 商品价格核对` 可查看同主题候选，目录候选仍需审核后才可进入关系注册表。图谱包含 `Scene → Dataset → Resource → Field`、`Dataset → Topic`，并通过 `parent_scene` 把原始分组支持的细分 Scene 连到上位场景；图谱保存来源哈希和字段角色，不复制业务行。当前已核验十个原始来源、55 条场景关系，本机 766 个 Scene 中 45 个有数据支撑；13,822 条目录项不会自动获得任务生成资格。默认图谱路径按来源比例选择场景，运行时再次核对准入、哈希及字段；`--dataset-platform balanced --count 2` 按 1:1 分配。原关键词图谱路径由 `--generation-source graph_keywords --hops 3 --task-type Event` 显式调用，原数据集路径由 `--generation-source dataset` 显式调用。图谱数据路径覆盖三种训练路由，并可从较高/较低比较，以及同类业务最高、最低、平均值或数量中选择可核算目标。限定单一分组的关系只用于直接回答，避免泄漏工具任务的隐藏类别。 外部 LLM 会针对已准入原始来源，从现有 Scene 中提议关系；脚本只接受精确的 Scene 名称、可核验的原始分组值、固定来源哈希及简短业务称呼，经过第二轮 LLM 语义复核后再把提议与模型名写入关系注册表。`--datasets-only --llm-links-dry-run` 使用本机已缓存的原始文件只读展示候选；`--llm-dataset-key kaggle:owner/slug` 可只处理一个来源。LLM 提议的业务语义仍需人工抽检，关系上的 `review_method` 标明其来源。
+```bash
+./scripts/generate_task.sh --generation-backend spec --training-category multi_step_agentic --count 5
+./scripts/generate_task.sh --generation-backend legacy --hops 3 --training-category multi_step_agentic
+```
 
-端到端实验默认沿图谱规划路径生成开发轮次与留出集；可用 `scripts/loop_experiment.py --generation-source dataset` 运行原数据集路径。
+完整生成契约见[任务生成流水线](docs/task_generation_pipeline.md)与
+[Code Agent 编写规范](docs/code_agent_authoring.md)。`spec` 多步原型不调用生成模型，
+不代表默认 Code Agent 主链路的模型调用量或质量。
 
-详细流程、支持范围和实测结果见[数据集驱动任务生成](docs/dataset_task_generation.md)。
-任务生成完成后，会继续根据任务描述和环境生成 `rule-based/model-based` 观测指标，写入 `Task.metrics`。为提高工具选择训练的辨别能力，默认生成 2–3 个噪声工具并覆盖相关无关与完全无关两类；噪声工具由共享运行时提供无任务关键副作用的通用实现，不占用业务 handler 实现成本，也不产生任务进度奖励。工具生成前会把动作分类为环境操作、Agent 推理和 Agent 回答，只有环境操作可以暴露为工具。任务规模不再绑定具体构建模型，结构有效性由 schema、契约、任务级 readiness、外层验收和训练素材准备就绪门禁统一判断。
+规格流水线从目标和依赖编译 `rule-based` 指标，模型阶段流水线根据任务描述与环境生成 `rule-based/model-based` 指标，统一写入 `Task.metrics`。模型阶段还支持噪声工具，覆盖相关无关与完全无关两类；噪声工具由共享运行时提供无任务关键副作用的通用实现，不占用业务 handler 实现成本，也不产生任务进度奖励。工具生成前会把动作分类为环境操作、Agent 推理和 Agent 回答，只有环境操作可以暴露为工具。任务规模不再绑定具体构建模型，结构有效性由 schema、契约、任务级 readiness、外层验收和训练素材准备就绪门禁统一判断。
 
 沙箱通过普通 acceptance、outer conformance 和 mutation testing 后，还必须通过 `scripts/sandbox/validate_training_readiness.py` 的 RL 环境硬门禁。该门禁执行结构化成功、失败、噪声及反事实轨迹，检查奖励可分离性、确定性和公开 observation 泄漏，并输出 `training_readiness.json`。
-默认在 `output/task_artifacts/task-N/task.json` 写入每个任务的最终文件；可通过 `--output` 指定输出根目录。每次运行会扫描已有 `task-N`，从当前最大编号的下一号开始追加，绝不覆盖已有任务；并发进程通过原子目录预留避免编号冲突。Pipeline 运行日志默认追加写入 `output/task_generation.log`，也会输出到终端，可通过 `--log-file` 指定其他文件。日志记录任务级和阶段级开始、重试、成功、失败、耗时、产物路径和进度，不记录 Prompt 或凭据。任务默认并发生成 4 个，可通过 `--max-workers` 调整并发数。图谱路径的 Neo4j 查询默认 10 秒超时，可通过 `--path-query-timeout` 调整。
+默认在 `output/task/task-N/task.json` 写入每个任务的最终文件；可通过 `--output` 指定输出根目录。每次运行会扫描已有 `task-N`，从当前最大编号的下一号开始追加，绝不覆盖已有任务；并发进程通过原子目录预留避免编号冲突。Pipeline 运行日志默认追加写入 `output/task_generation.log`，也会输出到终端，可通过 `--log-file` 指定其他文件。日志记录任务级和阶段级开始、重试、成功、失败、耗时、产物路径和进度，不记录 Prompt 或凭据。任务默认并发生成 4 个，可通过 `--max-workers` 调整并发数。图谱路径的 Neo4j 查询默认 10 秒超时，可通过 `--path-query-timeout` 调整。
 使用 `--count N` 可批量新增 N 个独立的 `task-N` 目录；失败任务保留采样身份和失败归因证据，不会修改任何历史任务。
 
 ### 任务质量评分与过滤
@@ -168,7 +132,7 @@ WIKIPEDIA_DUMP_DB=data/wikipedia.sqlite3
 生成后可使用确定性离线评分器筛选训练样本。评分范围为 0–10，覆盖任务契约、Agentic 难度、环境与工具对齐、奖励可评测性、验收与训练就绪度；不调用 LLM，同一产物会得到相同结果。
 
 ```bash
-uv run python examples/score_tasks.py output/task_artifacts \
+uv run python examples/score_tasks.py output/task \
   --min-score 8 \
   --report output/task_quality_report.json \
   --csv output/task_quality_report.csv
@@ -177,7 +141,7 @@ uv run python examples/score_tasks.py output/task_artifacts \
 复制合格样本到独立目录：
 
 ```bash
-uv run python examples/score_tasks.py output/task_artifacts \
+uv run python examples/score_tasks.py output/task \
   --min-score 8 \
   --accepted-dir output/accepted_tasks
 ```
@@ -185,16 +149,16 @@ uv run python examples/score_tasks.py output/task_artifacts \
 只提取高价值 Agentic 样本：
 
 ```bash
-uv run python examples/score_tasks.py output/task_artifacts \
+uv run python examples/score_tasks.py output/task \
   --min-score 8 \
   --high-value-dir output/high_value_tasks
 ```
 
-评分器拒绝覆盖目标目录中的同名任务。CI 中可增加 `--fail-on-low-score`，只要存在低于阈值或未通过训练资格门禁的任务便返回非零退出码。`task_quality_report.json` 同时给出描述性 `score` 与布尔 `eligible`：分数用于质量排序，资格门禁用于排除契约冲突、无效成功轨迹、语义漂移和缺少 TaskSpec 的样本，不再用人为分数封顶暗示无效样本可训练。
+评分器拒绝覆盖目标目录中的同名任务。CI 中可增加 `--fail-on-low-score`，只要存在低于阈值或未通过训练资格门禁的任务便返回非零退出码。任务评分采用 0–10 分制；`task_quality_report.json` 的 `score` 是包含资格门禁的有效分数：任一硬门禁失败即为 0 分，`eligible=false`。`raw_score` 保留门禁前的质量分，维度得分和失败原因供诊断；只有资格通过的任务才按质量分排序。
 
 ### 沙箱离线评分与过滤
 
-`scripts/sandbox/score_sandbox_offline.py` 不调用模型或网络，重新执行业务验收、pytest、契约一致性、运行时通用性、outer conformance、五类 mutation 和 training-readiness，并用可执行成功/失败轨迹代替模型语义审查。报告同样分离 `score` 与 `eligible`；任一关键门禁失败都会令 `eligible=false`，不会篡改描述性分数。
+`scripts/sandbox/score_sandbox_offline.py` 不调用模型或网络，重新执行业务验收、pytest、契约一致性、运行时通用性、outer conformance、五类 mutation 和 training-readiness，并结合已有独立语义审查与可执行成功/失败轨迹。沙箱评分采用 0–10 分制；通过全部关键门禁后，再按独立语义审查分和成功轨迹相对已完成负例轨迹的奖励差距计算连续分数。任一关键检查失败即为 0 分、`eligible=false`；`raw_score` 保留门禁前的通过项权重和，`quality_factors` 记录连续分的依据。离线通过仍需 live 验证。交付、契约或语义审查预检失败时，评分器跳过后续昂贵检查，并在检查证据中标明原因。
 
 评分单个沙箱：
 
