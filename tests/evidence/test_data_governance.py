@@ -11,6 +11,14 @@ from env_factory.evidence.data_governance import (
 
 
 class DataGovernanceTest(unittest.TestCase):
+    def test_platform_call_uuid_is_not_pii_but_real_identifiers_still_are(self):
+        from env_factory.evidence.data_governance import scan_payloads
+        value = "call-abc123456789012345678defabcdefab"
+        self.assertEqual(len(value.removeprefix("call-")), 32)
+        self.assertEqual(scan_payloads({"trace":{"payload":{"tool_call_id":value}}})["pii_findings"], [])
+        self.assertTrue(scan_payloads({"trace":{"payload":{"tool_call_id":"123456789012345678"}}})["pii_findings"])
+        self.assertTrue(scan_payloads({"text":"contact 13812345678"})["pii_findings"])
+
     def test_content_digests_do_not_randomly_match_pii_patterns(self):
         from env_factory.evidence.data_governance import scan_payloads
 
@@ -63,65 +71,14 @@ class DataGovernanceTest(unittest.TestCase):
             self.assertEqual(report["credential_findings"], [])
             self.assertEqual(report["providers"]["agent"]["host"], "agent.example")
 
-    def test_kaggle_and_data_gov_hk_rows_are_eligible_with_matching_provenance(self):
-        for provider, url in (
-            ("kaggle", "https://www.kaggle.com/datasets/owner/orders"),
-            ("data_gov_hk", "https://data.gov.hk/sc-data/dataset/example"),
-        ):
-            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                source = {"provider": provider, "source_url": url,
-                          "source_sha256": "a" * 64, "source_format": ".csv", "source_member": None,
-                          "license": None}
-                governance = {"origin": "public_dataset", **source,
-                              "contains_real_user_data": "undetermined",
-                              "intended_use": "agentic_rl_training_material"}
-                self.make_root(root, governance={"data_governance": governance},
-                               material="order_id,category,amount\nA1,Books,10\n")
-                task = json.loads((root / "task.json").read_text())
-                task["artifacts"]["dataset_source"] = source
-                (root / "task.json").write_text(json.dumps(task))
-                report = self.run_audit(root)
-                self.assertTrue(report["eligible_for_external_model_processing"])
-                self.assertTrue(valid_governance_report(report, root, task))
-                task["artifacts"]["dataset_source"]["source_sha256"] = "b" * 64
-                self.assertFalse(valid_governance_report(report, root, task))
-
-    def test_public_dataset_pii_still_blocks_model_processing(self):
+    def test_non_synthetic_origin_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source = {"provider": "kaggle", "source_url": "https://www.kaggle.com/datasets/a/b",
-                      "source_sha256": "a" * 64, "source_format": ".csv", "source_member": None,
-                      "license": None}
             self.make_root(root, governance={"data_governance": {
-                "origin": "public_dataset", **source,
-                "contains_real_user_data": "undetermined",
+                "origin": "external", "contains_real_user_data": "undetermined",
                 "intended_use": "agentic_rl_training_material",
-            }}, material="customer@example.test")
-            task = json.loads((root / "task.json").read_text())
-            task["artifacts"]["dataset_source"] = source
-            (root / "task.json").write_text(json.dumps(task))
+            }}, material="fixture row")
             self.assertFalse(self.run_audit(root)["eligible_for_external_model_processing"])
-
-    def test_zip_dataset_member_is_bound_to_public_source(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            source = {"provider": "data_gov_hk",
-                      "source_url": "https://data.gov.hk/sc-data/dataset/example",
-                      "source_sha256": "a" * 64, "source_format": ".zip",
-                      "source_member": "tables/orders.csv", "license": None}
-            self.make_root(root, governance={"data_governance": {
-                "origin": "public_dataset", **source,
-                "contains_real_user_data": "undetermined",
-                "intended_use": "agentic_rl_training_material",
-            }}, material="order_id,category,amount\nO1,Books,10\n")
-            task = json.loads((root / "task.json").read_text())
-            task["artifacts"]["dataset_source"] = source
-            (root / "task.json").write_text(json.dumps(task))
-            report = self.run_audit(root)
-            self.assertTrue(valid_governance_report(report, root, task))
-            task["artifacts"]["dataset_source"]["source_member"] = "../orders.csv"
-            self.assertFalse(valid_governance_report(report, root, task))
 
     def test_credential_is_reported_by_location_without_leaking_value(self):
         with tempfile.TemporaryDirectory() as directory:

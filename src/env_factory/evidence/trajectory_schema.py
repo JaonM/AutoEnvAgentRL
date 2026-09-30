@@ -173,6 +173,182 @@ def episode_errors(episode: Any) -> list[str]:
     ):
         errors.append("episode:trajectory")
         trajectory = []
+    prefix = [
+        ("POST", "/v1/reset"), ("GET", "/v1/state"),
+        ("GET", "/v1/reward"), ("GET", "/v1/tools"),
+        ("GET", "/v1/observation"),
+    ]
+    suffix = [
+        ("GET", "/v1/reward"), ("GET", "/v1/reward"),
+        ("GET", "/v1/replay"), ("GET", "/v1/state"),
+    ]
+    if (
+        len(trajectory) < len(prefix) + len(suffix)
+        or [(step.get("method"), step.get("path")) for step in trajectory[:5]] != prefix
+        or [(step.get("method"), step.get("path")) for step in trajectory[-4:]] != suffix
+    ):
+        errors.append("episode:http_skeleton")
+    else:
+        reset = trajectory[0]
+        reset_body = reset.get("body")
+        if (
+            reset.get("status") != 200
+            or not isinstance(reset_body, Mapping)
+            or reset_body.get("seed") != episode.get("seed")
+            or reset_body.get("episode_id") != f"live-{episode.get('seed')}"
+        ):
+            errors.append("episode:reset_http_mismatch")
+        tools_step = trajectory[3]
+        tools_result = tools_step.get("result")
+        if (
+            tools_step.get("status") != 200
+            or not isinstance(tools_result, Mapping)
+            or not isinstance(tools_result.get("tools"), list)
+        ):
+            errors.append("episode:tools_http_result")
+        replay_step = trajectory[-2]
+        if (
+            replay_step.get("status") != 200
+            or replay_step.get("result") != episode.get("replay")
+        ):
+            errors.append("episode:replay_http_mismatch")
+    reward_positions = [
+        index for index, step in enumerate(trajectory)
+        if step.get("method") == "GET" and step.get("path") == "/v1/reward"
+    ]
+    reward_reads = [trajectory[index] for index in reward_positions]
+    reward_values = []
+    for step in reward_reads:
+        result = step.get("result")
+        reward = result.get("reward") if isinstance(result, Mapping) else None
+        if step.get("status") != 200 or not _number(reward):
+            errors.append("episode:reward_http_result")
+        reward_values.append(reward)
+    if len(reward_values) < 3:
+        errors.append("episode:reward_http_coverage")
+    else:
+        initial_observations = [
+            step for step in trajectory[reward_positions[0] + 1:reward_positions[1]]
+            if step.get("method") == "GET" and step.get("path") == "/v1/observation"
+        ]
+        if (
+            not initial_observations
+            or initial_observations[0].get("status") != 200
+            or not transitions
+            or not isinstance(transitions[0], Mapping)
+            or initial_observations[0].get("result") != transitions[0].get("observation")
+        ):
+            errors.append("episode:initial_observation_http_mismatch")
+        previous_position = reward_positions[0]
+        if reward_values[0] != episode.get("initial_reward"):
+            errors.append("episode:initial_reward_http_mismatch")
+        cursor = 1
+        current = reward_values[0]
+        first_executed = True
+        for index, transition in enumerate(transitions):
+            if not isinstance(transition, Mapping):
+                continue
+            result = transition.get("result")
+            protocol_error = isinstance(result, Mapping) and "protocol_error" in result
+            if not protocol_error:
+                if cursor >= len(reward_values) - 2:
+                    errors.append("episode:transition_reward_http_coverage")
+                    break
+                reward_position = reward_positions[cursor]
+                window = trajectory[previous_position + 1:reward_position]
+                action = transition.get("action")
+                action_requests = [
+                    step for step in window
+                    if step.get("method") == "POST"
+                    and (step.get("path", "").startswith("/v1/tools/")
+                         or step.get("path") in {"/v1/agent_response", "/v1/user_simulator"})
+                ]
+                if isinstance(action, Mapping) and action.get("kind") == "tool":
+                    expected_path = "/v1/tools/" + str(action.get("name"))
+                    expected_result = transition.get("result")
+                    if (
+                        len(action_requests) != 1
+                        or action_requests[0].get("path") != expected_path
+                        or action_requests[0].get("body") != action.get("arguments")
+                        or not isinstance(expected_result, Mapping)
+                        or action_requests[0].get("status") != expected_result.get("status")
+                        or action_requests[0].get("result") != expected_result.get("tool_result")
+                    ):
+                        errors.append(f"episode:action_http_mismatch[{index}]")
+                elif isinstance(action, Mapping) and action.get("kind") == "respond":
+                    simulator = transition.get("trainer_metadata")
+                    simulator = simulator.get("user_simulator") if isinstance(simulator, Mapping) else None
+                    if (
+                        len(action_requests) != 2
+                        or [step.get("path") for step in action_requests]
+                        != ["/v1/agent_response", "/v1/user_simulator"]
+                        or action_requests[0].get("body") != {"content": action.get("content")}
+                        or action_requests[0].get("status") != 200
+                        or action_requests[1].get("status") != 200
+                        or action_requests[1].get("result") != simulator
+                    ):
+                        errors.append(f"episode:action_http_mismatch[{index}]")
+                else:
+                    errors.append(f"episode:action_http_mismatch[{index}]")
+                observations = [
+                    step for step in window
+                    if step.get("method") == "GET" and step.get("path") == "/v1/observation"
+                ]
+                if (
+                    len(observations) != (2 if first_executed else 1)
+                    or any(step.get("status") != 200 for step in observations)
+                    or (first_executed and observations[0].get("result") != transition.get("observation"))
+                    or observations[-1].get("result") != transition.get("next_observation")
+                    or not window or window[-1] is not observations[-1]
+                    or (first_executed and action_requests and window.index(observations[0]) > window.index(action_requests[0]))
+                ):
+                    errors.append(f"episode:observation_http_mismatch[{index}]")
+                current = reward_values[cursor]
+                cursor += 1
+                previous_position = reward_position
+                first_executed = False
+            if transition.get("reward") != current:
+                errors.append(f"episode:transition_reward_http_mismatch[{index}]")
+        if cursor + 2 != len(reward_values):
+            errors.append("episode:reward_http_count")
+        if reward_values[-2:] != [episode.get("final_reward")] * 2:
+            errors.append("episode:final_reward_http_mismatch")
+    actual_actions = [
+        step for step in trajectory
+        if step.get("method") == "POST"
+        and (step.get("path", "").startswith("/v1/tools/")
+             or step.get("path") in {"/v1/agent_response", "/v1/user_simulator"})
+    ]
+    expected_actions = sum(
+        0 if isinstance(item.get("result"), Mapping) and "protocol_error" in item["result"]
+        else 2 if isinstance(item.get("action"), Mapping) and item["action"].get("kind") == "respond"
+        else 1
+        for item in transitions if isinstance(item, Mapping)
+    )
+    if len(actual_actions) != expected_actions:
+        errors.append("episode:action_http_count")
+    state_positions = [
+        index for index, step in enumerate(trajectory)
+        if step.get("method") == "GET" and step.get("path") == "/v1/state"
+    ]
+    state_reads = [trajectory[index] for index in state_positions]
+    if len(state_reads) != 2 or any(step.get("status") != 200 for step in state_reads):
+        errors.append("episode:state_http_coverage")
+    else:
+        if len(reward_positions) >= 3 and not (
+            state_positions[0] < reward_positions[0]
+            and reward_positions[-1] < state_positions[1]
+        ):
+            errors.append("episode:state_reward_http_order")
+        states = [
+            step.get("result", {}).get("business_state")
+            if isinstance(step.get("result"), Mapping) else None
+            for step in state_reads
+        ]
+        if states[0] != episode.get("initial_state"):
+            errors.append("episode:initial_state_http_mismatch")
+        if states[1] != episode.get("final_state"):
+            errors.append("episode:final_state_http_mismatch")
     raw_user_results = [
         step.get("result") for step in trajectory
         if isinstance(step, Mapping) and step.get("path") == "/v1/user_simulator"

@@ -1,15 +1,18 @@
 import importlib.util
+import hashlib
 import itertools
 import json
 import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from env_factory.tasks.task_portability import prepare_sandbox_task
+from env_factory.sandbox_scoring import SCORE_RUBRIC, evidence_fingerprint
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -30,9 +33,84 @@ rollout = load("run_live_rollout")
 
 
 class ExperimentTest(unittest.TestCase):
+    def test_direct_replay_gates_failed_delivery_score(self):
+        with patch.object(loop, "_build_one_unfinalized", return_value={
+            "passed": False, "score": 9.44,
+            "offline_score": 9.38, "failure_class": "live_reward_calibration",
+        }):
+            result = loop._build_one(ROOT, Path("task.json"), Path("sandbox"), {})
+        self.assertEqual(result["score"], 0.0)
+        self.assertEqual(result["diagnostic_score"], 9.44)
+        self.assertEqual(result["delivery_score_kind"], "gated_final_10_point")
+
+    def test_failed_delivery_has_zero_effective_score(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            loop, "_build_one", return_value={
+                "passed": False, "score": 9.44,
+                "offline_score": 9.38, "failure_class": "live_reward_calibration",
+            },
+        ):
+            result = loop.build_one(
+                ROOT, Path(directory) / "task.json", Path(directory) / "sandbox",
+                {"sandbox_runtime": "none"},
+            )
+        self.assertEqual(result["score"], 0.0)
+        self.assertEqual(result["diagnostic_score"], 9.44)
+        self.assertEqual(result["offline_score"], 9.38)
+        self.assertEqual(result["delivery_score_kind"], "gated_final_10_point")
+
+    def test_training_ready_is_published_after_final_cleanup(self):
+        for cleanup_code in (0, 1):
+            with self.subTest(cleanup_code=cleanup_code), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory)
+                (output / "status.json").write_text(json.dumps({
+                    "status": "success", "success": True, "exit_code": 0}))
+                verified = {"passed": True, "score": 10, "build": {"exit_code": 0},
+                    "live_rollout_verified": True, "live_reward_calibration_verified": True,
+                    "data_governance_verified": True, "trajectory_privacy_verified": True,
+                    "sandbox_score": {"passed": True}}
+                with patch.object(loop, "_build_one", return_value=verified), patch.object(
+                    loop, "run_process", return_value={"exit_code": cleanup_code}):
+                    result = loop.build_one(ROOT, output / "task.json", output,
+                                            {"sandbox_runtime": "docker"})
+                self.assertEqual(result["training_ready"], cleanup_code == 0)
+                self.assertEqual(json.loads((output / "status.json").read_text())["training_ready"], cleanup_code == 0)
+
+    def test_builder_owner_codes_survive_failure_classification(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            for phase, code, target in (
+                ("task_contract_rejected", "TASK_CONTRACT", "task_pipeline"),
+                ("platform_contract_rejected", "PLATFORM_RUNTIME", "platform_runtime_boundary"),
+                ("runtime_timeout_rejected", "BUILD_RUNTIME_TIMEOUT", "platform_or_task_contract"),
+                ("repair_no_progress", "BUILD_REPAIR_NO_PROGRESS", "sandbox_builder"),
+                ("repair_budget_exhausted", "BUILD_REPAIR_BUDGET", "sandbox_builder"),
+            ):
+                (output / "status.json").write_text(json.dumps({
+                    "status": "failed", "failed_phase": phase,
+                    "failure_code": code,
+                }), encoding="utf-8")
+                result = loop.classify_build_failure(output)
+                self.assertEqual(result["failure_code"], code)
+                self.assertEqual(result["repair_target"], target)
+
     @staticmethod
     def write_task_lineage(output: Path, task_path: Path) -> None:
         prepare_sandbox_task(task_path, output)
+
+    @staticmethod
+    def mock_sandbox_score(output: Path, threshold: float = 8) -> dict:
+        return {
+            "checks": [{"name": name, "weight": weight, "passed": True,
+                        "evidence": "verified", "critical": critical}
+                       for name, weight, critical in SCORE_RUBRIC],
+            "mode": "offline_executable", "network_used": False, "model_used": False,
+            "live_rollout_verified": False, "threshold": threshold,
+            "score": 10.0, "eligible": True, "passed": True,
+            "failed_critical_gates": [],
+            "model": loop.MODEL, "review_model": loop.MODEL,
+            "evidence_fingerprint": evidence_fingerprint(output, ROOT),
+        }
 
     def test_concurrent_attempts_receive_distinct_stable_container_tags(self):
         first = loop.sandbox_image_tag(Path("/tmp/experiment/sample-1/attempt-1"))
@@ -57,6 +135,7 @@ class ExperimentTest(unittest.TestCase):
         self.assertEqual(report["generated"], 2)
         self.assertEqual(report["qualified"], 2)
         self.assertEqual(report["end_to_end_rate"], 2 / 3)
+        self.assertIsNone(report["post_score_survival_rate"])
         self.assertFalse(report["all_passed"])
         self.assertFalse(report["live_rollout_verified"])
 
@@ -125,6 +204,20 @@ class ExperimentTest(unittest.TestCase):
         summary = loop.summarize([result], 8)
         self.assertEqual(summary["sandbox_build_yield"], 1)
         self.assertEqual(summary["end_to_end_rate"], 0)
+        self.assertEqual(summary["final_after_offline"], 0)
+        self.assertEqual(summary["post_score_survival_rate"], 0)
+
+    def test_offline_pass_is_not_counted_as_live_survival(self):
+        result = {
+            "task_path": "task", "score": 10.0, "passed": True,
+            "task_score": {"eligible": True, "score": 10.0},
+            "sandbox_score": {"passed": True, "score": 10.0},
+            "live_rollout_verified": False,
+        }
+        summary = loop.summarize([result], 8, validation="offline")
+        self.assertEqual(summary["offline_qualified"], 1)
+        self.assertEqual(summary["final_after_offline"], 0)
+        self.assertIsNone(summary["post_score_survival_rate"])
 
     def test_all_infrastructure_failures_do_not_form_a_quality_round(self):
         results = [loop.failure("infrastructure", "network unavailable") for _ in range(5)]
@@ -188,10 +281,43 @@ class ExperimentTest(unittest.TestCase):
                 config["training_mix"],
             )
 
+    def test_completed_sample_builds_while_generation_is_still_running(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            build_started = threading.Event()
+            overlap = []
+
+            def generate(*_args):
+                task_dir = root / "round-01/generation/task/task-1"
+                task_dir.mkdir(parents=True)
+                task_path = task_dir / "task.json"
+                task_path.write_text("{}", encoding="utf-8")
+                (task_dir / "sample_manifest.json").write_text(json.dumps({
+                    "batch_index": 1, "status": "completed",
+                    "task_sha256": hashlib.sha256(task_path.read_bytes()).hexdigest(),
+                }), encoding="utf-8")
+                overlap.append(build_started.wait(3))
+                return {"exit_code": 0, "timed_out": False, "seconds": .1}
+
+            def build(*_args):
+                build_started.set()
+                return {"passed": True, "score": 9}
+
+            config = {
+                "generate_count": 1, "threshold": 8, "max_concurrency": 2,
+                "generation_timeout": 10, "build_mode": "clean",
+            }
+            with patch.object(loop, "run_process", side_effect=generate), \
+                    patch.object(loop, "build_one", side_effect=build) as builder:
+                report = loop.run_round(ROOT, root, config, {"round": 1, "state": "running"})
+            self.assertEqual(overlap, [True])
+            self.assertEqual(builder.call_count, 1)
+            self.assertEqual(report["jobs"][0]["state"], "complete")
+
     def test_generation_manifests_preserve_failed_route_identity(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            task_dir = root / "round-01/generation/task_artifacts/task-9"
+            task_dir = root / "round-01/generation/task/task-9"
             task_dir.mkdir(parents=True)
             manifest = {
                 "batch_index": 1, "training_category": "multi_step_agentic",
@@ -201,7 +327,7 @@ class ExperimentTest(unittest.TestCase):
             (task_dir / "failure.json").write_text(json.dumps({
                 "failure_class": "GEN_SCHEMA", "message": "bad schema",
             }))
-            config = {"generate_count": 1, "threshold": 8, "max_concurrency": 1}
+            config = {"generate_count": 1, "threshold": 8, "max_concurrency": 1, "build_mode": "clean"}
             report = loop.run_round(
                 ROOT, root, config,
                 {"round": 1, "state": "running", "generation_started": True},
@@ -210,6 +336,73 @@ class ExperimentTest(unittest.TestCase):
             self.assertEqual(result["failure_code"], "GEN_SCHEMA")
             self.assertEqual(result["category"], "multi_step_agentic")
             self.assertEqual(result["sample_seed"], 99)
+
+    def test_failed_manifest_waits_for_failure_report_before_classification(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp) / "task-1"
+            task_dir.mkdir()
+            manifest_path = task_dir / "sample_manifest.json"
+            sample = {"batch_index": 1, "status": "failed", "training_category": "simple_agentic"}
+            manifest_path.write_text(json.dumps(sample), encoding="utf-8")
+            self.assertIsNone(loop.resolve_generated_job(
+                1, (manifest_path, sample), generation_done=False,
+            ))
+            (task_dir / "failure.json").write_text(json.dumps({
+                "failure_class": "GEN_SCHEMA", "message": "bad schema",
+            }), encoding="utf-8")
+            resolved = loop.resolve_generated_job(
+                1, (manifest_path, sample), generation_done=False,
+            )
+            self.assertEqual(resolved["result"]["failure_code"], "GEN_SCHEMA")
+
+    def test_interrupted_generation_does_not_build_uncommitted_task(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            task_dir = root / "round-01/generation/task/task-1"
+            task_dir.mkdir(parents=True)
+            (task_dir / "task.json").write_text("{}")
+            manifest_path = task_dir / "sample_manifest.json"
+            manifest = {"batch_index": 1, "status": "generated", "sample_seed": 9}
+            manifest_path.write_text(json.dumps(manifest))
+            config = {"generate_count": 1, "threshold": 8, "max_concurrency": 1}
+            with patch.object(loop, "build_one") as build:
+                report = loop.run_round(
+                    ROOT, root, config,
+                    {"round": 1, "state": "running", "generation_started": True},
+                )
+            build.assert_not_called()
+            self.assertEqual(report["jobs"][0]["result"]["failure_code"], "INFRA")
+
+    def test_completed_generation_requires_matching_task_digest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            task_dir = root / "round-01/generation/task/task-1"
+            task_dir.mkdir(parents=True)
+            task_path = task_dir / "task.json"
+            task_path.write_text("{}")
+            manifest_path = task_dir / "sample_manifest.json"
+            manifest = {
+                "batch_index": 1, "status": "completed", "sample_seed": 9,
+                "task_sha256": "0" * 64,
+            }
+            manifest_path.write_text(json.dumps(manifest))
+            config = {"generate_count": 1, "threshold": 8, "max_concurrency": 1, "build_mode": "clean"}
+            with patch.object(loop, "build_one") as build:
+                rejected = loop.run_round(
+                    ROOT, root, config,
+                    {"round": 1, "state": "running", "generation_started": True},
+                )
+            build.assert_not_called()
+            self.assertEqual(rejected["jobs"][0]["result"]["failure_code"], "INFRA")
+            manifest["task_sha256"] = hashlib.sha256(task_path.read_bytes()).hexdigest()
+            manifest_path.write_text(json.dumps(manifest))
+            with patch.object(loop, "build_one", return_value={"passed": True, "score": 9}) as build:
+                accepted = loop.run_round(
+                    ROOT, root, config,
+                    {"round": 1, "state": "running", "generation_started": True},
+                )
+            build.assert_called_once()
+            self.assertEqual(accepted["jobs"][0]["state"], "complete")
 
     def test_one_job_exception_does_not_abort_other_jobs(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -245,6 +438,56 @@ class ExperimentTest(unittest.TestCase):
             self.assertEqual(result["failure_class"], "task_quality")
             self.assertEqual(result["failure_code"], "EXTERNAL_CAPABILITY_UNAVAILABLE")
 
+    def test_infrastructure_disconnect_retries_with_resume(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            task_path = root / "task.json"
+            task_path.write_text("{}", encoding="utf-8")
+            output = root / "sandbox"
+            calls = []
+            quality = SimpleNamespace(to_dict=lambda: {
+                "eligible": True, "score": 9, "training_category": "simple_agentic",
+            })
+
+            def disconnected(command, *_args):
+                calls.append(command)
+                output.mkdir(exist_ok=True)
+                (output / "status.json").write_text(json.dumps({
+                    "status": "failed",
+                    "failure_code": "INFRA", "failure_category": "infrastructure",
+                    "failed_phase": "node_development",
+                }), encoding="utf-8")
+                return {"exit_code": 5, "timed_out": False, "seconds": .1}
+
+            config = {
+                "threshold": 8, "max_attempts": 2, "build_timeout": 10,
+                "build_mode": "clean", "infrastructure_retries": 1,
+            }
+            with patch("env_factory.tasks.task_quality.score_file", return_value=quality), \
+                    patch.object(loop, "run_process", side_effect=disconnected):
+                result = loop.build_one(ROOT, task_path, output, config)
+            self.assertEqual(len(calls), 2)
+            self.assertNotIn("--resume", calls[0])
+            self.assertIn("--resume", calls[1])
+            self.assertEqual(result["failure_code"], "INFRA")
+
+    def test_task_scoring_exception_counts_as_task_quality_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            task_path = root / "task.json"
+            task_path.write_text('{"environment_plan": []}', encoding="utf-8")
+            result = loop.build_one(
+                ROOT, task_path, root / "sandbox",
+                {"threshold": 8, "build_mode": "clean", "sandbox_runtime": "none"},
+            )
+        self.assertEqual(result["failure_class"], "task_quality")
+        self.assertEqual(result["task_score"]["score"], 0)
+        self.assertFalse(result["task_score"]["eligible"])
+        self.assertEqual(result["category"], "unknown")
+        summary = loop.summarize([result], 8)
+        self.assertEqual(summary["task_good_yield"], 0)
+        self.assertTrue(summary["valid_quality_round"])
+
     def test_build_failure_uses_last_failed_gate(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -274,6 +517,50 @@ class ExperimentTest(unittest.TestCase):
             self.assertEqual(result["build_failed_phase"], "runtime_validation")
             self.assertEqual(result["failure_code"], "BUILD_RUNTIME_INTEGRITY")
             self.assertEqual(result["repair_target"], "platform_runtime_boundary")
+
+    def test_scoring_requires_fresh_report_bound_to_current_sandbox(self):
+        quality = SimpleNamespace(to_dict=lambda: {
+            "eligible": True, "score": 9, "training_category": "simple_agentic",
+        })
+        for case in ("missing", "wrong_fingerprint", "bare_score"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                task_path = root / "task.json"
+                task_path.write_text("{}")
+                output = root / "sandbox"
+                output.mkdir()
+                report_path = output / "score_summary.json"
+                report_path.write_text('{"sandboxes":[{"passed":true,"score":10}]}')
+
+                def process(command, cwd, log, timeout):
+                    rendered = " ".join(command)
+                    if "develop_sandbox_with_agent.sh" in rendered:
+                        self.write_task_lineage(output, task_path)
+                    if "score_sandbox_offline.py" in rendered:
+                        self.assertFalse(report_path.exists())
+                        if case == "wrong_fingerprint":
+                            report = self.mock_sandbox_score(output)
+                            report["evidence_fingerprint"] = "stale"
+                            report_path.write_text(json.dumps({"sandboxes": [report]}))
+                        if case == "bare_score":
+                            report_path.write_text(json.dumps({"sandboxes": [{
+                                "passed": True, "score": 10,
+                                "model": loop.MODEL, "review_model": loop.MODEL,
+                                "evidence_fingerprint": evidence_fingerprint(output, ROOT),
+                            }]}))
+                    return {"exit_code": 0, "timed_out": False, "seconds": .1}
+
+                config = {"threshold": 8, "max_attempts": 2, "build_timeout": 10,
+                          "score_timeout": 10, "build_mode": "clean", "validation": "offline"}
+                with (
+                    patch("env_factory.tasks.task_quality.score_file", return_value=quality),
+                    patch.object(loop, "run_process", side_effect=process),
+                ):
+                    result = loop.build_one(ROOT, task_path, output, config)
+                self.assertFalse(result["passed"])
+                self.assertEqual(result["failure_class"], "offline_validation")
+                if case == "missing":
+                    self.assertFalse(report_path.exists())
 
     def test_agent_startup_failure_is_infrastructure_not_build_yield(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -324,11 +611,7 @@ class ExperimentTest(unittest.TestCase):
                     self.write_task_lineage(output, task_path)
                 if "score_sandbox_offline.py" in " ".join(command):
                     (output / "score_summary.json").write_text(json.dumps({
-                        "sandboxes": [{
-                            "passed": True, "score": 10,
-                            "model": loop.MODEL, "review_model": loop.MODEL,
-                            "evidence_fingerprint": "proof",
-                        }],
+                        "sandboxes": [self.mock_sandbox_score(output)],
                     }))
                 elif "audit_data_governance.py" in " ".join(command):
                     (output / "data_governance.json").write_text(json.dumps({
@@ -440,11 +723,7 @@ class ExperimentTest(unittest.TestCase):
                     self.write_task_lineage(output, task_path)
                 if "score_sandbox_offline.py" in rendered:
                     (output / "score_summary.json").write_text(json.dumps({
-                        "sandboxes": [{
-                            "passed": True, "score": 10,
-                            "model": loop.MODEL, "review_model": loop.MODEL,
-                            "evidence_fingerprint": "proof",
-                        }],
+                        "sandboxes": [self.mock_sandbox_score(output)],
                     }))
                     return {"exit_code": 0, "timed_out": False, "seconds": .1}
                 if "audit_data_governance.py" in rendered:
@@ -534,7 +813,6 @@ class ExperimentTest(unittest.TestCase):
                 task.write_text(json.dumps({"task": index}))
                 results.append({
                     "task_path": str(task), "sample_seed": 10_000 + index,
-                    "dataset_platform": "kaggle" if index % 2 == 0 else "data_gov_hk",
                     "score": 9, "passed": True, "category": "multi_step_agentic",
                     "task_score": {"eligible": True, "score": 9},
                     "sandbox_score": {"passed": True, "score": 9},
@@ -549,14 +827,6 @@ class ExperimentTest(unittest.TestCase):
                 rollout_success_target=2 / 3, previous_seeds={1, 2, 3},
             )
             self.assertTrue(summary["target_met"])
-            self.assertTrue(summary["source_balance_verified"])
-            results[0]["dataset_platform"] = "data_gov_hk"
-            unbalanced = loop.summarize_holdout(
-                results, 8, expected_count=30, end_to_end_target=.7,
-                rollout_success_target=2 / 3, previous_seeds={1, 2, 3},
-            )
-            self.assertFalse(unbalanced["target_met"])
-            results[0]["dataset_platform"] = "kaggle"
             results[0]["live_rollout"]["agent_success_rate"] = 1 / 3
             self.assertFalse(loop.summarize_holdout(
                 results, 8, expected_count=30, end_to_end_target=.7,
@@ -628,8 +898,10 @@ class RolloutTest(unittest.TestCase):
         self.assertEqual(report["quality_score"], 1.0)
         episodes[1]["agent_success"] = False
         report = rollout.summarize_episodes(episodes, 2 / 3)
-        self.assertFalse(report["passed"])
-        self.assertEqual(report["failure_owner"], "agent")
+        self.assertTrue(report["passed"])
+        self.assertTrue(report["environment_qualified"])
+        self.assertFalse(report["agent_policy_qualified"])
+        self.assertIsNone(report["failure_owner"])
         episodes[1]["issues"] = ["runtime_llm_fallback"]
         report = rollout.summarize_episodes(episodes, 0)
         self.assertFalse(report["all_episodes_fallback_free"])

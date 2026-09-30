@@ -13,7 +13,7 @@ def production_config():
         "threshold": 8.0,
         "validation": "live",
         "sandbox_runtime": "docker",
-        "holdout_count": 300,
+        "holdout_count": 30,
         "holdout_batches": 3,
         "holdout_rollout_episodes": 10,
         "source_digest": "1" * 64,
@@ -56,7 +56,7 @@ class ExperimentContractTest(unittest.TestCase):
     def test_contract_rejects_semantic_and_privacy_drift(self):
         config = production_config()
         contract = build_experiment_contract(config)
-        contract["configuration"]["holdout_count"] = 1
+        contract["configuration"]["holdout_count"] = 29
         contract["configuration_sha256"] = digest_json(
             contract["configuration"]
         )

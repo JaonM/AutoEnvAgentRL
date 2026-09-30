@@ -9,60 +9,16 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 from urllib.parse import urlparse
 
-from env_factory.generation.dataset_formats import (
-    ARCHIVE_EXTENSIONS, SUPPORTED_EXTENSIONS, SUPPORTED_SOURCE_EXTENSIONS, source_extension,
-)
-
 
 SYNTHETIC_ORIGIN = {
     "origin": "model_generated_synthetic",
     "contains_real_user_data": False,
     "intended_use": "agentic_rl_training_material",
 }
-PUBLIC_DATASET_HOSTS = {
-    "kaggle": {"kaggle.com", "www.kaggle.com"},
-    "data_gov_hk": {"data.gov.hk"},
-}
-
-
+PROGRAMMATIC_SYNTHETIC_ORIGIN = {**SYNTHETIC_ORIGIN, "origin": "programmatically_generated_synthetic"}
 def valid_data_origin(governance: Any, task: Mapping[str, Any]) -> bool:
-    """Accept synthetic fixtures or attributed public dataset source rows."""
-    if not isinstance(governance, Mapping):
-        return False
-    if dict(governance) == SYNTHETIC_ORIGIN:
-        return True
-    if governance.get("origin") != "public_dataset":
-        return False
-    provider = governance.get("provider")
-    url = governance.get("source_url")
-    digest = governance.get("source_sha256")
-    source_format = governance.get("source_format")
-    member = governance.get("source_member")
-    if (
-        provider not in PUBLIC_DATASET_HOSTS
-        or not isinstance(url, str)
-        or urlparse(url).scheme != "https"
-        or urlparse(url).hostname not in PUBLIC_DATASET_HOSTS[provider]
-        or not isinstance(digest, str)
-        or re.fullmatch(r"[0-9a-f]{64}", digest) is None
-        or source_format not in SUPPORTED_SOURCE_EXTENSIONS
-        or (source_format in ARCHIVE_EXTENSIONS and (
-            not isinstance(member, str)
-            or source_extension(member) not in SUPPORTED_EXTENSIONS
-            or Path(member).is_absolute()
-            or ".." in Path(member).parts
-            or "\\" in member
-        ))
-        or (source_format not in ARCHIVE_EXTENSIONS and member is not None)
-        or governance.get("contains_real_user_data") != "undetermined"
-        or governance.get("intended_use") != "agentic_rl_training_material"
-    ):
-        return False
-    source = task.get("artifacts", {}).get("dataset_source")
-    return isinstance(source, Mapping) and dict(source) == {
-        key: governance.get(key)
-        for key in ("provider", "source_url", "source_sha256", "source_format", "source_member", "license")
-    }
+    """Accept only the synthetic data origin produced by the task pipeline."""
+    return isinstance(governance, Mapping) and dict(governance) in (SYNTHETIC_ORIGIN, PROGRAMMATIC_SYNTHETIC_ORIGIN)
 OUTBOUND_SURFACES = {
     "agent": [
         "public_input",
@@ -112,6 +68,7 @@ PII_PATTERNS = {
     "mainland_phone": re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)"),
     "mainland_id": re.compile(r"(?<!\d)\d{17}[0-9Xx](?!\d)"),
 }
+OPAQUE_TOOL_CALL_ID = re.compile(r"call-[0-9a-f]{32}")
 CONTENT_IDENTITY = re.compile(r"(?:sha256:)?[0-9a-f]{64}", re.I)
 
 
@@ -189,7 +146,8 @@ def scan_payloads(payloads: Mapping[str, Any]) -> dict[str, Any]:
             # A complete content identity is opaque machine metadata. Random
             # digit runs inside it can resemble a phone or national ID, but
             # exempting only the full digest does not weaken free-text scans.
-            if CONTENT_IDENTITY.fullmatch(text) is None:
+            platform_call_id = path.endswith(".payload.tool_call_id") and OPAQUE_TOOL_CALL_ID.fullmatch(text) is not None
+            if CONTENT_IDENTITY.fullmatch(text) is None and not platform_call_id:
                 for name, pattern in PII_PATTERNS.items():
                     if pattern.search(text):
                         pii.append({"kind": name, "path": path})

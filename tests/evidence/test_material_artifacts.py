@@ -38,6 +38,25 @@ class MaterialArtifactsTest(unittest.TestCase):
             self.assertIn("dockerignore_contract", errors)
             self.assertIn("sensitive_context_file:credentials.json", errors)
 
+    def test_context_allows_hidden_files_inside_ignored_pytest_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".dockerignore").write_text(DOCKERIGNORE_SOURCE)
+            cache = root / ".pytest_cache"
+            cache.mkdir()
+            (cache / ".gitignore").write_text("*\n")
+            self.assertEqual(docker_context_errors(root), [])
+
+    def test_context_excludes_node_resume_checkpoints(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".dockerignore").write_text(DOCKERIGNORE_SOURCE)
+            checkpoints = root / ".node_checkpoints"
+            checkpoints.mkdir()
+            (checkpoints / "task_impl").touch()
+            self.assertEqual(docker_context_errors(root), [])
+            self.assertNotIn(".node_checkpoints/task_impl", portable_artifact_digests(root))
+
     def test_portable_inventory_rejects_symlinks(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

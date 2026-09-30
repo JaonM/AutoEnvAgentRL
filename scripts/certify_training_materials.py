@@ -21,7 +21,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from env_factory.evidence.material_artifacts import (
     MATERIAL_MANIFEST_VERSION,
@@ -39,7 +39,7 @@ from env_factory.evidence.data_governance import (
     valid_governance_report,
     valid_provider_binding as valid_governed_provider_binding,
 )
-from env_factory.evidence.container_provenance import verify_container_provenance
+from env_factory.evidence.container_provenance import inspect_local_image, verify_container_provenance
 from env_factory.evidence.certification_policy import (
     canonical_certification_policy,
     policy_for_experiment,
@@ -54,7 +54,7 @@ from env_factory.evidence.generation_provenance import generation_provenance_sna
 from env_factory.evidence.runtime_provenance import valid_container_rollout_execution
 from env_factory.sandbox_scoring import valid_score_report
 from env_factory.tasks.task_quality import score_file
-from env_factory.contracts.reward_contract import terminal_outcome_weight
+from env_factory.contracts.reward_contract import numeric_answer_counterfactual, terminal_outcome_weight
 from env_factory.evidence.material_consumer import BUNDLE_VERSION
 from env_factory.evidence.model_response_provenance import response_provenance
 from env_factory.evidence.production_preflight import (
@@ -72,7 +72,12 @@ USER_OUTCOMES = {
 }
 NEGATIVE_COUNTERFACTUALS = (
     "goal_failure", "no_tools", "noise_selection", "reordered_tools",
+    "wrong_final_answer", "wrong_numeric_answer",
 )
+MUST_COMPLETE_NEGATIVE_COUNTERFACTUALS = frozenset({
+    "goal_failure", "no_tools", "noise_selection",
+    "wrong_final_answer", "wrong_numeric_answer",
+})
 def load(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -183,7 +188,7 @@ def run_sandbox_revalidation(
                 str(project / "scripts/sandbox/score_sandbox_offline.py"),
                 str(root),
                 "--project", str(project),
-                "--threshold", str(policy["score_threshold"]),
+                "--threshold", str(policy["score_threshold"]), "--fresh",
                 "--output", str(output),
                 "--no-individual",
             ]
@@ -247,6 +252,13 @@ def wilson_lower(successes: int, total: int, *, z: float = Z_95) -> float:
     return max(0.0, (centre - margin) / denominator)
 
 
+def wilson_upper(errors: int, total: int, *, z: float = Z_95) -> float:
+    """Upper bound for an error rate; no observations give no assurance."""
+    if total <= 0:
+        return 1.0
+    return min(1.0, 1.0 - wilson_lower(total - errors, total, z=z))
+
+
 def _artifact(result: Mapping[str, Any], name: str) -> dict[str, Any]:
     root = Path(str(result.get("output", "")))
     path = root / name
@@ -278,7 +290,8 @@ def _counterfactual_counts(reports: Iterable[Mapping[str, Any]]) -> dict[str, in
         if isinstance(success, Mapping):
             positive_total += 1
             reward = success.get("reward")
-            if not isinstance(reward, (int, float)) or reward < 0.6:
+            if (success.get("status") != "completed"
+                    or not _valid_reward_number(reward) or reward < 0.6):
                 positive_errors += 1
         for name, case in cases.items():
             if name == "goal_success" or not isinstance(case, Mapping):
@@ -290,8 +303,17 @@ def _counterfactual_counts(reports: Iterable[Mapping[str, Any]]) -> dict[str, in
                 continue
             negative_total += 1
             reward = case.get("reward")
-            limit = 0.0 if name == "noise_selection" else 0.2
-            if isinstance(reward, (int, float)) and reward > limit:
+            answer_case = name in {"wrong_final_answer", "wrong_numeric_answer"}
+            limit = 0.6 if answer_case else (0.0 if name == "noise_selection" else 0.2)
+            must_complete_failed = (
+                name in MUST_COMPLETE_NEGATIVE_COUNTERFACTUALS
+                and case.get("status") != "completed"
+            )
+            invalid_reward = case.get("status") != "rejected" and (
+                not _valid_reward_number(reward)
+                or (reward >= limit if answer_case else reward > limit)
+            )
+            if must_complete_failed or invalid_reward:
                 negative_errors += 1
     return {
         "positive_total": positive_total,
@@ -299,6 +321,28 @@ def _counterfactual_counts(reports: Iterable[Mapping[str, Any]]) -> dict[str, in
         "negative_total": negative_total,
         "negative_errors": negative_errors,
     }
+
+
+def _counterfactual_sandbox_counts(reports: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+    """Treat correlated counterfactuals from one sandbox as one audit unit."""
+    total = positive_errors = negative_errors = 0
+    for report in reports:
+        total += 1
+        counts = _counterfactual_counts((report,))
+        positive_errors += counts["positive_total"] == 0 or counts["positive_errors"] > 0
+        negative_errors += counts["negative_total"] == 0 or counts["negative_errors"] > 0
+    return {
+        "total": total,
+        "positive_errors": positive_errors,
+        "negative_errors": negative_errors,
+    }
+
+
+def _valid_reward_number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float)) and not isinstance(value, bool)
+        and -1 <= value <= 1 and math.isfinite(value)
+    )
 
 
 def valid_reward_calibration(
@@ -316,6 +360,86 @@ def valid_reward_calibration(
         "category", task.get("training_category", "multi_step_agentic")
     )
     tool_required = category != "direct_response"
+    environment = task.get("environment_plan")
+    mode = environment.get("mode") if isinstance(environment, Mapping) else None
+    if tool_required and mode in {"reference_data", "stateful"}:
+        access = evidence.get("business_data_access")
+        read_tables = access.get("tables_read") if isinstance(access, Mapping) else None
+        tool_reads = access.get("tool_reads") if isinstance(access, Mapping) else None
+        artifacts = task.get("artifacts")
+        manifest = artifacts.get("data_manifest") if isinstance(artifacts, Mapping) else None
+        declared = {
+            item.get("table_name") for item in manifest.get("tables", [])
+            if isinstance(item, Mapping) and isinstance(item.get("table_name"), str)
+        } if isinstance(manifest, Mapping) else set()
+        if (
+            not isinstance(read_tables, list)
+            or not read_tables
+            or not declared
+            or any(not isinstance(name, str) or name not in declared for name in read_tables)
+        ):
+            return False
+        acceptance = task.get("acceptance_contract")
+        scenarios = acceptance.get("executable_scenarios") if isinstance(acceptance, Mapping) else None
+        success = next((item for item in scenarios if isinstance(item, Mapping)
+                        and item.get("kind") == "goal_success"), None) if isinstance(scenarios, list) else None
+        expected_tools = [
+            step.get("tool_name") for step in success.get("steps", [])
+            if isinstance(step, Mapping) and step.get("operation") == "tool_call"
+        ] if isinstance(success, Mapping) else []
+        if (
+            not expected_tools
+            or not isinstance(tool_reads, list)
+            or len(tool_reads) < len(expected_tools)
+            or any(
+                not isinstance(item, Mapping)
+                or item.get("tool_name") != expected_tools[index]
+                or not isinstance(item.get("tables_read"), list)
+                or not item["tables_read"]
+                or any(name not in declared for name in item["tables_read"])
+                for index, item in enumerate(tool_reads[:len(expected_tools)])
+            )
+        ):
+            return False
+        if mode == "reference_data":
+            causality = evidence.get("business_data_causality")
+            immutability = evidence.get("reference_data_immutability")
+            if (
+                not isinstance(causality, Mapping)
+                or causality.get("proved") is not True
+                or causality.get("table") not in read_tables
+                or not isinstance(causality.get("tool"), str)
+                or not causality["tool"]
+                or not isinstance(immutability, Mapping)
+                or immutability.get("unchanged") is not True
+            ):
+                return False
+            terminal_weight = terminal_outcome_weight(dict(task))
+            if terminal_weight > 0:
+                sensitivity = evidence.get("business_data_reward_sensitivity")
+                baseline = sensitivity.get("baseline_reward") if isinstance(sensitivity, Mapping) else None
+                baseline_repeats = sensitivity.get("baseline_rewards") if isinstance(sensitivity, Mapping) else None
+                changed = sensitivity.get("changed_reward") if isinstance(sensitivity, Mapping) else None
+                repeats = sensitivity.get("changed_rewards") if isinstance(sensitivity, Mapping) else None
+                if (
+                    not isinstance(sensitivity, Mapping)
+                    or sensitivity.get("proved") is not True
+                    or sensitivity.get("tool_results_changed") is not True
+                    or sensitivity.get("baseline_tool_results_stable") is not True
+                    or not _valid_reward_number(baseline)
+                    or not isinstance(baseline_repeats, list) or len(baseline_repeats) != 2
+                    or any(not _valid_reward_number(value) or value < 0.6 or value != baseline
+                           for value in baseline_repeats)
+                    or not _valid_reward_number(changed)
+                    or not isinstance(repeats, list) or len(repeats) != 2
+                    or any(not _valid_reward_number(value)
+                           or value >= 0.6 or baseline - value < max(0.05, 0.5 * terminal_weight) - 1e-9
+                           for value in repeats)
+                    or changed != max(repeats)
+                    or baseline < 0.6 or changed >= 0.6
+                    or baseline - changed < max(0.05, 0.5 * terminal_weight) - 1e-9
+                ):
+                    return False
     dependency = training.get("dependency")
     dependency_required = (
         dependency.get("required", category == "multi_step_agentic")
@@ -346,22 +470,34 @@ def valid_reward_calibration(
     required = {"goal_success", "goal_failure"}
     terminal_weight = terminal_outcome_weight(dict(task))
     if terminal_weight > 0:
-        if not any(
-            isinstance(step, Mapping) and step.get("operation") == "agent_response"
-            for step in steps
-        ):
+        answer_step = next((step for step in steps
+                            if isinstance(step, Mapping) and step.get("operation") == "agent_response"), None)
+        if answer_step is None:
             return False
         required.add("wrong_final_answer")
+        if numeric_answer_counterfactual(dict(task), answer_step.get("content")) is not None:
+            required.add("wrong_numeric_answer")
     if tool_required and any(
         isinstance(step, Mapping) and step.get("operation") == "agent_response"
         for step in steps
     ):
         required.add("no_tools")
-    required.update(
-        f"corrupted_arguments_{index}"
-        for index, step in enumerate(tool_steps, start=1)
-        if isinstance(step.get("arguments"), Mapping) and step["arguments"]
-    )
+    tool_schemas = {
+        item["function"].get("name"): item["function"].get("parameters", {})
+        for item in task.get("tools", [])
+        if isinstance(item, Mapping) and isinstance(item.get("function"), Mapping)
+    }
+    for index, step in enumerate(tool_steps, start=1):
+        arguments = step.get("arguments")
+        if not isinstance(arguments, Mapping) or not arguments:
+            continue
+        schema = tool_schemas.get(step.get("tool_name"), {})
+        schema_required = schema.get("required", []) if isinstance(schema, Mapping) else []
+        keys = ([key for key in schema_required if isinstance(key, str) and key in arguments]
+                if isinstance(schema_required, list) else [])
+        for argument_index in range(1, len(keys or [next(iter(arguments))]) + 1):
+            suffix = f"__{argument_index}" if argument_index > 1 else ""
+            required.add(f"corrupted_arguments_{index}{suffix}")
     if dependency_required and len(tool_steps) >= 2:
         required.update(
             f"skipped_tool_{index}" for index in range(1, len(tool_steps) + 1)
@@ -376,21 +512,23 @@ def valid_reward_calibration(
     if not (
         isinstance(positive, Mapping)
         and positive.get("status") == "completed"
-        and isinstance(positive.get("reward"), (int, float))
-        and not isinstance(positive.get("reward"), bool)
+        and _valid_reward_number(positive.get("reward"))
         and positive["reward"] >= 0.6
     ):
         return False
     for name in required - {"goal_success"}:
         case = cases.get(name)
-        if name == "wrong_final_answer":
+        if (name in MUST_COMPLETE_NEGATIVE_COUNTERFACTUALS
+                and (not isinstance(case, Mapping) or case.get("status") != "completed")):
+            return False
+        if name in {"wrong_final_answer", "wrong_numeric_answer"}:
             reward = case.get("reward") if isinstance(case, Mapping) else None
             required_drop = max(0.05, 0.5 * terminal_weight)
             if (
                 not isinstance(case, Mapping)
                 or case.get("status") != "completed"
-                or not isinstance(reward, (int, float))
-                or isinstance(reward, bool)
+                or not _valid_reward_number(reward)
+                or reward >= 0.6
                 or positive["reward"] - reward < required_drop - 1e-9
             ):
                 return False
@@ -403,8 +541,7 @@ def valid_reward_calibration(
         limit = 0.0 if name == "noise_selection" else 0.2
         if case.get("status") == "completed":
             if (
-                not isinstance(reward, (int, float))
-                or isinstance(reward, bool)
+                not _valid_reward_number(reward)
                 or reward > limit
             ):
                 return False
@@ -424,6 +561,27 @@ def valid_reward_calibration(
         and report.get("validation_mode") == "live_evaluator"
         and report.get("failed_gates") == []
         and report.get("failures") == []
+    )
+
+
+def consistent_causality_witness(
+    offline: Mapping[str, Any], live: Mapping[str, Any], task: Mapping[str, Any],
+) -> bool:
+    """Bind the live sensitivity decision to the deterministic offline mutation."""
+    if task.get("environment_plan", {}).get("mode") != "reference_data":
+        return True
+    offline_evidence = offline.get("evidence")
+    live_evidence = live.get("evidence")
+    if not isinstance(offline_evidence, Mapping) or not isinstance(live_evidence, Mapping):
+        return False
+    before = offline_evidence.get("business_data_causality")
+    after = live_evidence.get("business_data_causality")
+    if not isinstance(before, Mapping) or not isinstance(after, Mapping):
+        return False
+    fields = ("proved", "table", "tool", "field", "answer_value_mentioned")
+    return (
+        isinstance(before.get("answer_value_mentioned"), bool)
+        and all(before.get(field) == after.get(field) for field in fields)
     )
 
 
@@ -634,12 +792,56 @@ def valid_provider_binding(
 
 
 def valid_rollout_outcome(
-    report: Mapping[str, Any], policy: Mapping[str, Any]
+    report: Mapping[str, Any], policy: Mapping[str, Any],
+    *, task: Mapping[str, Any] | None = None,
 ) -> bool:
     """Independently recompute the per-sandbox production rollout verdict."""
     episodes = report.get("episodes")
     if not isinstance(episodes, list) or not episodes:
         return False
+    spec = task.get("task_spec") if isinstance(task, Mapping) else None
+    goal = spec.get("goal_contract", {}) if isinstance(spec, Mapping) else {}
+    predicates = goal.get("row_predicates") if isinstance(goal, Mapping) else None
+    if predicates and not isinstance(predicates, list):
+        return False
+    for episode in episodes:
+        if not isinstance(episode, Mapping):
+            return False
+        initial_reward = episode.get("initial_reward")
+        final_reward = episode.get("final_reward")
+        issues = episode.get("issues")
+        if (
+            not _valid_reward_number(initial_reward)
+            or not _valid_reward_number(final_reward)
+            or not isinstance(issues, list)
+        ):
+            return False
+        state_success = episode.get("state_goal_satisfied")
+        if predicates:
+            from env_factory.sandbox_runtime import BusinessGoalEvaluator
+            baseline = episode.get("initial_state")
+            state = episode.get("final_state")
+            if not isinstance(baseline, Mapping) or not isinstance(state, Mapping):
+                return False
+            try:
+                state_success = (
+                    BusinessGoalEvaluator.evaluate(predicates, state, baseline)
+                    and BusinessGoalEvaluator.preserves_unrelated(goal, baseline, state)
+                    and (not goal.get("requires_state_change") or baseline != state)
+                )
+            except (AttributeError, KeyError, TypeError, ValueError):
+                return False
+            if episode.get("state_goal_satisfied") is not state_success:
+                return False
+        expected_success = (
+            episode.get("termination") == "completed"
+            and final_reward >= 0.8
+            and initial_reward < 0.8
+            and state_success is not False
+            and not issues
+        )
+        if episode.get("agent_success") is not expected_success:
+            return False
     successes = sum(
         episode.get("agent_success") is True
         for episode in episodes if isinstance(episode, Mapping)
@@ -674,18 +876,55 @@ def valid_rollout_outcome(
     )
 
 
+def _generation_attempt_seeds(item: Mapping[str, Any]) -> list[int] | None:
+    try:
+        manifest = load(Path(str(item.get("sample_manifest", ""))))
+        attempts = manifest.get("attempts") if isinstance(manifest, Mapping) else None
+        if not isinstance(attempts, list) or not attempts:
+            return None
+        seeds = [attempt.get("seed") for attempt in attempts]
+        if any(not isinstance(seed, int) or isinstance(seed, bool) for seed in seeds):
+            return None
+        return seeds
+    except (OSError, TypeError, ValueError, json.JSONDecodeError, AttributeError):
+        return None
+
+
 def fresh_holdout_evidence(
-    holdouts: Iterable[Mapping[str, Any]], policy: Mapping[str, Any]
+    holdouts: Iterable[Mapping[str, Any]], policy: Mapping[str, Any],
+    *, development_reports: Iterable[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     batches = list(holdouts)
     batch_ids = [item.get("holdout_batch") for item in batches]
     seen_seeds: set[int] = set()
+    seen_attempt_seeds: set[int] = set()
+    development_seeds: set[int] = set()
+    development_attempt_seeds: set[int] = set()
+    development_attempts_valid = True
+    for report in development_reports:
+        if not isinstance(report, Mapping):
+            continue
+        for job in report.get("jobs", []):
+            item = job.get("result", {}) if isinstance(job, Mapping) else {}
+            if not isinstance(item, Mapping):
+                continue
+            seed = item.get("sample_seed")
+            if isinstance(seed, int) and not isinstance(seed, bool):
+                development_seeds.add(seed)
+                development_attempt_seeds.add(seed)
+            if item.get("sample_manifest"):
+                actual = _generation_attempt_seeds(item)
+                if actual is None:
+                    development_attempts_valid = False
+                else:
+                    development_attempt_seeds.update(actual)
     seen_tasks: set[str] = set()
     details = []
     all_fresh = (
         len(batches) >= policy["min_holdout_batches"]
         and all(isinstance(item, int) for item in batch_ids)
         and len(set(batch_ids)) == len(batch_ids)
+        and development_attempts_valid
     )
     for batch in batches:
         results = [
@@ -693,6 +932,14 @@ def fresh_holdout_evidence(
             if isinstance(job, Mapping)
         ]
         seeds = [item.get("sample_seed") for item in results]
+        attempt_seeds: list[int] = []
+        complete_attempts = True
+        for item in results:
+            actual = _generation_attempt_seeds(item)
+            if actual is not None:
+                attempt_seeds.extend(actual)
+            else:
+                complete_attempts = False
         digests = []
         for item in results:
             path = Path(str(item.get("task_path", "")))
@@ -706,6 +953,11 @@ def fresh_holdout_evidence(
             and all(isinstance(seed, int) for seed in seeds)
             and len(set(seeds)) == len(seeds)
             and seen_seeds.isdisjoint(seeds)
+            and development_seeds.isdisjoint(seeds)
+            and complete_attempts
+            and len(set(attempt_seeds)) == len(attempt_seeds)
+            and seen_attempt_seeds.isdisjoint(attempt_seeds)
+            and development_attempt_seeds.isdisjoint(attempt_seeds)
             and len(set(digests)) == len(digests)
             and seen_tasks.isdisjoint(digests)
             and batch.get("summary", {}).get("fresh_tasks_verified") is True
@@ -714,17 +966,46 @@ def fresh_holdout_evidence(
             "batch": batch.get("holdout_batch"),
             "requests": len(results),
             "materialized": len(digests),
+            "generation_attempts": len(attempt_seeds),
             "fresh": batch_fresh,
         })
         all_fresh = all_fresh and batch_fresh
         seen_seeds.update(seed for seed in seeds if isinstance(seed, int))
+        seen_attempt_seeds.update(attempt_seeds)
         seen_tasks.update(digests)
     return {
         "verified": all_fresh,
         "unique_seeds": len(seen_seeds),
+        "unique_attempt_seeds": len(seen_attempt_seeds),
+        "development_seeds": len(development_seeds),
+        "development_attempt_seeds": len(development_attempt_seeds),
         "unique_tasks": len(seen_tasks),
         "batches": details,
     }
+
+
+def user_outcome_coverage(records, minimum: int) -> bool:
+    """Coverage follows the declared dialogue policy, not accidental failures."""
+    if not records:
+        return False
+    interactive = []
+    fixed = []
+    for step, task in records:
+        if not valid_user_turn(step, task):
+            continue
+        outcome = step.get("result", {}).get("outcome_category")
+        policy = task.get("user_simulation_policy", {})
+        if policy == {"mode": "fixed_goal", "required_outcomes": ["goal_satisfied"]}:
+            fixed.append(outcome)
+        else:
+            interactive.append(outcome)
+    if fixed and not set(fixed) & {"goal_satisfied", "user_acceptance"}:
+        return False
+    if interactive:
+        outcomes = set(interactive)
+        return (len(outcomes) >= minimum and bool(outcomes & {"goal_satisfied", "user_acceptance"})
+                and bool(outcomes & {"information_required", "user_correction", "user_rejection", "agent_off_topic", "agent_premature_completion", "unrecognized"}))
+    return bool(fixed)
 
 
 def _report_task_documents(report: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -771,6 +1052,7 @@ def certify(
     project: Path | None = None,
     sandbox_revalidation: Mapping[str, Mapping[str, Any]] | None = None,
     production_preflight: Mapping[str, Any] | None = None,
+    image_inspector: Callable[[str], Mapping[str, Any] | None] = inspect_local_image,
 ) -> dict[str, Any]:
     project = project or Path(__file__).resolve().parents[1]
     config = history.get("config", {})
@@ -859,7 +1141,9 @@ def certify(
     jobs = [job for holdout in holdouts for job in holdout.get("jobs", [])]
     results = [job.get("result", {}) for job in jobs if isinstance(job, Mapping)]
     total = len(results)
-    holdout_freshness = fresh_holdout_evidence(holdouts, policy)
+    holdout_freshness = fresh_holdout_evidence(
+        holdouts, policy, development_reports=history.get("rounds") or [],
+    )
     partition_isolation = partition_isolation_evidence(history, holdouts)
     generated = [item for item in results if Path(str(item.get("task_path", ""))).is_file()]
     verified_task_scores: set[int] = set()
@@ -988,13 +1272,20 @@ def certify(
     verified_final_results: set[int] = set()
     expected_final_scores: dict[int, float] = {}
     final_result_failures = []
+    def frozen_task(item: Mapping[str, Any]) -> Mapping[str, Any]:
+        try:
+            document = load(Path(str(item.get("task_path", ""))))
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        return document if isinstance(document, Mapping) else {}
+
     for item in results:
         live = item.get("live_rollout")
         expected_score = None
         if (
             sandbox_passes(item)
             and isinstance(live, Mapping)
-            and valid_rollout_outcome(live, policy)
+            and valid_rollout_outcome(live, policy, task=frozen_task(item))
         ):
             expected_score = round(min(
                 10.0,
@@ -1028,6 +1319,8 @@ def certify(
     task_good = [item for item in results if task_passes(item)]
     built = [item for item in results if sandbox_passes(item)]
     qualified = [item for item in results if result_passes(item)]
+    qualified_ids = {id(item) for item in qualified}
+    post_score_qualified = sum(id(item) in qualified_ids for item in built)
     claimed_qualified = [
         item for item in results
         if item.get("passed") is True
@@ -1053,6 +1346,11 @@ def certify(
         "task_good_yield_ci95_lower": wilson_lower(len(task_good), total),
         "sandbox_build_yield": len(built) / len(task_good) if task_good else 0.0,
         "sandbox_build_yield_ci95_lower": wilson_lower(len(built), len(task_good)),
+        "post_score_qualified": post_score_qualified,
+        "post_score_survival_rate": post_score_qualified / len(built) if built else None,
+        "post_score_survival_ci95_lower": (
+            wilson_lower(post_score_qualified, len(built)) if built else None
+        ),
         "end_to_end_rate": len(qualified) / total if total else 0.0,
         "end_to_end_ci95_lower": wilson_lower(len(qualified), total),
     }
@@ -1099,7 +1397,8 @@ def certify(
             snapshot = generation_provenance_snapshot(
                 sample_manifest,
                 task_document,
-                expected_provider=expected_generation_provider,
+                expected_provider=(None if task_document.get("artifacts", {}).get("generation_pipeline", {}).get("backend") == "spec"
+                                   else expected_generation_provider),
                 expected_task_sha256=hashlib.sha256(task_path.read_bytes()).hexdigest(),
             )
             if snapshot["sample_seed"] != item.get("sample_seed"):
@@ -1126,7 +1425,11 @@ def certify(
         if isinstance(item.get("live_rollout"), Mapping)
     ]
     rollout_outcomes_verified = sum(
-        valid_rollout_outcome(report, policy) for report in claimed_live_reports
+        valid_rollout_outcome(
+            item["live_rollout"], policy, task=frozen_task(item),
+        )
+        for item in claimed_qualified
+        if isinstance(item.get("live_rollout"), Mapping)
     )
     rollout_outcome_integrity = (
         bool(claimed_qualified)
@@ -1271,6 +1574,9 @@ def certify(
     agentic_reports = [
         _artifact(item, "agentic_training_value_live.json") for item in qualified
     ]
+    offline_agentic_reports = [
+        _artifact(item, "agentic_training_value.json") for item in qualified
+    ]
     # Re-scan every sample that claims final success, even if another
     # independent gate already removed it from the exportable set. This keeps
     # governance diagnostics fail-closed under post-run task tampering.
@@ -1285,10 +1591,18 @@ def certify(
         )
         for item, report in zip(claimed_qualified, governance_reports)
     )
+    observed_images: dict[str, Mapping[str, Any] | None] = {}
+    for item in qualified:
+        tag = str(item.get("container_image_tag", ""))
+        if tag not in observed_images:
+            observed = image_inspector(tag)
+            observed_images[tag] = dict(observed) if isinstance(observed, Mapping) else None
     container_reports = [
         verify_container_provenance(
             Path(str(item.get("output", ""))),
             expected_tag=str(item.get("container_image_tag", "")),
+            observed_image=observed_images[str(item.get("container_image_tag", ""))],
+            require_local_image=True,
         )
         for item in qualified
     ]
@@ -1318,11 +1632,15 @@ def certify(
         qualified_tasks.append(value if isinstance(value, Mapping) else {})
     verified_reward_calibrations = sum(
         valid_reward_calibration(report, task)
-        for report, task in zip(agentic_reports, qualified_tasks)
+        and consistent_causality_witness(offline, report, task)
+        for offline, report, task in zip(
+            offline_agentic_reports, agentic_reports, qualified_tasks
+        )
     )
     tool_and_reward_integrity = (
         bool(qualified)
         and len(agentic_reports) == len(qualified)
+        and len(offline_agentic_reports) == len(qualified)
         and len(qualified_tasks) == len(qualified)
         and verified_reward_calibrations == len(qualified)
     )
@@ -1331,6 +1649,7 @@ def certify(
         for item, report in zip(qualified, agentic_reports)
     )
     counterfactuals = _counterfactual_counts(agentic_reports)
+    counterfactual_sandboxes = _counterfactual_sandbox_counts(agentic_reports)
     false_positive_rate = (
         counterfactuals["negative_errors"] / counterfactuals["negative_total"]
         if counterfactuals["negative_total"] else 1.0
@@ -1338,6 +1657,12 @@ def certify(
     false_negative_rate = (
         counterfactuals["positive_errors"] / counterfactuals["positive_total"]
         if counterfactuals["positive_total"] else 1.0
+    )
+    false_positive_upper = wilson_upper(
+        counterfactual_sandboxes["negative_errors"], counterfactual_sandboxes["total"]
+    )
+    false_negative_upper = wilson_upper(
+        counterfactual_sandboxes["positive_errors"], counterfactual_sandboxes["total"]
     )
     batch_measurements = []
     for batch in holdouts:
@@ -1590,6 +1915,7 @@ def certify(
         "container_reproducibility": {
             "reports": len(container_reports),
             "verified": reproducible_containers,
+            "observed_images_sha256": digest_json(observed_images),
             "all_verified": (
                 bool(qualified)
                 and len(container_reports) == len(qualified)
@@ -1611,8 +1937,11 @@ def certify(
             ),
         },
         "reward_counterfactuals": counterfactuals,
+        "reward_counterfactual_sandboxes": counterfactual_sandboxes,
         "reward_false_positive_rate": false_positive_rate,
         "reward_false_negative_rate": false_negative_rate,
+        "reward_false_positive_ci95_upper": false_positive_upper,
+        "reward_false_negative_ci95_upper": false_negative_upper,
         "fresh_holdout_verified": holdout_freshness["verified"],
         "fresh_holdout_evidence": holdout_freshness,
         "partition_isolation": partition_isolation,
@@ -1684,12 +2013,8 @@ def certify(
             and measurements["user_simulator_protocol_rate"]
             >= policy["min_user_simulator_protocol_rate"]
         ),
-        "user_simulator_outcome_coverage": (
-            len(user_outcomes) >= policy["min_user_outcome_categories"]
-            and bool(set(user_outcomes) & {"goal_satisfied", "user_acceptance"})
-            and bool(set(user_outcomes) & interactive_outcomes)
-        ),
-        "trajectory_diversity": successes > 0 and successes < len(episodes),
+        "user_simulator_outcome_coverage": user_outcome_coverage(user_turn_records, policy["min_user_outcome_categories"]),
+        "trajectory_diversity": successes > 0 and counterfactuals.get("negative_total", 0) > 0,
         "environment_integrity": (
             measurements["environment_error_rate"] <= policy["max_environment_error_rate"]
             and fallbacks == 0
@@ -1717,8 +2042,14 @@ def certify(
             and all(item.get("sandbox_artifacts_sha256") for item in material_items)
             and all(item.get("sandbox_evidence_sha256") for item in material_items)
         ),
-        "reward_false_positive_rate": false_positive_rate <= policy["max_reward_false_positive_rate"],
-        "reward_false_negative_rate": false_negative_rate <= policy["max_reward_false_negative_rate"],
+        "reward_false_positive_rate": (
+            false_positive_rate <= policy["max_reward_false_positive_rate"]
+            and false_positive_upper <= policy["max_reward_false_positive_rate"]
+        ),
+        "reward_false_negative_rate": (
+            false_negative_rate <= policy["max_reward_false_negative_rate"]
+            and false_negative_upper <= policy["max_reward_false_negative_rate"]
+        ),
     }
     failed = [name for name, passed in gates.items() if not passed]
     return {

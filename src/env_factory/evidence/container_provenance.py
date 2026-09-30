@@ -6,7 +6,8 @@ import hashlib
 import json
 from pathlib import Path
 import re
-from typing import Any, Mapping
+import subprocess
+from typing import Any, Callable, Mapping
 
 from env_factory.evidence.material_artifacts import docker_build_context_digest, docker_context_errors
 
@@ -23,6 +24,32 @@ REQUIREMENT_PARTS = re.compile(
 
 def file_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def inspect_local_image(
+    tag: str, *, runner: Callable[..., Any] = subprocess.run,
+) -> dict[str, Any] | None:
+    """Read the image currently addressed by a local Docker tag."""
+    if not isinstance(tag, str) or not tag.strip():
+        return None
+    try:
+        completed = runner(
+            ["docker", "image", "inspect", tag, "--format", "{{json .}}"],
+            text=True, capture_output=True, timeout=20, check=False,
+        )
+        if completed.returncode != 0:
+            return None
+        image = json.loads(completed.stdout)
+        config = image.get("Config") if isinstance(image, Mapping) else None
+        if not isinstance(config, Mapping):
+            return None
+        return {
+            "image_id": image.get("Id"),
+            "platform": {"os": image.get("Os"), "architecture": image.get("Architecture")},
+            "runtime_user": config.get("User"),
+        }
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError, TypeError, ValueError):
+        return None
 
 
 def exact_requirements(path: Path) -> bool:
@@ -94,7 +121,9 @@ def verify_python_packages(path: Path, requirements: Path) -> dict[str, Any]:
 
 
 def verify_container_provenance(
-    root: Path, *, expected_tag: str | None = None
+    root: Path, *, expected_tag: str | None = None,
+    observed_image: Mapping[str, Any] | None = None,
+    require_local_image: bool = False,
 ) -> dict[str, Any]:
     failures = []
     failures.extend(docker_context_errors(root))
@@ -122,6 +151,16 @@ def verify_container_provenance(
         failures.append("image_tag")
     if CONTENT_DIGEST.fullmatch(str(metadata.get("image_id", ""))) is None:
         failures.append("image_id")
+    if require_local_image:
+        if not isinstance(observed_image, Mapping):
+            failures.append("local_image_unavailable")
+        else:
+            if observed_image.get("image_id") != metadata.get("image_id"):
+                failures.append("local_image_id")
+            if observed_image.get("platform") != metadata.get("platform"):
+                failures.append("local_image_platform")
+            if observed_image.get("runtime_user") != metadata.get("runtime_user"):
+                failures.append("local_image_user")
     try:
         dockerfile_text = dockerfile.read_text(encoding="utf-8")
         dockerfile_digest = file_sha256(dockerfile)

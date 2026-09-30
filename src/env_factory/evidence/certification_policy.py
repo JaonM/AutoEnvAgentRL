@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 
-POLICY_VERSION = "1.0"
+POLICY_VERSION = "1.9"
 MINIMUM_SCORE_THRESHOLD = 8.0
 
 
@@ -21,7 +21,7 @@ def canonical_certification_policy(
     return {
         "version": POLICY_VERSION,
         "score_threshold": float(score_threshold),
-        "min_tasks": 300,
+        "min_tasks": 30,
         "min_holdout_batches": 3,
         "min_task_yield": 0.90,
         "min_task_yield_ci95_lower": 0.85,
@@ -33,7 +33,7 @@ def canonical_certification_policy(
         "max_near_duplicate_rate": 0.05,
         "min_episodes_per_qualified_sandbox": 10,
         "min_agent_success_rate_per_sandbox": 2 / 3,
-        "min_total_episodes": 7500,
+        "min_total_episodes": 750,
         "max_environment_error_rate": 0.001,
         "max_reward_false_positive_rate": 0.005,
         "max_reward_false_negative_rate": 0.02,

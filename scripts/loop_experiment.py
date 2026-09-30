@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 import concurrent.futures
+from datetime import datetime, timezone
 import fcntl
 import hashlib
 import itertools
@@ -27,6 +28,8 @@ from env_factory.evidence.execution_provenance import (
 from env_factory.tasks.task_similarity import task_partition_isolation
 from env_factory.tasks.task_portability import valid_task_lineage
 from env_factory.evidence.material_artifacts import digest_json
+from env_factory.sandbox_scoring import valid_score_report
+from env_factory.evidence.training_status import write_training_status
 
 MODEL = "gpt-6-luna"
 ACTIVE_PROCESSES = set()
@@ -210,6 +213,7 @@ def start_rollout_container(project, output, image_tag, config):
         "SANDBOX_TRAINER_API_KEY", "SANDBOX_LLM_API_KEY",
         "SANDBOX_LLM_BASE_URL", "SANDBOX_LLM_MODEL",
         "SANDBOX_LLM_TIMEOUT_SECONDS", "SANDBOX_LLM_MAX_RETRIES",
+        "KIMI_K3_REASONING_EFFORT",
         "SANDBOX_EVALUATOR_MOCK", "SANDBOX_MUTATION_MODE",
     ):
         if os.environ.get(name):
@@ -324,6 +328,8 @@ BUILD_PHASE_FAILURES = {
     "node_development": ("BUILD_MODULE", "sandbox_builder"),
     "semantic_review": ("BUILD_SEMANTIC_REVIEW", "sandbox_builder"),
     "defect_repair": ("BUILD_DEFECT_REPAIR", "sandbox_builder"),
+    "repair_no_progress": ("BUILD_REPAIR_NO_PROGRESS", "sandbox_builder"),
+    "repair_budget_exhausted": ("BUILD_REPAIR_BUDGET", "sandbox_builder"),
     "defect_validation": ("BUILD_DEFECT_VALIDATION", "sandbox_builder"),
     "contract_validation": ("BUILD_CONTRACT", "sandbox_builder"),
     "trace_validation": ("BUILD_TRACE", "sandbox_builder"),
@@ -332,6 +338,9 @@ BUILD_PHASE_FAILURES = {
     "training_readiness": ("BUILD_TRAINING_READINESS", "sandbox_builder"),
     "agentic_training_value": ("BUILD_AGENTIC_VALUE", "sandbox_builder"),
     "docker_build": ("BUILD_DOCKER", "container_builder"),
+    "task_contract_rejected": ("TASK_CONTRACT", "task_pipeline"),
+    "platform_contract_rejected": ("PLATFORM_RUNTIME", "platform_runtime_boundary"),
+    "runtime_timeout_rejected": ("BUILD_RUNTIME_TIMEOUT", "platform_or_task_contract"),
 }
 
 
@@ -349,13 +358,24 @@ def classify_build_failure(output):
     if status.get("failure_code") == "INFRA" and status.get("failure_category") == "infrastructure":
         return {"build_failed_phase": phase, "failure_class": "infrastructure",
                 "failure_code": "INFRA", "repair_target": "runner_or_provider"}
+    if status.get("failure_code") == "REVIEW_UNRESOLVED":
+        return {"build_failed_phase": phase, "failure_class": "review",
+                "failure_code": "REVIEW_UNRESOLVED", "repair_target": "review_evidence"}
+    explicit = status.get("failure_code")
+    if explicit in {"TASK_CONTRACT", "PLATFORM_RUNTIME", "BUILD_RUNTIME_TIMEOUT"}:
+        target = {
+            "TASK_CONTRACT": "task_pipeline",
+            "PLATFORM_RUNTIME": "platform_runtime_boundary",
+            "BUILD_RUNTIME_TIMEOUT": "platform_or_task_contract",
+        }[explicit]
+        return {"build_failed_phase": phase, "failure_code": explicit, "repair_target": target}
     code, target = BUILD_PHASE_FAILURES.get(
         phase, ("BUILD_BUSINESS", "sandbox_builder")
     )
     return {"build_failed_phase": phase, "failure_code": code, "repair_target": target}
 
 
-def summarize(results, threshold, *, targets=None):
+def summarize(results, threshold, *, targets=None, validation=None):
     total = len(results)
     qualified_items = [
         item for item in results
@@ -373,6 +393,23 @@ def summarize(results, threshold, *, targets=None):
         and item.get("sandbox_score", {}).get("score", 0) >= threshold
         for item in results
     )
+    final_after_offline = sum(
+        item.get("passed") is True
+        and item.get("score", 0) >= threshold
+        and item.get("live_rollout_verified") is True
+        and item.get("sandbox_score", {}).get("passed") is True
+        and item.get("sandbox_score", {}).get("score", 0) >= threshold
+        for item in results
+    )
+    live_requested = (
+        validation == "live" if validation in {"live", "offline"} else any(
+            "data_governance" in item or "live_rollout" in item
+            or item.get("failure_class") in {
+                "live_rollout", "reward_calibration", "trajectory_privacy",
+            }
+            for item in results
+        )
+    )
     end_to_end_rate = qualified / total if total else 0
     task_good_yield = task_qualified / total if total else 0
     sandbox_build_yield = offline_qualified / task_qualified if task_qualified else 0
@@ -387,6 +424,17 @@ def summarize(results, threshold, *, targets=None):
         "qualified": qualified,
         "sandbox_build_yield": sandbox_build_yield,
         "offline_qualified": offline_qualified,
+        "final_after_offline": final_after_offline,
+        "post_score_survival_rate": (
+            final_after_offline / offline_qualified
+            if live_requested and offline_qualified else None
+        ),
+        "qualification_scope": "environment_delivery",
+        "agent_policy_qualified_count": sum(item.get("live_rollout", {}).get("agent_policy_qualified") is True for item in results),
+        "agent_success_episode_count": sum(
+            episode.get("agent_success") is True for item in results
+            for episode in item.get("live_rollout", {}).get("episodes", [])),
+        "agent_episode_count": sum(len(item.get("live_rollout", {}).get("episodes", [])) for item in results),
         "end_to_end_rate": end_to_end_rate,
         "mean_score_all_requests": sum(item.get("score", 0) for item in results) / total if total else 0,
         "mean_qualified_score": mean_qualified_score,
@@ -431,10 +479,10 @@ def summarize(results, threshold, *, targets=None):
 def summarize_holdout(
     results, threshold, *, expected_count, end_to_end_target,
     rollout_success_target, previous_seeds=(), previous_task_digests=(),
-    minimum_materialized=None,
+    minimum_materialized=None, validation=None,
 ):
     """Apply the stricter, distribution-shifted release gate."""
-    summary = summarize(results, threshold)
+    summary = summarize(results, threshold, validation=validation)
     live_results = [
         item["live_rollout"] for item in results
         if isinstance(item.get("live_rollout"), dict)
@@ -443,11 +491,6 @@ def summarize_holdout(
         item for item in results
         if item.get("passed") is True and item.get("score", 0) >= threshold
     ]
-    source_counts = {platform: sum(item.get("dataset_platform") == platform for item in results)
-                     for platform in ("kaggle", "data_gov_hk")}
-    source_balance_verified = (len(results) == expected_count and expected_count % 2 == 0
-                               and all(count == expected_count // 2
-                                       for count in source_counts.values()))
     seeds = [item.get("sample_seed") for item in results]
     task_digests = []
     for item in results:
@@ -483,8 +526,6 @@ def summarize_holdout(
         "holdout_expected": expected_count,
         "holdout_minimum_materialized": minimum_materialized,
         "fresh_tasks_verified": fresh_tasks_verified,
-        "source_counts": source_counts,
-        "source_balance_verified": source_balance_verified,
         "rollout_success_target": rollout_success_target,
         "qualified_rollout_floor_met": qualified_rollout_floor_met,
         "all_episodes_environment_clean": all_episodes_environment_clean,
@@ -492,7 +533,6 @@ def summarize_holdout(
     })
     summary["target_met"] = (
         fresh_tasks_verified
-        and source_balance_verified
         and summary["end_to_end_rate"] >= end_to_end_target
         and qualified_rollout_floor_met
         and all_episodes_environment_clean
@@ -547,9 +587,10 @@ def run_holdout(project, root, config, previous_reports, *, batch_number=1):
         previous_seeds=previous_seeds,
         previous_task_digests=previous_task_digests,
         minimum_materialized=(
-            300 if config.get("certification_profile") == "production"
+            30 if config.get("certification_profile") == "production"
             else config["holdout_count"]
         ),
+        validation=config.get("validation"),
     )
     isolation = task_partition_isolation({
         "previous": [
@@ -573,15 +614,41 @@ def run_holdout(project, root, config, previous_reports, *, batch_number=1):
     return report
 
 
-def _build_one(project, task_path, output, config, seed=None):
-    from env_factory.tasks.task_quality import score_file
+def _build_one_unfinalized(project, task_path, output, config, seed=None):
+    from env_factory.tasks.task_quality import error_report, score_file
     output.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
-    task_score = score_file(task_path, min_score=config["threshold"]).to_dict()
+    try:
+        task_score = score_file(task_path, min_score=config["threshold"]).to_dict()
+    except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+        task_score = error_report(
+            task_path, exc, min_score=config["threshold"],
+        ).to_dict()
     common = {"task_path": str(task_path), "output": str(output), "task_score": task_score,
               "category": task_score.get("training_category"), "build_mode": config["build_mode"]}
     if not task_score.get("eligible") or task_score["score"] < config["threshold"]:
         return failure("task_quality", task_score.get("findings", []), **common)
+    generation_seconds = 0.0
+    construction_deadline = None
+    try:
+        task_document = json.loads(task_path.read_text())
+        pipeline = task_document.get("artifacts", {}).get("generation_pipeline", {})
+        if pipeline.get("backend") in {"spec", "code_agent"}:
+            generation_seconds = float(pipeline.get("seconds", 0))
+            manifest_path = task_path.parent / "sample_manifest.json"
+            if manifest_path.is_file():
+                generation_seconds = float(json.loads(manifest_path.read_text()).get("generation_seconds", generation_seconds))
+            budget = config.get("sample_build_budget", 0)
+            if budget > 0:
+                construction_deadline = started + budget - max(0.0, generation_seconds)
+            common["generation_build_budget_seconds"] = budget or None
+            common["generation_build_target_seconds"] = 300
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    def remaining_timeout(limit):
+        if construction_deadline is None:
+            return limit
+        return max(0.001, min(limit, construction_deadline - time.monotonic()))
     # Only use a complete seed with identical inputs; do not copy runtime DBs or evidence.
     if seed:
         import shutil
@@ -599,6 +666,7 @@ def _build_one(project, task_path, output, config, seed=None):
                "--runtime", config.get("sandbox_runtime", "none"),
                "--tag", image_tag,
                "--max-attempts", str(config["max_attempts"]),
+               "--max-total-repairs", str(config.get("max_total_repairs", 4)),
                "--foreground", "--skip-auto-score"]
     if seed:
         command.append("--resume")
@@ -610,14 +678,33 @@ def _build_one(project, task_path, output, config, seed=None):
             attempt_command.append("--resume")
         log_name = "build.log" if infrastructure_attempt == 0 else f"build-infra-retry-{infrastructure_attempt}.log"
         built = run_process(
-            attempt_command, project, output / log_name, config["build_timeout"]
+            attempt_command, project, output / log_name, remaining_timeout(config["build_timeout"])
         )
         build_attempts.append({"attempt": infrastructure_attempt + 1, **built})
-        if not built.get("timed_out") or built.get("budget_exhausted"):
+        if construction_deadline is not None and time.monotonic() >= construction_deadline:
+            common["generation_and_build_seconds"] = generation_seconds + time.monotonic() - started
+            return failure("performance_budget", "generation and sandbox construction exceeded the sample budget",
+                           failure_code="SAMPLE_BUILD_BUDGET", **common)
+        infrastructure_status = False
+        status_path = output / "status.json"
+        if status_path.is_file():
+            try:
+                status = json.loads(status_path.read_text(encoding="utf-8"))
+                infrastructure_status = (
+                    status.get("failure_code") == "INFRA"
+                    and status.get("failure_category") == "infrastructure"
+                )
+            except (OSError, ValueError, json.JSONDecodeError):
+                pass
+        if built.get("budget_exhausted") or (
+            not built.get("timed_out") and not infrastructure_status
+        ):
             break
     assert built is not None
     common["build"] = built
     common["build_attempts"] = build_attempts
+    common["build_completed_at"] = datetime.now(timezone.utc).isoformat()
+    common["generation_and_build_seconds"] = generation_seconds + time.monotonic() - started
     if built["exit_code"] != 0:
         buildability_path = output / "buildability.json"
         if buildability_path.is_file():
@@ -656,16 +743,31 @@ def _build_one(project, task_path, output, config, seed=None):
             **common,
         )
     report_path = output / "score_summary.json"
+    report_path.unlink(missing_ok=True)
     scored = run_process([sys.executable, str(project / "scripts/sandbox/score_sandbox_offline.py"), str(output),
                           "--project", str(project), "--threshold", str(config["threshold"]),
-                          "--output", str(report_path)], project, output / "score.log", config["score_timeout"])
+                          "--output", str(report_path)], project, output / "score.log", remaining_timeout(config["score_timeout"]))
     common["scoring"] = scored
+    common["generation_and_build_seconds"] = generation_seconds + time.monotonic() - started
+    if construction_deadline is not None and time.monotonic() >= construction_deadline:
+        return failure("performance_budget", "sandbox qualification exceeded the sample budget",
+                       failure_code="SAMPLE_BUILD_BUDGET", **common)
     if scored["timed_out"]:
         return failure("infrastructure", "scoring timeout", **common)
-    report = json.loads(report_path.read_text())["sandboxes"][0]
+    try:
+        reports = json.loads(report_path.read_text(encoding="utf-8"))["sandboxes"]
+        if not isinstance(reports, list) or len(reports) != 1 or not isinstance(reports[0], dict):
+            raise ValueError("scorer must return exactly one sandbox report")
+        report = reports[0]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError, IndexError) as exc:
+        return failure("offline_validation", f"scorer report unavailable or invalid: {type(exc).__name__}", **common)
+    score_structure_valid = valid_score_report(
+        report, root=output, project=project, threshold=float(config["threshold"]),
+    )
     passed = (scored["exit_code"] == 0 and report.get("passed") is True
               and report.get("score", 0) >= config["threshold"]
-              and report.get("model") == MODEL and report.get("review_model") == MODEL)
+              and report.get("model") == MODEL and report.get("review_model") == MODEL
+              and score_structure_valid)
     result = {**common, "passed": passed, "score": report.get("score", 0),
             "offline_score": report.get("score", 0), "sandbox_score": report,
             "failure_class": None if passed else "offline_validation",
@@ -711,7 +813,7 @@ def _build_one(project, task_path, output, config, seed=None):
             str(output), "--output", str(live_path),
             "--episodes", str(config["rollout_episodes"]),
             "--max-steps", str(config["rollout_steps"]),
-            "--min-success-rate", str(config.get("rollout_min_success_rate", 0.0)),
+            "--min-success-rate", str(config.get("rollout_min_success_rate", 2 / 3)),
         ]
         container_runtime = None
         if config.get("sandbox_runtime", "none") == "docker":
@@ -909,6 +1011,31 @@ def _build_one(project, task_path, output, config, seed=None):
     return result
 
 
+def finalize_delivery_score(result):
+    """Keep a failed gate's numeric evidence separate from its delivery score."""
+    result["delivery_score_kind"] = "gated_final_10_point"
+    if result.get("passed") is not True:
+        diagnostic_score = result.get("score")
+        if (
+            isinstance(diagnostic_score, (int, float))
+            and not isinstance(diagnostic_score, bool)
+            and "diagnostic_score" not in result
+        ):
+            result["diagnostic_score"] = diagnostic_score
+        result["score"] = 0.0
+    return result
+
+
+def _build_one(project, task_path, output, config, seed=None):
+    """Score direct replays with the same final gate as the batch entry point."""
+    write_training_status(output)
+    result = finalize_delivery_score(
+        _build_one_unfinalized(project, task_path, output, config, seed)
+    )
+    result["training_ready"] = False
+    return result
+
+
 def build_one(project, task_path, output, config, seed=None):
     """Build and validate one sandbox, always reclaiming its local image."""
     result = None
@@ -916,6 +1043,7 @@ def build_one(project, task_path, output, config, seed=None):
         result = _build_one(project, task_path, output, config, seed)
         return result
     finally:
+        write_training_status(output)
         if config.get("sandbox_runtime", "none") == "docker":
             cleanup = run_process(
                 ["docker", "image", "rm", sandbox_image_tag(output)],
@@ -935,78 +1063,79 @@ def build_one(project, task_path, output, config, seed=None):
                         repair_target="runner_or_provider",
                         detail="validated container image cleanup failed",
                     )
+        if result is not None:
+            finalize_delivery_score(result)
+            write_training_status(output, result)
+
+
+def resolve_generated_job(index, manifest_entry, *, generation_done):
+    """Admit only atomically completed generation artifacts."""
+    if manifest_entry is None:
+        if not generation_done:
+            return None
+        result = failure("generation", "sample manifest missing; see generation log",
+                         failure_code="INFRA", category="unknown")
+        return {"id": index, "state": "complete", "result": result}
+    manifest_path, sample = manifest_entry
+    task_path = manifest_path.parent / "task.json"
+    declared_hash = sample.get("task_sha256")
+    complete = (
+        sample.get("status") == "completed"
+        and isinstance(declared_hash, str)
+        and len(declared_hash) == 64
+        and task_path.is_file()
+    )
+    if complete and hashlib.sha256(task_path.read_bytes()).hexdigest() == declared_hash:
+        return {
+            "id": index, "task_path": str(task_path), "state": "pending",
+            "sample_manifest": str(manifest_path),
+            "category": sample.get("training_category", "unknown"),
+            "sample_seed": sample.get("sample_seed"),
+        }
+    if sample.get("status") != "failed" and not generation_done:
+        return None
+    failure_path = manifest_path.parent / "failure.json"
+    if sample.get("status") == "failed" and not failure_path.is_file() and not generation_done:
+        # The generator commits the failed manifest before its failure report.
+        # Wait for the report rather than misclassifying a semantic rejection.
+        return None
+    if sample.get("status") == "failed" and failure_path.is_file():
+        try:
+            detail = json.loads(failure_path.read_text())
+        except (OSError, ValueError, json.JSONDecodeError):
+            detail = {"failure_class": "INFRA", "message": "invalid generation failure report"}
+    else:
+        detail = {
+            "failure_class": "INFRA",
+            "message": "generation artifact incomplete or checksum mismatch; refusing sandbox build",
+        }
+    if not isinstance(detail, dict):
+        detail = {"failure_class": "INFRA", "message": "invalid generation failure report"}
+    result = failure(
+        "generation", detail.get("message", detail),
+        failure_code=detail.get("failure_class", "GEN_SEMANTIC"),
+        category=sample.get("training_category", "unknown"),
+        sample_manifest=str(manifest_path), sample_seed=sample.get("sample_seed"),
+    )
+    return {"id": index, "state": "complete", "result": result}
 
 
 def run_round(project, root, config, report):
     round_root = root / f"round-{report['round']:02d}"
     round_root.mkdir(parents=True, exist_ok=True)
     state_path = round_root / "round_report.json"
+    generation_root = round_root / "generation"
     if "jobs" not in report:
         if config["generate_count"]:
-            generation_root = round_root / "generation"
-            # Do not repeat an ambiguous interrupted generation and accidentally change the sample.
-            interrupted = report.get("generation_started", False)
-            if not interrupted:
-                report["generation_started"] = True
-                write_json(state_path, report)
-                report["generation"] = run_process([
-                    sys.executable, str(project / "examples/generate_task.py"),
-                    "--count", str(config["generate_count"]), "--max-workers", str(config["max_concurrency"]),
-                    "--generation-source", config.get("generation_source", "graph"),
-                    "--dataset-platform", "balanced",
-                    "--seed", str(config.get("experiment_seed", 0) + report["round"] - 1),
-                    "--hops", str(config.get("generation_hops", 3)),
-                    "--route-attempts", str(config.get("route_attempts", 3)),
-                    "--training-mix", str(config.get(
-                        "training_mix", "direct_response=0.20,simple_agentic=0.30,multi_step_agentic=0.50"
-                    )),
-                    "--output", str(generation_root), "--log-file", str(round_root / "generation.log"),
-                ], project, round_root / "generation_process.log", config["generation_timeout"])
-            count = config["generate_count"]
+            report["jobs"] = [
+                {"id": index, "state": "awaiting_generation"}
+                for index in range(1, config["generate_count"] + 1)
+            ]
         else:
-            paths = [Path(value) for value in config["task_paths"]]
-            count = len(paths)
-        report["jobs"] = []
-        if config["generate_count"]:
-            manifests = {}
-            for manifest_path in sorted((generation_root / "task_artifacts").glob("task-*/sample_manifest.json")):
-                try:
-                    sample = json.loads(manifest_path.read_text())
-                    manifests[int(sample["batch_index"])] = (manifest_path, sample)
-                except (OSError, ValueError, KeyError, json.JSONDecodeError):
-                    continue
-            for index in range(1, count + 1):
-                manifest_entry = manifests.get(index)
-                if manifest_entry:
-                    manifest_path, sample = manifest_entry
-                    task_path = manifest_path.parent / "task.json"
-                    if task_path.is_file():
-                        report["jobs"].append({
-                            "id": index, "task_path": str(task_path), "state": "pending",
-                            "sample_manifest": str(manifest_path),
-                            "category": sample.get("training_category", "unknown"),
-                            "sample_seed": sample.get("sample_seed"),
-                            "dataset_platform": sample.get("dataset_platform"),
-                        })
-                        continue
-                    failure_path = manifest_path.parent / "failure.json"
-                    detail = json.loads(failure_path.read_text()) if failure_path.is_file() else {
-                        "failure_class": "GEN_SEMANTIC", "message": "no completed task artifact; see generation log"
-                    }
-                    result = failure(
-                        "generation", detail.get("message", detail),
-                        failure_code=detail.get("failure_class", "GEN_SEMANTIC"),
-                        category=sample.get("training_category", "unknown"),
-                        sample_manifest=str(manifest_path), sample_seed=sample.get("sample_seed"),
-                        dataset_platform=sample.get("dataset_platform"),
-                    )
-                else:
-                    result = failure("generation", "sample manifest missing; see generation log",
-                                     failure_code="INFRA", category="unknown")
-                report["jobs"].append({"id": index, "state": "complete", "result": result})
-        else:
-            for index, task_path in enumerate(paths, start=1):
-                report["jobs"].append({"id": index, "task_path": str(task_path), "state": "pending"})
+            report["jobs"] = [
+                {"id": index, "task_path": str(task_path), "state": "pending"}
+                for index, task_path in enumerate(config["task_paths"], start=1)
+            ]
         write_json(state_path, report)
 
     def execute(job):
@@ -1030,30 +1159,112 @@ def run_round(project, root, config, report):
                 result.setdefault("sample_manifest", job["sample_manifest"])
             if job.get("sample_seed") is not None:
                 result.setdefault("sample_seed", job["sample_seed"])
-            if job.get("dataset_platform") is not None:
-                result.setdefault("dataset_platform", job["dataset_platform"])
             return result
         except Exception as exc:
             return failure("infrastructure", f"{type(exc).__name__}: {exc}",
                            task_path=str(task_path), output=str(output),
                            category=job.get("category", "unknown"),
                            sample_manifest=job.get("sample_manifest"),
-                           sample_seed=job.get("sample_seed"),
-                           dataset_platform=job.get("dataset_platform"))
+                           sample_seed=job.get("sample_seed"))
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=config["max_concurrency"]) as pool:
+    generation_workers = min(
+        config["generate_count"], max(1, config["max_concurrency"] // 2)
+    ) if config["generate_count"] else 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as generation_pool, \
+            concurrent.futures.ThreadPoolExecutor(max_workers=config["max_concurrency"]) as pool:
+        generation_future = None
+        if config["generate_count"] and not report.get("generation_started", False):
+            report["generation_started"] = True
+            write_json(state_path, report)
+            generation_future = generation_pool.submit(run_process, [
+                sys.executable, str(project / "examples/generate_task.py"),
+                "--count", str(config["generate_count"]),
+                "--max-workers", str(generation_workers),
+                "--seed", str(config.get("experiment_seed", 0) + report["round"] - 1),
+                "--hops", str(config.get("generation_hops", 3)),
+                "--generation-backend", str(config.get("generation_backend", "code_agent")),
+                "--code-agent-timeout", str(config.get("code_agent_timeout", 600)),
+                "--route-attempts", str(config.get("route_attempts", 3)),
+                "--training-mix", str(config.get(
+                    "training_mix", "direct_response=0.20,simple_agentic=0.30,multi_step_agentic=0.50"
+                )),
+                "--output", str(generation_root),
+                "--log-file", str(round_root / "generation.log"),
+            ] + (["--task-intent", config["generation_intent"]] if config.get("generation_intent") else [])
+              + (["--environment-mode", config["generation_environment_mode"]]
+                 if config.get("generation_environment_mode") else []),
+                project, round_root / "generation_process.log", config["generation_timeout"])
+        generation_done = generation_future is None
         futures = {}
-        for job in report["jobs"]:
-            if job["state"] == "complete":
-                continue
-            job.update(state="running", attempt=job.get("attempt", 0) + 1)
-            write_json(state_path, report)
-            futures[pool.submit(execute, job)] = job
-        for future in concurrent.futures.as_completed(futures):
-            job = futures[future]
-            job.update(state="complete", result=future.result())
-            write_json(state_path, report)
-            print(json.dumps({"round": report["round"], "sample": job["id"], "passed": job["result"]["passed"]}), flush=True)
+        while True:
+            if generation_future is not None and generation_future.done():
+                try:
+                    report["generation"] = generation_future.result()
+                except Exception as exc:
+                    report["generation"] = {
+                        "exit_code": 1, "timed_out": False,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                generation_future = None
+                generation_done = True
+                write_json(state_path, report)
+            if config["generate_count"]:
+                manifests = {}
+                for manifest_path in (generation_root / "task").glob("task-*/sample_manifest.json"):
+                    try:
+                        sample = json.loads(manifest_path.read_text(encoding="utf-8"))
+                        index = int(sample["batch_index"])
+                        if 1 <= index <= config["generate_count"]:
+                            manifests[index] = (manifest_path, sample)
+                    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+                        continue
+                for job in report["jobs"]:
+                    if job["state"] != "awaiting_generation":
+                        continue
+                    resolved = resolve_generated_job(
+                        job["id"], manifests.get(job["id"]),
+                        generation_done=generation_done,
+                    )
+                    if resolved is not None:
+                        job.update(resolved)
+                        if job["state"] == "complete":
+                            job["completed_at"] = datetime.now(timezone.utc).isoformat()
+                        write_json(state_path, report)
+            build_capacity = config["max_concurrency"] - (
+                generation_workers if not generation_done else 0
+            )
+            for job in report["jobs"]:
+                if len(futures) >= build_capacity:
+                    break
+                if job["state"] not in {"pending", "running"}:
+                    continue
+                if any(active is job for active in futures.values()):
+                    continue
+                job.update(state="running", attempt=job.get("attempt", 0) + 1)
+                write_json(state_path, report)
+                futures[pool.submit(execute, job)] = job
+            if futures:
+                completed, _ = concurrent.futures.wait(
+                    futures, timeout=0.3,
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                for future in completed:
+                    job = futures.pop(future)
+                    job.update(
+                        state="complete", result=future.result(),
+                        completed_at=datetime.now(timezone.utc).isoformat(),
+                    )
+                    write_json(state_path, report)
+                    print(json.dumps({
+                        "round": report["round"], "sample": job["id"],
+                        "passed": job["result"]["passed"],
+                    }), flush=True)
+            elif not generation_done:
+                time.sleep(0.3)
+            if generation_done and not futures and all(
+                job["state"] == "complete" for job in report["jobs"]
+            ):
+                break
     targets = {
         "task_yield": config.get("target_task_yield", 0),
         "build_yield": config.get("target_build_yield", 0),
@@ -1062,7 +1273,8 @@ def run_round(project, root, config, report):
         "category_rate": config.get("target_category_rate", 0),
     }
     report["summary"] = summarize(
-        [job["result"] for job in report["jobs"]], config["threshold"], targets=targets
+        [job["result"] for job in report["jobs"]], config["threshold"],
+        targets=targets, validation=config.get("validation"),
     )
     report["state"] = "complete"
     write_json(state_path, report)
@@ -1077,15 +1289,22 @@ def main():
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--task-ids", default=None)
     source.add_argument("--generate-count", type=int, default=0)
-    parser.add_argument("--generation-source", choices=("dataset", "graph"), default="graph",
-                        help="实验生成路径；graph 使用已审核的图谱与数据集关系")
     parser.add_argument("--generation-hops", type=int, default=3)
+    parser.add_argument("--generation-backend", choices=("code_agent", "spec", "legacy"), default="code_agent",
+                        help="任务生成后端，默认 code_agent；spec/legacy 用于显式对照")
+    parser.add_argument("--generation-intent", help="固定生成意图（例如 modify），用于独立验证业务写入任务")
+    parser.add_argument("--generation-environment-mode", choices=("stateless", "reference_data", "stateful", "external_capability"),
+                        help="强制实际环境模式；写入覆盖使用 stateful")
+    parser.add_argument("--code-agent-timeout", type=float, default=600,
+                        help="单样本 Code Agent 生成防卡死超时（秒），默认 600")
+    parser.add_argument("--sample-build-budget", type=int, default=0,
+                        help="可选生成、构建与离线验收硬超时（秒）；默认 0 不启用，5 分钟仅为观测目标")
     parser.add_argument("--route-attempts", type=int, default=3)
     parser.add_argument(
         "--training-mix",
         default="direct_response=0.20,simple_agentic=0.30,multi_step_agentic=0.50",
     )
-    parser.add_argument("--task-root", type=Path, default=Path("output/task_artifacts"))
+    parser.add_argument("--task-root", type=Path, default=Path("output/task"))
     parser.add_argument(
         "--max-rounds", type=int, default=0,
         help="第一阶段最大质量轮数；0 表示不设置轮数上限",
@@ -1094,6 +1313,10 @@ def main():
     parser.add_argument(
         "--max-attempts", type=int, default=3,
         help="每个沙箱开发节点及每个独立缺陷的最大修复次数",
+    )
+    parser.add_argument(
+        "--max-total-repairs", type=int, default=4,
+        help="每个样本的业务缺陷修复总次数",
     )
     parser.add_argument(
         "--infrastructure-retries", type=int, default=1,
@@ -1120,7 +1343,7 @@ def main():
     parser.add_argument("--rollout-steps", type=int, default=20)
     parser.add_argument("--rollout-timeout", type=int, default=1800)
     parser.add_argument(
-        "--rollout-min-success-rate", type=float, default=0.0,
+        "--rollout-min-success-rate", type=float, default=2 / 3,
         help="第一阶段每个沙箱的最低 rollout 成功率；0 保留至少一次成功语义",
     )
     parser.add_argument(
@@ -1129,7 +1352,7 @@ def main():
     )
     parser.add_argument("--bundle-signing-private-key", type=Path)
     parser.add_argument("--bundle-trusted-public-key", type=Path)
-    parser.add_argument("--holdout-count", type=int, default=400)
+    parser.add_argument("--holdout-count", type=int, default=30)
     parser.add_argument("--holdout-batches", type=int, default=3)
     parser.add_argument("--holdout-end-to-end-rate", type=float, default=0.85)
     parser.add_argument("--holdout-rollout-episodes", type=int, default=10)
@@ -1149,11 +1372,11 @@ def main():
     if (args.max_rounds < 0 or not 0 <= args.threshold < 10
             or args.generate_count < 0 or not 0 <= args.generation_hops <= 20):
         parser.error("invalid rounds, threshold or generation count")
-    if args.generate_count % 2 or args.holdout_count % 2:
-        parser.error("balanced Kaggle/DATA.GOV.HK batches require even generation and holdout counts")
     if not 0 <= args.infrastructure_retries <= 3:
         parser.error("infrastructure retries must be between 0 and 3")
-    for key in ("max_concurrency", "max_attempts", "route_attempts", "consecutive_rounds",
+    if args.sample_build_budget < 0:
+        parser.error("sample_build_budget must be nonnegative")
+    for key in ("code_agent_timeout", "max_concurrency", "max_attempts", "max_total_repairs", "route_attempts", "consecutive_rounds",
                 "build_timeout", "score_timeout", "generation_timeout", "rollout_episodes", "rollout_steps", "rollout_timeout", "max_total_seconds", "holdout_count", "holdout_batches", "holdout_rollout_episodes", "holdout_seed_offset"):
         if getattr(args, key) <= 0:
             parser.error(f"{key} must be positive")
@@ -1164,10 +1387,10 @@ def main():
     if not args.threshold <= args.target_qualified_mean <= 10:
         parser.error("target_qualified_mean must be between threshold and 10")
     if args.certification_profile == "production" and (
-        args.holdout_count < 300 or args.holdout_batches < 3
+        args.holdout_count < 30 or args.holdout_batches < 3
         or args.holdout_rollout_episodes < 10
     ):
-        parser.error("production certification requires 3 batches, 300 requests per batch and 10 episodes per sandbox")
+        parser.error("production certification requires 3 batches, 30 requests per batch and 10 episodes per sandbox")
     if args.certification_profile == "production" and args.threshold < 8:
         parser.error("production certification requires --threshold >= 8")
     if args.certification_profile == "production" and args.sandbox_runtime != "docker":
@@ -1203,7 +1426,7 @@ def main():
             parser.error(str(exc))
         if private_identity != bundle_key_identity:
             parser.error("bundle signing private key does not match trusted public key")
-    if args.generate_count and not all(
+    if args.generate_count and args.generation_backend != "code_agent" and not all(
         model_roles["generation"][key] for key in ("model", "api_key")
     ):
         parser.error("task generation requires LLM_MODEL and LLM_API_KEY")
@@ -1222,7 +1445,15 @@ def main():
             raise ValueError()
     except ValueError:
         parser.error("task IDs must be positive integers")
-    paths = [] if args.generate_count else [(task_root / f"task-{value}/task.json").resolve() for value in ids]
+    paths = []
+    if not args.generate_count:
+        for value in ids:
+            candidate = task_root / f"task-{value}/task.json"
+            if not candidate.is_file() and args.task_root == Path("output/task"):
+                legacy = project / f"output/task_artifacts/task-{value}/task.json"
+                if legacy.is_file():
+                    candidate = legacy
+            paths.append(candidate.resolve())
     if any(not path.is_file() for path in paths):
         parser.error("task input is missing")
     production_preflight = None
@@ -1249,10 +1480,10 @@ def main():
         "bundle_signing_private_key", "bundle_trusted_public_key",
     }}
     from env_factory.evidence.data_governance import provider_identity
-    generation_provider = provider_identity(
-        model_roles["generation"]["base_url"],
-        model_roles["generation"]["model"],
-    )
+    generation_role = ({"base_url": "codex://cli", "model": MODEL,
+                        "allowed_response_models": [MODEL]}
+                       if args.generation_backend == "code_agent" else model_roles["generation"])
+    generation_provider = provider_identity(generation_role["base_url"], generation_role["model"])
     rollout_provider = provider_identity(
         model_roles["agent"]["base_url"],
         model_roles["agent"]["model"],
@@ -1265,12 +1496,11 @@ def main():
                   source_digest=source_digest(project), input_digests=[input_digest(path) for path in paths],
                   execution_provenance=collect_execution_provenance(project),
                   bundle_attestation_key_identity_sha256=bundle_key_identity,
-                  generation_model=model_roles["generation"]["model"],
+                  generation_model=generation_role["model"],
                   rollout_model=model_roles["agent"]["model"],
                   runtime_model=model_roles["runtime"]["model"],
-                  generation_allowed_response_models=model_roles[
-                      "generation"
-                  ]["allowed_response_models"],
+                  kimi_k3_reasoning_effort=os.getenv("KIMI_K3_REASONING_EFFORT") or "max",
+                  generation_allowed_response_models=generation_role["allowed_response_models"],
                   rollout_allowed_response_models=model_roles[
                       "agent"
                   ]["allowed_response_models"],

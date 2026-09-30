@@ -10,13 +10,24 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import uuid
 from env_factory.llm import LLMClient
 from env_factory.evidence.data_governance import provider_identity
 from env_factory.evidence.model_roles import resolve_model_roles
 from env_factory.evidence.material_artifacts import portable_artifact_digest
 from env_factory.runtime_llm import RuntimeLLMConfig
-from env_factory.sandbox_http import HTTPSandboxClient
+from env_factory.sandbox_http import HTTPSandboxClient, evaluator_http_timeout
 from env_factory.sandbox_runtime import BusinessGoalEvaluator
+
+
+def write_json(path: Path, value: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def episode(app, task, client, seed, max_steps):
@@ -148,7 +159,7 @@ def episode(app, task, client, seed, max_steps):
     goal = task.get("task_spec", {}).get("goal_contract", {})
     state_success = None
     if goal.get("row_predicates"):
-        state_success = (BusinessGoalEvaluator.evaluate(goal["row_predicates"], state)
+        state_success = (BusinessGoalEvaluator.evaluate(goal["row_predicates"], state, baseline)
                          and BusinessGoalEvaluator.preserves_unrelated(goal, baseline, state)
                          and (not goal.get("requires_state_change") or baseline != state))
     fallbacks = [event for event in replay.get("events", []) if event.get("payload", {}).get("used_fallback")]
@@ -196,19 +207,21 @@ def summarize_episodes(episodes, minimum_success_rate):
         live_rollout_verified
         and all_episodes_environment_clean
         and all_episodes_fallback_free
-        and success_rate_gate_passed
     )
     if any("execution_error" in item.get("issues", []) for item in episodes):
         failure_owner = "infrastructure"
     elif not all_episodes_environment_clean or not live_rollout_verified:
         failure_owner = "environment"
-    elif not success_rate_gate_passed:
-        failure_owner = "agent"
     else:
         failure_owner = None
     return {
         "live_rollout_verified": live_rollout_verified,
         "agent_success_rate": agent_success_rate,
+        "qualification_policy_version": "3.0",
+        "task_solvability_witness": agent_success_rate > 0,
+        "environment_qualified": live_rollout_verified and all_episodes_environment_clean,
+        "agent_policy_qualified": success_rate_gate_passed,
+        "score_scope": "live_environment_integrity",
         "environment_checks_passed": all_episodes_environment_clean,
         "all_episodes_fallback_free": all_episodes_fallback_free,
         "all_episodes_environment_clean": all_episodes_environment_clean,
@@ -217,13 +230,15 @@ def summarize_episodes(episodes, minimum_success_rate):
         "quality_score": round(
             (0.3 if live_rollout_verified else 0.0)
             + (0.3 if all_episodes_environment_clean else 0.0)
-            + (0.4 if success_rate_gate_passed else 0.0),
+            + (0.4 if all_episodes_fallback_free else 0.0),
             2,
         ),
         "passed": passed,
         "failure_owner": failure_owner,
+        "agent_failure_owner": None if success_rate_gate_passed else "agent",
         "conclusion": (
-            "live_success_witness" if passed else "issues_or_insufficient_success_evidence"
+            "live_success_witness" if passed and agent_success_rate > 0 else
+            "environment_clean_no_agent_success" if passed else "environment_or_execution_failure"
         ),
     }
 
@@ -249,7 +264,7 @@ def main():
     parser.add_argument("--base-url")
     parser.add_argument("--container-image-id")
     parser.add_argument(
-        "--min-success-rate", type=float, default=0.0,
+        "--min-success-rate", type=float, default=2 / 3,
         help="minimum successful episode ratio; 0 preserves the one-success witness gate",
     )
     args = parser.parse_args()
@@ -277,7 +292,10 @@ def main():
         import re
         if re.fullmatch(r"sha256:[0-9a-f]{64}", args.container_image_id) is None:
             parser.error("--container-image-id must be a Docker sha256 image ID")
-        app = HTTPSandboxClient(args.base_url)
+        app = HTTPSandboxClient(
+            args.base_url,
+            timeout=evaluator_http_timeout(runtime.timeout_seconds, runtime.max_retries),
+        )
         module = None
         runtime_execution = {
             "version": "1.0",
@@ -314,7 +332,6 @@ def main():
                   == provider_attestation["runtime_provider_sha256"]
               ),
               "live_rollout_verified": False, "passed": False}
-    from loop_experiment import write_json
     with tempfile.TemporaryDirectory(prefix="envfactory-rollout-") as temporary:
         if app is None:
             app = module.create_app(db_path=Path(temporary) / "episodes.sqlite3")

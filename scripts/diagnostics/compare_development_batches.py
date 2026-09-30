@@ -25,8 +25,11 @@ def batch(root: Path) -> dict[str, Any]:
     by_id = {item.get("task_id"): item for item in rows if isinstance(item, dict)}
     if len(by_id) != len(rows) or any(not isinstance(key, str) for key in by_id):
         raise ValueError(f"{root} has duplicate or missing task IDs")
+    task_root = root / "task"
+    if not task_root.is_dir() and (root / "task_artifacts").is_dir():
+        task_root = root / "task_artifacts"
     manifests = {
-        task_id: load(root / "task_artifacts" / task_id / "sample_manifest.json")
+        task_id: load(task_root / task_id / "sample_manifest.json")
         for task_id in by_id
     }
     selection = load(root / "build_probe_selection.json")

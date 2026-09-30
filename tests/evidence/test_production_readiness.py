@@ -3,11 +3,14 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
+from env_factory.contracts.reward_contract import REFERENCE_FACTUALITY_CRITERION
 from env_factory.sandbox_scoring import (
     SCORE_RUBRIC,
     evidence_fingerprint,
+    sandbox_quality_factors,
     valid_score_report,
 )
 from env_factory.tasks.task_quality import score_file
@@ -17,6 +20,7 @@ from env_factory.evidence.material_artifacts import (
     MATERIAL_MANIFEST_VERSION,
     docker_build_context_digest,
 )
+from env_factory.evidence.trajectory_schema import episode_errors
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -115,12 +119,19 @@ class ProductionReadinessTest(unittest.TestCase):
                 }
         return revalidation
 
-    def certify(self, history):
+    def certify(self, history, *, image_inspector=None):
+        if image_inspector is None:
+            image_inspector = lambda tag: {
+                "image_id": "sha256:" + "d" * 64,
+                "platform": {"os": "linux", "architecture": "arm64"},
+                "runtime_user": "sandbox",
+            } if tag == "fixture" else None
         return certifier.certify(
             history,
             certifier.default_policy(),
             sandbox_revalidation=self.sandbox_revalidation(history),
             production_preflight=self.production_preflight(history["config"]),
+            image_inspector=image_inspector,
         )
 
     @staticmethod
@@ -179,7 +190,10 @@ class ProductionReadinessTest(unittest.TestCase):
             "noise_tools": [{"name": "get_weather", "category": "unrelated"}],
             "metrics": [
                 {"id": "process_read", "category": "process", "type": "hybrid", "evaluator": {}},
-                {"id": "outcome", "category": "outcome", "type": "model-based", "evaluator": {}},
+                {"id": "outcome", "category": "outcome", "type": "model-based",
+                 "evaluator": {"kind": "external_llm_judge"},
+                 "evaluation_inputs": ["final_agent_response", "tool_results", "business_data"],
+                 "criteria": [REFERENCE_FACTUALITY_CRITERION]},
                 {"id": "noise", "category": "penalty", "type": "rule-based", "evaluator": {}},
             ],
             "metric_implementations": [
@@ -230,7 +244,15 @@ class ProductionReadinessTest(unittest.TestCase):
                 "capability_dag": {"nodes": ["read_inventory"], "edges": []},
                 "goal_contract": {"expected_delta": []},
             },
-            "artifacts": {"data_manifest": {"data_governance": {
+            "artifacts": {"data_manifest": {
+                "version": "1.0", "environment_mode": "reference_data",
+                "root": "data/business_data",
+                "tables": [{
+                    "table_name": "inventory",
+                    "schema_file": "schemas/inventory.json",
+                    "rows_file": "rows/inventory.jsonl",
+                }],
+                "data_governance": {
                 "origin": "model_generated_synthetic",
                 "contains_real_user_data": False,
                 "intended_use": "agentic_rl_training_material",
@@ -239,6 +261,8 @@ class ProductionReadinessTest(unittest.TestCase):
         if category == "direct_response":
             task["training_category"] = category
             task["environment_plan"] = {"mode": "stateless"}
+            task["artifacts"]["data_manifest"]["environment_mode"] = "stateless"
+            task["artifacts"]["data_manifest"]["tables"] = []
             task["tools"] = [task["tools"][1]]
             task["acceptance_contract"]["executable_scenarios"] = [
                 {"kind": "goal_success", "steps": [{"operation": "respond"}]},
@@ -287,10 +311,24 @@ class ProductionReadinessTest(unittest.TestCase):
         return task
 
     def make_history(self, root: Path, *, count: int = 10, batches: int = 3):
-        # Gate-specific failures need valid evidence, but only the positive
-        # certification test needs the full production cohort of 3 x 300.
+        # Gate-specific failures use smaller evidence; the positive test uses
+        # 3 x 300 to meet the reward-error confidence bound.
         evidence = root / "evidence"
         evidence.mkdir()
+        business = root / "data/business_data"
+        (business / "schemas").mkdir(parents=True)
+        (business / "rows").mkdir()
+        (business / "schemas/inventory.json").write_text(json.dumps({
+            "table_name": "inventory",
+            "columns": [
+                {"name": "id", "type": "integer", "nullable": False},
+                {"name": "category", "type": "text", "nullable": False},
+            ],
+            "primary_key": ["id"], "foreign_keys": [], "indexes": [], "constraints": [],
+        }))
+        (business / "rows/inventory.jsonl").write_text(
+            json.dumps({"id": 1, "category": "办公设备"}) + "\n"
+        )
         (evidence / "app.py").write_text("# immutable sandbox\n")
         (evidence / ".dockerignore").write_text(DOCKERIGNORE_SOURCE)
         pinned_image = "registry.example/python@sha256:" + "c" * 64
@@ -360,7 +398,14 @@ class ProductionReadinessTest(unittest.TestCase):
         }))
         (evidence / "agentic_training_value.json").write_text(json.dumps({
             "curriculum_training_ready": True,
-            "evidence": {"counterfactuals": {
+            "evidence": {"business_data_access": {"tables_read": ["inventory"], "tool_reads": [
+                {"tool_name": "read_inventory", "tables_read": ["inventory"]},
+                {"tool_name": "rank_inventory", "tables_read": ["inventory"]},
+            ]},
+                         "business_data_causality": {"proved": True, "table": "inventory", "tool": "lookup",
+                                                     "field": "quantity", "answer_value_mentioned": False},
+                         "reference_data_immutability": {"unchanged": True},
+                         "counterfactuals": {
                 "goal_success": {"reward": 1.0},
                 "goal_failure": {"reward": 0.0},
                 "no_tools": {"reward": 0.0},
@@ -387,7 +432,14 @@ class ProductionReadinessTest(unittest.TestCase):
                 "no_new_privileges": True,
                 "non_root_user": True,
             },
-            "evidence": {"counterfactuals": {
+            "evidence": {"business_data_access": {"tables_read": ["inventory"], "tool_reads": [
+                {"tool_name": "read_inventory", "tables_read": ["inventory"]},
+                {"tool_name": "rank_inventory", "tables_read": ["inventory"]},
+            ]},
+                         "business_data_causality": {"proved": True, "table": "inventory", "tool": "lookup",
+                                                     "field": "quantity", "answer_value_mentioned": False},
+                         "reference_data_immutability": {"unchanged": True},
+                         "counterfactuals": {
                 "goal_success": {"reward": 1.0, "status": "completed"},
                 "goal_failure": {"reward": 0.0, "status": "completed"},
                 "no_tools": {"reward": 0.0, "status": "completed"},
@@ -525,13 +577,60 @@ class ProductionReadinessTest(unittest.TestCase):
                     }],
                     "trajectory": [
                         {
+                            "method": "POST", "path": "/v1/reset", "status": 200,
+                            "body": {"episode_id": f"live-{episode}", "seed": episode},
+                            "result": {},
+                        },
+                        {
+                            "method": "GET", "path": "/v1/state", "status": 200,
+                            "body": None, "result": {"business_state": {}},
+                        },
+                        {
                             "method": "GET", "path": "/v1/reward", "status": 200,
                             "body": None, "result": {"reward": 0.0},
+                        },
+                        {
+                            "method": "GET", "path": "/v1/tools", "status": 200,
+                            "body": None, "result": {"tools": []},
+                        },
+                        {
+                            "method": "GET", "path": "/v1/observation", "status": 200,
+                            "body": None, "result": {},
+                        },
+                        {
+                            "method": "POST", "path": "/v1/agent_response", "status": 200,
+                            "body": {"content": "done"}, "result": {},
                         },
                         {
                             "method": "POST", "path": "/v1/user_simulator", "status": 200,
                             "body": {"messages": []},
                             "result": self.fixture_user_turn(episode),
+                        },
+                        {
+                            "method": "GET", "path": "/v1/observation", "status": 200,
+                            "body": None, "result": {},
+                        },
+                        *[{
+                            "method": "GET", "path": "/v1/reward", "status": 200,
+                            "body": None,
+                            "result": {"reward": 1.0 if episode < 8 else 0.0},
+                        } for _ in range(3)],
+                        {
+                            "method": "GET", "path": "/v1/replay", "status": 200,
+                            "body": None, "result": {"events": [{
+                                "event": "runtime_llm_call",
+                                "payload": {"summary": {
+                                    "version": "1.0", "responses": 1,
+                                    "mock_responses": 0,
+                                    "models": {"simulator-model": 1},
+                                    "usage": {"total_tokens": 5},
+                                    "response_id_sha256": ["8" * 64],
+                                }},
+                            }]},
+                        },
+                        {
+                            "method": "GET", "path": "/v1/state", "status": 200,
+                            "body": None, "result": {"business_state": {}},
                         },
                     ],
                 }
@@ -681,6 +780,9 @@ class ProductionReadinessTest(unittest.TestCase):
     def test_wilson_bound_accounts_for_sample_size(self):
         self.assertLess(certifier.wilson_lower(9, 10), .9)
         self.assertGreater(certifier.wilson_lower(900, 1000), .87)
+        self.assertGreater(certifier.wilson_upper(0, 100), .005)
+        self.assertLess(certifier.wilson_upper(0, 1000), .005)
+        self.assertEqual(certifier.wilson_upper(0, 0), 1.0)
 
     def test_certification_json_publication_is_atomic(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -707,6 +809,7 @@ class ProductionReadinessTest(unittest.TestCase):
             )
             self.assertIn("rl_training_convergence", report["does_not_certify"])
             self.assertEqual(report["measurements"]["episodes"], 9000)
+            self.assertEqual(report["measurements"]["post_score_survival_rate"], 1.0)
             self.assertTrue(report["gates"]["rollout_provenance"])
             self.assertTrue(report["gates"]["container_rollout_execution"])
             self.assertTrue(report["gates"]["container_reward_calibration"])
@@ -714,6 +817,19 @@ class ProductionReadinessTest(unittest.TestCase):
             self.assertTrue(report["gates"]["user_simulator_outcome_coverage"])
             self.assertTrue(report["gates"]["data_governance"])
             self.assertTrue(report["gates"]["container_reproducibility"])
+            self.assertLessEqual(
+                report["measurements"]["reward_false_positive_ci95_upper"],
+                certifier.canonical_certification_policy()["max_reward_false_positive_rate"],
+            )
+            self.assertLessEqual(
+                report["measurements"]["reward_false_negative_ci95_upper"],
+                certifier.canonical_certification_policy()["max_reward_false_negative_rate"],
+            )
+            self.assertRegex(
+                report["measurements"]["container_reproducibility"]
+                    ["observed_images_sha256"],
+                r"^[0-9a-f]{64}$",
+            )
             self.assertTrue(report["gates"]["trajectory_privacy"])
             self.assertTrue(report["gates"]["execution_environment"])
             self.assertTrue(report["gates"]["production_experiment_profile"])
@@ -734,6 +850,16 @@ class ProductionReadinessTest(unittest.TestCase):
             )
             self.assertEqual(len(report["materials_manifest"]["dataset_sha256"]), 64)
 
+    def test_docker_tag_drift_cannot_pass_container_reproducibility(self):
+        with tempfile.TemporaryDirectory() as directory:
+            history = self.make_history(Path(directory))
+            report = self.certify(history, image_inspector=lambda tag: {
+                "image_id": "sha256:" + "e" * 64,
+                "platform": {"os": "linux", "architecture": "arm64"},
+                "runtime_user": "sandbox",
+            })
+            self.assertFalse(report["gates"]["container_reproducibility"])
+
     def test_small_fixture_preserves_non_cohort_gates(self):
         with tempfile.TemporaryDirectory() as directory:
             report = self.certify(self.make_history(Path(directory)))
@@ -742,7 +868,14 @@ class ProductionReadinessTest(unittest.TestCase):
                 "independent_holdout_batches",
                 "fresh_holdout",
                 "rollout_coverage",
+                "reward_false_positive_rate",
+                "reward_false_negative_rate",
             })
+            self.assertEqual(report["measurements"]["reward_false_positive_rate"], 0.0)
+            self.assertGreater(
+                report["measurements"]["reward_false_positive_ci95_upper"],
+                certifier.canonical_certification_policy()["max_reward_false_positive_rate"],
+            )
 
     def test_relaxed_policy_cannot_certify_training_materials(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -758,7 +891,7 @@ class ProductionReadinessTest(unittest.TestCase):
             self.assertFalse(report["certified"])
             self.assertFalse(report["gates"]["certification_policy"])
             self.assertIn("certification_policy", report["failed_gates"])
-            self.assertEqual(report["policy"]["min_tasks"], 300)
+            self.assertEqual(report["policy"]["min_tasks"], 30)
             self.assertFalse(
                 report["measurements"]["certification_policy"]["verified"]
             )
@@ -903,13 +1036,16 @@ class ProductionReadinessTest(unittest.TestCase):
             self.assertFalse(report["gates"]["generation_provenance"])
             self.assertIn("generation_provenance", report["failed_gates"])
 
-    def test_pilot_sized_holdout_cannot_claim_production_certification(self):
+    def test_thirty_task_holdout_lacks_reward_confidence_for_certification(self):
         with tempfile.TemporaryDirectory() as directory:
             history = self.make_history(Path(directory), count=30)
             report = self.certify(history)
             self.assertFalse(report["certified"])
-            self.assertIn("materialized_sample_size", report["failed_gates"])
-            self.assertIn("rollout_coverage", report["failed_gates"])
+            self.assertTrue(report["gates"]["materialized_sample_size"])
+            self.assertTrue(report["gates"]["rollout_coverage"])
+            self.assertIn("reward_false_positive_rate", report["failed_gates"])
+            self.assertIn("reward_false_negative_rate", report["failed_gates"])
+            self.assertEqual(report["measurements"]["post_score_survival_rate"], 1.0)
 
     def test_near_duplicate_task_family_cannot_cross_holdout_batches(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -989,10 +1125,11 @@ class ProductionReadinessTest(unittest.TestCase):
             jobs = [job for batch in history["holdouts"] for job in batch["jobs"]]
             for index, job in enumerate(jobs[:46]):
                 turns = job["result"]["live_rollout"]["episodes"][0]["trajectory"]
+                user_turn = next(step for step in turns if step["path"] == "/v1/user_simulator")
                 if index % 2:
-                    turns[1]["result"].pop("outcome_category")
+                    user_turn["result"].pop("outcome_category")
                 else:
-                    turns[1]["result"]["fsm_state_after"] = "undeclared-state"
+                    user_turn["result"]["fsm_state_after"] = "undeclared-state"
             report = self.certify(history)
             self.assertFalse(report["gates"]["user_simulator_protocol"])
             self.assertFalse(report["gates"]["trajectory_schema"])
@@ -1024,6 +1161,17 @@ class ProductionReadinessTest(unittest.TestCase):
             live_report = root / "evidence/agentic_training_value_live.json"
             value = json.loads(live_report.read_text())
             value["validation_mode"] = "offline_mock"
+            live_report.write_text(json.dumps(value))
+            report = self.certify(history)
+            self.assertFalse(report["gates"]["tool_and_reward_integrity"])
+
+    def test_live_reward_report_cannot_hide_answer_bearing_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            history = self.make_history(root)
+            live_report = root / "evidence/agentic_training_value_live.json"
+            value = json.loads(live_report.read_text())
+            value["evidence"]["business_data_causality"]["answer_value_mentioned"] = True
             live_report.write_text(json.dumps(value))
             report = self.certify(history)
             self.assertFalse(report["gates"]["tool_and_reward_integrity"])
@@ -1076,6 +1224,53 @@ class ProductionReadinessTest(unittest.TestCase):
                 report["measurements"]["rollout_outcome_integrity"],
                 {"verified": 29, "expected": 30, "all_verified": False},
             )
+
+    def test_rollout_success_flag_must_match_terminal_reward(self):
+        with tempfile.TemporaryDirectory() as directory:
+            history = self.make_history(Path(directory))
+            result = history["holdouts"][0]["jobs"][0]["result"]
+            rollout = result["live_rollout"]
+            task = json.loads(Path(result["task_path"]).read_text())
+            policy = certifier.canonical_certification_policy()
+            self.assertTrue(certifier.valid_rollout_outcome(
+                rollout, policy, task=task,
+            ))
+            rollout["episodes"][0]["agent_success"] = False
+            rollout["agent_success_rate"] = 0.7
+            self.assertFalse(certifier.valid_rollout_outcome(
+                rollout, policy, task=task,
+            ))
+
+    def test_rollout_state_goal_is_recomputed_from_business_rows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            history = self.make_history(Path(directory))
+            result = history["holdouts"][0]["jobs"][0]["result"]
+            rollout = result["live_rollout"]
+            task = json.loads(Path(result["task_path"]).read_text())
+            task["task_spec"]["goal_contract"] = {
+                "row_predicates": [{
+                    "table": "inventory", "where": {"id": 1},
+                    "values": {"status": "done"}, "count": 1,
+                }],
+                "requires_state_change": True,
+            }
+            for episode in rollout["episodes"]:
+                episode["initial_state"] = {"inventory": [{"id": 1, "status": "pending"}]}
+                succeeded = episode["agent_success"]
+                episode["final_state"] = {"inventory": [{
+                    "id": 1, "status": "done" if succeeded else "pending",
+                }]}
+                episode["state_goal_satisfied"] = succeeded
+                next(step for step in episode["trajectory"] if step["path"] == "/v1/state")["result"]["business_state"] = episode["initial_state"]
+                episode["trajectory"][-1]["result"]["business_state"] = episode["final_state"]
+            policy = certifier.canonical_certification_policy()
+            self.assertTrue(certifier.valid_rollout_outcome(
+                rollout, policy, task=task,
+            ))
+            rollout["episodes"][0]["final_state"]["inventory"][0]["status"] = "pending"
+            self.assertFalse(certifier.valid_rollout_outcome(
+                rollout, policy, task=task,
+            ))
 
     def test_rollout_provider_identity_must_match_data_governance(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1130,6 +1325,52 @@ class ProductionReadinessTest(unittest.TestCase):
             result["live_rollout"]["agent_provider_sha256"] = "z" * 64
             report = self.certify(history)
             self.assertFalse(report["gates"]["rollout_provenance"])
+
+    def test_evidence_fingerprint_changes_after_same_directory_is_repaired(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "task.json").write_text("{}")
+            (root / "app.py").write_text("VALUE = 1\n")
+            before = evidence_fingerprint(root, ROOT)
+            (root / "app.py").write_text("VALUE = 2\n")
+            self.assertNotEqual(before, evidence_fingerprint(root, ROOT))
+
+    def test_evidence_fingerprint_covers_nested_business_data_and_scorer_code(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            project = workspace / "project"
+            scorer = project / "scripts/sandbox/score_sandbox.py"
+            scorer.parent.mkdir(parents=True)
+            scorer.write_text("SCORE = 1\n")
+            sandbox = workspace / "sandbox"
+            business = sandbox / "data/business_data/records.json"
+            business.parent.mkdir(parents=True)
+            business.write_text('{"amount": 1}')
+            (sandbox / "task.json").write_text("{}")
+            before = evidence_fingerprint(sandbox, project)
+            business.write_text('{"amount": 2}')
+            after_business = evidence_fingerprint(sandbox, project)
+            self.assertNotEqual(before, after_business)
+            scorer.write_text("SCORE = 2\n")
+            self.assertNotEqual(after_business, evidence_fingerprint(sandbox, project))
+
+    def test_score_report_rejects_symlinked_build_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "sandbox"
+            root.mkdir()
+            target = Path(directory) / "outside.json"
+            target.write_text("{}")
+            (root / "linked.json").symlink_to(target)
+            report = {
+                "checks": [{"name": name, "weight": weight, "passed": True,
+                            "evidence": "ok", "critical": critical}
+                           for name, weight, critical in SCORE_RUBRIC],
+                "mode": "offline_executable", "network_used": False, "model_used": False,
+                "live_rollout_verified": False, "threshold": 8, "score": 10.0,
+                "eligible": True, "passed": True, "failed_critical_gates": [],
+                "evidence_fingerprint": "claimed", "model": "builder", "review_model": "reviewer",
+            }
+            self.assertFalse(valid_score_report(report, root=root, project=ROOT, threshold=8))
 
     def test_sandbox_score_must_match_frozen_structural_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1241,6 +1482,11 @@ class ProductionReadinessTest(unittest.TestCase):
             self.assertTrue(valid_score_report(
                 report, root=root, project=ROOT, threshold=8.0,
             ))
+            report["verification_status"] = "live_verified"
+            self.assertFalse(valid_score_report(
+                report, root=root, project=ROOT, threshold=8.0,
+            ))
+            report.pop("verification_status")
             report["checks"][0]["weight"] = 2.0
             report["score"] = 11.0
             self.assertFalse(valid_score_report(
@@ -1249,6 +1495,70 @@ class ProductionReadinessTest(unittest.TestCase):
             report["checks"][0]["weight"] = 1.0
             report["score"] = 10.0
             report["checks"][0]["critical"] = False
+            self.assertFalse(valid_score_report(
+                report, root=root, project=ROOT, threshold=8.0,
+            ))
+
+    def test_sandbox_continuous_score_is_recomputed_from_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "review_report.json").write_text(json.dumps({"score": 0.9}))
+            (root / "agentic_training_value.json").write_text(json.dumps({
+                "evidence": {"counterfactuals": {
+                    "goal_success": {"reward": 1.0, "status": "completed"},
+                    "goal_failure": {"reward": 0.25, "status": "completed"},
+                }},
+            }))
+            factors = sandbox_quality_factors(root)
+            self.assertEqual(factors, {
+                "semantic_business_fidelity": 0.9,
+                "declared_training_policy": 0.75,
+            })
+            report = {
+                "score": 9.45, "raw_score": 10.0,
+                "score_kind": "gated_weighted_10_point", "quality_factors": factors,
+                "eligible": True, "passed": True, "threshold": 8.0,
+                "failed_critical_gates": [],
+                "checks": [{
+                    "name": name, "weight": weight, "passed": True,
+                    "evidence": "verified", "critical": critical,
+                } for name, weight, critical in SCORE_RUBRIC],
+                "mode": "offline_executable", "verification_status": "requires_live",
+                "network_used": False, "model_used": False,
+                "live_rollout_verified": False,
+                "model": "builder", "review_model": "reviewer",
+                "evidence_fingerprint": evidence_fingerprint(root, ROOT),
+            }
+            self.assertTrue(valid_score_report(
+                report, root=root, project=ROOT, threshold=8.0,
+            ))
+            report["score"] = 10.0
+            self.assertFalse(valid_score_report(
+                report, root=root, project=ROOT, threshold=8.0,
+            ))
+
+    def test_sandbox_score_cannot_hide_failed_critical_gate_behind_high_points(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checks = [
+                {"name": name, "weight": weight, "passed": name != "semantic_business_fidelity",
+                 "evidence": "checked", "critical": critical}
+                for name, weight, critical in SCORE_RUBRIC
+            ]
+            report = {
+                "score": 0.0, "eligible": False, "passed": False,
+                "threshold": 8.0,
+                "failed_critical_gates": ["semantic_business_fidelity"],
+                "checks": checks,
+                "mode": "offline_executable", "network_used": False,
+                "model_used": False, "live_rollout_verified": False,
+                "model": "builder", "review_model": "reviewer",
+                "evidence_fingerprint": evidence_fingerprint(root, ROOT),
+            }
+            self.assertTrue(valid_score_report(
+                report, root=root, project=ROOT, threshold=8.0,
+            ))
+            report["score"] = 9.5
             self.assertFalse(valid_score_report(
                 report, root=root, project=ROOT, threshold=8.0,
             ))
@@ -1293,7 +1603,13 @@ class ProductionReadinessTest(unittest.TestCase):
             "validation_mode": "live_evaluator",
             "failed_gates": [],
             "failures": [],
-            "evidence": {"counterfactuals": {
+            "evidence": {"business_data_access": {"tables_read": ["inventory"], "tool_reads": [
+                {"tool_name": "read_inventory", "tables_read": ["inventory"]},
+                {"tool_name": "rank_inventory", "tables_read": ["inventory"]},
+            ]},
+                         "business_data_causality": {"proved": True, "table": "inventory", "tool": "lookup"},
+                         "reference_data_immutability": {"unchanged": True},
+                         "counterfactuals": {
                 name: {
                     "reward": 1.0 if name == "goal_success" else (
                         -1.0 if name == "noise_selection" else 0.0
@@ -1309,6 +1625,79 @@ class ProductionReadinessTest(unittest.TestCase):
             }},
         }
         self.assertTrue(certifier.valid_reward_calibration(report, task))
+        cases = report["evidence"]["counterfactuals"]
+        for name in ("goal_failure", "no_tools", "noise_selection"):
+            original_case = dict(cases[name])
+            cases[name] = {
+                "reward": None, "status": "rejected", "http_status": 422,
+                "error_type": "ScenarioRejected",
+            }
+            self.assertFalse(certifier.valid_reward_calibration(report, task), name)
+            cases[name] = original_case
+        for invalid in (float("nan"), float("inf"), -float("inf"), 1.1, -1.1, 10**1000, True):
+            original = cases["goal_success"]["reward"]
+            cases["goal_success"]["reward"] = invalid
+            self.assertFalse(certifier.valid_reward_calibration(report, task))
+            cases["goal_success"]["reward"] = original
+            original = cases["goal_failure"]["reward"]
+            cases["goal_failure"]["reward"] = invalid
+            self.assertFalse(certifier.valid_reward_calibration(report, task))
+            cases["goal_failure"]["reward"] = original
+
+        outcome = next(item for item in task["metrics"] if item["category"] == "outcome")
+        outcome.update({"weight": 0.8, "evaluation_inputs": ["final_agent_response"]})
+        report["evidence"]["counterfactuals"]["wrong_final_answer"] = {
+            "reward": 0.0, "status": "completed",
+        }
+        self.assertFalse(certifier.valid_reward_calibration(report, task))
+        causality = report["evidence"]["business_data_causality"]
+        causality["answer_value_mentioned"] = True
+        self.assertFalse(certifier.valid_reward_calibration(report, task))
+        report["evidence"]["business_data_reward_sensitivity"] = {
+            "proved": True, "tool_results_changed": True,
+            "baseline_reward": 1.0, "baseline_rewards": [1.0, 1.0],
+            "baseline_tool_results_stable": True, "changed_reward": 0.0,
+            "changed_rewards": [0.0, 0.0],
+        }
+        self.assertTrue(certifier.valid_reward_calibration(report, task))
+        sensitivity = report["evidence"]["business_data_reward_sensitivity"]
+        sensitivity["baseline_rewards"] = [1.0, 0.0]
+        self.assertFalse(certifier.valid_reward_calibration(report, task))
+        sensitivity["baseline_rewards"] = [1.0, 1.0]
+        sensitivity["changed_rewards"] = [0.0, 1.0]
+        self.assertFalse(certifier.valid_reward_calibration(report, task))
+        sensitivity["changed_rewards"] = [0.0]
+        self.assertFalse(certifier.valid_reward_calibration(report, task))
+        sensitivity["changed_rewards"] = [0.0, 0.0]
+        causality.pop("answer_value_mentioned")
+        report["evidence"].pop("business_data_reward_sensitivity")
+        outcome.pop("weight")
+        outcome.pop("evaluation_inputs")
+        report["evidence"]["counterfactuals"].pop("wrong_final_answer")
+        first_tool = task["tools"][0]["function"]
+        first_tool["parameters"] = {"required": ["category", "date"]}
+        first_call = task["acceptance_contract"]["executable_scenarios"][0]["steps"][0]
+        first_call["arguments"]["date"] = "2026-01-01"
+        self.assertFalse(certifier.valid_reward_calibration(report, task))
+        report["evidence"]["counterfactuals"]["corrupted_arguments_1__2"] = {
+            "reward": 0.0, "status": "completed",
+        }
+        self.assertTrue(certifier.valid_reward_calibration(report, task))
+        first_call["arguments"].pop("date")
+        first_tool.pop("parameters")
+        tool_reads = report["evidence"]["business_data_access"]["tool_reads"]
+        report["evidence"]["business_data_access"]["tool_reads"] = tool_reads[:1]
+        self.assertFalse(certifier.valid_reward_calibration(report, task))
+        report["evidence"]["business_data_access"]["tool_reads"] = tool_reads
+        access = report["evidence"].pop("business_data_access")
+        self.assertFalse(certifier.valid_reward_calibration(report, task))
+        report["evidence"]["business_data_access"] = access
+        causality = report["evidence"].pop("business_data_causality")
+        self.assertFalse(certifier.valid_reward_calibration(report, task))
+        report["evidence"]["business_data_causality"] = causality
+        immutability = report["evidence"].pop("reference_data_immutability")
+        self.assertFalse(certifier.valid_reward_calibration(report, task))
+        report["evidence"]["reference_data_immutability"] = immutability
         task["environment_plan"] = {"mode": "reference_data"}
         task["metrics"] = [{
             "id": "answer", "category": "outcome", "type": "model-based",
@@ -1319,17 +1708,104 @@ class ProductionReadinessTest(unittest.TestCase):
         counterfactuals["wrong_final_answer"] = {"reward": 0.7, "status": "completed"}
         self.assertFalse(certifier.valid_reward_calibration(report, task))
         counterfactuals["wrong_final_answer"]["reward"] = 0.3
+        report["evidence"]["business_data_reward_sensitivity"] = {
+            "proved": True, "baseline_reward": 1.0,
+            "baseline_rewards": [1.0, 1.0], "baseline_tool_results_stable": True,
+            "changed_reward": 0.2, "changed_rewards": [0.2, 0.2],
+            "tool_results_changed": True,
+        }
         self.assertTrue(certifier.valid_reward_calibration(report, task))
+        task["task_intent"] = "calculate"
+        task["acceptance_contract"]["executable_scenarios"][0]["steps"][-1]["content"] = "合计 42 元"
+        self.assertFalse(certifier.valid_reward_calibration(report, task))
+        counterfactuals["wrong_numeric_answer"] = {"reward": 0.7, "status": "completed"}
+        self.assertFalse(certifier.valid_reward_calibration(report, task))
+        counterfactuals["wrong_numeric_answer"]["reward"] = 0.3
+        self.assertTrue(certifier.valid_reward_calibration(report, task))
+        report["evidence"]["business_data_reward_sensitivity"] = {
+            "proved": True, "baseline_reward": 1.0,
+            "baseline_rewards": [1.0, 1.0], "baseline_tool_results_stable": True,
+            "changed_reward": 0.2, "changed_rewards": [0.2, 0.2],
+            "tool_results_changed": True,
+        }
+        self.assertTrue(certifier.valid_reward_calibration(report, task))
+        report["evidence"]["business_data_reward_sensitivity"]["changed_reward"] = 1.0
+        self.assertFalse(certifier.valid_reward_calibration(report, task))
+        report["evidence"]["business_data_reward_sensitivity"]["changed_reward"] = 0.2
         failure = report["evidence"]["counterfactuals"]["goal_failure"]
         failure.update(reward=None, status="rejected")
         self.assertFalse(certifier.valid_reward_calibration(report, task))
         failure.update(http_status=422, error_type="ScenarioRejected")
-        self.assertTrue(certifier.valid_reward_calibration(report, task))
-        failure["message"] = "untrusted provider response"
         self.assertFalse(certifier.valid_reward_calibration(report, task))
-        failure.pop("message")
+        failure.update(reward=0.0, status="completed")
+        failure.pop("http_status")
+        failure.pop("error_type")
+        self.assertTrue(certifier.valid_reward_calibration(report, task))
+        rejected_argument = report["evidence"]["counterfactuals"]["corrupted_arguments_1"]
+        rejected_argument.update(reward=None, status="rejected", http_status=422,
+                                 error_type="ScenarioRejected")
+        self.assertTrue(certifier.valid_reward_calibration(report, task))
+        rejected_argument["message"] = "untrusted provider response"
+        self.assertFalse(certifier.valid_reward_calibration(report, task))
+        rejected_argument.clear()
+        rejected_argument.update(reward=0.0, status="completed")
+        self.assertTrue(certifier.valid_reward_calibration(report, task))
         del report["evidence"]["counterfactuals"]["skipped_tool_2"]
         self.assertFalse(certifier.valid_reward_calibration(report, task))
+
+    def test_live_causality_must_match_offline_mutation_witness(self):
+        task = {"environment_plan": {"mode": "reference_data"}}
+        witness = {"proved": True, "table": "inventory", "tool": "lookup",
+                   "field": "quantity", "answer_value_mentioned": True}
+        offline = {"evidence": {"business_data_causality": dict(witness)}}
+        live = {"evidence": {"business_data_causality": dict(witness)}}
+        self.assertTrue(certifier.consistent_causality_witness(offline, live, task))
+        live["evidence"]["business_data_causality"]["answer_value_mentioned"] = False
+        self.assertFalse(certifier.consistent_causality_witness(offline, live, task))
+        offline["evidence"]["business_data_causality"].pop("answer_value_mentioned")
+        self.assertFalse(certifier.consistent_causality_witness(offline, live, task))
+
+    def test_wrong_answers_count_toward_reward_false_positive_rate(self):
+        counts = certifier._counterfactual_counts([{"evidence": {"counterfactuals": {
+            "goal_success": {"reward": 1.0, "status": "completed"},
+            "wrong_final_answer": {"reward": 0.7, "status": "completed"},
+            "wrong_numeric_answer": {"reward": 0.3, "status": "completed"},
+        }}}])
+        self.assertEqual(counts["negative_total"], 2)
+        self.assertEqual(counts["negative_errors"], 1)
+        invalid = certifier._counterfactual_counts([{"evidence": {"counterfactuals": {
+            "goal_success": {"reward": float("nan")},
+            "wrong_final_answer": {"reward": float("nan"), "status": "completed"},
+        }}}])
+        self.assertEqual(invalid["positive_errors"], 1)
+        self.assertEqual(invalid["negative_errors"], 1)
+        rejected = certifier._counterfactual_counts([{"evidence": {"counterfactuals": {
+            "goal_failure": {"reward": None, "status": "rejected", "http_status": 422},
+            "corrupted_arguments_1": {"reward": None, "status": "rejected", "http_status": 422},
+        }}}])
+        self.assertEqual(rejected["negative_errors"], 1)
+
+    def test_reward_confidence_uses_sandbox_not_correlated_case_count(self):
+        cases = {"goal_success": {"reward": 1.0, "status": "completed"}}
+        cases.update({
+            f"corrupted_arguments_{index}": {"reward": 0.0, "status": "completed"}
+            for index in range(100)
+        })
+        reports = [{"evidence": {"counterfactuals": cases}} for _ in range(100)]
+        per_case = certifier._counterfactual_counts(reports)
+        per_sandbox = certifier._counterfactual_sandbox_counts(reports)
+        self.assertEqual(per_case["negative_total"], 10_000)
+        self.assertEqual(per_sandbox, {
+            "total": 100, "positive_errors": 0, "negative_errors": 0,
+        })
+        self.assertLess(certifier.wilson_upper(0, per_case["negative_total"]), .005)
+        self.assertGreater(certifier.wilson_upper(0, per_sandbox["total"]), .005)
+        reports[0]["evidence"]["counterfactuals"] = {
+            "goal_success": {"reward": 1.0, "status": "completed"},
+        }
+        self.assertEqual(
+            certifier._counterfactual_sandbox_counts(reports)["negative_errors"], 1,
+        )
 
     def test_runtime_readiness_requires_complete_executable_evidence(self):
         report = {
@@ -1474,7 +1950,10 @@ class ProductionReadinessTest(unittest.TestCase):
             for batch in history["holdouts"]:
                 for job in batch["jobs"]:
                     for episode in job["result"]["live_rollout"]["episodes"]:
-                        result = episode["trajectory"][1]["result"]
+                        result = next(
+                            step["result"] for step in episode["trajectory"]
+                            if step["path"] == "/v1/user_simulator"
+                        )
                         result.update(
                             match_status="matched",
                             outcome_category="user_acceptance",
@@ -1493,6 +1972,43 @@ class ProductionReadinessTest(unittest.TestCase):
             self.assertFalse(report["gates"]["fresh_holdout"])
             self.assertFalse(report["measurements"]["fresh_holdout_evidence"]["verified"])
 
+    def test_holdout_checks_all_generation_retry_seeds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            batches = []
+            for index, (base, attempts) in enumerate(((100, [100, 101]), (101, [101]))):
+                task = root / f"task-{index}.json"
+                task.write_text(json.dumps({"task": str(index)}))
+                manifest = root / f"sample-{index}.json"
+                manifest.write_text(json.dumps({
+                    "attempts": [{"seed": seed} for seed in attempts],
+                }))
+                batches.append({
+                    "holdout_batch": index + 1,
+                    "summary": {"fresh_tasks_verified": True},
+                    "jobs": [{"result": {
+                        "task_path": str(task), "sample_manifest": str(manifest),
+                        "sample_seed": base,
+                    }}],
+                })
+            policy = {"min_holdout_batches": 2, "min_tasks": 1}
+            self.assertFalse(certifier.fresh_holdout_evidence(batches, policy)["verified"])
+            second = Path(batches[1]["jobs"][0]["result"]["sample_manifest"])
+            second.write_text(json.dumps({"attempts": [{"seed": 200}]}))
+            batches[1]["jobs"][0]["result"]["sample_seed"] = 200
+            self.assertTrue(certifier.fresh_holdout_evidence(batches, policy)["verified"])
+            development_manifest = root / "development.json"
+            development_manifest.write_text(json.dumps({
+                "attempts": [{"seed": 199}, {"seed": 200}],
+            }))
+            development = [{"jobs": [{"result": {
+                "sample_seed": 199,
+                "sample_manifest": str(development_manifest),
+            }}]}]
+            self.assertFalse(certifier.fresh_holdout_evidence(
+                batches, policy, development_reports=development,
+            )["verified"])
+
     def test_transition_terminal_flags_must_match_episode_termination(self):
         with tempfile.TemporaryDirectory() as directory:
             history = self.make_history(Path(directory))
@@ -1500,6 +2016,108 @@ class ProductionReadinessTest(unittest.TestCase):
             episode["transitions"][-1]["terminated"] = False
             report = self.certify(history)
             self.assertFalse(report["gates"]["trajectory_schema"])
+
+    def test_episode_reward_and_state_match_http_trace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            history = self.make_history(Path(directory))
+            episode = history["holdouts"][0]["jobs"][0]["result"]["live_rollout"]["episodes"][0]
+            self.assertTrue(certifier.complete_episode(episode))
+            episode["trajectory"][-3]["result"]["reward"] = 0.0
+            self.assertFalse(certifier.complete_episode(episode))
+            episode["trajectory"][-3]["result"]["reward"] = 1.0
+            episode["trajectory"][-1]["result"]["business_state"] = {"tampered": []}
+            self.assertFalse(certifier.complete_episode(episode))
+
+    def test_episode_action_and_observation_match_http_trace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            history = self.make_history(Path(directory))
+            episode = history["holdouts"][0]["jobs"][0]["result"]["live_rollout"]["episodes"][0]
+            self.assertTrue(certifier.complete_episode(episode))
+            response = next(step for step in episode["trajectory"] if step["path"] == "/v1/agent_response")
+            response["body"]["content"] = "different answer"
+            self.assertFalse(certifier.complete_episode(episode))
+            response["body"]["content"] = "done"
+            observation = next(step for step in episode["trajectory"] if step["path"] == "/v1/observation")
+            observation["result"] = {"tampered": True}
+            self.assertFalse(certifier.complete_episode(episode))
+            observation["result"] = {}
+            episode["trajectory"].insert(-1, {
+                "method": "POST", "path": "/v1/agent_response",
+                "body": {"content": "extra"}, "status": 200, "result": {},
+            })
+            self.assertFalse(certifier.complete_episode(episode))
+
+    def test_episode_requires_reset_tools_and_replay_http_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            history = self.make_history(Path(directory))
+            episode = history["holdouts"][0]["jobs"][0]["result"]["live_rollout"]["episodes"][0]
+            self.assertTrue(certifier.complete_episode(episode))
+            episode["trajectory"][0]["body"]["seed"] = -1
+            self.assertFalse(certifier.complete_episode(episode))
+            episode["trajectory"][0]["body"]["seed"] = episode["seed"]
+            episode["trajectory"][3]["result"] = {"tools": "forged"}
+            self.assertFalse(certifier.complete_episode(episode))
+            episode["trajectory"][3]["result"] = {"tools": []}
+            episode["trajectory"][-2]["result"] = {"events": []}
+            self.assertFalse(certifier.complete_episode(episode))
+
+    def test_real_rollout_emitter_matches_episode_http_schema(self):
+        class App:
+            reward = 0.0
+
+            def __init__(self, with_tool=False):
+                self.with_tool = with_tool
+
+            def handle(self, method, path, body, headers):
+                if path == "/v1/reset":
+                    self.reward = 0.0
+                    result = {}
+                elif path == "/v1/state":
+                    result = {"business_state": {}}
+                elif path == "/v1/reward":
+                    result = {"reward": self.reward}
+                elif path == "/v1/tools":
+                    result = {"tools": ([{
+                        "type": "function",
+                        "function": {"name": "lookup", "parameters": {"type": "object"}},
+                    }] if self.with_tool else [])}
+                elif path == "/v1/tools/lookup":
+                    result = {"value": 1}
+                elif path == "/v1/observation":
+                    result = {}
+                elif path == "/v1/agent_response":
+                    self.reward = 1.0
+                    result = {}
+                elif path == "/v1/user_simulator":
+                    result = {
+                        "user_query": "accepted", "should_end": True,
+                        "termination_reason": "completed",
+                    }
+                elif path == "/v1/replay":
+                    result = {"events": []}
+                else:
+                    raise AssertionError(path)
+                return 200, result, {}
+
+        class Client:
+            def __init__(self, actions):
+                self.actions = iter(actions)
+
+            def chat(self, messages, **kwargs):
+                return SimpleNamespace(
+                    content=json.dumps(next(self.actions)),
+                    model="policy", id="response-1", finish_reason="stop", usage={},
+                )
+
+        with patch.dict("os.environ", {"SANDBOX_TRAINER_API_KEY": "test-key"}):
+            for with_tool in (False, True):
+                actions = ([{"kind": "tool", "name": "lookup", "arguments": {"key": 1}}]
+                           if with_tool else [])
+                actions.append({"kind": "respond", "content": "done"})
+                episode = rollout_runner.episode(
+                    App(with_tool), {"task": "hello"}, Client(actions), 7, 3,
+                )
+                self.assertTrue(certifier.complete_episode(episode), episode_errors(episode))
 
     def test_material_manifest_detects_post_certification_changes(self):
         with tempfile.TemporaryDirectory() as directory:

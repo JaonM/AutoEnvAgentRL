@@ -4,8 +4,9 @@ from pathlib import Path
 import tempfile
 import unittest
 import importlib.util
+from types import SimpleNamespace
 
-from env_factory.evidence.container_provenance import verify_container_provenance
+from env_factory.evidence.container_provenance import inspect_local_image, verify_container_provenance
 from env_factory.evidence.material_artifacts import (
     DOCKERIGNORE_SOURCE,
     docker_build_context_digest,
@@ -22,6 +23,43 @@ SPEC.loader.exec_module(resolver)
 
 
 class ContainerProvenanceTest(unittest.TestCase):
+    def test_local_image_inspection_reads_daemon_identity(self):
+        image = {
+            "Id": "sha256:" + "b" * 64, "Os": "linux", "Architecture": "arm64",
+            "Config": {"User": "sandbox"},
+        }
+        calls = []
+        def runner(command, **kwargs):
+            calls.append(command)
+            return SimpleNamespace(returncode=0, stdout=json.dumps(image))
+        self.assertEqual(inspect_local_image("fixture", runner=runner), {
+            "image_id": image["Id"],
+            "platform": {"os": "linux", "architecture": "arm64"},
+            "runtime_user": "sandbox",
+        })
+        self.assertEqual(calls[0][:4], ["docker", "image", "inspect", "fixture"])
+
+    def test_local_image_identity_must_match_recorded_build(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            metadata = self.fixture(root)
+            observed = {
+                "image_id": metadata["image_id"],
+                "platform": metadata["platform"],
+                "runtime_user": metadata["runtime_user"],
+            }
+            self.assertTrue(verify_container_provenance(
+                root, expected_tag="fixture", observed_image=observed,
+                require_local_image=True,
+            )["verified"])
+            self.assertIn("local_image_unavailable", verify_container_provenance(
+                root, observed_image=None, require_local_image=True,
+            )["failed_gates"])
+            self.assertIn("local_image_id", verify_container_provenance(
+                root, observed_image={**observed, "image_id": "sha256:" + "c" * 64},
+                require_local_image=True,
+            )["failed_gates"])
+
     def test_cached_resolution_requires_matching_repository_and_platform(self):
         digest = "sha256:" + "c" * 64
         inspect = [{"Os": "linux", "Architecture": "arm64", "RepoDigests": [

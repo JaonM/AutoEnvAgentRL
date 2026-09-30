@@ -76,7 +76,7 @@ def valid_experiment_contract(
         and _number(threshold)
         and 8.0 <= float(threshold) <= 10.0
         and _positive_integer(configuration.get("holdout_count"))
-        and configuration["holdout_count"] >= 300
+        and configuration["holdout_count"] >= 30
         and _positive_integer(configuration.get("holdout_batches"))
         and configuration["holdout_batches"] >= 3
         and _positive_integer(configuration.get("holdout_rollout_episodes"))

@@ -42,18 +42,6 @@ exporter = load_exporter()
 
 
 class MaterialExportTest(unittest.TestCase):
-    def test_dataset_card_reports_public_source_origins(self):
-        card = exporter._dataset_card(
-            {}, source_dataset_sha256="a" * 64,
-            items=[{"category": "simple_agentic", "split": "train"}],
-            transition_count=1, model_pairs=Counter(),
-            successful_episodes=0, episode_count=1,
-            data_origins=Counter({"public_dataset": 1}),
-        )
-        self.assertEqual(card["data_boundary"]["origin"], "public_dataset")
-        self.assertEqual(card["data_boundary"]["origins"], {"public_dataset": 1})
-        self.assertEqual(card["data_boundary"]["contains_real_user_data"], "undetermined")
-
     @staticmethod
     def remove_current_trajectory_purpose(bundle: Path, manifest: dict) -> None:
         manifest.pop("trajectory_purpose", None)
@@ -224,11 +212,46 @@ class MaterialExportTest(unittest.TestCase):
                 "termination": "completed", "transitions": [transition],
                 "initial_reward": 0.0, "final_reward": 1.0,
                 "trajectory": [{
+                    "method": "POST", "path": "/v1/reset", "status": 200,
+                    "body": {"episode_id": "live-1", "seed": 1}, "result": {},
+                }, {
+                    "method": "GET", "path": "/v1/state", "status": 200,
+                    "result": {"business_state": {}},
+                }, {
                     "method": "GET", "path": "/v1/reward", "status": 200,
-                    "result": {"reward": 1.0},
+                    "result": {"reward": 0.0},
+                }, {
+                    "method": "GET", "path": "/v1/tools", "status": 200,
+                    "result": {"tools": []},
+                }, {
+                    "method": "GET", "path": "/v1/observation", "status": 200,
+                    "result": {},
+                }, {
+                    "method": "POST", "path": "/v1/agent_response",
+                    "body": {"content": "done"}, "status": 200, "result": {},
                 }, {
                     "method": "POST", "path": "/v1/user_simulator",
                     "status": 200, "result": user_result,
+                }, {
+                    "method": "GET", "path": "/v1/observation", "status": 200,
+                    "result": {},
+                }, *[{
+                    "method": "GET", "path": "/v1/reward", "status": 200,
+                    "result": {"reward": 1.0},
+                } for _ in range(3)], {
+                    "method": "GET", "path": "/v1/replay", "status": 200,
+                    "result": {"events": [{
+                        "event": "runtime_llm_call",
+                        "payload": {"summary": {
+                            "version": "1.0", "responses": 1,
+                            "mock_responses": 0, "models": {"simulator": 1},
+                            "usage": {"total_tokens": 5},
+                            "response_id_sha256": ["8" * 64],
+                        }},
+                    }]},
+                }, {
+                    "method": "GET", "path": "/v1/state", "status": 200,
+                    "result": {"business_state": {}},
                 }],
                 "replay": {"events": [{
                     "event": "runtime_llm_call",

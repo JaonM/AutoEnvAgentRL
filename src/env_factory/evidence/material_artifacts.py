@@ -37,6 +37,8 @@ __pycache__
 **/.runtime
 .outer_conformance
 .outer_conformance/**
+.node_checkpoints
+.node_checkpoints/**
 *.pyc
 *.pyo
 *.sqlite
@@ -52,6 +54,7 @@ agentic_training_value_live.json
 buildability.json
 data_governance.json
 offline_sandbox_score.json
+sandbox_score.json
 review_report.json
 score_summary.json
 training_readiness.json
@@ -70,13 +73,14 @@ defect_*_review.json
 """
 
 IGNORED_CONTEXT_NAMES = EVIDENCE_NAMES | {
-    "live_rollout.json", "status.json", "runtime_trace.jsonl",
+    "live_rollout.json", "sandbox_score.json", "status.json", "runtime_trace.jsonl",
     "mutation_report.json", "docker_image_metadata.json", "python_packages.json",
     "runtime_state.json", "last_delivery_error.txt", "defects.json",
     "failure.json", "mutation_cases.json",
 }
 IGNORED_CONTEXT_PARTS = {
     ".git", "__pycache__", ".pytest_cache", ".runtime", ".outer_conformance",
+    ".node_checkpoints",
 }
 PORTABLE_POST_BUILD_NAMES = {"docker_image_metadata.json", "python_packages.json"}
 IGNORED_CONTEXT_GLOBS = {"*.stdout", "*.stderr", "defect_*_review.json"}
@@ -118,6 +122,8 @@ def docker_context_errors(root: Path) -> list[str]:
             errors.append(f"context_symlink:{relative}")
         if path.is_file() and RISKY_CONTEXT_FILE.fullmatch(path.name):
             errors.append(f"sensitive_context_file:{relative}")
+        if any(part in IGNORED_CONTEXT_PARTS for part in relative.parts):
+            continue
         hidden_parts = [
             part for part in relative.parts
             if part.startswith(".") and part not in {
