@@ -3,6 +3,11 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+project_dir="$(cd "$script_dir/.." && pwd)"
+export PYTHONPATH="$project_dir/src${PYTHONPATH:+:$PYTHONPATH}"
+if [[ -x "$project_dir/.venv/bin/python3" ]]; then
+  export PATH="$project_dir/.venv/bin:$PATH"
+fi
 
 context=""
 tag="env-factory-agent-sandbox"
@@ -10,6 +15,7 @@ start="false"
 dockerfile=""
 port="8080"
 env_file=""
+pin_only="false"
 
 usage() {
   cat <<'EOF'
@@ -25,6 +31,7 @@ usage() {
   --port N          宿主机端口，容器端口固定为 8000，默认：8080
   --env-file FILE   启动容器时注入的环境变量文件，默认：不使用
   --start           构建后启动容器，默认：不启动
+  --pin-only        只将基础镜像固定到内容摘要，不构建镜像
   -h, --help        显示帮助
 
 环境变量：
@@ -47,6 +54,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --start) start="true"; shift ;;
+    --pin-only) pin_only="true"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "未知参数：$1" >&2; usage >&2; exit 2 ;;
   esac
@@ -172,7 +180,11 @@ awk -v image="$selected" '
 # Make the portable source identical to the context whose image is measured.
 # In particular, COPY . . must not embed the earlier floating-tag Dockerfile.
 cp "$resolved_dockerfile" "$dockerfile"
+if [[ "$pin_only" == "true" ]]; then
+  exit 0
+fi
 context_report="$(python3 "$script_dir/sandbox/validate_docker_context.py" "$context")" || {
+  [[ -z "$context_report" ]] || echo "$context_report" >&2
   echo "Docker 构建上下文不符合可移植/敏感文件隔离契约：$context" >&2
   exit 3
 }
@@ -304,7 +316,7 @@ if [[ "$start" == "true" ]]; then
     --tmpfs /tmp:rw,noexec,nosuid,size=64m
     --tmpfs /app/.runtime:rw,nosuid,size=64m,uid=10001,gid=10001,mode=0700
   )
-  for env_name in SANDBOX_TRAINER_API_KEY SANDBOX_LLM_API_KEY SANDBOX_LLM_BASE_URL SANDBOX_LLM_MODEL SANDBOX_LLM_TIMEOUT_SECONDS SANDBOX_LLM_MAX_RETRIES SANDBOX_EVALUATOR_MOCK; do
+  for env_name in SANDBOX_TRAINER_API_KEY SANDBOX_LLM_API_KEY SANDBOX_LLM_BASE_URL SANDBOX_LLM_MODEL SANDBOX_LLM_TIMEOUT_SECONDS SANDBOX_LLM_MAX_RETRIES KIMI_K3_REASONING_EFFORT SANDBOX_EVALUATOR_MOCK; do
     if [[ -n "${!env_name:-}" ]]; then run_args+=(--env "$env_name"); fi
   done
   if [[ -n "$env_file" ]]; then run_args+=(--env-file "$env_file"); fi

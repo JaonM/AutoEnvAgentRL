@@ -49,6 +49,27 @@ class DefectAttemptBudgetTest(unittest.TestCase):
             self.assertEqual(budget.reserve_attempt(state, same, 3), ("DEFECT-0001", 2))
             self.assertEqual(budget.reserve_attempt(state, other, 3), ("DEFECT-0002", 1))
 
+    def test_similar_findings_for_distinct_fields_have_independent_budgets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "attempts.json"
+            first = {
+                "category": "semantic correctness", "tool_name": "audit_material_labels",
+                "file": "task_impl.py",
+                "fix_required": "Validate material_code in the item lookup result",
+                "evidence": "The material_code field is missing from lookup output",
+            }
+            second = {**first,
+                "fix_required": "Validate supplier_code in the item lookup result",
+                "evidence": "The supplier_code field is missing from lookup output",
+            }
+            for attempt in range(1, 4):
+                self.assertEqual(budget.reserve_attempt(state, first, 3), ("DEFECT-0001", attempt))
+            self.assertEqual(budget.reserve_attempt(state, second, 3), ("DEFECT-0002", 1))
+            rephrased = {**second,
+                "evidence": "The supplier_code field is missing from lookup output.",
+            }
+            self.assertEqual(budget.reserve_attempt(state, rephrased, 3), ("DEFECT-0002", 2))
+
     def test_cli_moves_to_next_defect_when_first_budget_is_exhausted(self):
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory) / "attempts.json"
@@ -61,12 +82,51 @@ class DefectAttemptBudgetTest(unittest.TestCase):
             arguments = [sys.executable, str(SCRIPT), "--state", str(state),
                          "--defects", str(defects_file), "--max-attempts", "1"]
             first = subprocess.run(arguments, capture_output=True, text=True, check=True)
+            subprocess.run([sys.executable, str(SCRIPT), "--state", str(state),
+                            "--commit-id", "DEFECT-0001"], check=True)
             second = subprocess.run(arguments, capture_output=True, text=True, check=True)
+            subprocess.run([sys.executable, str(SCRIPT), "--state", str(state),
+                            "--commit-id", "DEFECT-0002"], check=True)
             exhausted = subprocess.run(arguments, capture_output=True, text=True)
             self.assertEqual(first.stdout.strip(), "0 DEFECT-0001 1")
             self.assertEqual(second.stdout.strip(), "1 DEFECT-0002 1")
             self.assertNotEqual(exhausted.returncode, 0)
             self.assertIn("all currently reported defects exhausted", exhausted.stderr)
+
+    def test_interrupted_or_released_attempt_does_not_spend_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "attempts.json"
+            defect = {"category": "business", "evidence": "wrong total"}
+            self.assertEqual(budget.reserve_attempt(state, defect, 1, pending=True),
+                             ("DEFECT-0001", 1))
+            self.assertEqual(budget.reserve_attempt(state, defect, 1, pending=True),
+                             ("DEFECT-0001", 1))
+            budget.finish_pending(state, "DEFECT-0001", release=True)
+            self.assertEqual(budget.reserve_attempt(state, defect, 1, pending=True),
+                             ("DEFECT-0001", 1))
+            budget.finish_pending(state, "DEFECT-0001", release=False)
+            with self.assertRaisesRegex(RuntimeError, "exhausted"):
+                budget.reserve_attempt(state, defect, 1, pending=True)
+
+    def test_total_budget_spans_distinct_defects_and_excludes_released_attempts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "attempts.json"
+            first = {"category": "business", "evidence": "wrong total"}
+            second = {"category": "business", "evidence": "missing item"}
+            third = {"category": "business", "evidence": "wrong status"}
+            self.assertEqual(budget.reserve_attempt(
+                state, first, 3, maximum_total=2, pending=True,
+            ), ("DEFECT-0001", 1))
+            budget.finish_pending(state, "DEFECT-0001", release=True)
+            self.assertEqual(budget.reserve_attempt(
+                state, first, 3, maximum_total=2,
+            ), ("DEFECT-0001", 1))
+            self.assertEqual(budget.reserve_attempt(
+                state, second, 3, maximum_total=2,
+            ), ("DEFECT-0002", 1))
+            with self.assertRaisesRegex(RuntimeError, "total repair attempts"):
+                budget.reserve_attempt(state, third, 3, maximum_total=2)
+            self.assertEqual([entry["attempts"] for entry in json.loads(state.read_text())["defects"]], [1, 1])
 
     def test_reward_defect_rephrasing_keeps_same_budget(self):
         with tempfile.TemporaryDirectory() as directory:

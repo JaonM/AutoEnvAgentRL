@@ -23,6 +23,7 @@ start="false"
 background="true"
 max_concurrency="2"
 max_attempts="3"
+max_total_repairs="4"
 resume="false"
 auto_score="true"
 sandbox_port="8080"
@@ -33,6 +34,7 @@ current_attempt="0"
 current_defect_ids=""
 current_failure_category=""
 current_failure_code=""
+timing_reset="false"
 
 usage() {
   cat <<'EOF'
@@ -53,7 +55,8 @@ usage() {
   --tag NAME         镜像名称，默认：env-factory-agent-sandbox
   --max-concurrency N 并发任务数，默认：2
   --max-attempts N   每个开发节点及每个独立缺陷的最大修复次数，默认：3
-  --resume           复用输出目录中的已有实现，跳过模块重开发并直接验收/修复
+  --max-total-repairs N 每个样本的业务缺陷修复总次数，默认：4
+  --resume           复用输出目录中的已完成节点，继续未完成节点及验收/修复
   --skip-auto-score  构建成功后不自动执行离线评分
   --sandbox-port N   Docker 宿主机映射端口，容器端口固定为 8000，默认：8080
   --env-file FILE    Docker 启动时注入的环境变量文件，默认：不使用
@@ -65,7 +68,7 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --input|--output|--agent|--review-agent|--model|--review-model|--runtime|--tag|--max-concurrency|--max-attempts|--sandbox-port|--env-file)
+    --input|--output|--agent|--review-agent|--model|--review-model|--runtime|--tag|--max-concurrency|--max-attempts|--max-total-repairs|--sandbox-port|--env-file)
       if (( $# < 2 )); then
         echo "$1 需要提供参数值" >&2
         exit 2
@@ -81,6 +84,7 @@ while [[ $# -gt 0 ]]; do
         --tag) tag="$2" ;;
         --max-concurrency) max_concurrency="$2" ;;
         --max-attempts) max_attempts="$2" ;;
+        --max-total-repairs) max_total_repairs="$2" ;;
         --sandbox-port) sandbox_port="$2" ;;
         --env-file) env_file="$2" ;;
       esac
@@ -102,6 +106,10 @@ fi
 
 if ! [[ "$max_attempts" =~ ^[1-9][0-9]*$ ]]; then
   echo "--max-attempts 必须是正整数：$max_attempts" >&2
+  exit 2
+fi
+if ! [[ "$max_total_repairs" =~ ^[1-9][0-9]*$ ]]; then
+  echo "--max-total-repairs 必须是正整数：$max_total_repairs" >&2
   exit 2
 fi
 if ! [[ "$sandbox_port" =~ ^[1-9][0-9]*$ ]] || (( sandbox_port > 65535 )); then
@@ -245,21 +253,22 @@ prepare_task() {
     "$task_output/TASK_PROMPT.md" "$task_output/SPEC_TASK.md" "$task_output/AGENT_TASK.md" \
     "$task_output/BUILD_CONTRACT.json" \
     "$task_output/review_report.json" "$task_output/review_agent.stdout" "$task_output/review_agent.stderr" \
-    "$task_output/defects.json" "$task_output/last_delivery_error.txt" "$task_output/acceptance_failure.log"
+    "$task_output/defects.json" "$task_output/last_delivery_error.txt" "$task_output/acceptance_failure.log" || return
   if [[ "$resume" != "true" ]]; then
     rm -f \
       "$task_output/defect_attempts.json" \
       "$task_output/spec.md" "$task_output/action_plan.json" "$task_output/development_plan.json" "$task_output/tools.json" "$task_output/Dockerfile" \
       "$task_output/docker_build.sh" "$task_output/docker_run.sh" \
       "$task_output/acceptance.sh" "$task_output/IMPLEMENTATION_REPORT.md" \
-      "$task_output/app.py" "$task_output/task_impl.py"
-    rm -rf "$task_output/data" "$task_output/tests" "$task_output/.outer_conformance"
+      "$task_output/app.py" "$task_output/task_impl.py" || return
+    rm -rf "$task_output/data" "$task_output/tests" "$task_output/.outer_conformance" || return
+    rm -rf "$task_output/.node_checkpoints" || return
   fi
-  mkdir -p "$task_output/data"
+  mkdir -p "$task_output/data" || return
   # Provide the single reviewed runtime adapter to the Code Agent; the Agent
   # must use it for User Simulator and reward evaluator LLM calls.
-  cp "$project_dir/src/env_factory/runtime_llm.py" "$task_output/runtime_llm.py"
-  cp "$project_dir/src/env_factory/sandbox_runtime.py" "$task_output/sandbox_runtime.py"
+  cp "$project_dir/src/env_factory/runtime_llm.py" "$task_output/runtime_llm.py" || return
+  cp "$project_dir/src/env_factory/sandbox_runtime.py" "$task_output/sandbox_runtime.py" || return
   python3 - "$input_path" "$task_output" "$task_index" <<'PY'
 import sys
 from pathlib import Path
@@ -270,6 +279,7 @@ prepare_sandbox_task(
     Path(sys.argv[1]), Path(sys.argv[2]), index=int(sys.argv[3])
 )
 PY
+  if [[ "$?" -ne 0 ]]; then return 4; fi
   python3 - "$task_output/task.json" "$task_output/BUILD_CONTRACT.json" <<'PY'
 import json
 import sys
@@ -298,11 +308,12 @@ Path(sys.argv[2]).write_text(
     json.dumps(contract, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
 )
 PY
-  chmod 444 "$task_output/BUILD_CONTRACT.json"
+  if [[ "$?" -ne 0 ]]; then return 4; fi
+  chmod 444 "$task_output/BUILD_CONTRACT.json" || return
   scaffold_args=(--root "$task_output")
   if [[ "$resume" == "true" ]]; then scaffold_args+=(--preserve-implementation); fi
-  python3 "$project_dir/scripts/sandbox/generate_sandbox_scaffold.py" "${scaffold_args[@]}"
-  write_task_prompt "$task_output"
+  python3 "$project_dir/scripts/sandbox/generate_sandbox_scaffold.py" "${scaffold_args[@]}" || return
+  write_task_prompt "$task_output" || return
 }
 
 write_task_prompt() {
@@ -311,62 +322,102 @@ write_task_prompt() {
   if [[ -x "$project_dir/.venv/bin/python3" ]]; then
     validation_python="$project_dir/.venv/bin/python3"
   fi
-  cp "$project_dir/docs/sandbox_spec_prompt.md" "$task_output/TASK_PROMPT.md"
-  cat >> "$task_output/TASK_PROMPT.md" <<EOF
+  cat > "$task_output/TASK_PROMPT.md" <<EOF
+# Task-specific sandbox extension
 
-The complete task input is in ./task.json. The immutable outer-workflow contract is in ./BUILD_CONTRACT.json; it is the task.json projection with the top-level actions field removed. Treat it as authoritative for sandbox implementation. Implement the sandbox directly from BUILD_CONTRACT.json and the referenced artifacts. Do not create or depend on spec.md. EnvFactory generates an outer conformance plan after implementation; do not modify, replace, or treat the sandbox's acceptance.sh as authoritative.
-The project output directory is: $task_output
-For local validation use: $validation_python -m pytest -q. If a login shell resets PATH, use this interpreter directly; do not install dependencies from PyPI during sandbox development.
+The immutable task contract is ./BUILD_CONTRACT.json. The outer workflow has
+already generated the shared runtime, HTTP application, acceptance runner,
+Docker delivery files, tool schemas, and development_plan.json. Work only on
+the current development-plan node or the single structured defect supplied in
+the invocation prompt. The output directory is $task_output.
+
+For local validation use: $validation_python -m pytest -q
 EOF
-  # The rest is literal instruction text. Quoting the delimiter prevents
-  # backticked examples and shell variables from executing during preparation.
   cat >> "$task_output/TASK_PROMPT.md" <<'EOF'
 
-Reward implementation is contract-driven and must not be simplified. Load every metric.evaluator and top-level metric_implementations entry from BUILD_CONTRACT.json. Compiled process and rule-based metrics use DeclarativeMetricEvaluator; only metrics still declared model-based use the external evaluator boundary. Do not use fixed tool positions, keyword presence, successful-call coverage, or a boolean final-document shortcut as a substitute. Acceptance must test passing and failing cases for every evaluator family, including wrong tool arguments, wrong numeric results, missing business changes, repeated invalid calls, and user-intent deviation. The reward endpoint must use the declared metric scores and reward_formula exactly.
+## Implementation boundary
 
-The sandbox is acceptable only if it teaches the tool policy declared by BUILD_CONTRACT.training_contract. For direct_response, the successful trajectory must not call tools and unnecessary tool use must not improve reward. For tool-requiring profiles, a canned final answer without required task-tool calls must receive reward <= 0.2. A trajectory with corrupted business arguments, placeholder values, empty required collections, empty business results, or skipped required steps must be rejected or receive reward <= 0.2. For dependent_tool_chain, downstream tools must consume upstream outputs. Valid tool-requiring trajectories must use real fixture-backed values and every required tool result must contain meaningful business evidence. Never derive an evaluator's expected arguments from the actual call being scored. Deterministic evaluator mocks must compile expected calls independently from task intent, reward_key_steps, tool bindings, and fixture values. Outcome reward must be gated by the process steps required by the declared profile.
+Read only the relevant fields of BUILD_CONTRACT.json and the current node in
+development_plan.json. When task_implementation_editable is false, task_impl.py is
+platform-owned: modify only focused tests. Otherwise implement missing task-specific behavior in task_impl.py
+and focused task tests. A zero-node plan requires no implementation code.
+Declared select, aggregate_count, insert, update, and delete specs are compiled
+by the platform; do not duplicate them as Python handlers. Business handlers
+must validate declared arguments, read or change the declared business data,
+and return real results. They must not award reward, inspect hidden evaluation,
+copy fixed answers, or enforce tool order through replay history. Read-only
+tools must not write business state. Preserve other nodes and their behavior.
 
-The implementation must be contract-generic: do not copy generated metric IDs, metric weights, fixed expected tool-call maps, or fixed turn cutoffs into app.py. Load metric/evaluator definitions, reward weights, user_profiles, and user_scripts from BUILD_CONTRACT.json and its manifests. The runtime UserSimulator must reason from the current profile, FSM state, legal outgoing transitions, variables, and complete live conversation through RuntimeLLMClient. Implement a real ToolRegistry, RewardEvaluator, and UserSimulator boundary. The outer workflow will reject source that hard-codes generated metric IDs or a dialogue transcript.
+The following files are platform-owned: task.json, BUILD_CONTRACT.json,
+development_plan.json, tools.json, app.py, runtime_llm.py,
+sandbox_runtime.py, acceptance_runner.py, acceptance.sh, Dockerfile,
+.dockerignore, docker_build.sh, docker_run.sh, and requirements-dev.txt.
+Do not modify or regenerate them. The outer workflow restores and rejects
+changes to these files. Do not create spec.md, action_plan.json, another tool
+registry, a replacement User Simulator, or a replacement reward engine.
 
-## Implementation task
+The shared runtime owns Trainer authentication, episode isolation, replay,
+idempotency, User Simulator FSM and external LLM fallback, evaluator calls,
+reward aggregation, and mutation hooks. The outer acceptance and independent
+reviewers test these platform obligations. Do not add task-local tests that
+assert alternate platform behavior, such as a guessed reward timeout or
+fallback policy. Add tests only for task-specific handlers, data projections,
+and uncompiled metric extensions. Follow the evaluator definitions and
+reward_formula in BUILD_CONTRACT.json; never hard-code metric IDs, weights,
+expected calls, or final answers. Noise tools have shared safe fixtures and
+must not be implemented as task handlers.
 
-Follow the outer workflow's module development plan and implement one node at a time; do not treat this prompt as permission to skip the planned node boundaries.
+If a contract field or necessary fixture is missing, report the exact gap;
+do not invent a business fact or silently broaden scope. Do not install
+packages from the network. Keep credentials out of source, logs and results.
+Use the existing shared runtime and generated acceptance entry point.
 
-Read BUILD_CONTRACT.json and the current development_plan node, then implement only that node's declared extension points. Use only fields and artifacts present in the contract; do not invent missing task semantics or add default termination, observation, platform, or evaluation rules. Implement the declared LLM tools and their complete execution logic; tool endpoints must only validate inputs, execute business behavior, persist changes, and return the business result. They must not calculate or return observation or reward. Implement the observation endpoint as the only endpoint for public environment observation. Implement reward calculation only behind the declared reward endpoint, and calculate it when that endpoint is called from the accumulated session trace and current business data. Do not create a separate task-action or Trainer-action registry. Use the platform-owned persistence, simulator, evaluation context and reward gate. Implement only missing business handlers and metric extensions, focused tests, acceptance.sh and IMPLEMENTATION_REPORT.md. Do not rewrite the outer-owned tools.json, requirements-dev.txt, Dockerfile, docker_build.sh, or docker_run.sh. The sandbox test suite must be executable with `python3 -m pytest -q`; do not report pytest as passed when it was skipped. Each defect repair must add or run a focused pytest case and report its test node in the defect-verification evidence. After acceptance, write acceptance_result.json with business_acceptance=passed and http_conformance=passed or skipped; when HTTP is skipped, include an explicit http_skip_reason. Do not create spec.md, action_plan.json, development_plan.json, topology files, or any other design handoff.
+## Verification and repair
 
-Production runtime requirements are mandatory: use the provided ./runtime_llm.py adapter and ./sandbox_runtime.py primitives for User Simulator, reward evaluator, authentication, episode storage, idempotency, and replay. Implement Trainer Bearer authentication using SANDBOX_TRAINER_API_KEY for reset, observation, state, user_simulator, reward, and replay; keep Agent tool endpoints separate and never expose Trainer endpoints through the Agent tool registry. `/v1/state` is trainer-only evidence for initial/final business-state verification and must never be copied into the policy observation. Implement per-episode storage isolation, POST /v1/reset with optional episode_id and seed, deterministic seeded replay, idempotency using the declared Idempotency-Key header, and GET /v1/replay with trace/data/version hashes. The shared adapter must use SANDBOX_LLM_API_KEY, SANDBOX_LLM_BASE_URL, SANDBOX_LLM_MODEL, SANDBOX_LLM_TIMEOUT_SECONDS, and SANDBOX_LLM_MAX_RETRIES. Never persist or log credentials. Implement SANDBOX_EVALUATOR_MOCK for deterministic evaluator tests; record evaluator calls and ensure mock and real paths use the same input/output schema. Add contract tests for unauthorized Trainer requests, cross-episode data leakage, reset/seed determinism, idempotent retries, replay integrity, LLM timeout/fallback, evaluator mock/real parity, and reward changes caused by real business-data changes. Run all checks and acceptance.sh before finishing.
-
-The outer workflow has already generated app.py, task_impl.py, tools.json, requirements-dev.txt, Dockerfile, docker_build.sh, and docker_run.sh. Preserve these EnvFactory-owned composition and delivery assets; implement task-specific extension points in task_impl.py and add focused tests/acceptance evidence. Use sandbox_runtime.ManifestDataStore for manifest validation, baseline loading, data hashes, and per-episode business-data copies. Use sandbox_runtime.SandboxApplication as the HTTP/WSGI boundary; app.py must remain a thin composition and launcher, not a regenerated router. Use sandbox_runtime.ContractToolRegistry for tool schema validation, dispatch, tracing, and mutation hooks, sandbox_runtime.ContractUserSimulator for seeded FSM state, external-LLM reasoning, and fallback, sandbox_runtime.DeclarativeMetricEvaluator for metric_implementations, sandbox_runtime.ContractEvaluatorRuntime for cached and trace-visible external evaluator calls, and sandbox_runtime.ContractRewardAggregator for reward range validation, weighting, and clipping. Do not call RuntimeLLMClient directly from metric scoring. Do not inject a task-specific user renderer into ContractUserSimulator: the default runtime path must use its external LLM and its bounded non-advancing recovery when that boundary is unavailable. Pass BUILD_CONTRACT.noise_tools to ContractToolRegistry; do not write task-specific handlers for noise tools. Noise calls must be trace-visible but must not change task-critical state or satisfy rewarded key steps. Generate only task-specific business handlers, observation callbacks, and scoring logic for metrics not covered by metric_implementations; do not duplicate these generic runtime components.
-
-Mutation testing is a mandatory executable acceptance gate, not documentation. Implement the declared SANDBOX_MUTATION_MODE environment variable with production default disabled and every declared mode: constant_tool_result, skip_business_write, constant_reward, ignore_tool_arguments, and bypass_trainer_auth. Each non-disabled mode must deliberately introduce the named defect in an externally observable way so the normal acceptance tests fail: constant_tool_result must make a valid tool case return an invalid/constant result; skip_business_write must suppress a business write that a success scenario requires; constant_reward must make /v1/reward disagree with the declared formula or omit valid components; ignore_tool_arguments must accept or process an invalid/different argument contrary to the tool schema; bypass_trainer_auth must allow an unauthenticated Trainer-only request. Do not expose a mutation endpoint and never enable a mutation mode in production. The outer workflow will run acceptance.sh and independent HTTP conformance checks once per mutation mode and will reject the build if any mutant survives. Ensure acceptance.sh itself starts the app with inherited environment variables and has assertions for every mutation mode.
-
-The executable acceptance script must invoke python3 (or the active interpreter via "$PYTHON"), never the bare python command, because the outer environment may not provide a python alias. Its TCP-permission fallback must validate the same contract through the public business API and must not hard-code a task-specific field unless that field and expected value are present in BUILD_CONTRACT/task.json.
-
-Tool handlers enforce the JSON schema, not stronger restrictions inferred from descriptive examples: wording such as "fixed" does not create an enum. A read/search/lookup tool must remain read-only. For deliverable-only tasks with no mutating business tool, POST /v1/agent_response is the persisted deliverable boundary; do not make a read tool write a synthetic outcome row. For environment_plan.mode=external_capability, route task tools through ExternalCapabilityClient. It supports a configured HTTP provider, deterministic training fixtures, and an explicit data_unavailable response; never fabricate live external facts.
-Do not inspect replay/tool-call history inside a business handler to reject a call as PRECONDITION_FAILED or to enforce capability-DAG order. A downstream tool validates its declared arguments and current business state; shared ContractRewardGate and process metrics own causal ordering. This separation is mandatory so an Agent can recover from an early wrong-order call by later executing a valid dependency chain.
-
-External evaluator failure must be conservative: never derive the expected tool or arguments from the actual call being scored, and never award a match merely because any call occurred. Use a contract-derived independent expectation when present, otherwise score zero. ContractUserSimulator calls the configured RuntimeLLMClient by default using only the sanitized payload: complete live messages, profile, current state, outgoing transitions, variables, and recovery policy. Task-specific user_renderer injection is forbidden. It must emit one of the fixed dialogue outcomes: goal_satisfied, information_required, user_correction, user_rejection, user_acceptance, agent_off_topic, agent_premature_completion, or unrecognized. Normal outcomes require match_status=matched and a current transition_id carrying the same outcome_category. Recovery outcomes must not select or advance a normal transition; unrecognized may be ambiguous, while the other recovery outcomes are unmatched. The shared runtime bounds recovery attempts and terminates them as unresolved_dialogue. The renderer must not receive future turns or hidden business truth. Do not replace profile-aware rendering with hard-coded state-name responses.
-
-Preserve the scaffold's contract-generic observation fields: conversation, available_tools, tool_results, episode_id, and public_observation. Task-specific observation data may extend public_observation but must not replace the required top-level observation contract or expose hidden simulator/reward state.
+Run the smallest focused test for the current node or defect, then run
+`python3 -m pytest -q` and `bash ./acceptance.sh` when the node declares full
+validation. If bare python3 cannot import pytest, use the interpreter above or
+`"$PYTHON" -m pytest -q` when PYTHON is set. Do not claim a skipped check
+passed. Report the changed task-specific files and exact test node/results.
+For a defect repair, fix only the first evidenced root cause and retain the
+rest of the contract. The outer workflow runs contract, runtime, mutation,
+training-readiness, semantic, and Docker gates; do not copy those gates into
+new task-local tests or rerun them unless the current node requests them.
 EOF
 }
 
 run_code_agent() {
   local phase_prompt="$1"
-  local capture code
+  local capture code retry
   case "$agent" in
     codex)
-      codex_args=(exec --approve-for-me)
-      if [[ -n "$model" ]]; then codex_args+=(--model "$model"); fi
-      codex_args+=("$phase_prompt")
-      capture="$(mktemp "${TMPDIR:-/tmp}/envfactory-agent-start.XXXXXX")"
-      (cd "$output_path" && codex "${codex_args[@]}") </dev/null 2>&1 | tee "$capture"
-      code="${PIPESTATUS[0]}"
-      if [[ "$code" -ne 0 ]] && grep -q 'failed to initialize in-process app-server client' "$capture"; then
+      current_failure_category=""
+      current_failure_code=""
+      for retry in 1 2 3; do
+        codex_args=(exec --approve-for-me)
+        if [[ -n "$model" ]]; then codex_args+=(--model "$model"); fi
+        codex_args+=("$phase_prompt")
+        capture="$(mktemp "${TMPDIR:-/tmp}/envfactory-agent-start.XXXXXX")"
+        (cd "$output_path" && codex "${codex_args[@]}") </dev/null 2>&1 | tee "$capture"
+        code="${PIPESTATUS[0]}"
+        if [[ "$code" -eq 0 ]]; then
+          rm -f "$capture"
+          return 0
+        fi
+        if ! grep -Eiq 'failed to initialize in-process app-server client|connection (reset|refused|closed|error)|network (error|unavailable)|timed out|timeout|HTTP (429|502|503|504)|rate limit|stream disconnected' "$capture"; then
+          rm -f "$capture"
+          current_failure_category=""
+          current_failure_code=""
+          return "$code"
+        fi
+        rm -f "$capture"
         current_failure_category="infrastructure"
         current_failure_code="INFRA"
-      fi
-      rm -f "$capture"
+        if [[ "$retry" -lt 3 ]]; then
+          echo "Code Agent 网络/服务连接失败；保留工作目录，第 $retry 次重连" >&2
+          sleep "$retry"
+        fi
+      done
       return "$code"
       ;;
     claude)
@@ -386,17 +437,47 @@ write_status() {
   local status="$1"
   local exit_code="$2"
   local message="${3:-}"
-  python3 - "$output_path/status.json" "$status" "$exit_code" "$message" "$agent" "$runtime" "$current_phase" "$current_node_id" "$current_attempt" "$current_defect_ids" "$current_failure_category" "$model" "$review_model" "${failed_phase:-}" "$current_failure_code" <<'PY'
+  python3 - "$output_path/status.json" "$status" "$exit_code" "$message" "$agent" "$runtime" "$current_phase" "$current_node_id" "$current_attempt" "$current_defect_ids" "$current_failure_category" "$model" "$review_model" "${failed_phase:-}" "$current_failure_code" "$timing_reset" <<'PY'
 import json
 import sys
+import time
 from datetime import datetime, timezone
 import hashlib
 from pathlib import Path
 
 path = Path(sys.argv[1])
+now = time.time()
+try:
+    previous = json.loads(path.read_text(encoding="utf-8")) if sys.argv[16] != "true" else {}
+except (OSError, json.JSONDecodeError):
+    previous = {}
+if not isinstance(previous, dict):
+    previous = {}
+started_at = previous.get("started_at_epoch")
+if not isinstance(started_at, (int, float)) or isinstance(started_at, bool):
+    started_at = now
+timings = previous.get("phase_timings", [])
+if not isinstance(timings, list):
+    timings = []
+else:
+    timings = [dict(item) for item in timings if isinstance(item, dict)]
+if timings and timings[-1].get("ended_at_epoch") is None:
+    last = timings[-1]
+    last["ended_at_epoch"] = now
+    last["seconds"] = round(max(0.0, now - last["started_at_epoch"]), 3)
+if sys.argv[2] == "pending":
+    timings.append({
+        "phase": sys.argv[7],
+        "node_id": sys.argv[8] or None,
+        "attempt": int(sys.argv[9]),
+        "started_at_epoch": now,
+        "ended_at_epoch": None,
+        "seconds": None,
+    })
 payload = {
     "status": sys.argv[2],
     "success": sys.argv[2] == "success",
+    "training_ready": False,
     "exit_code": int(sys.argv[3]),
     "message": sys.argv[4],
     "agent": sys.argv[5],
@@ -411,6 +492,9 @@ payload = {
     "failed_phase": sys.argv[14] or None,
     "failure_code": sys.argv[15] or None,
     "finished_at": datetime.now(timezone.utc).isoformat(),
+    "started_at_epoch": started_at,
+    "elapsed_seconds": round(max(0.0, now - started_at), 3),
+    "phase_timings": timings,
 }
 
 for filename in ("task.json", "BUILD_CONTRACT.json", "tools.json", "runtime_trace.jsonl", "review_report.json", "docker_image_metadata.json"):
@@ -433,228 +517,8 @@ set_build_phase() {
 }
 
 validate_contract_and_tools() {
-  python3 - "$output_path/task.json" "$output_path/BUILD_CONTRACT.json" "$output_path/tools.json" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-task_path, contract_path, tools_path = map(Path, sys.argv[1:])
-task = json.loads(task_path.read_text(encoding="utf-8"))
-contract = json.loads(contract_path.read_text(encoding="utf-8"))
-tools = json.loads(tools_path.read_text(encoding="utf-8"))
-
-expected_contract = {key: value for key, value in task.items() if key != "actions"}
-if contract != expected_contract:
-    raise SystemExit("BUILD_CONTRACT.json 与去除 actions 后的 task.json 深度不相等")
-if not isinstance(tools, list) or not tools:
-    raise SystemExit("tools.json 必须是非空的顶层 Function Tool 数组")
-
-declared_tools = task.get("tools")
-if isinstance(declared_tools, list) and tools != declared_tools:
-    raise SystemExit("tools.json 与 task.json.tools 深度不相等")
-
-names = set()
-def check_schema(schema, location):
-    if not isinstance(schema, dict):
-        raise SystemExit(f"工具参数 {location} schema 必须是 object")
-    if not isinstance(schema.get("description"), str) or not schema["description"].strip():
-        raise SystemExit(f"工具参数 {location} 缺少 description")
-    if schema.get("type") == "object":
-        properties = schema.get("properties", {})
-        if not isinstance(properties, dict):
-            raise SystemExit(f"工具参数 {location}.properties 必须是 object")
-        required = schema.get("required", [])
-        if not isinstance(required, list) or any(key not in properties for key in required):
-            raise SystemExit(f"工具参数 {location}.required 无效")
-        for key, value in properties.items():
-            check_schema(value, f"{location}.{key}")
-    elif schema.get("type") == "array" and "items" in schema:
-        check_schema(schema["items"], f"{location}[]")
-
-for index, tool in enumerate(tools, 1):
-    if not isinstance(tool, dict) or tool.get("type") != "function":
-        raise SystemExit(f"tools.json 第 {index} 项不是标准 function tool")
-    function = tool.get("function")
-    if not isinstance(function, dict):
-        raise SystemExit(f"tools.json 第 {index} 项缺少 function")
-    name = function.get("name")
-    if not isinstance(name, str) or not name or name in names:
-        raise SystemExit(f"tools.json 工具名无效或重复：{name!r}")
-    if not isinstance(function.get("description"), str) or not function["description"].strip():
-        raise SystemExit(f"工具 {name} 缺少 function.description")
-    parameters = function.get("parameters")
-    if not isinstance(parameters, dict) or parameters.get("type") != "object":
-        raise SystemExit(f"工具 {name} 的 parameters 必须是 object schema")
-    if not isinstance(parameters.get("properties"), dict):
-        raise SystemExit(f"工具 {name} 缺少 parameters.properties")
-    for key, value in parameters["properties"].items():
-        check_schema(value, f"{name}.{key}")
-    names.add(name)
-
-noise_tools = contract.get("noise_tools", [])
-if not isinstance(noise_tools, list):
-    raise SystemExit("BUILD_CONTRACT.noise_tools 必须是数组")
-noise_by_name = {}
-for index, item in enumerate(noise_tools):
-    if not isinstance(item, dict) or not isinstance(item.get("name"), str) or not item["name"]:
-        raise SystemExit(f"noise_tools[{index}] 缺少 name")
-    category = item.get("category")
-    if category not in {"unrelated", "related_irrelevant"}:
-        raise SystemExit(f"noise_tools[{index}] category 无效")
-    if item["name"] in noise_by_name:
-        raise SystemExit(f"noise_tools 工具名重复：{item['name']}")
-    noise_by_name[item["name"]] = category
-if not set(noise_by_name) <= names:
-    raise SystemExit("BUILD_CONTRACT.noise_tools 中存在未暴露的工具")
-
-interface = contract.get("requirements", {}).get("runtime_interface")
-if not isinstance(interface, dict) or interface.get("protocol") != "http":
-    raise SystemExit("BUILD_CONTRACT.requirements.runtime_interface 缺少 http 约定")
-endpoints = interface.get("endpoints")
-if not isinstance(endpoints, list):
-    raise SystemExit("runtime_interface.endpoints 必须是数组")
-from env_factory.contracts.runtime_contract import missing_system_endpoints
-if missing_system_endpoints(interface):
-    raise SystemExit("runtime_interface 缺少系统或 reward endpoint")
-declared_tool_endpoints = [
-    item for item in endpoints
-    if isinstance(item, dict) and item.get("kind") == "llm_tool"
-]
-if {item.get("name") for item in declared_tool_endpoints} != names:
-    raise SystemExit("runtime_interface 未逐一声明所有 LLM tool")
-if "ask_user" in names:
-    raise SystemExit("ask_user 不再是 LLM Tool，必须使用 user_simulator endpoint")
-
-metrics = task.get("metrics")
-if not isinstance(metrics, list) or not metrics:
-    raise SystemExit("task.json.metrics 必须是非空数组")
-key_steps = task.get("reward_key_steps")
-if not isinstance(key_steps, list):
-    raise SystemExit("task.json.reward_key_steps 必须是数组")
-action_names = {
-    str(item.get("name") or item.get("action"))
-    for item in task.get("actions", [])
-    if isinstance(item, dict)
-}
-key_step_ids = set()
-key_action_names = set()
-for index, step in enumerate(key_steps):
-    if not isinstance(step, dict) or not isinstance(step.get("step_id"), str) or not step["step_id"]:
-        raise SystemExit(f"reward_key_steps[{index}] 缺少有效 step_id")
-    if step["step_id"] in key_step_ids:
-        raise SystemExit(f"reward_key_steps[{index}] step_id 重复")
-    if step.get("action_name") not in action_names:
-        raise SystemExit(f"reward_key_steps[{index}] 引用了未知 action")
-    if not isinstance(step.get("rationale"), str) or not step["rationale"].strip():
-        raise SystemExit(f"reward_key_steps[{index}] 缺少 rationale")
-    if not isinstance(step.get("required_for_goal"), bool):
-        raise SystemExit(f"reward_key_steps[{index}] required_for_goal 必须是 boolean")
-    key_step_ids.add(step["step_id"])
-    key_action_names.add(step["action_name"])
-for index, metric in enumerate(metrics):
-    if not isinstance(metric, dict):
-        raise SystemExit(f"metrics[{index}] 必须是 object")
-    evaluator = metric.get("evaluator")
-    if not isinstance(evaluator, dict):
-        raise SystemExit(f"metrics[{index}] 缺少 executable evaluator")
-    if not isinstance(evaluator.get("kind"), str) or not evaluator["kind"]:
-        raise SystemExit(f"metrics[{index}].evaluator.kind 无效")
-    if evaluator.get("source") not in {"runtime_rule", "external_llm"}:
-        raise SystemExit(f"metrics[{index}].evaluator.source 无效")
-    if not isinstance(evaluator.get("score_mapping"), dict) or not evaluator["score_mapping"]:
-        raise SystemExit(f"metrics[{index}].evaluator.score_mapping 缺失")
-    score_range = [-1, 0] if metric.get("category") == "penalty" else [0, 1]
-    if any(isinstance(value, bool) or not isinstance(value, (int, float)) or not score_range[0] <= value <= score_range[1]
-           for value in evaluator["score_mapping"].values()):
-        raise SystemExit(f"metrics[{index}].evaluator.score_mapping 超出 {score_range}")
-    category = metric.get("category")
-    metric_type = metric.get("type")
-    if category == "process":
-        compiled_rule = (
-            metric_type == "rule-based"
-            and evaluator.get("kind") == "trajectory_rule"
-            and evaluator.get("source") == "runtime_rule"
-            and set(evaluator["score_mapping"]) == {"pass", "fail"}
-        )
-        model_rule = (
-            metric_type == "hybrid"
-            and evaluator.get("kind") == "hybrid_tool_call"
-            and evaluator.get("source") == "external_llm"
-            and evaluator.get("comparison") == "exact_tool_name_and_canonical_arguments"
-            and set(evaluator["score_mapping"]) == {"match", "mismatch"}
-        )
-        if not (compiled_rule or model_rule):
-            raise SystemExit(f"metrics[{index}] process evaluator 与声明式或外部模型契约不匹配")
-        if metric.get("target_action") not in key_action_names:
-            raise SystemExit(f"metrics[{index}] process target_action 必须属于 reward_key_steps")
-    elif metric_type == "rule-based":
-        if evaluator.get("kind") not in {"business_state_rule", "document_rule", "trajectory_rule"}:
-            raise SystemExit(f"metrics[{index}] rule-based evaluator.kind 无效")
-        if evaluator.get("source") != "runtime_rule" or not isinstance(evaluator.get("assertion"), str) or not evaluator["assertion"].strip():
-            raise SystemExit(f"metrics[{index}] rule-based evaluator 缺少可执行 assertion")
-    elif metric_type == "model-based":
-        if evaluator.get("kind") != "external_llm_judge" or evaluator.get("source") != "external_llm":
-            raise SystemExit(f"metrics[{index}] model-based evaluator 必须使用 external_llm_judge")
-    elif metric_type == "hybrid":
-        if evaluator.get("kind") != "hybrid_outcome" or evaluator.get("source") != "external_llm":
-            raise SystemExit(f"metrics[{index}] hybrid evaluator.kind 无效")
-        if not isinstance(evaluator.get("rule"), dict) or not isinstance(evaluator.get("external_llm"), dict):
-            raise SystemExit(f"metrics[{index}] hybrid evaluator 缺少 rule/external_llm")
-if interface.get("llm_tools") != [item.get("name") for item in declared_tool_endpoints]:
-    raise SystemExit("runtime_interface.llm_tools 与 endpoint 顺序不一致")
-mutation = interface.get("mutation_testing")
-if (not isinstance(mutation, dict) or mutation.get("environment_variable") != "SANDBOX_MUTATION_MODE"
-        or not isinstance(mutation.get("modes"), list) or not mutation["modes"]
-        or mutation.get("production_default") != "disabled"):
-    raise SystemExit("runtime_interface 缺少 mutation testing 约定")
-if interface.get("launcher", {}).get("command") != ["python", "app.py", "--port", "{port}"]:
-    raise SystemExit("runtime_interface launcher 必须使用 python app.py --port {port}")
-reward_endpoints = [item for item in endpoints if isinstance(item, dict) and item.get("kind") == "reward_function"]
-if len(reward_endpoints) != 1 or reward_endpoints[0].get("name") != "reward":
-    raise SystemExit("runtime_interface 必须声明一个 reward function")
-if reward_endpoints[0].get("access") != "rl_trainer_only":
-    raise SystemExit("reward endpoint 必须仅允许 RL Trainer 调用")
-user_simulator_endpoints = [item for item in endpoints if isinstance(item, dict) and item.get("kind") == "user_simulator"]
-if len(user_simulator_endpoints) != 1 or user_simulator_endpoints[0].get("name") != "user_simulator":
-    raise SystemExit("runtime_interface 必须声明一个 user_simulator endpoint")
-if user_simulator_endpoints[0].get("access") != "rl_trainer_only":
-    raise SystemExit("user_simulator endpoint 必须仅允许 RL Trainer 调用")
-replay_endpoints = [item for item in endpoints if isinstance(item, dict) and item.get("kind") == "replay"]
-if len(replay_endpoints) != 1 or replay_endpoints[0].get("name") != "replay" or replay_endpoints[0].get("access") != "rl_trainer_only":
-    raise SystemExit("runtime_interface 必须声明 Trainer-only replay endpoint")
-security = interface.get("security")
-trainer_security = security.get("trainer") if isinstance(security, dict) else None
-if not isinstance(trainer_security, dict) or trainer_security.get("scheme") != "bearer" or trainer_security.get("environment_variable") != "SANDBOX_TRAINER_API_KEY":
-    raise SystemExit("runtime_interface 缺少 Trainer Bearer 鉴权约定")
-episode = interface.get("episode")
-if not isinstance(episode, dict) or episode.get("isolation") != "per_episode" or episode.get("reset_accepts_seed") is not True or episode.get("deterministic_replay") is not True:
-    raise SystemExit("runtime_interface 缺少 episode 隔离/seed/replay 约定")
-llm_runtime = interface.get("llm_runtime")
-if not isinstance(llm_runtime, dict) or llm_runtime.get("api_key_environment_variable") != "SANDBOX_LLM_API_KEY":
-    raise SystemExit("runtime_interface 缺少外部 LLM 凭据边界")
-evaluator_runtime = interface.get("evaluator_runtime")
-if not isinstance(evaluator_runtime, dict) or evaluator_runtime.get("mock_mode_environment_variable") != "SANDBOX_EVALUATOR_MOCK":
-    raise SystemExit("runtime_interface 缺少 evaluator mock 约定")
-errors = interface.get("errors")
-if not isinstance(errors, dict) or errors.get("content_type") != "application/json" or not isinstance(errors.get("schema"), dict):
-    raise SystemExit("runtime_interface 缺少统一错误协议")
-observability = interface.get("observability")
-if not isinstance(observability, dict) or observability.get("request_id_header") != "X-Request-ID" or observability.get("credential_redaction") is not True:
-    raise SystemExit("runtime_interface 缺少可观测性/凭据脱敏约定")
-if reward_endpoints[0].get("formula") != contract.get("reward_formula"):
-    raise SystemExit("runtime_interface reward formula 与 task.json.reward_formula 不一致")
-acceptance = task.get("acceptance_contract")
-if not isinstance(acceptance, dict) or acceptance.get("authority") != "env_factory_outer_workflow":
-    raise SystemExit("task.json 缺少 EnvFactory-owned acceptance_contract")
-for key in ("fixtures", "scenarios", "tool_cases", "invariants", "mutations", "reward_cases", "mutation_tests"):
-    if not isinstance(acceptance.get(key), (list, dict)):
-        raise SystemExit(f"acceptance_contract.{key} 无效")
-if not acceptance.get("invariants") or not acceptance.get("mutation_tests"):
-    raise SystemExit("acceptance_contract 缺少业务不变量或 mutation tests")
-print("BUILD_CONTRACT/task.json deep equality: ok")
-print("tool schema: ok")
-print("runtime HTTP interface: ok")
-PY
+  python3 "$project_dir/scripts/sandbox/validate_contract_and_tools.py" \
+    "$output_path/task.json" "$output_path/BUILD_CONTRACT.json" "$output_path/tools.json"
 }
 
 validate_runtime_trace() {
@@ -688,8 +552,10 @@ validate_mutation_tests() {
   echo "执行自动 mutation testing：要求每个受控缺陷都被验收测试杀死"
   local mutation_log mutation_status
   mutation_log="$output_path/mutation_report.log"
+  local mutation_args=(--root "$output_path")
+  if [[ -n "${1:-}" ]]; then mutation_args+=(--baseline-context-digest "$1"); fi
   set +e
-  python3 "$project_dir/scripts/sandbox/run_mutation_tests.py" --root "$output_path" \
+  python3 "$project_dir/scripts/sandbox/run_mutation_tests.py" "${mutation_args[@]}" \
     >"$mutation_log" 2>&1
   mutation_status=$?
   set -e
@@ -720,6 +586,7 @@ validate_runtime_genericity() {
 validate_semantic_review() {
   echo "执行独立 Code Agent 语义验收"
   local review_tmp review_stdout review_stderr review_stdout_tmp review_stderr_tmp review_status review_prompt
+  local adjudication_status review_round="${1:-0}"
   review_tmp="$(mktemp "${TMPDIR:-/tmp}/envfactory-review.XXXXXX")"
   review_stdout="$output_path/review_agent.stdout"
   review_stderr="$output_path/review_agent.stderr"
@@ -756,6 +623,21 @@ accept killed and explicitly non-applicable mutations as authoritative. Do
 not require an irrelevant mutation (for example skip_business_write in a
 read-only or direct-response sandbox) to become artificially observable.
 
+Use exactly these checked_modules identifiers after inspecting all four areas:
+business_tools, reward, user_simulator, runtime_contract.
+For each high/critical reward finding, supply reproduction as
+{"kind":"invalid_goal_reward" or "no_tool_reward", "steps":[declarative scenario steps]}.
+The outer runner resets the episode; do not include reset steps or executable
+code. A finding without supported executable evidence is quarantined for
+review, never sent to automatic code repair. Inspect ContractRewardGate and
+the actual event recording in ContractToolRegistry, not only per-metric evaluators.
+
+Before claiming that unrelated state earns outcome credit, inspect
+training_readiness.json evidence.unrelated_state_preservation. Those probes
+execute the reference trajectory, alter a protected field while retaining
+the requested goal, and measure the final public reward endpoint. If you
+claim a different gap, supply a concrete reproduction that survives that gate.
+
 Review these modules independently:
 1. business data and the real behavior of every task tool. Read the
    noise_tools metadata in BUILD_CONTRACT.json before reviewing tools. A
@@ -774,6 +656,45 @@ Review these modules independently:
    and tool/reward separation;
 6. production completeness, failure paths, and whether the implementation is
    merely a fixed happy-path demo.
+
+When business integration tests claim a data counterfactual, inspect the actual
+operation order and observed values. A mutation before reset is discarded by
+reset and is not a data-change test. Require the test to establish that the
+intended changed value reached the tool result before treating its reward
+assertion as evidence. Distinguish a test-coverage defect from a runtime reward
+defect; do not infer broken reward semantics solely from an ineffective test.
+A useful negative counterpart submits the old fact after changing the data and
+checks the affected reward component, preserving unrelated partial credit.
+
+For a stateful data-dependent write, verify that a counterfactual changes an
+upstream input and changes the correct write or decision. Changing only the
+destination field before overwriting it with the original value does not prove
+upstream sensitivity. A copied initial fixture modified before create_app/reset
+is legitimate: confirm the test points app.ROOT to the copied fixture, leaves
+the contract and reward rules intact, observes the new input through the tool,
+and checks both the new correct result and the stale counterpart. This differs
+from mutating live database state before reset, which is discarded.
+
+For reward review, `scope: terminal` means the metric evaluates the Agent's
+submitted final response or final business state at the reward endpoint. It
+does not by itself require the separate User Simulator FSM to reach a terminal
+state. Require simulator completion only when the metric criteria or goal
+contract explicitly make user acceptance part of task success. An exact tool
+argument copied from the user's fixed named target is also legitimate;
+report a fixed expected-call defect only when it rejects a valid call for the
+actual request or ignores a target that can vary at runtime.
+
+Establish the active requested entity from
+task_spec.task_contract.public_input.initial_user_message and declared
+user-script changes before evaluating target generalization. A tool may accept
+many entities while this episode asks about one fixed entity. Querying another
+entity does not change the user's request; an answer about that other entity
+must not earn the requested entity's outcome credit. Distinguish two tests:
+changing business facts for the requested entity must update its expected
+answer; selecting an unrelated entity must not redirect the reward target.
+Require dynamic target binding only when a declared public input or user
+transition actually changes the requested entity. Cite that input/transition
+in any target-generalization finding.
 
 The Trainer protocol is reset-scoped: POST /v1/reset selects the active
 episode for subsequent calls. Per-episode isolation requires independent
@@ -832,14 +753,16 @@ Use status=fail for any critical/high finding. Do not mark pass merely because
 local tests or mutation tests pass.
 EOF
 )"
+  if [[ "$review_round" -gt 0 ]]; then
+    review_prompt+=$'\nA prior review was unresolved. Read .node_checkpoints/review-first.json, including executable adjudication. Recheck the cited claim against full runtime enforcement. Provide a supported reproduction or withdraw a disproved claim; do not repeat an unsupported allegation.'
+  fi
   set +e
   case "$review_agent" in
     codex)
-      review_codex_args=(exec --ephemeral --sandbox read-only --output-last-message "$review_tmp")
-      if [[ -n "$review_model" ]]; then review_codex_args+=(--model "$review_model"); fi
-      review_codex_args+=("$review_prompt")
-      (cd "$output_path" && codex "${review_codex_args[@]}") \
-          >"$review_stdout_tmp" 2>"$review_stderr_tmp"
+      review_args=(--cwd "$output_path" --prompt "$review_prompt" --response "$review_tmp"
+        --stdout "$review_stdout_tmp" --stderr "$review_stderr_tmp")
+      if [[ -n "$review_model" ]]; then review_args+=(--model "$review_model"); fi
+      python3 "$project_dir/scripts/sandbox/run_readonly_review.py" "${review_args[@]}"
       ;;
     claude)
       (cd "$output_path" && claude --print "$review_prompt") \
@@ -856,19 +779,24 @@ EOF
   cp "$review_stderr_tmp" "$review_stderr"
   rm -f "$review_stdout_tmp" "$review_stderr_tmp"
   if [[ "$review_status" -ne 0 || ! -s "$review_tmp" ]]; then
+    if [[ "$review_status" -eq 75 ]]; then
+      current_failure_code="INFRA"
+      current_failure_category="infrastructure"
+    fi
     echo "独立语义审查 Agent 执行失败：退出码=$review_status" >&2
     cat "$review_stderr" >&2 || true
     rm -f "$review_tmp"
+    if [[ "$review_status" -eq 75 ]]; then return 75; fi
     return 1
   fi
   cp "$review_tmp" "$output_path/review_report.json"
   python3 - "$output_path/review_report.json" "$output_path" <<'PY'
-import hashlib
 import json
 import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from env_factory.sandbox_scoring import review_source_hashes
 
 report_path = Path(sys.argv[1])
 root = Path(sys.argv[2])
@@ -905,14 +833,19 @@ report["findings"] = filtered
 report["review_run_id"] = uuid.uuid4().hex
 report["reviewed_at"] = datetime.now(timezone.utc).isoformat()
 report["noise_tool_names"] = sorted(noise)
-report["source_hashes"] = {}
-for filename in ("task.json", "BUILD_CONTRACT.json", "tools.json", "runtime_trace.jsonl", "last_delivery_error.txt"):
-    path = root / filename
-    if path.is_file():
-        report["source_hashes"][filename] = hashlib.sha256(path.read_bytes()).hexdigest()
+report["source_hashes"] = review_source_hashes(root)
 report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 PY
   rm -f "$review_tmp"
+  adjudication_status=0
+  python3 "$project_dir/scripts/sandbox/adjudicate_review.py" --root "$output_path" || adjudication_status=$?
+  if [[ "$adjudication_status" -eq 76 && "$review_round" -eq 0 ]]; then
+    mkdir -p "$output_path/.node_checkpoints"
+    cp "$output_path/review_report.json" "$output_path/.node_checkpoints/review-first.json"
+    validate_semantic_review 1
+    return $?
+  fi
+  if [[ "$adjudication_status" -ne 0 ]]; then return "$adjudication_status"; fi
   python3 "$project_dir/scripts/sandbox/validate_review_report.py" \
     --report "$output_path/review_report.json"
 }
@@ -965,11 +898,11 @@ EOF
   set +e
   case "$review_agent" in
     codex)
-      defect_codex_args=(exec --ephemeral --sandbox read-only --output-last-message "$review_tmp")
-      if [[ -n "$review_model" ]]; then defect_codex_args+=(--model "$review_model"); fi
-      defect_codex_args+=("$prompt_text")
-      (cd "$output_path" && codex "${defect_codex_args[@]}") \
-          >"$output_path/defect_${defect_id}_review.stdout" 2>"$output_path/defect_${defect_id}_review.stderr"
+      defect_review_args=(--cwd "$output_path" --prompt "$prompt_text" --response "$review_tmp"
+        --stdout "$output_path/defect_${defect_id}_review.stdout"
+        --stderr "$output_path/defect_${defect_id}_review.stderr")
+      if [[ -n "$review_model" ]]; then defect_review_args+=(--model "$review_model"); fi
+      python3 "$project_dir/scripts/sandbox/run_readonly_review.py" "${defect_review_args[@]}"
       ;;
     claude)
       (cd "$output_path" && claude --print "$prompt_text") \
@@ -983,6 +916,10 @@ EOF
   review_status=$?
   set -e
   if [[ "$review_status" -ne 0 || ! -s "$review_tmp" ]]; then
+    if [[ "$review_status" -eq 75 ]]; then
+      current_failure_code="INFRA"
+      current_failure_category="infrastructure"
+    fi
     rm -f "$review_tmp"
     echo "缺陷 $defect_id 独立验证 Agent 执行失败：退出码=$review_status" >&2
     return 1
@@ -1012,39 +949,8 @@ PY
 }
 
 extract_structured_defects() {
-  python3 - "$output_path/review_report.json" "$output_path/defects.json" "$output_path/last_delivery_error.txt" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-report_path, defects_path, error_path = map(Path, sys.argv[1:])
-report = {}
-findings = []
-if report_path.is_file():
-    try:
-        report = json.loads(report_path.read_text(encoding="utf-8"))
-        findings = report.get("findings", []) if isinstance(report, dict) else []
-    except json.JSONDecodeError:
-        findings = []
-if not findings:
-    error = error_path.read_text(encoding="utf-8", errors="replace") if error_path.is_file() else "验收失败"
-    findings = [{"severity": "critical", "category": "delivery_failure", "file": None,
-                 "line": None, "evidence": error[-12000:],
-                 "contract_reference": "outer workflow validation",
-                 "fix_required": "修复验收输出中的全部问题并重新运行相关检查"}]
-normalized = []
-review_run_id = report.get("review_run_id") if isinstance(report, dict) else None
-source_hashes = report.get("source_hashes", {}) if isinstance(report, dict) else {}
-for index, finding in enumerate(findings, 1):
-    if isinstance(finding, dict):
-        item = dict(finding)
-        item["id"] = item.get("id") or f"DEF-{index:03d}"
-        item["review_run_id"] = review_run_id
-        item["source_hashes"] = source_hashes
-        normalized.append(item)
-defects_path.write_text(json.dumps(normalized, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-print(len(normalized))
-PY
+  python3 "$project_dir/scripts/sandbox/extract_delivery_defects.py" \
+    --root "$output_path" --failed-phase "$current_phase"
 }
 
 defect_json() {
@@ -1052,7 +958,12 @@ defect_json() {
 import json
 import sys
 items = json.loads(open(sys.argv[1], encoding="utf-8").read())
-print(json.dumps(items[int(sys.argv[2])], ensure_ascii=False, indent=2))
+defect = dict(items[int(sys.argv[2])])
+# Provenance stays in defects.json for audit and budget matching. It is not
+# useful in the model's repair prompt and may be stale after a focused retry.
+defect.pop("source_hashes", None)
+defect.pop("review_run_id", None)
+print(json.dumps(defect, ensure_ascii=False, indent=2))
 PY
 }
 
@@ -1133,7 +1044,9 @@ run_sandbox_pytest() {
     return 1
   fi
   set +e
-  (cd "$output_path" && PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q) >"$report_path" 2>&1
+  # Exercise the same externally supplied authentication contract as Docker.
+  # Tests must read the configured token, not silently choose a private default.
+  (cd "$output_path" && SANDBOX_TRAINER_API_KEY="local-validation-$RANDOM-$RANDOM" PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q) >"$report_path" 2>&1
   local status=$?
   set -e
   cat "$report_path"
@@ -1256,12 +1169,16 @@ snapshot_platform_assets() {
   for file in "${platform_owned_files[@]}"; do
     [[ -e "$output_path/$file" ]] && cp -p "$output_path/$file" "$backup_dir/$file"
   done
+  if [[ -f "$output_path/development_plan.json" && -f "$output_path/task_impl.py" ]] &&
+      python3 -c 'import json,sys; sys.exit(json.load(open(sys.argv[1])).get("task_implementation_editable", True) is not False)' "$output_path/development_plan.json"; then
+    cp -p "$output_path/task_impl.py" "$backup_dir/task_impl.py"
+  fi
   printf '%s\n' "$backup_dir"
 }
 
 restore_and_reject_platform_changes() {
   local backup_dir="$1" file changed=""
-  for file in "${platform_owned_files[@]}"; do
+  for file in "${platform_owned_files[@]}" task_impl.py; do
     if [[ -e "$backup_dir/$file" ]] && ! cmp -s "$backup_dir/$file" "$output_path/$file"; then
       changed="${changed}${changed:+, }${file}"
       cp -p "$backup_dir/$file" "$output_path/$file"
@@ -1297,13 +1214,13 @@ validate_delivery() {
     echo "生成了已废弃的拓扑产物：${legacy[*]}"
     return 1
   fi
-  validate_acceptance_portability
-  validate_pytest_setup
+  validate_acceptance_portability || return $?
+  validate_pytest_setup || return $?
 
-  local acceptance_log acceptance_status
+  local acceptance_log acceptance_status baseline_context_digest
   acceptance_log="$(mktemp "${TMPDIR:-/tmp}/sandbox-acceptance.XXXXXX")"
   set +e
-  (cd "$output_path" && bash ./acceptance.sh) >"$acceptance_log" 2>&1
+  (cd "$output_path" && SANDBOX_MUTATION_MODE=disabled bash ./acceptance.sh) >"$acceptance_log" 2>&1
   acceptance_status=$?
   set -e
   if [[ "$acceptance_status" -ne 0 ]]; then
@@ -1317,27 +1234,39 @@ validate_delivery() {
   rm -f "$acceptance_log"
   normalize_acceptance_result
   export_runtime_trace
-  validate_acceptance_result
+  validate_acceptance_result || return $?
+  baseline_context_digest="$(python3 - "$output_path" <<'PY'
+import sys
+from pathlib import Path
+from env_factory.evidence.material_artifacts import docker_build_context_digest
+
+print(docker_build_context_digest(Path(sys.argv[1])))
+PY
+)"
   if ! run_sandbox_pytest "acceptance"; then
     echo "pytest 业务测试失败" >&2
     return 1
   fi
-  validate_contract_and_tools
-  validate_runtime_genericity
-  validate_outer_conformance
-  validate_mutation_tests
+  validate_contract_and_tools || return $?
+  validate_runtime_genericity || return $?
+  validate_outer_conformance || return $?
+  validate_mutation_tests "$baseline_context_digest" || return $?
   set_build_phase "training_readiness" "" "${current_attempt:-0}" "${current_defect_ids:-}" "正在验证 RL 训练素材环境准备就绪性"
-  validate_training_readiness
+  validate_training_readiness || return $?
   set_build_phase "agentic_training_value" "" "${current_attempt:-0}" "${current_defect_ids:-}" "正在验证 Agentic RL 训练素材价值"
-  validate_agentic_training_value
+  validate_agentic_training_value || return $?
   # Mutation runs execute acceptance.sh repeatedly and deliberately leave the
   # last mutant's failed evidence behind.  Re-run a clean baseline before the
   # semantic reviewer; merely normalizing the mutant envelope would preserve
   # false failure evidence and invite an unnecessary model repair.
-  restore_final_acceptance_evidence
-  validate_dockerfile_security
+  restore_final_acceptance_evidence || return $?
+  validate_dockerfile_security || return $?
+  if [[ "$runtime" == "docker" ]]; then
+    "$project_dir/scripts/build_docker_sandbox_image.sh" --context "$output_path" --pin-only
+  fi
   set_build_phase "semantic_review" "" "${current_attempt:-0}" "${current_defect_ids:-}" "正在执行独立语义验收"
-  validate_semantic_review
+  validate_semantic_review || return $?
+  python3 "$project_dir/scripts/sandbox/record_gate_evidence.py" --root "$output_path" --project "$project_dir"
 }
 
 run_agent_and_finalize_impl() {
@@ -1348,7 +1277,6 @@ run_agent_and_finalize_impl() {
     return 4
   fi
   echo "Code Agent 模块化开发阶段开始：agent=$agent output=$output_path"
-  implementation_prompt="$(<"$output_path/TASK_PROMPT.md")"
 
   if [[ "$resume" != "true" ]]; then
     set_build_phase "planning" "" 1 "" "正在生成确定性模块开发拓扑"
@@ -1356,7 +1284,11 @@ run_agent_and_finalize_impl() {
       --contract "$output_path/BUILD_CONTRACT.json" \
       --output "$output_path/development_plan.json"
     validate_development_plan
-
+  else
+    echo "增量续建：保留已有实现并恢复未完成的模块节点"
+    validate_development_plan
+  fi
+  mkdir -p "$output_path/.node_checkpoints"
     # Bash 3.2 with `set -u` treats expansion of a declared-but-empty array as
     # an unbound variable.  Keep an inert sentinel so fully declarative tasks
     # can legitimately have a zero-node development plan.
@@ -1366,6 +1298,10 @@ run_agent_and_finalize_impl() {
     done < <(python3 "$project_dir/scripts/sandbox/validate_development_plan.py" "$output_path/development_plan.json" --ids | tail -n +2)
     for node_id in "${node_ids[@]}"; do
     [[ -z "$node_id" ]] && continue
+    if [[ "$resume" == "true" && -f "$output_path/.node_checkpoints/$node_id" ]]; then
+      echo "模块节点已完成，跳过：$node_id"
+      continue
+    fi
     node_done="false"
     node_error=""
     for (( node_attempt = 1; node_attempt <= max_attempts; node_attempt++ )); do
@@ -1386,6 +1322,7 @@ Implement the task-specific behavior required by this node. Reuse runtime_llm.py
       set -e
       if [[ "$node_status" -eq 0 ]]; then
         node_done="true"
+        touch "$output_path/.node_checkpoints/$node_id"
         set_build_phase "node_completed" "$node_id" "$node_attempt" "" "模块节点完成：$node_id"
         break
       fi
@@ -1400,15 +1337,17 @@ Implement the task-specific behavior required by this node. Reuse runtime_llm.py
       return 5
     fi
     done
-  else
-    echo "增量续建：保留已有实现并直接执行完整验收/缺陷修复"
-    validate_development_plan
-  fi
 
   implementation_succeeded="false"
   implementation_error=""
   repair_attempt=0
+  reward_timeout_retried="false"
+  focused_defect_index=""
+  repair_feedback=""
   while true; do
+    if [[ -z "$focused_defect_index" ]]; then
+    # Reports from the previous implementation must never choose this round's defect.
+    rm -f "$output_path/review_report.json"
     set_build_phase "acceptance" "" "$repair_attempt" "" "正在执行完整业务验收"
     set +e
     delivery_error="$(validate_delivery 2>&1)"
@@ -1418,35 +1357,100 @@ Implement the task-specific behavior required by this node. Reuse runtime_llm.py
       implementation_succeeded="true"
       break
     fi
+    # validate_delivery runs in command substitution; its phase variable is
+    # local to that subshell, while set_build_phase persists the latest gate.
+    validation_phase="$(python3 - "$output_path/status.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+try:
+    phase = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8")).get("phase")
+except (OSError, ValueError, TypeError):
+    phase = None
+print(phase if isinstance(phase, str) and phase else "acceptance")
+PY
+)"
+    current_phase="$validation_phase"
+    if [[ "$delivery_status" -eq 76 && "$validation_phase" == "semantic_review" ]]; then
+      current_failure_code="REVIEW_UNRESOLVED"
+      current_failure_category="review"
+      set_build_phase "review_unresolved" "" "$repair_attempt" "" "审查意见尚未获得可执行证据，隔离候选，不调用代码修复"
+      return 5
+    fi
+    if [[ "$delivery_status" -eq 75 ]]; then
+      current_failure_code="INFRA"
+      current_failure_category="infrastructure"
+      return 5
+    fi
     implementation_error="$delivery_error"
     printf '%s\n' "$implementation_error" > "$output_path/last_delivery_error.txt"
+    if python3 "$project_dir/scripts/sandbox/route_delivery_failure.py" \
+      --plan "$output_path/development_plan.json" \
+      --error-log "$output_path/last_delivery_error.txt"; then
+      if [[ "$reward_timeout_retried" == "false" ]]; then
+        reward_timeout_retried="true"
+        echo "零扩展节点沙箱的 reward 接口超时；先重试一次验证，不调用任务修复 Agent" >&2
+        continue
+      fi
+      current_failure_code="BUILD_RUNTIME_TIMEOUT"
+      set_build_phase "runtime_timeout_rejected" "" "$repair_attempt" "" \
+        "零扩展节点沙箱的 reward 接口重复超时，转交运行时或任务契约排查"
+      return 5
+    fi
     extract_structured_defects >/dev/null
     current_defect_ids="$(defect_ids)"
+    if python3 "$project_dir/scripts/sandbox/protected_contract_defects.py" \
+      --defects "$output_path/defects.json"; then
+      echo "独立审查确认缺陷需要修改受保护的任务/奖励契约；本候选退回任务生成，停止沙箱代码修复" >&2
+      current_failure_code="TASK_CONTRACT"
+      set_build_phase "task_contract_rejected" "" "$repair_attempt" "$current_defect_ids" \
+        "任务契约缺陷无法在沙箱扩展层修复"
+      return 5
+    fi
+    if python3 "$project_dir/scripts/sandbox/protected_contract_defects.py" \
+      --defects "$output_path/defects.json" --owner platform; then
+      echo "独立审查确认缺陷位于 EnvFactory 共有运行时；停止无效的任务 Agent 修复" >&2
+      current_failure_code="PLATFORM_RUNTIME"
+      set_build_phase "platform_contract_rejected" "" "$repair_attempt" "$current_defect_ids" \
+        "共有运行时缺陷无法在任务扩展层修复"
+      return 5
+    fi
+    else
+      echo "局部校验尚未通过；继续修复同一缺陷，暂不重复完整验收" >&2
+    fi
     # The development agent repairs one evidenced root cause at a time. Feeding all findings
     # into one turn causes broad rewrites and regressions; remaining defects
     # are rediscovered against the repaired implementation in the next round.
     # The budget is persisted per defect, since extract_structured_defects may
     # reuse DEF-001 for a different root cause on the next validation pass.
-    if ! budget_line="$(python3 "$project_dir/scripts/sandbox/defect_attempt_budget.py" \
-      --state "$output_path/defect_attempts.json" --defects "$output_path/defects.json" \
-      --max-attempts "$max_attempts")"; then
-      echo "本次验收中的缺陷均达到各自 ${max_attempts} 次修复上限：$implementation_error" >&2
+    budget_args=(--state "$output_path/defect_attempts.json" --defects "$output_path/defects.json"
+      --max-attempts "$max_attempts" --max-total-attempts "$max_total_repairs")
+    if [[ -n "$focused_defect_index" ]]; then budget_args+=(--index "$focused_defect_index"); fi
+    if ! budget_line="$(python3 "$project_dir/scripts/sandbox/defect_attempt_budget.py" "${budget_args[@]}")"; then
+      echo "本样本的缺陷修复预算已用尽；单缺陷上限 ${max_attempts} 次、总上限 ${max_total_repairs} 次" >&2
+      set_build_phase "repair_budget_exhausted" "" "$repair_attempt" "$current_defect_ids" \
+        "缺陷修复预算已用尽，停止重复验收"
       return 5
     fi
     read -r defect_index budget_id repair_attempt <<<"$budget_line"
     defect="$(defect_json "$defect_index")"
+    defect_category="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("category", ""))' <<<"$defect")"
     echo "针对缺陷 $budget_id 执行第 ${repair_attempt}/${max_attempts} 次修复"
     if [[ -n "$defect" ]]; then
       defect_id="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("id", "unknown"))' <<<"$defect")"
       set_build_phase "defect_repair" "$defect_id" "$repair_attempt" "$current_defect_ids" "正在修复结构化缺陷：$defect_id"
       before_defect_hash="$(implementation_hash)"
-      repair_prompt="$implementation_prompt
-
-这是一次针对性缺陷修复，不要重新生成 demo，也不要修改 BUILD_CONTRACT.json、task.json 或 development_plan.json。
+      repair_prompt="这是一次针对性缺陷修复。TASK_PROMPT.md 是约束文件；按需读取与当前缺陷相关的章节、BUILD_CONTRACT.json 字段、代码和日志，不要把整份文件转录进上下文。
+不要重新生成 demo，也不要修改 BUILD_CONTRACT.json、task.json、development_plan.json 或其他平台自有文件。
 当前缺陷：
 $defect
 
-请检查缺陷涉及的代码和契约，完成真实修复，并增加或运行能够证明该缺陷已修复的回归测试。修复后保留其他已完成模块的行为。"
+上次局部校验失败的反馈：
+${repair_feedback:-无}
+
+只修复此缺陷的首个根因，保留其他模块的行为。增加或运行能证明该缺陷已修复的回归测试，并报告测试节点。"
+      repair_feedback=""
       set +e
       platform_backup="$(snapshot_platform_assets)"
       run_code_agent "$repair_prompt"
@@ -1455,6 +1459,13 @@ $defect
         repair_status=10
       fi
       set -e
+      if [[ "$current_failure_code" == "INFRA" ]]; then
+        python3 "$project_dir/scripts/sandbox/defect_attempt_budget.py" \
+          --state "$output_path/defect_attempts.json" --release-id "$budget_id"
+      else
+        python3 "$project_dir/scripts/sandbox/defect_attempt_budget.py" \
+          --state "$output_path/defect_attempts.json" --commit-id "$budget_id"
+      fi
       if [[ "$repair_status" -ne 0 ]]; then
         echo "缺陷 $defect_id 修复退出码：$repair_status" >&2
         if [[ "$current_failure_code" == "INFRA" ]]; then
@@ -1464,11 +1475,13 @@ $defect
       after_defect_hash="$(implementation_hash)"
       if [[ "$before_defect_hash" == "$after_defect_hash" ]]; then
         echo "缺陷 $defect_id 修复没有产生生产代码或验收代码变化；拒绝将本轮标记为已修复" >&2
-        repair_status=6
+        set_build_phase "repair_no_progress" "$defect_id" "$repair_attempt" "$current_defect_ids" \
+          "修复未改变受验收代码，停止重复验收"
+        return 5
       fi
       if [[ "$repair_status" -eq 0 ]]; then
         set_build_phase "defect_validation" "$defect_id" "$repair_attempt" "$current_defect_ids" "正在校验缺陷修复产物：$defect_id"
-        if ! PYTHONDONTWRITEBYTECODE=1 python3 - "$output_path" <<'PY'
+        if ! PYTHONDONTWRITEBYTECODE=1 python3 - "$output_path" 2>"$output_path/defect_${defect_id}_syntax.log" <<'PY'
 import sys
 from pathlib import Path
 
@@ -1481,61 +1494,47 @@ PY
         then
           echo "缺陷 $defect_id 修复后 Python 语法检查失败" >&2
           repair_status=7
+          repair_feedback="Python 语法检查失败；请查看 defect_${defect_id}_syntax.log 并修复首个错误。"
         fi
       fi
       if [[ "$repair_status" -eq 0 ]]; then
         if ! run_sandbox_pytest "defect_${defect_id}"; then
           echo "缺陷 $defect_id 的 pytest 回归测试未通过" >&2
           repair_status=9
+          repair_feedback="pytest 未通过；请先查看 pytest_defect_${defect_id}.log，修复首个失败测试。"
         fi
       fi
-      if [[ "$repair_status" -eq 0 ]]; then
+      # Delivery failures are rechecked by the same executable acceptance gate
+      # immediately below; semantic defects still get focused independent review.
+      if [[ "$repair_status" -eq 0 && "$defect_category" != "delivery_failure" ]]; then
         if ! validate_single_defect "$defect" "$defect_id"; then
+          if [[ "$current_failure_code" == "INFRA" ]]; then
+            return 5
+          fi
           echo "缺陷 $defect_id 专项验证未通过；本缺陷保持未关闭" >&2
           repair_status=8
+          repair_feedback="缺陷专项验证未通过；请查看 defect_${defect_id}_review.json 和 defect_${defect_id}_review.stderr，只修复 remaining_issue 指出的首个根因。"
         fi
       fi
     fi
+    if [[ "$repair_status" -eq 7 || "$repair_status" -eq 8 || "$repair_status" -eq 9 ]]; then
+      focused_defect_index="$defect_index"
+      continue
+    fi
+    focused_defect_index=""
     echo "缺陷 $budget_id 第 ${repair_attempt}/${max_attempts} 次修复后重新验收" >&2
   done
   echo "Code Agent 模块化开发和缺陷修复完成：$output_path"
-  echo "执行 BUILD_CONTRACT/task.json 深度相等和工具合规复核"
-  set_build_phase "contract_validation" "" "$repair_attempt" "$current_defect_ids" "正在校验构建契约和工具 schema"
-  if ! validate_contract_and_tools; then
-    echo "BUILD_CONTRACT 或工具合规复核失败" >&2
-    return 5
-  fi
+  # validate_delivery completed contract, runtime, outer, mutation, readiness,
+  # agentic-value and final baseline checks after the last implementation edit.
+  # Do not execute the same checks again before the independent offline scorer.
   echo "执行运行时契约 trace 校验：$output_path/runtime_trace.jsonl"
   set_build_phase "trace_validation" "" "$repair_attempt" "$current_defect_ids" "正在校验运行时 trace"
   if ! validate_runtime_trace; then
     echo "运行时契约 trace 校验失败" >&2
     return 5
   fi
-  echo "执行 EnvFactory 独立外层 conformance 校验"
-  echo "执行运行时通用性/反硬编码校验"
-  set_build_phase "runtime_validation" "" "$repair_attempt" "$current_defect_ids" "正在执行运行时通用性校验"
-  if ! validate_runtime_genericity; then
-    echo "运行时通用性校验失败" >&2
-    return 5
-  fi
-  if ! validate_outer_conformance; then
-    echo "外层 conformance 校验失败" >&2
-    return 5
-  fi
-  echo "执行自动 mutation testing"
-  set_build_phase "mutation_testing" "" "$repair_attempt" "$current_defect_ids" "正在执行 mutation testing"
-  if ! validate_mutation_tests; then
-    echo "mutation testing 校验失败" >&2
-    return 5
-  fi
-  # Mutation probes intentionally rerun acceptance.sh under broken modes and
-  # therefore overwrite its evidence file. Always finish with a clean baseline
-  # run so downstream scoring observes the real sandbox state.
-  set_build_phase "acceptance" "" "$repair_attempt" "$current_defect_ids" "正在恢复最终基线验收证据"
-  if ! restore_final_acceptance_evidence; then
-    return 5
-  fi
-  # 留一份可读验收证据；最终判定仍来自上面的临时目录重生成结果。
+  # Preserve a readable outer artifact. The validated copy was temporary.
   python3 "$project_dir/scripts/sandbox/generate_outer_conformance.py" \
     --root "$output_path" --output "$output_path/.outer_conformance" --check
 
@@ -1573,6 +1572,28 @@ run_agent_and_finalize() {
     exit_code=$?
   fi
   if [[ "$exit_code" -eq 0 ]]; then
+    if [[ "$auto_score" == "true" ]]; then
+      set_build_phase "offline_scoring" "" "$repair_attempt" "" "正在执行构建后离线评分"
+      rm -f "$output_path/offline_sandbox_score.json"
+      echo "执行构建后离线评分：$output_path/offline_sandbox_score.json"
+      set +e
+      python3 "$project_dir/scripts/sandbox/score_sandbox_offline.py" \
+        "$output_path" --project "$project_dir" --build-finalization \
+        >"$output_path/offline_score.log" 2>&1
+      score_status=$?
+      set -e
+      if [[ "$score_status" -eq 0 ]]; then
+        echo "构建后离线评分通过：$output_path/offline_sandbox_score.json"
+      else
+        failed_phase="offline_scoring"
+        current_failure_category="sandbox_failure"
+        current_failure_code="OFFLINE_SCORING"
+        current_phase="failed"
+        write_status "failed" 5 "沙箱构建完成但离线评分未通过"
+        echo "构建成功，但离线评分未达到阈值；详情：$output_path/offline_score.log" >&2
+        return 5
+      fi
+    fi
     failed_phase=""
     current_failure_category=""
     current_failure_code=""
@@ -1580,20 +1601,6 @@ run_agent_and_finalize() {
     current_node_id=""
     current_defect_ids=""
     write_status "success" "$exit_code" "沙箱环境构建成功"
-    if [[ "$auto_score" == "true" ]]; then
-      echo "执行构建后离线评分：$output_path/offline_sandbox_score.json"
-      set +e
-      python3 "$project_dir/scripts/sandbox/score_sandbox_offline.py" \
-        "$output_path" --project "$project_dir" \
-        >"$output_path/offline_score.log" 2>&1
-      score_status=$?
-      set -e
-      if [[ "$score_status" -eq 0 ]]; then
-        echo "构建后离线评分通过：$output_path/offline_sandbox_score.json"
-      else
-        echo "构建成功，但离线评分未达到阈值；详情：$output_path/offline_score.log" >&2
-      fi
-    fi
   else
     failed_phase="$current_phase"
     if [[ "$current_failure_code" != "INFRA" ]]; then
@@ -1601,7 +1608,7 @@ run_agent_and_finalize() {
       buildability)
         current_failure_category="task_contract_failure"
         ;;
-      node_development|acceptance|semantic_review|defect_repair|defect_validation|contract_validation|trace_validation|runtime_validation|mutation_testing|training_readiness|agentic_training_value)
+      node_development|acceptance|semantic_review|defect_repair|defect_validation|repair_no_progress|repair_budget_exhausted|contract_validation|trace_validation|runtime_validation|mutation_testing|training_readiness|agentic_training_value)
         current_failure_category="sandbox_failure"
         ;;
       *)
@@ -1626,10 +1633,21 @@ start_task() {
     current_tag="${tag}-task-$(printf '%03d' "$((task_index + 1))")"
   fi
   mkdir -p "$output_path"
+  timing_reset="true"
   set_build_phase "preparing" "" 0 "" "正在准备沙箱环境"
-  prepare_task "$task_index" "$output_path"
-  prompt="$(<"$output_path/TASK_PROMPT.md")"
-  export project_dir agent review_agent model review_model runtime start background input_path output_path prompt current_tag sandbox_port env_file max_attempts resume auto_score
+  timing_reset="false"
+  if prepare_task "$task_index" "$output_path"; then
+    :
+  else
+    preparation_status=$?
+    failed_phase="preparing"
+    current_failure_category="task_contract_failure"
+    current_failure_code="TASK_PREPARATION"
+    current_phase="failed"
+    write_status "failed" "$preparation_status" "沙箱任务准备失败"
+    return "$preparation_status"
+  fi
+  export project_dir agent review_agent model review_model runtime start background input_path output_path current_tag sandbox_port env_file max_attempts max_total_repairs resume auto_score
   log_file="$output_path/agent.log"
   if [[ "$background" == "true" ]]; then
     (run_agent_and_finalize) >"$log_file" 2>&1 </dev/null &

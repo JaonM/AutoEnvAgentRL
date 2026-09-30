@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import importlib.util
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -21,7 +23,25 @@ def load(path: Path) -> Any:
 
 def canonical(value: Any) -> Any:
     if isinstance(value, dict):
-        return {key: canonical(item) for key, item in value.items() if key not in {"request_id", "timestamp", "duration_ms", "created_at", "trace_hash"}}
+        if (isinstance(value.get("events"), list) and "trace_hash" in value
+                and "episode_id" in value):
+            events = []
+            for event in value["events"]:
+                if not isinstance(event, dict):
+                    events.append(event)
+                    continue
+                normalized = {key: canonical(item) for key, item in event.items()
+                              if key != "timestamp"}
+                payload = normalized.get("payload")
+                if event.get("event") == "tool_call" and isinstance(payload, dict):
+                    normalized["payload"] = {
+                        key: item for key, item in payload.items()
+                        if key not in {"tool_call_id", "request_id", "timestamp", "duration_ms"}
+                    }
+                events.append(normalized)
+            return {key: (events if key == "events" else canonical(item))
+                    for key, item in value.items() if key != "trace_hash"}
+        return {key: canonical(item) for key, item in value.items()}
     if isinstance(value, list):
         return [canonical(item) for item in value]
     return value
@@ -45,8 +65,10 @@ def reward_from_run(run: dict[str, Any]) -> float | None:
     for item in reversed(run.get("history", [])):
         if item.get("operation") == "reward" and isinstance(item.get("body"), dict):
             value = item["body"].get("reward")
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
+            if (isinstance(value, (int, float)) and not isinstance(value, bool)
+                    and -1 <= value <= 1 and math.isfinite(value)):
                 return float(value)
+            return None
     return None
 
 
@@ -60,6 +82,64 @@ def import_app(root: Path):
     if not hasattr(module, "create_app"):
         raise RuntimeError("generated app.py must expose create_app()")
     return module.create_app()
+
+
+def valid_delta_precondition(delta: Any, tables: dict[str, Any]) -> bool:
+    """Validate typed changes against their scoped baseline; never search prose."""
+    if not isinstance(delta, dict) or "before" not in delta or "after" not in delta:
+        return False
+    before, after = delta["before"], delta["after"]
+    if type(before) is type(after) and before == after:
+        return False
+    table, where, field = delta.get("table"), delta.get("where"), delta.get("field")
+    if not isinstance(table, str) or not isinstance(where, dict) or not where or not isinstance(field, str):
+        return False
+    rows = [row for row in tables.get(table, []) if all(
+        key in row and type(row[key]) is type(value) and row[key] == value for key, value in where.items())]
+    return bool(rows) and all(field in row and type(row[field]) is type(before) and row[field] == before for row in rows)
+
+
+def preservation_probes(app, runner, scenario, goal, headers):
+    """Run final-sandbox counterexamples while keeping the requested goal true."""
+    from sandbox_runtime import BusinessGoalEvaluator
+    app.handle("POST", "/v1/reset", {"episode_id": "preservation-baseline", "seed": 17}, headers)
+    baseline = copy.deepcopy(app.business_snapshot())
+    runner.run(scenario)
+    success_state = copy.deepcopy(app.business_snapshot())
+    results = []
+    for table, rows in success_state.items():
+        keys = goal.get("table_primary_keys", {}).get(table, [])
+        if not keys:
+            continue
+        found = False
+        for row in rows:
+            if found:
+                break
+            for field, value in row.items():
+                if field in keys or value is None:
+                    continue
+                changed = (not value if isinstance(value, bool) else value + 1 if isinstance(value, (int, float)) else value + "__preservation_probe__" if isinstance(value, str) else None)
+                if changed is None:
+                    continue
+                runner.run(scenario)
+                try:
+                    app.mutate_business_state({"table": table, "selector": {k: row[k] for k in keys}, "changes": {field: changed}})
+                except Exception:
+                    continue  # schema/constraint rejection is not reward evidence
+                current = app.business_snapshot()
+                if (not BusinessGoalEvaluator.evaluate(goal["row_predicates"], current, baseline)
+                        or BusinessGoalEvaluator.preserves_unrelated(goal, baseline, current)):
+                    continue
+                status, payload, _ = app.handle("GET", "/v1/reward", headers=headers)
+                reward = payload.get("reward") if isinstance(payload, dict) else None
+                passed = status == 200 and isinstance(reward, (int, float)) and not isinstance(reward, bool) and math.isfinite(reward) and reward <= 0.2
+                results.append({"table": table, "field": field, "goal_still_satisfied": True,
+                                "unrelated_state_changed": True, "reward": reward, "passed": passed})
+                found = True
+                break
+    runner.run(scenario)
+    return {"status": "completed" if results else "not_applicable", "cases": results,
+            "passed": all(case["passed"] for case in results)}
 
 
 def validate(root: Path) -> dict[str, Any]:
@@ -91,14 +171,16 @@ def validate(root: Path) -> dict[str, Any]:
                 for line in rows_path.read_text(encoding="utf-8").splitlines():
                     if line.strip():
                         baseline_values.append(json.loads(line))
-        baseline_text = json.dumps(baseline_values, ensure_ascii=False)
         invalid_deltas = []
+        baseline_by_table = {}
+        for table in manifest.get("tables", []) if isinstance(manifest, dict) else []:
+            rows_file = table.get("rows_file") if isinstance(table, dict) else None
+            if rows_file:
+                rows_path = root / str(manifest.get("root", "")) / rows_file
+                if rows_path.is_file():
+                    baseline_by_table[table.get("table_name")] = [json.loads(line) for line in rows_path.read_text().splitlines() if line.strip()]
         for delta in deltas if isinstance(deltas, list) else []:
-            if not isinstance(delta, dict):
-                invalid_deltas.append(delta)
-                continue
-            before, after = delta.get("before"), delta.get("after")
-            if not isinstance(before, str) or not before or before == after or before not in baseline_text:
+            if not valid_delta_precondition(delta, baseline_by_table):
                 invalid_deltas.append(delta)
         evidence["state_causality"] = {"archetype": archetype, "expected_delta": deltas, "invalid": invalid_deltas}
         if environment.get("mode") == "stateful" and not goal.get("row_predicates"):
@@ -158,10 +240,19 @@ def validate(root: Path) -> dict[str, Any]:
             goal = (task_spec or {}).get("goal_contract", {})
             if goal.get("row_predicates"):
                 snapshot = getattr(app, "business_snapshot", None)
-                if snapshot is None or not BusinessGoalEvaluator.evaluate(goal["row_predicates"], snapshot()):
+                if snapshot is None or not BusinessGoalEvaluator.evaluate(goal["row_predicates"], snapshot(), baseline_by_table):
                     failures.append({"gate": "state_causality", "message": "success rollout did not satisfy business postconditions"})
         except Exception as exc:
             failures.append({"gate": "determinism", "message": str(exc)})
+    if runs.get("goal_success") and (task_spec or {}).get("goal_contract", {}).get("row_predicates"):
+        scenario = next(item for item in scenarios if item.get("kind") == "goal_success")
+        try:
+            preservation = preservation_probes(app, runner, scenario, task_spec["goal_contract"], auth)
+            evidence["unrelated_state_preservation"] = preservation
+            if not preservation["passed"]:
+                failures.append({"gate": "unrelated_state_preservation", "message": "unrelated state mutation retained reward", "evidence": preservation})
+        except Exception as exc:
+            failures.append({"gate": "unrelated_state_preservation", "message": str(exc)})
     # Exercise the public episode protocol and the shared state layer directly.
     # These checks produce machine-readable evidence for factory-level
     # production-prepared certification instead of inferring isolation from

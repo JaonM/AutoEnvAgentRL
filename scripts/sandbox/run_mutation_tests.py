@@ -23,6 +23,8 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from env_factory.evidence.material_artifacts import docker_build_context_digest
+
 
 def load(root: Path, name: str):
     return json.loads((root / name).read_text(encoding="utf-8"))
@@ -151,11 +153,14 @@ def direct_mutation_probe(task: dict, base_url: str, key: str, mode: str) -> boo
     """
     if mode == "bypass_trainer_auth":
         status, _ = request(base_url, "GET", "/v1/observation")
-        return status != 401
+        return 200 <= status < 300
     probes = argument_probe_cases(task)
     valid_call = (probes[0][0], probes[0][1]) if probes else None
     if valid_call is None:
-        for scenario in task.get("acceptance_contract", {}).get("executable_scenarios", []):
+        scenarios = task.get("acceptance_contract", {}).get("executable_scenarios", [])
+        for scenario in sorted(scenarios, key=lambda item: item.get("kind") != "goal_success" if isinstance(item, dict) else True):
+            if not isinstance(scenario, dict) or scenario.get("kind") not in {None, "goal_success"}:
+                continue
             for step in scenario.get("steps", []) if isinstance(scenario, dict) else []:
                 if isinstance(step, dict) and step.get("operation") == "tool_call":
                     name, arguments = step.get("tool_name"), step.get("arguments", {})
@@ -175,7 +180,7 @@ def direct_mutation_probe(task: dict, base_url: str, key: str, mode: str) -> boo
             name = tools[0].get("function", {}).get("name")
             if isinstance(name, str):
                 status, _ = request(base_url, "POST", f"/v1/tools/{name}", {"__unexpected__": True})
-                return status != 400
+                return 200 <= status < 300
     if mode == "constant_reward":
         request(base_url, "POST", "/v1/reset", {"episode_id": "direct-reward-probe", "seed": 17}, key=key)
         status, body = request(base_url, "GET", "/v1/reward", key=key)
@@ -186,9 +191,19 @@ def direct_mutation_probe(task: dict, base_url: str, key: str, mode: str) -> boo
 def in_process_constant_tool_probe(task: dict, root: Path, env: dict[str, str], key: str) -> bool:
     """Observe the platform mutant through its public handler when TCP is unavailable."""
     probes = argument_probe_cases(task)
-    if not probes:
-        return False
-    name, arguments, _ = probes[0]
+    if probes:
+        name, arguments, _ = probes[0]
+    else:
+        # Parameterless tools still have a successful reference call. Do not
+        # substitute an earlier scaffold scenario with deliberately bad args.
+        scenarios = task.get("acceptance_contract", {}).get("executable_scenarios", [])
+        calls = [step for scenario in sorted(scenarios, key=lambda item: item.get("kind") != "goal_success" if isinstance(item, dict) else True)
+                 if isinstance(scenario, dict) and scenario.get("kind") in {None, "goal_success"}
+                 for step in scenario.get("steps", [])
+                 if isinstance(step, dict) and step.get("operation") == "tool_call"]
+        if not calls:
+            return False
+        name, arguments = calls[0]["tool_name"], calls[0].get("arguments", {})
     program = """import json,sys
 from pathlib import Path
 from app import create_app
@@ -255,6 +270,22 @@ def run_acceptance(root: Path, env: dict[str, str]) -> tuple[int, str]:
         return 124, str(output)[-12000:] + "\nacceptance.sh timeout"
 
 
+def reusable_baseline(root: Path, expected_digest: str | None) -> bool:
+    """Reuse an outer acceptance pass only for the exact validated context."""
+    if not expected_digest or not re.fullmatch(r"[0-9a-f]{64}", expected_digest):
+        return False
+    try:
+        result = load(root, "acceptance_result.json")
+        return (
+            isinstance(result, dict)
+            and result.get("business_acceptance") == "passed"
+            and result.get("http_conformance") in {"passed", "skipped"}
+            and docker_build_context_digest(root) == expected_digest
+        )
+    except (OSError, ValueError, TypeError):
+        return False
+
+
 def run_outer(root: Path, project_dir: Path, base_url: str, env: dict[str, str]) -> tuple[int, str]:
     with tempfile.TemporaryDirectory(prefix="envfactory-mutant-outer-") as directory:
         completed = subprocess.run(
@@ -269,6 +300,8 @@ def run_outer(root: Path, project_dir: Path, base_url: str, env: dict[str, str])
 def main() -> int:
     parser = argparse.ArgumentParser(description="执行沙箱自动 mutation testing")
     parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--baseline-context-digest", default=None,
+                        help="reuse a passed outer acceptance only when its build context is unchanged")
     args = parser.parse_args()
     root = args.root.resolve()
     project_dir = Path(__file__).resolve().parents[2]
@@ -288,6 +321,11 @@ def main() -> int:
     environment_plan = task.get("environment_plan", {})
     applicable_modes = []
     for mode in modes:
+        if (mode in {"constant_tool_result", "ignore_tool_arguments"}
+                and task.get("training_category") == "direct_response"
+                and task.get("tools") == []):
+            print(f"mutation not applicable: {mode} (direct response has no tools)")
+            continue
         if mode == "skip_business_write" and not (
             isinstance(environment_plan, dict)
             and environment_plan.get("mode") == "stateful"
@@ -305,11 +343,14 @@ def main() -> int:
     base_env.setdefault("SANDBOX_EVALUATOR_MOCK", "true")
     base_env["SANDBOX_MUTATION_MODE"] = "disabled"
 
-    baseline_code, baseline_output = run_acceptance(root, base_env)
-    if baseline_code != 0:
-        print("mutation baseline acceptance failed", file=sys.stderr)
-        print(baseline_output, file=sys.stderr)
-        return 1
+    if reusable_baseline(root, args.baseline_context_digest):
+        print("mutation baseline acceptance reused from outer workflow")
+    else:
+        baseline_code, baseline_output = run_acceptance(root, base_env)
+        if baseline_code != 0:
+            print("mutation baseline acceptance failed", file=sys.stderr)
+            print(baseline_output, file=sys.stderr)
+            return 1
 
     # HTTP is an independent protocol gate, but some managed/macOS runners
     # prohibit local TCP bind. In that case acceptance.sh remains authoritative
@@ -344,12 +385,25 @@ def main() -> int:
             stop(baseline_process)
 
     survivors: list[str] = []
+    records = []
+    def finish(code: int) -> int:
+        (root / "mutation_report.json").write_text(json.dumps({
+            "version": "2.0", "passed": code == 0,
+            "source_context_digest": docker_build_context_digest(root),
+            "results": records,
+        }, indent=2) + "\n")
+        return code
     for mode in modes:
         mode = str(mode)
         env = dict(base_env)
         env["SANDBOX_MUTATION_MODE"] = mode
         acceptance_code, acceptance_output = run_acceptance(root, env)
-
+        if acceptance_code in {124, 125, 126, 127} or acceptance_code < 0:
+            print(f"mutation infrastructure_error: {mode} acceptance exit={acceptance_code}", file=sys.stderr)
+            records.append({"mode": mode, "status": "infrastructure_error", "exit_code": acceptance_code})
+            return finish(75)
+        # Generated acceptance failure alone is not a kill witness. Require
+        # an independent outer assertion or an observed mutation seam.
         outer_code, outer_output, argument_probe_failed = 0, "HTTP conformance skipped: local TCP bind unavailable", False
         direct_probe_failed = False
         log_file = None
@@ -364,8 +418,11 @@ def main() -> int:
             try:
                 base_url = f"http://127.0.0.1:{port}"
                 healthy = wait_health(base_url, process)
-                outer_code, outer_output = (run_outer(root, project_dir, base_url, env)
-                                            if healthy else (125, "mutant runtime did not become healthy"))
+                try:
+                    outer_code, outer_output = (run_outer(root, project_dir, base_url, env)
+                                                if healthy else (75, "mutant runtime did not become healthy"))
+                except (OSError, subprocess.TimeoutExpired) as exc:
+                    outer_code, outer_output = 75, type(exc).__name__
                 if healthy and mode == "ignore_tool_arguments" and baseline_argument_sensitive:
                     argument_probe_failed = not argument_sensitivity(task, base_url, trainer_key)
                 if healthy:
@@ -375,15 +432,20 @@ def main() -> int:
         elif mode == "constant_tool_result":
             direct_probe_failed = in_process_constant_tool_probe(task, root, env, trainer_key)
 
-        killed = acceptance_code != 0 or outer_code != 0 or argument_probe_failed or direct_probe_failed
+        if outer_code not in {0, 1}:
+            print(f"mutation infrastructure_error: {mode}: {outer_output}", file=sys.stderr)
+            records.append({"mode": mode, "status": "infrastructure_error", "exit_code": outer_code})
+            return finish(75)
+        killed = outer_code == 1 or argument_probe_failed or direct_probe_failed
         if killed:
-            reason = ("acceptance.sh" if acceptance_code != 0 else
-                      "outer conformance" if outer_code != 0 else
+            reason = ("outer conformance" if outer_code != 0 else
                       "argument sensitivity probe" if argument_probe_failed else
                       "outer direct mutation probe")
+            records.append({"mode": mode, "status": "killed", "witness": reason})
             print(f"mutation killed: {mode} ({reason})")
         else:
             survivors.append(mode)
+            records.append({"mode": mode, "status": "survived"})
             print(f"mutation survived: {mode}", file=sys.stderr)
             print("--- acceptance output ---", file=sys.stderr)
             print(acceptance_output[-4000:], file=sys.stderr)
@@ -393,9 +455,10 @@ def main() -> int:
                 print(f"--- runtime log: {log_file.name} ---", file=sys.stderr)
 
     if survivors:
+        finish(1)
         raise SystemExit("mutation testing failed; surviving mutants: " + ", ".join(survivors))
     print(f"mutation testing: ok ({len(modes)} mutants killed)")
-    return 0
+    return finish(0)
 
 
 if __name__ == "__main__":

@@ -40,6 +40,10 @@ def create_app(*, db_path=None):
         extensions = hooks.custom_metric_scores(context, dict(scores))
         if scores.keys() & extensions.keys(): raise ValueError("custom metrics cannot override compiled scores")
         scores.update(extensions); return aggregator.aggregate(reward_gate.apply(scores, context))
+    if (contract.get("user_simulation_policy", {}).get("mode") == "fixed_goal"
+            and all(m.get("type") == "rule-based" for m in contract.get("metrics", []))
+            and {m["id"] for m in contract.get("metrics", [])} <= {m["metric_id"] for m in contract.get("metric_implementations", [])}):
+        user.completion_check = lambda: bool(store.get_state("final_agent_response", "")) and reward()["reward"] >= 1 - 1e-9
     def reset(episode): data.reset(episode); user.reset(episode); hooks.reset(episode)
     app = SandboxApplication(episode_store=store, tool_registry=registry, observation=hooks.observation, reward=reward, user_turn=user.turn, business_snapshot=lambda: {name: data.table(name) for name in data.baseline}, reset_hook=reset, data_hash=data.data_hash)
     app.mutate_business_state = lambda mutation: data.update(mutation["table"], mutation.get("selector", {}), mutation.get("changes", {}))

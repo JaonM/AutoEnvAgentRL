@@ -11,6 +11,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from score_sandbox import Check, evaluate, rubric_check, score_checks
+from env_factory.sandbox_scoring import sandbox_quality_factors
 
 
 def load(path: Path) -> Any:
@@ -85,10 +86,22 @@ def offline_semantic_check(root: Path, checks: dict[str, dict[str, Any]]) -> tup
     )
 
 
-def evaluate_offline(root: Path, *, project: Path, threshold: float) -> dict[str, Any]:
-    result = evaluate(root, project=project, execute=True, threshold=threshold, offline=True)
+def evaluate_offline(
+    root: Path, *, project: Path, threshold: float, build_finalization: bool = False, reuse_evidence: bool = True,
+) -> dict[str, Any]:
+    result = evaluate(
+        root, project=project, execute=True, threshold=threshold, offline=True,
+        build_finalization=build_finalization, reuse_evidence=reuse_evidence,
+    )
     by_name = {item["name"]: item for item in result["checks"]}
-    semantic_ok, semantic_evidence = offline_semantic_check(root, by_name)
+    executable_ok, executable_evidence = offline_semantic_check(root, by_name)
+    review = by_name.get("semantic_business_fidelity", {})
+    review_ok = review.get("passed") is True
+    semantic_ok = review_ok and executable_ok
+    semantic_evidence = (
+        f"independent_review={review_ok}: {review.get('evidence', 'missing')}; "
+        f"executable_semantics={executable_ok}: {executable_evidence}"
+    )
     checks = []
     for item in result["checks"]:
         if item["name"] == "semantic_business_fidelity":
@@ -97,12 +110,18 @@ def evaluate_offline(root: Path, *, project: Path, threshold: float) -> dict[str
             ))
         else:
             checks.append(Check(**item))
-    scored = score_checks(checks, threshold=threshold)
+    scored = score_checks(
+        checks, threshold=threshold, quality_factors=sandbox_quality_factors(root),
+    )
     scored.update({
         "root": str(root),
         "mode": "offline_executable",
+        "score_scope": "offline_sandbox_qualification",
+        "delivery_verified": False,
+        "verification_status": "requires_live",
         "live_rollout_verified": False,
         "evidence_fingerprint": result.get("evidence_fingerprint"),
+        "evidence_reused": result.get("evidence_reused", False),
         "network_used": False,
         "model_used": False,
         "model": result.get("model"),
@@ -132,14 +151,19 @@ def main() -> int:
     parser.add_argument("--project", type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument("--threshold", type=float, default=8.0)
     parser.add_argument("--output", type=Path, help="批量汇总 JSON；默认打印到 stdout")
+    parser.add_argument("--fresh", action="store_true", help="Force fresh executable qualification")
     parser.add_argument("--no-individual", action="store_true", help="不写入各沙箱 offline_sandbox_score.json")
+    parser.add_argument("--build-finalization", action="store_true", help="仅构建收尾时接受 offline_scoring 待完成状态")
     args = parser.parse_args()
     roots = discover(args.roots)
     if not roots:
         parser.error("没有发现包含 task.json 和 app.py 的沙箱目录")
     reports = []
     for root in roots:
-        report = evaluate_offline(root, project=args.project.resolve(), threshold=args.threshold)
+        report = evaluate_offline(
+            root, project=args.project.resolve(), threshold=args.threshold,
+            build_finalization=args.build_finalization, reuse_evidence=not args.fresh,
+        )
         reports.append(report)
         if not args.no_individual:
             (root / "offline_sandbox_score.json").write_text(

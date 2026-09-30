@@ -67,6 +67,33 @@ def trace_precondition_functions(source: str) -> list[str]:
     )
 
 
+def hardcoded_metric_scores(source: str, metric_ids: set[str]) -> list[str]:
+    """Flag explicit metric bindings inside scoring code, not business labels.
+
+    This structural check supplements immutable runtime ownership and behavioral
+    reward tests; it is not a general proof that authored code is correct.
+    """
+    found = set()
+    def visit(node: ast.AST, scoring: bool = False) -> None:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            scoring = scoring or bool(re.search(r"score|reward|evaluat", node.name, re.I))
+        if scoring:
+            keys = []
+            if isinstance(node, ast.Dict):
+                keys = node.keys
+            elif isinstance(node, ast.Subscript):
+                keys = [node.slice]
+            elif isinstance(node, ast.Compare):
+                keys = [node.left, *node.comparators]
+            for key in keys:
+                if isinstance(key, ast.Constant) and isinstance(key.value, str) and key.value in metric_ids:
+                    found.add(key.value)
+        for child in ast.iter_child_nodes(node):
+            visit(child, scoring)
+    visit(ast.parse(source))
+    return sorted(found)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, required=True)
@@ -102,6 +129,7 @@ def main() -> int:
     shared_source_path = root / "sandbox_runtime.py"
     shared_source = shared_source_path.read_text(encoding="utf-8") if shared_source_path.is_file() else ""
     contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    template = None
     if contract.get("task_spec"):
         import importlib.util
         template_path = Path(__file__).with_name("generate_sandbox_scaffold.py")
@@ -144,9 +172,14 @@ def main() -> int:
     if not evaluator_boundary:
         fail("runtime must use RuntimeLLMClient for external evaluator/user simulation")
 
+    # Exact platform templates already passed the immutable-source check.
+    # Their generic keys (e.g. "event") may coincide with any authored metric ID.
+    trusted_templates = {"app.py": template.APP_SOURCE, "task_impl.py": template.TASK_IMPL_SOURCE} if template else {}
+    metric_sources = {name: text for name, text in sources.items()
+                      if text != trusted_templates.get(name)}
     metric_ids = [item.get("id") for item in metrics if isinstance(item, dict)]
-    for metric_id in metric_ids:
-        if isinstance(metric_id, str) and metric_id and metric_id in source:
+    for text in metric_sources.values():
+        for metric_id in hardcoded_metric_scores(text, set(metric_ids)):
             fail(f"runtime hard-codes generated metric id: {metric_id}")
 
     # The simulator chooses a deterministic seeded profile/FSM branch and may

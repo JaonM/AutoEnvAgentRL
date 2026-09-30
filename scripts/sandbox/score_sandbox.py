@@ -12,7 +12,11 @@ import tempfile
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from env_factory.sandbox_scoring import RUBRIC_BY_NAME, evidence_fingerprint
+from env_factory.sandbox_scoring import (
+    RUBRIC_BY_NAME, evidence_fingerprint, sandbox_quality_factors,
+    validate_semantic_review,
+)
+from env_factory.tasks.task_quality import score_file
 
 
 REQUIRED_FILES = (
@@ -35,14 +39,29 @@ def rubric_check(name: str, passed: bool, evidence: str) -> Check:
     return Check(name, spec["weight"], passed, evidence, spec["critical"])
 
 
-def score_checks(checks: list[Check], *, threshold: float = 8.0) -> dict[str, Any]:
+def score_checks(
+    checks: list[Check], *, threshold: float = 8.0,
+    quality_factors: dict[str, float] | None = None,
+) -> dict[str, Any]:
+    quality_factors = quality_factors or {}
     raw = round(sum(item.weight for item in checks if item.passed), 2)
+    weighted = round(sum(
+        item.weight * quality_factors.get(item.name, 1.0)
+        for item in checks if item.passed
+    ), 2)
     failed_critical = [item.name for item in checks if item.critical and not item.passed]
     eligible = not failed_critical
+    score = weighted if eligible else 0.0
     return {
-        "score": raw,
+        "score": score,
+        "raw_score": raw,
+        "score_kind": "gated_weighted_10_point",
+        "score_scope": "offline_sandbox_qualification",
+        "qualification": "eligible" if eligible else "rejected",
+        "score_interpretation": "Diagnostic quality within mandatory gates; not an agent success probability",
+        "quality_factors": quality_factors,
         "eligible": eligible,
-        "passed": eligible and raw >= threshold,
+        "passed": eligible and score >= threshold,
         "threshold": threshold,
         "failed_critical_gates": failed_critical,
         "checks": [item._asdict() for item in checks],
@@ -65,49 +84,75 @@ def json_file(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def contract_check(root: Path) -> tuple[bool, str]:
+def contract_check(root: Path, *, threshold: float) -> tuple[bool, str]:
     try:
         task = json_file(root / "task.json")
         contract = json_file(root / "BUILD_CONTRACT.json")
         tools = json_file(root / "tools.json")
     except (OSError, json.JSONDecodeError) as exc:
         return False, str(exc)
+    if not isinstance(task, dict):
+        return False, "task.json must be a JSON object"
     expected = {key: value for key, value in task.items() if key != "actions"}
     if contract != expected:
         return False, "BUILD_CONTRACT.json is not the immutable task projection"
     if tools != task.get("tools"):
         return False, "tools.json differs from task.json.tools"
-    return True, "contract projection and tools schema are identical"
+    try:
+        quality = score_file(root / "task.json", min_score=threshold)
+    except Exception as exc:
+        return False, f"task quality could not be verified: {exc}"
+    if not quality.passed:
+        return False, (
+            f"task quality gate failed: score={quality.score} "
+            f"eligible={quality.eligible} findings={quality.eligibility_failures}"
+        )
+    return True, (
+        "contract projection and tools schema are identical; "
+        f"task quality score={quality.score} eligible=true"
+    )
 
 
 def review_check(root: Path) -> tuple[bool, str, float]:
     try:
         report = json_file(root / "review_report.json")
-    except (OSError, json.JSONDecodeError) as exc:
+        score = validate_semantic_review(report, root)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
         return False, str(exc), 0.0
-    score = report.get("score")
-    blocking = [
-        item for item in report.get("findings", [])
-        if isinstance(item, dict) and item.get("severity") in {"critical", "high"}
-    ]
-    valid_score = isinstance(score, (int, float)) and not isinstance(score, bool) and 0 <= score <= 1
-    passed = report.get("status") == "pass" and valid_score and not blocking
-    return passed, f"status={report.get('status')} score={score} blocking={len(blocking)}", float(score) if valid_score else 0.0
+    return True, f"status=pass score={score} blocking=0", score
 
 
-def evaluate(root: Path, *, project: Path, execute: bool, threshold: float, offline: bool = False) -> dict[str, Any]:
+def delivery_status_ok(status: Any, *, build_finalization: bool = False) -> bool:
+    if not isinstance(status, dict):
+        return False
+    return (status.get("status") == "success" and status.get("success") is True) or (
+        build_finalization
+        and status.get("status") == "pending"
+        and status.get("success") is False
+        and status.get("phase") == "offline_scoring"
+    )
+
+
+def evaluate(
+    root: Path, *, project: Path, execute: bool, threshold: float,
+    offline: bool = False, build_finalization: bool = False, reuse_evidence: bool = True,
+) -> dict[str, Any]:
     missing = [name for name in REQUIRED_FILES if not (root / name).is_file() or not (root / name).stat().st_size]
     try:
         status = json_file(root / "status.json")
     except (OSError, json.JSONDecodeError):
         status = {}
-    delivery_ok = not missing and status.get("success") is True
+    if not isinstance(status, dict):
+        status = {}
+    delivery_ok = not missing and delivery_status_ok(
+        status, build_finalization=build_finalization,
+    )
     checks = [rubric_check(
         "delivery_integrity", delivery_ok,
         f"missing={missing}; status={status.get('status')}",
     )]
 
-    contract_ok, contract_evidence = contract_check(root)
+    contract_ok, contract_evidence = contract_check(root, threshold=threshold)
     checks.append(rubric_check(
         "contract_and_tool_identity", contract_ok, contract_evidence,
     ))
@@ -117,7 +162,39 @@ def evaluate(root: Path, *, project: Path, execute: bool, threshold: float, offl
         "semantic_business_fidelity", review_ok, review_evidence,
     ))
 
-    if execute:
+    # A failed preflight makes every later gate ineligible. Avoid launching
+    # acceptance, pytest and mutation runs against an incomplete delivery.
+    preflight_failures = [item.name for item in checks if not item.passed]
+    if execute and preflight_failures:
+        reason = "skipped: prerequisite failed: " + ", ".join(preflight_failures)
+        checks.extend(rubric_check(name, False, reason) for name in (
+            "business_acceptance", "sandbox_pytest", "runtime_genericity",
+            "outer_conformance", "mutation_resistance", "training_readiness",
+            "declared_training_policy",
+        ))
+        result = score_checks(
+            checks, threshold=threshold, quality_factors=sandbox_quality_factors(root),
+        )
+        result.update({
+            "root": str(root), "review_score": review_score,
+            "model": status.get("model"), "review_model": status.get("review_model"),
+            "executed": execute,
+            "evidence_fingerprint": evidence_fingerprint(root, project),
+            "skipped_checks": reason,
+        })
+        return result
+
+    from env_factory.evidence.gate_cache import load as load_gates, save as save_gates
+    cached = load_gates(root, project) if execute and reuse_evidence else None
+    if cached:
+        acceptance_ok, acceptance_out = cached['business_acceptance']
+        pytest_ok, pytest_out = cached['sandbox_pytest']
+        runtime_ok, runtime_out = cached['runtime_genericity']
+        outer_ok, outer_out = cached['outer_conformance']
+        mutation_ok, mutation_out = cached['mutation_resistance']
+        readiness_ok, readiness_out = cached['training_readiness']
+        agentic_ok, agentic_out = cached['declared_training_policy']
+    elif execute:
         env = os.environ.copy()
         if offline:
             env["SANDBOX_EVALUATOR_MOCK"] = "1"
@@ -185,7 +262,13 @@ def evaluate(root: Path, *, project: Path, execute: bool, threshold: float, offl
         rubric_check("training_readiness", readiness_ok, readiness_out),
         rubric_check("declared_training_policy", agentic_ok, agentic_out),
     ])
-    result = score_checks(checks, threshold=threshold)
+    if execute and not cached:
+        from env_factory.evidence.gate_cache import GATES
+        save_gates(root, project, {item.name: [item.passed, item.evidence] for item in checks if item.name in GATES})
+    result = score_checks(
+        checks, threshold=threshold, quality_factors=sandbox_quality_factors(root),
+    )
+    result['evidence_reused'] = bool(cached)
     result.update({
         "root": str(root),
         "review_score": review_score,
@@ -202,10 +285,15 @@ def main() -> int:
     parser.add_argument("root", type=Path)
     parser.add_argument("--project", type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument("--threshold", type=float, default=8.0)
-    parser.add_argument("--execute", action="store_true", help="重新执行全部验收门禁，而非只读取已有证据")
+    execution = parser.add_mutually_exclusive_group()
+    execution.add_argument("--execute", dest="execute", action="store_true", default=True,
+                           help="重新执行全部验收门禁（默认）")
+    execution.add_argument("--reuse-evidence", dest="execute", action="store_false",
+                           help="仅供诊断：复用已有验收证据，不作为新鲜评分")
+    parser.add_argument("--fresh", action="store_true", help="Force fresh executable qualification")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    result = evaluate(args.root.resolve(), project=args.project.resolve(), execute=args.execute, threshold=args.threshold)
+    result = evaluate(args.root.resolve(), project=args.project.resolve(), execute=args.execute, threshold=args.threshold, reuse_evidence=not args.fresh)
     output = args.output or args.root / "sandbox_score.json"
     output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(result, ensure_ascii=False, indent=2))

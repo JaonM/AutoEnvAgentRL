@@ -81,10 +81,73 @@ def build_plan(contract: dict[str, Any]) -> dict[str, Any]:
             "validation": ["python3 -m pytest -q tests/reward"],
             "scope": {"metrics": custom_metrics, "archetype": archetype},
         })
+    if contract.get("artifacts", {}).get("generation_pipeline", {}).get("backend") == "code_agent":
+        nodes.append({
+            "id": "business_integration",
+            "goal": (
+                "Validate the agent-authored business contract against the actual scaffold behavior. "
+                "This node may edit only tests/business_integration. Implementation extensions belong "
+                "to the preceding task_handlers/metric_extensions nodes when those nodes exist. "
+                "Compiled tools and metric scores are already implemented and cannot be replaced. "
+                "Add executable tests for this business scenario under tests/business_integration: "
+                "For model-based metrics, SANDBOX_EVALUATOR_MOCK performs exact reference-field matching only; "
+                "it cannot grade paraphrases. Offline tests must use the reference text in those fields. "
+                "Do not claim semantic equivalence from mock tests; real semantic calibration/live evidence is separate. "
+                "Use the existing dependency-free application API: create_app(db_path=tmp_path / 'episode.sqlite3'), "
+                "then status, body, headers = app.handle(method, path, json_body, request_headers). "
+                "Use pytest tmp_path for a fresh file-backed database per test; SQLite ':memory:' does not persist "
+                "across this runtime's separate connections. app.handle exercises routing, authentication, tools "
+                "and reward directly. Do not add Flask/Werkzeug or invent another HTTP client for these tests. "
+                "Read the trainer token from os.environ['SANDBOX_TRAINER_API_KEY'] after setting a fallback only when absent; "
+                "construct Authorization from that actual value. Validation injects a different token, as Docker does. "
+                "a real successful episode, an incorrect business outcome, and a meaningful data/argument "
+                "counterfactual when the contract has relevant business data or tool arguments. "
+                "For a stateless direct-response task with no tools or tables, instead test a changed-meaning "
+                "answer and its affected reward component. Absence of business state in that route is expected, "
+                "not a contract defect; do not invent tables or tool calls for the test. "
+                "For a stateful data-dependent write, test a changed UPSTREAM input which changes the correct "
+                "write value or decision, not only the destination field which the same write overwrites. "
+                "Construct this as a new initial fixture: copy BUILD_CONTRACT.json and data/ into tmp_path, "
+                "change the relevant copied input row, monkeypatch app.ROOT to that copied root BEFORE "
+                "create_app, then reset and execute the tool chain. Keep the contract and reward rules unchanged. "
+                "Assert the upstream tool returns the new input, the correct new write earns full reward, "
+                "and the old write or old answer loses its affected reward component. "
+                "Never alter delivery fixture files. This fixture-before-reset method changes initial conditions; "
+                "mutating unrelated upstream rows after reset would instead count as episode side effects. "
+                "For tests of within-episode business mutations, a positive counterfactual preserves the public target (such as the requested "
+                "order ID) while changing relevant business data. Reset the episode BEFORE applying a "
+                "business-state mutation; reset restores baseline data. Assert the mutation affected a row "
+                "and the subsequent tool result contains the new value before testing reward. Also submit "
+                "the stale answer and verify the affected component loses credit. Another order is a negative case unless "
+                "the public task authorizes choosing it. Tests must call actual tools/reward, not assert metadata or copy reference "
+                "assertions. For an incorrect outcome, assert the affected reward components; independent "
+                "correct fields may retain partial credit. Derive any total from the declared metric weights, "
+                "never assume every incorrect answer scores 0 or 0.2. Use pytest.approx for fractional "
+                "reward totals; binary floating-point sums need not equal decimal literals exactly. Include the complete reward object in "
+                "assertion failures so diagnosis can distinguish a rejected decision from other earned credit. "
+                "Keep task.json, BUILD_CONTRACT.json and platform runtime immutable. "
+                "Do not replace the shared declarative compiler with duplicated hardcoded handlers. "
+                "If the contract is inconsistent, report the exact defect; do not weaken it."
+            ),
+            "depends_on": [node["id"] for node in nodes],
+            "inputs": ["BUILD_CONTRACT.json", "task_impl.py", "app.py"],
+            "outputs": ["tests/business_integration"],
+            "validation": ["python3 -m pytest -q tests/business_integration"],
+            "scope": {"tools": tool_names, "tables": tables, "archetype": archetype,
+                      "reward_components": [{"id": metric["id"], "category": metric["category"],
+                          "weight": metric["weight"],
+                          "answer_fields": [target.get("key", target.get("label"))
+                              for rule in contract.get("metric_implementations", [])
+                              if rule.get("metric_id") == metric["id"]
+                              and rule.get("operator") in {"value_targets", "numeric_targets"}
+                              for target in rule.get("expected", {}).get("targets", [])]}
+                          for metric in contract.get("metrics", [])]},
+        })
     return {
         "version": "2.0",
         "authority": "env_factory_outer_workflow",
         "environment_archetype": archetype,
+        "task_implementation_editable": bool(custom_tools or custom_metrics),
         "nodes": nodes,
     }
 

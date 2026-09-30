@@ -240,14 +240,61 @@ def reference_reward(task: dict[str, Any], scores: dict[str, Any]) -> float:
     return max(-1.0, min(1.0, total))
 
 
+def schema_example(schema: dict[str, Any]) -> Any:
+    if schema.get("enum"):
+        return schema["enum"][0]
+    if "const" in schema:
+        return schema["const"]
+    kind = schema.get("type")
+    if kind == "object":
+        return {name: schema_example(schema["properties"][name]) for name in schema.get("required", [])}
+    if kind == "array":
+        return [schema_example(schema["items"]) for _ in range(schema.get("minItems", 0))]
+    if kind in {"integer", "number"}:
+        return max(schema.get("minimum", 0), schema.get("exclusiveMinimum", -1) + 1)
+    if kind == "boolean":
+        return False
+    if kind == "null":
+        return None
+    return "x" * max(1, schema.get("minLength", 1))
+
+
+def invalid_schema_cases(task: dict[str, Any]) -> list[dict[str, Any]]:
+    from env_factory.sandbox_runtime import validate_json_schema, SandboxError
+    cases = []
+    acceptance = task.get("acceptance_contract", {})
+    fixtures = acceptance.get("argument_probes", []) + acceptance.get("tool_cases", [])
+    for tool in task.get("tools", []):
+        function = tool["function"]
+        name, schema = function["name"], function["parameters"]
+        if schema.get("required"):
+            cases.append({"tool": name, "case": "missing_required_arguments", "request": {}, "error_fragment": "missing required properties"})
+        if schema.get("additionalProperties") is not False:
+            continue
+        candidates = [case.get("arguments", case.get("arguments_template")) for case in fixtures if case.get("tool_name") == name]
+        candidates.append(schema_example(schema))
+        valid = None
+        for candidate in candidates:
+            try:
+                validate_json_schema(schema, candidate)
+                valid = candidate
+                break
+            except SandboxError:
+                continue
+        if valid is None:
+            fail(f"no schema-valid fixture for additionalProperties probe: {name}")
+        key = "__outer_invalid_property__"
+        while key in schema.get("properties", {}):
+            key += "_"
+        cases.append({"tool": name, "case": "unexpected_property", "request": {**valid, key: True}, "error_fragment": "unexpected properties"})
+    return cases
+
+
 def build_manifest(task: dict[str, Any], names: list[str], metrics: list[dict[str, Any]], key_steps: list[dict[str, Any]], acceptance: dict[str, Any]) -> dict[str, Any]:
     return {
         "authority": "env_factory_outer_workflow",
         "checks": ["contract_projection", "openai_tool_schema", "runtime_http_contract", "key_steps", "metric_evaluators", "reward_formula", "business_scenarios", "counterfactual_rewards", "mutation_tests"],
-        "tool_cases": [case for name in names for case in (
-            {"tool": name, "case": "missing_required_arguments", "request": {}},
-            {"tool": name, "case": "unexpected_property", "request": {"__outer_invalid_property__": True}},
-        )],
+        "tool_cases": invalid_schema_cases(task),
         "reward_cases": [
             {"metric_id": metric.get("id"), "case": "evaluator_positive_and_negative_paths_required", "category": metric.get("category"), "evaluator": metric.get("evaluator", {}).get("kind")}
             for metric in metrics
@@ -291,9 +338,13 @@ def runtime_smoke(root: Path, names: list[str], base_url: str) -> None:
                 raw = response.read().decode("utf-8")
                 return response.status, json.loads(raw) if raw else None
         except HTTPError as exc:
-            return exc.code, None
+            try:
+                payload = json.loads(exc.read().decode("utf-8"))
+            except (ValueError, UnicodeError):
+                payload = None
+            return exc.code, payload
         except (URLError, TimeoutError, OSError) as exc:
-            fail(f"runtime endpoint unavailable {method} {path}: {exc}")
+            raise SystemExit(75) from exc
 
     status, _ = call("GET", "/health")
     if not 200 <= status < 300:
@@ -350,20 +401,13 @@ def runtime_smoke(root: Path, names: list[str], base_url: str) -> None:
         expected = reference_reward(task, components)
         if abs(float(reward_payload["reward"]) - expected) > 1e-6:
             fail("runtime reward does not match independent reference formula")
-    for tool in task.get("tools", []):
-        function = tool.get("function", {}) if isinstance(tool, dict) else {}
-        name = function.get("name")
-        schema = function.get("parameters", {})
-        required = schema.get("required", []) if isinstance(schema, dict) else []
-        if required:
-            invalid_body = {}
-        elif isinstance(schema, dict) and schema.get("additionalProperties") is False:
-            invalid_body = {"__outer_invalid_property__": True}
-        else:
-            continue
-        status, _ = call("POST", f"/v1/tools/{name}", invalid_body, auth=False)
+    for case in invalid_schema_cases(task):
+        status, payload = call("POST", f"/v1/tools/{case['tool']}", case["request"], auth=False)
         if status < 400 or status >= 500:
-            fail(f"invalid request for {name} was not rejected with 4xx: HTTP {status}")
+            fail(f"invalid request for {case['tool']} was not rejected with 4xx: HTTP {status}")
+        message = payload.get("error", {}).get("message", "") if isinstance(payload, dict) else ""
+        if case["error_fragment"] not in message:
+            fail(f"schema probe {case['case']} failed for the wrong reason: {message}")
 
 
 def main() -> int:

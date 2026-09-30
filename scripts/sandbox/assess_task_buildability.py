@@ -19,7 +19,7 @@ from env_factory.task_pipeline import PipelineGenerationError, TaskGenerationPip
 from env_factory.tasks.task_spec import TaskSpecError, validate_task_spec
 from env_factory.contracts.runtime_contract import missing_system_endpoints
 from env_factory.contracts.tool_chain_contract import tool_chain_issues as _tool_chain_issues
-from env_factory.contracts.reward_contract import reward_contract_issues
+from env_factory.contracts.reward_contract import ambiguous_metric_captures, reward_contract_issues
 
 
 def _issue(code: str, owner: str, message: str, **evidence: Any) -> dict[str, Any]:
@@ -27,26 +27,11 @@ def _issue(code: str, owner: str, message: str, **evidence: Any) -> dict[str, An
 
 
 def _manifest_root(task_root: Path, manifest: dict[str, Any]) -> Path:
-    """Resolve both portable and generation-workspace manifest roots.
-
-    Generated task artifacts retain a project-relative root so the outer
-    builder can locate and copy them.  Once the task directory itself is
-    handed to this preflight, its schema/row files are already immediately
-    below ``task_root``.  Prefer that self-contained representation, then the
-    conventional task-relative and current-workspace forms.
-    """
+    """Read business files from the task's declared root."""
     declared = Path(str(manifest["root"]))
     if declared.is_absolute():
         return declared
-    referenced = [
-        item.get("schema_file") or item.get("rows_file")
-        for item in manifest.get("tables", [])
-        if isinstance(item, dict)
-    ]
-    if any(isinstance(name, str) and (task_root / name).is_file() for name in referenced):
-        return task_root
-    candidates = (task_root / declared, Path.cwd() / declared)
-    return next((candidate for candidate in candidates if candidate.is_dir()), candidates[0])
+    return task_root / declared
 
 
 def assess(root: Path, *, threshold: float = 8.0) -> dict[str, Any]:
@@ -82,6 +67,14 @@ def assess(root: Path, *, threshold: float = 8.0) -> dict[str, Any]:
         ))
 
     mode = task.get("environment_plan", {}).get("mode")
+    if (mode == "stateful" and task.get("task_spec", {}).get("goal_contract", {}).get("allow_noop") is not True
+            and TaskGenerationPipeline._has_conditional_noop_branch(
+        task, task.get("public_input", {}) if isinstance(task.get("public_input"), dict) else {},
+    )):
+        issues.append(_issue(
+            "STATEFUL_NOOP_BRANCH", "task_generation",
+            "a valid no-write branch cannot satisfy a state-change-only goal contract",
+        ))
     declared_modes = task.get("runtime_capabilities", {}).get("environment_modes", [])
     if isinstance(declared_modes, list) and declared_modes and mode not in declared_modes:
         issues.append(_issue(
@@ -99,6 +92,8 @@ def assess(root: Path, *, threshold: float = 8.0) -> dict[str, Any]:
         ))
 
     manifest = task.get("artifacts", {}).get("data_manifest", {})
+    preview_tables: list[dict[str, Any]] = []
+    table_schemas: list[dict[str, Any]] = []
     if isinstance(manifest, dict) and manifest.get("root"):
         data_root = _manifest_root(root, manifest)
         if not data_root.is_dir():
@@ -110,13 +105,40 @@ def assess(root: Path, *, threshold: float = 8.0) -> dict[str, Any]:
             try:
                 with tempfile.TemporaryDirectory(prefix="envfactory-buildability-") as directory:
                     store = EpisodeStore(Path(directory) / "episodes.sqlite3")
-                    ManifestDataStore(manifest, data_root, store)
+                    business_data = ManifestDataStore(manifest, data_root, store)
+                    preview_tables = [
+                        {**business_data.schemas.get(name, {}), "table_name": name, "rows": rows}
+                        for name, rows in business_data.baseline.items()
+                    ]
+                    table_schemas = list(business_data.schemas.values())
             except (SandboxError, OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
                 issues.append(_issue(
                     "BUSINESS_DATA_INVALID", "task_generation",
                     "business data violates the shared persistence contract",
                     error=str(exc), root=str(data_root),
                 ))
+
+    if preview_tables and mode in {"reference_data", "stateful"}:
+        try:
+            preview = TaskGenerationPipeline._preview_success_tool_results(
+                scenarios=task.get("acceptance_contract", {}).get("executable_scenarios", []),
+                data_tables=preview_tables,
+                tool_implementations=task.get("tool_implementations", []),
+                environment_mode=mode,
+                tools=task.get("tools", []),
+                semantic_goal=task.get("task_spec", {}).get("goal_contract"),
+            )
+            issues.extend(_issue(
+                issue["code"], "task_generation",
+                "reward metric captures a positional row from a multirow tool result",
+                **{key: value for key, value in issue.items() if key != "code"},
+            ) for issue in ambiguous_metric_captures(task, preview))
+        except (PipelineGenerationError, SandboxError, TypeError, ValueError) as exc:
+            issues.append(_issue(
+                "SUCCESS_TOOL_PREVIEW_INVALID", "task_generation",
+                "declared success tools fail against persisted business data",
+                error=str(exc),
+            ))
 
     for index, spec in enumerate(task.get("metric_implementations", [])):
         if not isinstance(spec, dict) or not isinstance(spec.get("path"), str):
@@ -145,6 +167,25 @@ def assess(root: Path, *, threshold: float = 8.0) -> dict[str, Any]:
         item.get("name") for item in task.get("noise_tools", []) if isinstance(item, dict)
     }
     missing_handlers = sorted(declared_tools - implemented_tools - noise_tools)
+    for spec in task.get("tool_implementations", []):
+        if isinstance(spec, dict):
+            missing_columns = TaskGenerationPipeline._missing_insert_columns(spec, table_schemas)
+            if missing_columns:
+                issues.append(_issue(
+                    "INSERT_ROW_INCOMPLETE", "task_generation",
+                    "declarative insert omits storage columns required by the shared data store",
+                    tool_name=spec.get("tool_name"), table=spec.get("table"),
+                    missing_columns=missing_columns,
+                ))
+            optional = TaskGenerationPipeline._optional_mutation_arguments(
+                spec, task.get("tools", []),
+            )
+            if optional:
+                issues.append(_issue(
+                    "MUTATION_ARGUMENT_OPTIONAL", "task_generation",
+                    "declarative mutation reads arguments not required by its tool schema",
+                    tool_name=spec.get("tool_name"), optional_arguments=optional,
+                ))
     business_tools = [
         item for item in task.get("tools", [])
         if isinstance(item, dict)
