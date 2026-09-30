@@ -23,8 +23,11 @@ class TaskSpecError(ValueError):
     """Raised when semantic inputs cannot compile into a trainable contract."""
 
 
-def validate_goal_contract(goal: Mapping[str, Any], data_tables: Sequence[Mapping[str, Any]]) -> None:
+def validate_goal_contract(goal: Mapping[str, Any], data_tables: Sequence[Mapping[str, Any]], *, require_change: bool = True) -> None:
     """Require typed, addressable predicates rather than prose matching."""
+    if "allow_noop" in goal and not isinstance(goal["allow_noop"], bool):
+        raise TaskSpecError("goal allow_noop must be boolean")
+    require_change = require_change and goal.get("allow_noop") is not True
     tables = {item["table_name"]: item for item in data_tables}
     predicates = goal.get("row_predicates")
     if not isinstance(predicates, list) or not predicates:
@@ -40,14 +43,24 @@ def validate_goal_contract(goal: Mapping[str, Any], data_tables: Sequence[Mappin
             value = predicate.get(field)
             if not isinstance(value, Mapping) or not set(value) <= columns:
                 raise TaskSpecError(f"goal predicate {field} references invalid columns")
-        if not predicate["where"] and not predicate["values"]:
+        expressions = predicate.get("value_expressions", {})
+        if (not isinstance(expressions, Mapping) or not set(expressions) <= columns
+                or set(expressions) & set(predicate["values"])):
+            raise TaskSpecError("goal value_expressions references invalid or duplicate columns")
+        from env_factory.sandbox_runtime import DeclarativeMetricEvaluator, SandboxError
+        for expression in expressions.values():
+            try:
+                DeclarativeMetricEvaluator._value_expression(expression, {})
+            except SandboxError as exc:
+                raise TaskSpecError(f"invalid goal value expression: {exc}") from exc
+        if not predicate["where"] and not predicate["values"] and not expressions:
             raise TaskSpecError("goal predicate must identify target rows or values")
         count = predicate.get("count")
         if not isinstance(count, int) or isinstance(count, bool) or count < 0:
             raise TaskSpecError("goal predicate count must be a non-negative integer")
     from env_factory.sandbox_runtime import BusinessGoalEvaluator
     baseline = {name: table.get("rows", []) for name, table in tables.items()}
-    if BusinessGoalEvaluator.evaluate(predicates, baseline):
+    if require_change and BusinessGoalEvaluator.evaluate(predicates, baseline, baseline):
         raise TaskSpecError("initial fixture already satisfies the stateful goal")
 
 
@@ -69,6 +82,27 @@ def _refs(value: Any) -> set[str]:
             result.update(_refs(item))
         return result
     return set()
+
+
+def _ref_paths(value: Any, path: str = "$") -> list[tuple[str, str, Any]]:
+    """Locate each captured value at its actual nested tool argument path."""
+    if isinstance(value, Mapping):
+        if set(value) == {"$ref"} and isinstance(value.get("$ref"), str):
+            return [(value["$ref"], path, None)]
+        if set(value) == {"$expr"}:
+            return [(reference, path, value) for reference in sorted(_refs(value))]
+        paths: list[tuple[str, str, Any]] = []
+        for key, item in value.items():
+            if not isinstance(key, str) or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) is None:
+                if _refs(item):
+                    raise TaskSpecError("captured dependency uses an unsupported argument path")
+                continue
+            paths.extend(_ref_paths(item, f"{path}.{key}"))
+        return paths
+    if isinstance(value, list):
+        return [entry for index, item in enumerate(value)
+                for entry in _ref_paths(item, f"{path}[{index}]")]
+    return []
 
 
 def derive_environment_archetype(
@@ -97,8 +131,8 @@ def _explicit_changes(task_description: Mapping[str, Any]) -> list[dict[str, str
     ]
 
 
-def _capability_edges(scenarios: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
-    edges: list[dict[str, str]] = []
+def _capability_edges(scenarios: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    edges: list[dict[str, Any]] = []
     for scenario in scenarios:
         if scenario.get("kind") != "goal_success":
             continue
@@ -107,14 +141,18 @@ def _capability_edges(scenarios: Sequence[Mapping[str, Any]]) -> list[dict[str, 
             if step.get("operation") != "tool_call":
                 continue
             tool_name = str(step.get("tool_name", ""))
-            for reference in sorted(_refs(step.get("arguments", {}))):
+            for reference, argument_path, expression in _ref_paths(step.get("arguments", {})):
                 producer = producers.get(reference)
                 if producer and producer[0] != tool_name:
                     edge = {"from_tool": producer[0], "to_tool": tool_name, "via": reference,
-                            "result_path": producer[1]}
-                    for argument, value in step.get("arguments", {}).items():
-                        if value == {"$ref": reference}:
-                            edge["argument_path"] = f"$.{argument}"
+                            "result_path": producer[1], "argument_path": argument_path}
+                    if expression is not None:
+                        refs = sorted(_refs(expression))
+                        if any(name not in producers for name in refs):
+                            raise TaskSpecError("argument expression has an unavailable capture")
+                        edge["argument_expression"] = expression
+                        edge["expression_captures"] = [{"name": name, "tool_name": producers[name][0],
+                            "path": producers[name][1]} for name in refs]
                     if edge not in edges:
                         edges.append(edge)
             capture = step.get("capture")
@@ -254,7 +292,9 @@ def compile_task_spec(
             "effects": list(action.get("effects", action.get("expected_effects", [])))
             if isinstance(action.get("effects", action.get("expected_effects", [])), list) else [],
         })
-    changes = _explicit_changes(task_description)
+    # A typed goal is authoritative. Inferring additional changes from repeated
+    # task/goal/public-input prose reintroduces a second, contradictory truth.
+    changes = [] if semantic_goal is not None else _explicit_changes(task_description)
     goal_contract = {
         "initial_predicates": [
             {"kind": "contains_business_value", "value": item["before"]} for item in changes
@@ -269,7 +309,12 @@ def compile_task_spec(
     if semantic_goal is not None:
         validate_goal_contract(semantic_goal, data_tables)
         goal_contract.update(semantic_goal)
-        goal_contract["requires_state_change"] = mode == "stateful"
+        goal_contract["forbidden_deltas"] = [{
+            "kind": "outside_goal_rows_or_fields",
+            "scope": "row_predicates",
+            "enforcement": "BusinessGoalEvaluator.preserves_unrelated",
+        }]
+        goal_contract["requires_state_change"] = mode == "stateful" and semantic_goal.get("allow_noop") is not True
         goal_contract["table_primary_keys"] = {table["table_name"]: table.get("primary_key", []) for table in data_tables}
     scenarios = _objects(executable_scenarios)
     edges = _key_step_edges(key_steps, bindings)
@@ -350,6 +395,16 @@ def validate_task_spec(spec: Mapping[str, Any], *, data_tables: Sequence[Mapping
     for edge in edges:
         if not isinstance(edge, Mapping) or edge.get("from_tool") not in graph or edge.get("to_tool") not in graph:
             raise TaskSpecError("capability edge references unknown tool")
+        if bool(edge.get("result_path")) != bool(edge.get("argument_path")):
+            raise TaskSpecError("captured dependency requires both result_path and argument_path")
+        if "argument_expression" in edge:
+            captures = edge.get("expression_captures")
+            if (not isinstance(captures, list) or not captures
+                    or any(not isinstance(item, Mapping) or item.get("tool_name") not in graph
+                           or not isinstance(item.get("name"), str) or not isinstance(item.get("path"), str)
+                           for item in captures)
+                    or {item["name"] for item in captures} != _refs(edge["argument_expression"])):
+                raise TaskSpecError("argument expression requires complete capture bindings")
         graph[edge["to_tool"]].add(edge["from_tool"])
     remaining = set(graph)
     while remaining:

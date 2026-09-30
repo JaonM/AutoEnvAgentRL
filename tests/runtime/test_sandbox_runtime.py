@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 import tempfile
@@ -104,18 +105,49 @@ class SandboxRuntimeTest(unittest.TestCase):
             else:
                 os.environ["SANDBOX_EXTERNAL_FIXTURES"] = previous
 
-    def test_contract_evaluator_runtime_caches_and_traces_fallback(self):
+    def test_contract_evaluator_runtime_retries_failed_external_call(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"SANDBOX_EVALUATOR_MOCK": "1"}):
             store = EpisodeStore(Path(directory) / "episodes.sqlite3")
             store.reset(episode_id="eval", seed=1)
             evaluator = ContractEvaluatorRuntime(store)
             metric = {"id": "quality", "evaluator": {"kind": "external_llm_judge"}}
-            first = evaluator.json_judge(metric, {"answer": "x"}, fallback={"label": "fail"})
-            second = evaluator.json_judge(metric, {"answer": "x"}, fallback={"label": "different"})
+            with patch("env_factory.sandbox_runtime.RuntimeLLMClient.json_chat",
+                       side_effect=[OSError("temporary outage"), {"label": "pass"}]) as judge:
+                first = evaluator.json_judge(metric, {"answer": "x"}, fallback={"label": "fail"})
+                second = evaluator.json_judge(metric, {"answer": "x"}, fallback={"label": "different"})
+                third = evaluator.json_judge(metric, {"answer": "x"}, fallback={"label": "different"})
             self.assertEqual(first, {"label": "fail"})
-            self.assertEqual(second, first)
+            self.assertEqual(second, {"label": "pass"})
+            self.assertEqual(third, second)
+            self.assertEqual(judge.call_count, 2)
             events = store.replay()["events"]
-            self.assertEqual([item["event"] for item in events], ["evaluator_call"])
+            self.assertEqual([item["event"] for item in events], ["evaluator_call", "evaluator_call"])
+            self.assertTrue(events[0]["payload"]["used_fallback"])
+            self.assertFalse(events[1]["payload"]["used_fallback"])
+            self.assertFalse(events[0]["payload"]["judgment_obtained"])
+            self.assertTrue(events[1]["payload"]["judgment_obtained"])
+
+    def test_judge_preserves_business_time_fields_inside_replay(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EpisodeStore(Path(directory) / "episodes.sqlite3")
+            store.reset(episode_id="business-time", seed=1)
+            evaluator = ContractEvaluatorRuntime(store)
+            context = {
+                "business_data": {"orders": [{"created_at": "2025-02-01", "timestamp": "09:30"}]},
+                "tool_results": {"trace_hash": "transport-hash", "events": [{
+                    "event": "tool_call", "timestamp": 123.0,
+                    "result": {"created_at": "2025-02-01", "timestamp": "09:30"},
+                }]},
+            }
+            metric = {"id": "fact", "evaluator": {"score_mapping": {"pass": 1, "fail": 0}}}
+            with patch("env_factory.sandbox_runtime.RuntimeLLMClient.json_chat",
+                       return_value={"label": "pass"}) as judge:
+                evaluator.json_judge(metric, context, fallback={"label": "fail"})
+            sent = json.loads(judge.call_args.args[0][1]["content"])["runtime_evidence"]
+            self.assertEqual(sent["business_data"]["orders"][0]["created_at"], "2025-02-01")
+            self.assertEqual(sent["tool_results"]["events"][0]["result"]["timestamp"], "09:30")
+            self.assertNotIn("timestamp", sent["tool_results"]["events"][0])
+            self.assertNotIn("trace_hash", sent["tool_results"])
 
     def test_model_evaluator_limits_context_and_explains_labels(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -148,6 +180,44 @@ class SandboxRuntimeTest(unittest.TestCase):
             self.assertIn("all assistant responses cumulatively", captured["messages"][0]["content"])
             self.assertIn("Compare A and B for this project", captured["messages"][1]["content"])
             self.assertNotIn("business_state", captured["messages"][1]["content"])
+
+    def test_model_evaluator_uses_current_tool_results_for_factuality(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EpisodeStore(Path(directory) / "episodes.sqlite3")
+            store.reset(episode_id="current-data", seed=1)
+            contract = {"metrics": [{
+                "id": "accuracy", "rubric": "match current product",
+                "criteria": ["All answer facts match current business records"],
+                "evaluation_inputs": ["final_agent_response", "tool_results", "business_data"],
+                "score_range": [0, 1],
+                "evaluator": {"kind": "external_llm_judge", "source": "external_llm",
+                              "score_mapping": {"correct": 1, "incorrect": 0}},
+            }]}
+            captured = {}
+            def fake_chat(client, messages, **kwargs):
+                captured["messages"] = messages
+                return {"label": "incorrect"}
+            context = {
+                "final_agent_response": "The product is blue",
+                "business_state": {"product": [{"color": "red"}]},
+                "trajectory": {"events": [
+                    {"event": "old transport event"},
+                    {"event": "tool_call", "payload": {
+                        "tool_name": "query_product", "arguments": {"id": "HF-2024"},
+                    }, "result": {"records": [{"color": "red"}]}},
+                ]},
+                "observation": {"tool_results": [{"records": [{"color": "red"}]}]},
+            }
+            with patch("env_factory.sandbox_runtime.RuntimeLLMClient.json_chat", new=fake_chat):
+                scores = ContractModelMetricEvaluator(contract, store).evaluate_all(context, {})
+            self.assertEqual(scores, {"accuracy": 0.0})
+            sent = json.loads(captured["messages"][1]["content"])["runtime_evidence"]
+            self.assertEqual(sent["tool_results"], [{
+                "tool_name": "query_product", "arguments": {"id": "HF-2024"},
+                "result": {"records": [{"color": "red"}]},
+            }])
+            self.assertNotIn("trajectory", sent)
+            self.assertIn("stale private-record value", captured["messages"][0]["content"])
 
     def test_wsgi_auth_precedes_malformed_json_and_preserves_request_id(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(
@@ -219,6 +289,30 @@ class SandboxRuntimeTest(unittest.TestCase):
             with self.assertRaisesRegex(SandboxError, "duplicate unique index"):
                 data.insert("samples", {"id": 2, "code": "S-1", "efficiency": 20.0})
 
+    def test_insert_generates_integer_primary_key_and_safe_nullable_field(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            schema = {"columns": [
+                {"name": "id", "type": "INTEGER", "nullable": False},
+                {"name": "name", "type": "TEXT", "nullable": False},
+                {"name": "note", "type": "TEXT", "nullable": True},
+                {"name": "status", "type": "TEXT", "nullable": False},
+            ], "primary_key": ["id"], "foreign_keys": [], "indexes": [], "constraints": []}
+            (root / "schema.json").write_text(json.dumps(schema), encoding="utf-8")
+            (root / "rows.jsonl").write_text(json.dumps({
+                "id": 7, "name": "old", "note": None, "status": "open",
+            }) + "\n", encoding="utf-8")
+            store = EpisodeStore(root / "episodes.sqlite3")
+            data = ManifestDataStore({"environment_mode": "stateful", "tables": [{
+                "table_name": "events", "schema_file": "schema.json", "rows_file": "rows.jsonl",
+            }]}, root, store)
+            data.reset()
+            self.assertEqual(data.insert("events", {"name": "new", "status": "open"}), {
+                "id": 8, "name": "new", "note": None, "status": "open",
+            })
+            with self.assertRaisesRegex(SandboxError, "does not match schema"):
+                data.insert("events", {"name": "missing status"})
+
     def test_nullable_in_check_accepts_only_listed_values_or_null(self):
         expression = "is_matched IN (0, 1) OR is_matched IS NULL"
         self.assertTrue(ManifestDataStore._check_constraint({"is_matched": None}, expression))
@@ -226,6 +320,12 @@ class SandboxRuntimeTest(unittest.TestCase):
         self.assertFalse(ManifestDataStore._check_constraint({"is_matched": 2}, expression))
         with self.assertRaises(SandboxError):
             ManifestDataStore._check_constraint({"is_matched": 1}, "is_matched = 1 OR 1 = 1")
+
+    def test_nullable_numeric_check_accepts_null_or_positive_value(self):
+        expression = "waitlist_seq IS NULL OR waitlist_seq > 0"
+        self.assertTrue(ManifestDataStore._check_constraint({"waitlist_seq": None}, expression))
+        self.assertTrue(ManifestDataStore._check_constraint({"waitlist_seq": 2}, expression))
+        self.assertFalse(ManifestDataStore._check_constraint({"waitlist_seq": 0}, expression))
 
     def test_contract_user_simulator_failure_does_not_accept_completion_claim(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -477,6 +577,97 @@ class SandboxRuntimeTest(unittest.TestCase):
         context["business_state"]["samples"][0]["efficiency"] = 21.5
         self.assertEqual(evaluator.evaluate(spec, context), 0.0)
 
+    def test_numeric_targets_recompute_from_private_business_rows(self):
+        evaluator = DeclarativeMetricEvaluator()
+        spec = {
+            "metric_id": "purchase_total", "source": "final_agent_response",
+            "path": "$", "operator": "numeric_targets",
+            "expected": {"targets": [{
+                "label": "总金额", "unit": "元", "tolerance": 0.01,
+                "expression": {"op": "mul", "args": [
+                    {"op": "sub", "args": [
+                        {"literal": 3},
+                        {"lookup": {"table": "inventory", "field": "remaining_kg",
+                                    "where": {"ingredient_name": "木耳"}}},
+                    ]},
+                    {"literal": 60},
+                ]},
+            }]},
+            "score_mapping": {"pass": 1, "fail": 0},
+        }
+        context = {
+            "final_agent_response": "结论：总金额132元。",
+            "business_state": {"inventory": [{"ingredient_name": "木耳", "remaining_kg": 0.8}]},
+        }
+        self.assertEqual(evaluator.evaluate(spec, context), 1.0)
+        context["business_state"]["inventory"][0]["remaining_kg"] = 1.8
+        self.assertEqual(evaluator.evaluate(spec, context), 0.0)
+        context["final_agent_response"] = "结论：总金额72元。"
+        self.assertEqual(evaluator.evaluate(spec, context), 1.0)
+        context["final_agent_response"] = "结论：总金额999元。补充说明：总金额72元。"
+        self.assertEqual(evaluator.evaluate(spec, context), 0.0)
+        spec["expected"]["targets"][0]["expression"]["args"][0]["args"][0]["literal"] = 23
+        context["final_agent_response"] = "结论：总金额1,332元。"
+        context["business_state"]["inventory"][0]["remaining_kg"] = 0.8
+        self.assertEqual(evaluator.evaluate(spec, context), 1.0)
+
+    def test_numeric_targets_support_private_row_aggregation(self):
+        evaluator = DeclarativeMetricEvaluator()
+        spec = {
+            "metric_id": "trade_total", "source": "final_agent_response",
+            "path": "$", "operator": "numeric_targets",
+            "expected": {"targets": [{
+                "label": "合计", "unit": "元", "tolerance": 0,
+                "expression": {"aggregate": {
+                    "table": "trades", "field": "amount", "where": {"status": "settled"},
+                    "op": "sum",
+                }},
+            }]},
+            "score_mapping": {"pass": 1, "fail": 0},
+        }
+        context = {"final_agent_response": "合计300元", "business_state": {
+            "trades": [{"amount": 100, "status": "settled"},
+                       {"amount": 200, "status": "settled"},
+                       {"amount": 900, "status": "pending"}],
+        }}
+        self.assertEqual(evaluator.evaluate(spec, context), 1.0)
+        context["business_state"]["trades"][0]["amount"] = 101
+        self.assertEqual(evaluator.evaluate(spec, context), 0.0)
+        spec["expected"]["targets"][0]["expression"]["aggregate"]["op"] = "count"
+        context["final_agent_response"] = "合计2元"
+        self.assertEqual(evaluator.evaluate(spec, context), 1.0)
+        context["business_state"]["trades"].pop(0)
+        self.assertEqual(evaluator.evaluate(spec, context), 0.0)
+
+    def test_numeric_targets_sum_product_includes_new_matching_rows(self):
+        evaluator = DeclarativeMetricEvaluator()
+        spec = {
+            "source": "final_agent_response", "path": "$", "operator": "numeric_targets",
+            "expected": {"targets": [{
+                "label": "总面积", "unit": "平方英尺", "tolerance": 0,
+                "expression": {"aggregate": {
+                    "table": "inventory", "fields": ["area", "quantity"],
+                    "where": {"batch": "A"}, "op": "sum_product",
+                }},
+            }]},
+        }
+        context = {"final_agent_response": "总面积14平方英尺", "business_state": {
+            "inventory": [{"batch": "A", "area": 2, "quantity": 3},
+                          {"batch": "A", "area": 4, "quantity": 2},
+                          {"batch": "B", "area": 10, "quantity": 5}],
+        }}
+        self.assertEqual(evaluator.evaluate(spec, context), 1.0)
+        context["business_state"]["inventory"].append(
+            {"batch": "A", "area": 1, "quantity": 2}
+        )
+        self.assertEqual(evaluator.evaluate(spec, context), 0.0)
+        context["final_agent_response"] = "总面积16平方英尺"
+        self.assertEqual(evaluator.evaluate(spec, context), 1.0)
+        malformed = copy.deepcopy(spec)
+        malformed["expected"]["targets"][0]["expression"]["aggregate"]["field"] = "area"
+        with self.assertRaisesRegex(SandboxError, "extra=\\['field'\\]"):
+            DeclarativeMetricEvaluator.validate_numeric_targets(malformed["expected"])
+
     def test_declarative_metric_matches_exact_tool_call_with_capture(self):
         evaluator = DeclarativeMetricEvaluator()
         spec = {
@@ -549,6 +740,30 @@ class SandboxRuntimeTest(unittest.TestCase):
         self.assertEqual(handler({"tags": ["neutral", "casual"]}), {
             "records": [{"id": "1"}], "count": 1,
         })
+
+    def test_declarative_tool_filters_by_column_in_prior_record_array(self):
+        class FakeData:
+            def table(self, name):
+                return [
+                    {"sample_code": "A", "latest_batch_no": "B-1", "passed": True},
+                    {"sample_code": "B", "latest_batch_no": "B-2", "passed": False},
+                    {"sample_code": "C", "latest_batch_no": "B-3", "passed": True},
+                ]
+
+        handler = DeclarativeToolCompiler(FakeData()).compile({
+            "tool_name": "fetch_inspection", "operation": "select",
+            "table": "samples", "result_field": "records",
+            "filters": [{"argument": "inventory_records", "column": "latest_batch_no", "operator": "in"}],
+        })
+        self.assertEqual(handler({"inventory_records": [
+            {"sample_code": "A", "latest_batch_no": "B-1"},
+            {"sample_code": "B", "latest_batch_no": "B-2"},
+        ]})["records"], [
+            {"sample_code": "A", "latest_batch_no": "B-1", "passed": True},
+            {"sample_code": "B", "latest_batch_no": "B-2", "passed": False},
+        ])
+        with self.assertRaises(SandboxError):
+            handler({"inventory_records": [{"sample_code": "A"}]})
 
     def test_declarative_tool_resolves_human_name_through_foreign_key(self):
         class FakeData:
@@ -689,6 +904,55 @@ class SandboxRuntimeTest(unittest.TestCase):
             ]}
             validated = DataManifestValidator.validate(manifest, root)
             self.assertEqual(validated["tables"]["children"][0]["parent_id"], "p1")
+
+    def test_manifest_validator_rejects_duplicate_tables_and_stale_row_count(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "schema.json").write_text(json.dumps({
+                "table_name": "inventory", "columns": [{"name": "id"}],
+                "primary_key": ["id"], "foreign_keys": [],
+            }), encoding="utf-8")
+            (root / "rows.jsonl").write_text('{"id": 1}\n', encoding="utf-8")
+            table = {"table_name": "inventory", "schema_file": "schema.json",
+                     "rows_file": "rows.jsonl", "row_count": 1}
+            self.assertEqual(len(DataManifestValidator.validate({"tables": [table]}, root)["tables"]), 1)
+            with self.assertRaisesRegex(SandboxError, "duplicate table name"):
+                DataManifestValidator.validate({"tables": [table, dict(table)]}, root)
+            with self.assertRaisesRegex(SandboxError, "row_count differs"):
+                DataManifestValidator.validate({"tables": [{**table, "row_count": 2}]}, root)
+            with self.assertRaisesRegex(SandboxError, "schema name differs"):
+                DataManifestValidator.validate({"tables": [{**table, "table_name": "orders"}]}, root)
+
+    def test_manifest_validator_confines_files_to_data_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "data"
+            root.mkdir()
+            (root / "schema.json").write_text(json.dumps({
+                "table_name": "inventory", "columns": [{"name": "id"}],
+                "primary_key": ["id"], "foreign_keys": [],
+            }), encoding="utf-8")
+            (base / "outside.jsonl").write_text('{"id": 1}\n', encoding="utf-8")
+            table = {"table_name": "inventory", "schema_file": "schema.json",
+                     "rows_file": "../outside.jsonl"}
+            with self.assertRaisesRegex(SandboxError, "escapes data root"):
+                DataManifestValidator.validate({"tables": [table]}, root)
+            (root / "linked.jsonl").symlink_to(base / "outside.jsonl")
+            with self.assertRaisesRegex(SandboxError, "escapes data root"):
+                DataManifestValidator.validate({"tables": [{**table, "rows_file": "linked.jsonl"}]}, root)
+            with self.assertRaisesRegex(SandboxError, "not an object"):
+                DataManifestValidator.validate({"tables": [None]}, root)
+            (root / "schema.json").write_text("[]", encoding="utf-8")
+            with self.assertRaisesRegex(SandboxError, "schema is not an object"):
+                DataManifestValidator.validate({"tables": [{**table, "rows_file": "schema.json"}]}, root)
+
+    def test_date_only_filter_bounds_include_full_timestamp_day(self):
+        matches = DeclarativeToolCompiler._matches
+        self.assertTrue(matches("2025-06-05 18:30:00", "2025-06-05", "lte"))
+        self.assertTrue(matches("2025-06-05T00:15:00", "2025-06-05", "gte"))
+        self.assertFalse(matches("2025-06-06 00:00:00", "2025-06-05", "lte"))
+        self.assertFalse(matches("2025-06-04 23:59:59", "2025-06-05", "gte"))
+        self.assertFalse(matches("2025-06-05 18:30:00", "2025-06-05 12:00:00", "lte"))
 
     def test_shared_application_routes_and_authenticates(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -72,6 +72,19 @@ def prepare_sandbox_task(
                 shutil.copytree(source_root, destination)
             manifest["root"] = runtime_root.as_posix()
 
+            if key == "data_manifest":
+                task_spec = task.get("task_spec")
+                environment_contract = (
+                    task_spec.get("environment_contract")
+                    if isinstance(task_spec, dict) else None
+                )
+                initial_fixture = (
+                    environment_contract.get("initial_fixture")
+                    if isinstance(environment_contract, dict) else None
+                )
+                if isinstance(initial_fixture, dict) and isinstance(initial_fixture.get("manifest"), dict):
+                    initial_fixture["manifest"] = json.loads(json.dumps(manifest, ensure_ascii=False))
+
             for item in task.get("environment", []):
                 if (
                     key == "data_manifest"

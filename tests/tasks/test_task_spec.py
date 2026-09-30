@@ -114,6 +114,21 @@ class TaskSpecCompilerTest(unittest.TestCase):
             ],
         }])
         self.assertEqual(spec["capability_dag"]["edges"][0]["via"], "record_id")
+        self.assertEqual(spec["capability_dag"]["edges"][0]["argument_path"], "$.id")
+
+        nested = compile_task_spec(**common, executable_scenarios=[{
+            "scenario_id": "nested_success", "kind": "goal_success", "steps": [
+                {"operation": "tool_call", "tool_name": "lookup", "arguments": {},
+                 "capture": {"record_id": "$.records[0].id"}},
+                {"operation": "tool_call", "tool_name": "update",
+                 "arguments": {"changes": [{"id": {"$ref": "record_id"}}]}},
+            ],
+        }])
+        self.assertEqual(nested["capability_dag"]["edges"][0]["argument_path"], "$.changes[0].id")
+        del nested["capability_dag"]["edges"][0]["argument_path"]
+        from env_factory.tasks.task_spec import validate_task_spec
+        with self.assertRaisesRegex(TaskSpecError, "both result_path and argument_path"):
+            validate_task_spec(nested)
 
     def test_compiles_capability_edge_from_key_step_dependencies(self):
         spec = compile_task_spec(

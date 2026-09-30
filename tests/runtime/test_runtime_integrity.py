@@ -44,6 +44,24 @@ class IntegrityTest(unittest.TestCase):
             self.assertEqual(call.call_count, 1)
             self.assertEqual(call.call_args.kwargs["response_schema"]["properties"]["label"]["enum"], ["pass", "fail"])
 
+    def test_empty_terminal_answer_is_scored_without_external_judge(self):
+        contract = {"metrics": [{
+            "id": "answer_quality", "category": "outcome", "scope": "terminal",
+            "score_range": [0, 1],
+            "evaluation_inputs": ["final_agent_response", "tool_results"],
+            "evaluator": {"kind": "external_llm_judge",
+                          "score_mapping": {"full": 1, "partial": 0.5, "missing": 0}},
+        }]}
+        evaluator = ContractModelMetricEvaluator(contract, self.store)
+        with patch.dict("os.environ", {"SANDBOX_EVALUATOR_MOCK": "0"}), patch(
+            "env_factory.sandbox_runtime.RuntimeLLMClient"
+        ) as client:
+            self.assertEqual(evaluator.evaluate_all({"final_agent_response": ""}, {}),
+                             {"answer_quality": 0.0})
+            self.assertEqual(evaluator.evaluate_all({"final_agent_response": "  "}, {}),
+                             {"answer_quality": 0.0})
+            client.assert_not_called()
+
     def test_model_metric_maps_declared_business_data_to_runtime_state(self):
         contract = {"metrics": [{
             "id": "quality", "score_range": [0, 1],
@@ -69,6 +87,34 @@ class IntegrityTest(unittest.TestCase):
         self.assertEqual(captured["evidence"], {
             "business_data": {"orders": [{"id": 1}]},
         })
+
+    def test_reference_answer_with_stale_private_fact_loses_outcome_credit(self):
+        contract = {
+            "task_spec": {"environment_contract": {"mode": "reference_data", "initial_fixture": {
+                "manifest": {"tables": [{"table_name": "archive", "primary_key": ["id"]}]}}}},
+            "metrics": [{"id": "answer", "category": "outcome", "scope": "terminal",
+                         "score_range": [0, 1],
+                         "evaluation_inputs": ["final_agent_response", "tool_results", "business_data"],
+                         "evaluator": {"kind": "external_llm_judge", "score_mapping": {"pass": 1, "fail": 0}}}],
+        }
+        evaluator = ContractModelMetricEvaluator(contract, self.store)
+        original = {"archive": [{"id": 1, "updated_at": "2024-06-15"}]}
+        changed = {"archive": [{"id": 1, "updated_at": "2025-07-20"}]}
+        context = {
+            "initial_business_state": original, "business_state": changed,
+            "final_agent_response": "档案更新日期为 2024-06-15。",
+            "trajectory": {"events": [{"event": "tool_call", "result": {
+                "archive": {"id": 1, "updated_at": "2025-07-20"}}}]},
+        }
+        with patch.dict("os.environ", {"SANDBOX_EVALUATOR_MOCK": "0"}), patch(
+            "env_factory.sandbox_runtime.RuntimeLLMClient.json_chat", return_value={"label": "pass"},
+        ):
+            self.assertEqual(evaluator.evaluate_all(context, {}), {"answer": 0})
+            context["final_agent_response"] = "档案更新日期为 2025-07-20。"
+            self.assertEqual(evaluator.evaluate_all(context, {}), {"answer": 1})
+        self.assertEqual([event["event"] for event in self.store.replay()["events"]
+                          if event["event"] == "evaluator_fact_mismatch"],
+                         ["evaluator_fact_mismatch"])
 
     def test_model_metric_reads_declared_inputs_from_observation_envelope(self):
         contract = {"metrics": [{
@@ -167,6 +213,23 @@ class IntegrityTest(unittest.TestCase):
         handler = DeclarativeToolCompiler(self.data).compile({
             "operation": "select", "table": "items", "result_field": "records", "order_by": ["quantity"]})
         self.assertEqual([row["quantity"] for row in handler({})["records"]], [2, 10])
+
+    def test_tool_trace_records_private_business_reads(self):
+        tools = [{"type": "function", "function": {
+            "name": "lookup", "parameters": {"type": "object"},
+        }}]
+        registry = ContractToolRegistry(
+            tools, {"lookup": lambda args: {"records": self.data.select("items", id=1)}},
+            event_recorder=self.store.event,
+        )
+        registry.execute("lookup", {})
+        event = self.store.replay()["events"][-1]
+        self.assertEqual(event["payload"]["business_data_reads"], ["items"])
+
+        registry.handlers["lookup"] = lambda args: {"records": [{"id": 1}]}
+        registry.execute("lookup", {})
+        event = self.store.replay()["events"][-1]
+        self.assertEqual(event["payload"]["business_data_reads"], [])
 
     def test_explicit_episode_context_isolates_interleaved_work(self):
         self.store.reset(episode_id="B", seed=2)
@@ -291,10 +354,27 @@ class IntegrityTest(unittest.TestCase):
 
     def test_evaluator_cache_uses_real_replay_shape(self):
         evaluator = ContractEvaluatorRuntime(self.store)
-        with patch.dict("os.environ", {"SANDBOX_EVALUATOR_MOCK": "1"}):
+        with patch("env_factory.sandbox_runtime.RuntimeLLMClient.json_chat",
+                   return_value={"score": 1}) as judge:
             for _ in range(2):
                 evaluator.json_judge({"id": "goal"}, {"trajectory": self.store.replay()}, fallback={"score": 0})
+        self.assertEqual(judge.call_count, 1)
         self.assertEqual(len(self.store.replay()["events"]), 1)
+
+    def test_evaluator_cache_invalidates_when_rubric_or_criteria_change(self):
+        evaluator = ContractEvaluatorRuntime(self.store)
+        metric = {"id": "goal", "rubric": "Explain the distinction", "criteria": ["Mention different roles"]}
+        context = {"final_agent_response": "These have different roles."}
+        with patch("env_factory.sandbox_runtime.RuntimeLLMClient.json_chat",
+                   side_effect=[{"label": "pass"}, {"label": "fail"}, {"label": "pass"}]) as judge:
+            first = evaluator.json_judge(metric, context, fallback={"label": "fail"})
+            self.assertEqual(first["label"], "pass")
+            self.assertEqual(evaluator.json_judge(metric, context, fallback={"label": "fail"}), first)
+            metric["criteria"] = ["Also identify the preparation method"]
+            self.assertEqual(evaluator.json_judge(metric, context, fallback={"label": "fail"})["label"], "fail")
+            metric["rubric"] = "Assess only the stated role distinction"
+            self.assertEqual(evaluator.json_judge(metric, context, fallback={"label": "fail"})["label"], "pass")
+            self.assertEqual(judge.call_count, 3)
 
     def test_later_recovery_can_establish_dependency(self):
         gate = ContractRewardGate({"training_contract": {"category": "multi_step_agentic"},
@@ -313,6 +393,28 @@ class IntegrityTest(unittest.TestCase):
         self.assertEqual(gate.apply({"goal": 1}, {"trajectory": {"events": events}})["goal"], 0)
         events[-1]["payload"]["arguments"]["id"] = 1
         self.assertEqual(gate.apply({"goal": 1}, {"trajectory": {"events": events}})["goal"], 1)
+
+    def test_nested_dependency_requires_output_consumption_and_complete_paths(self):
+        task_spec = {"training_contract": {"category": "multi_step_agentic"},
+            "capability_dag": {"nodes": ["read", "write"], "edges": [{
+                "from_tool": "read", "to_tool": "write",
+                "result_path": "$.records[0].id", "argument_path": "$.changes[0].id",
+            }]}}
+        gate = ContractRewardGate(task_spec, [
+            {"id": "goal", "category": "outcome", "score_range": [0, 1]},
+        ])
+        events = [
+            {"event": "tool_call", "payload": {"tool_name": "read"},
+             "result": {"records": [{"id": 1}]}},
+            {"event": "tool_call", "payload": {"tool_name": "write",
+             "arguments": {"changes": [{"id": 2}]}}},
+        ]
+        context = {"trajectory": {"events": events}}
+        self.assertEqual(gate.apply({"goal": 1}, context)["goal"], 0)
+        events[1]["payload"]["arguments"]["changes"][0]["id"] = 1
+        self.assertEqual(gate.apply({"goal": 1}, context)["goal"], 1)
+        del task_spec["capability_dag"]["edges"][0]["argument_path"]
+        self.assertEqual(gate.apply({"goal": 1}, context)["goal"], 0)
 
     def test_state_goal_cannot_be_satisfied_by_call_coverage(self):
         gate = ContractRewardGate({

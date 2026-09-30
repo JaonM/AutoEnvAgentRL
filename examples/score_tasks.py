@@ -14,7 +14,7 @@ from env_factory.tasks.task_quality import discover_task_files, error_report, sc
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="批量评分并过滤 Agentic-RL 任务样本")
-    parser.add_argument("root", nargs="?", type=Path, default=Path("output/task_artifacts"))
+    parser.add_argument("root", nargs="?", type=Path, default=Path("output/task"))
     parser.add_argument("--min-score", type=float, default=8.0, help="合格阈值，默认 8.0（含）")
     parser.add_argument("--report", type=Path, default=Path("output/task_quality_report.json"))
     parser.add_argument("--csv", type=Path, help="可选 CSV 汇总路径")

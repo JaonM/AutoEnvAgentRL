@@ -14,6 +14,7 @@ import math
 import random
 import re
 import time
+import unicodedata
 import uuid
 import os
 import hashlib
@@ -26,6 +27,10 @@ from .llm import LLMClient
 from .generation.pipeline_errors import PipelineGenerationError
 from .generation.pipeline_prompts import REWARD_DESIGN_PROMPT, TOOL_DEFINITION_PROMPT
 from .contracts.reward_contract import (
+    REFERENCE_FACTUALITY_CRITERION,
+    STATEFUL_GOAL_CRITERION,
+    ambiguous_metric_captures,
+    contradicts_reference_factuality,
     declared_terminal_outcome_ids, has_literal_payload_argument,
     reward_contract_issues,
 )
@@ -34,8 +39,21 @@ from .generation.pipeline_stage import (
 )
 from .generation.stage_cache import StageCache
 from .generation.user_simulation_contract import UserSimulationContractMixin
+from .tasks.task_quality import (
+    capability_disclaims_tool, fixed_row_total_targets, has_private_tool_dependency,
+    prior_result_only_tool_actions, public_row_sets, unsourced_real_world_exemplars,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _finite_number(value: Any) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
 
 HIGH_STAKES_MARKERS = (
     "法律", "法规", "法条", "政策文件", "合规", "法律意见",
@@ -106,13 +124,17 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             error_type=PipelineGenerationError,
         )
 
-    def _call(self, stage: str, system: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _call(
+        self, stage: str, system: str, payload: dict[str, Any],
+        *, stop_on_structural_error: bool = False,
+    ) -> dict[str, Any]:
         return self.stage_executor.call(
             stage,
             system,
             payload,
             jitter=random.uniform,
             sleep=time.sleep,
+            stop_on_structural_error=stop_on_structural_error,
         )
 
     @staticmethod
@@ -133,8 +155,6 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
         training_category: str = "multi_step_agentic",
         rng: random.Random | None = None,
         available_environment_modes: tuple[str, ...] | None = None,
-        description_override: dict[str, Any] | None = None,
-        source_data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         random_source = rng or random
         supported_modes = set(available_environment_modes or (
@@ -180,7 +200,7 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             raise PipelineGenerationError(f"unsupported task_intent: {task_intent}")
         category_rules = {
             "direct_response": "生成 simple 的直接回答任务。用户输入必须足以完成任务；不要虚构业务数据依赖或业务工具。正确策略是不调用工具，若提供噪声工具则调用它应受罚。",
-            "simple_agentic": "生成 simple 的单步 Agentic 任务。必须存在一个模型常识无法替代的信息缺口或状态操作，并可由一个必要业务工具完成；工具结果必须决定最终回答。",
+            "simple_agentic": "生成 simple 的单步 Agentic 任务。必须存在一个模型常识无法替代的信息缺口或状态操作，并可由一个必要业务工具完成；这一次工具返回必须提供最终回答所需的全部私有业务事实，不要设计需要第二次独立查询或跨多张表补事实的目标。工具结果必须决定最终回答。",
             "multi_step_agentic": "生成 standard 或 complex 的多步 Agentic 任务。至少需要两个业务工具，且至少一个后续工具参数或分支必须依赖前序工具的公开结果。",
         }
         if training_category not in category_rules:
@@ -198,8 +218,75 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
         if not has_source_urls:
             source_safety_hint = (
                 " 当前 graph_context 不含可核验来源 URL，因此禁止把医疗诊断、用药、法律、合规、"
-                "税务、证券或投资建议设为任务目标；即使关键词涉及这些领域，也必须改写成无需权威"
-                "事实的低风险语言处理任务。"
+                "税务、证券或投资建议设为任务目标；即使关键词涉及这些领域，也必须围绕"
+                "内部合成业务记录设计低风险任务，只检查、转换或更新明确给出的内部字段与规则，"
+                "不得判断现实世界的专业结论。Agentic 路由仍须通过声明的业务工具读取或修改私有记录。"
+            )
+        source_safety_hint += (
+            " 用户可见的 task、initial_user_message 和工具需求要像真实业务请求；"
+            "不得出现‘沙箱’‘图谱节点’‘采样关键词’等生产内部术语。"
+            "多步任务的第二个工具必须访问新的私有记录或执行必要业务操作，"
+            "不得只是对前序结果求和、计数、格式化或组织最终回答。"
+            "Agentic 任务的私有业务记录应由 route_plan 声明的工具在运行时读取，"
+            "不得为使题面自包含而复制到 public_input。expected_result 只描述结果形式和判定规则；"
+            "业务记录尚未生成时，不得预填由私有记录决定的具体答案或金额。"
+            "涉及相对日期的计算须明确运行日期或统计区间。"
+            "直接回答若要求列举现实领域的代表作品、人物或历史实例，必须有公开且可追溯的"
+            "实际参考资料；不得用模型编写的无来源材料冒充事实。无来源时改成纯文本加工或明确虚构的案例。"
+        )
+        scene_business_plan: dict[str, Any] | None = None
+        if isinstance(graph_context.get("nodes"), list) and graph_context["nodes"]:
+            plan_error: PipelineGenerationError | None = None
+            for plan_attempt in range(1, self.retries + 1):
+                scene_business_plan = self._call(
+                    "scene_business_plan" if plan_attempt == 1 else "scene_business_plan.repair",
+                    "从采样 Scene 路径中选择一个能自然出现在真实用户需求里的具体主题。"
+                    "先确定用户角色、业务目标和可查询的业务记录，再规划任务描述。"
+                    "anchor_term 必须逐字取自 keywords 或 graph_context.nodes，不能另造主题；"
+                    "business_context 与 user_need 要像真实业务，不得提到图谱、沙箱或生成流程。"
+                "multi_step_agentic 的 tool_dependency 必须说明先查什么记录、从结果取什么"
+                "用户请求中尚不知道的标识，再以该标识作为第二步访问另一类私有记录或执行操作的参数；"
+                "若第二步只需用户已给的名称，就不构成真实参数依赖。不能把简单汇总或格式化当第二步。"
+                    "source_records 只列可在沙箱中合成并持久化的普通业务记录，不得虚构权威外部事实。"
+                    + source_safety_hint,
+                    {
+                        "keywords": keywords,
+                        "graph_context": graph_context,
+                        "task_type": task_type,
+                        "task_intent": task_intent,
+                        "training_category": training_category,
+                        "supported_modes": sorted(supported_modes),
+                        "previous_plan": scene_business_plan,
+                        "validation_error": str(plan_error) if plan_error else None,
+                        "output": {
+                            "anchor_term": "string", "business_context": "string",
+                            "user_role": "string", "user_need": "string",
+                            "source_records": ["string"], "tool_dependency": "string",
+                        },
+                    },
+                )
+                try:
+                    self._validate_scene_business_plan(
+                        scene_business_plan, keywords=keywords,
+                        graph_context=graph_context, training_category=training_category,
+                    )
+                    self._validate_scene_source_scope(
+                        scene_business_plan, has_source_urls=has_source_urls,
+                    )
+                    plan_error = None
+                    break
+                except PipelineGenerationError as exc:
+                    plan_error = exc
+                    logger.warning("scene business plan invalid: attempt=%d/%d error=%s",
+                                   plan_attempt, self.retries, exc)
+            if plan_error is not None:
+                raise plan_error
+            required_anchor = scene_business_plan["anchor_term"]
+            source_safety_hint += (
+                f" 输入中的 scene_business_plan 已选定业务主题；题面 task 或 initial_user_message"
+                f"必须逐字出现具体主题词《{required_anchor}》，不能仅使用其他 Scene 关键词替代。"
+                "业务目标和必要记录应与该规划一致，"
+                "不得把锚点当无关前缀硬塞进题面。"
             )
         description_output = {
             "task": "string", "task_intent": task_intent, "goal": "string", "context": [],
@@ -207,22 +294,32 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             "route_plan": {"environment_operations": [{"action_name": "string", "purpose": "string", "dependencies": []}]},
             "expected_result": "string", "complexity": "simple|standard|complex", "requirements": {},
         }
-        description = description_override if description_override is not None else self._call(
+        description = self._call(
             "task_description",
             f"根据主题和关键词生成真实用户任务。任务意图已经固定为 {task_intent}：{intent_rules[task_intent]}。必须严格遵循该意图，不得用其他意图替换它。训练路由已经固定为 {training_category}：{category_rules[training_category]} route_plan.environment_operations 是该任务真正必要的环境操作骨架：direct_response 必须为空；simple_agentic 必须恰好一个；multi_step_agentic 至少两个，且后续操作 dependencies 必须引用前序 action_name，表示参数、记录标识或分支条件的真实数据依赖。action_name 必须是具体业务动作，不得把分析、比较、总结或最终回答算作环境操作。题面必须让这些操作成为完成目标的必要条件。当前运行环境只支持 {sorted(supported_modes)}，不得生成依赖其他环境模式的任务；external_capability 不在列表时，禁止要求实时搜索、天气、行情、公共网络查询或未提供的外部计算服务。不得把简单任务机械拆成多个查询，也不得为满足工具数量虚构数据源。若当前关键词不足以形成该路由要求，可以忽略弱相关关键词并围绕最有信息量的关键词设计真实业务场景。必须明确目标、上下文、约束、预期结果和复杂度事实。任务必须能由用户运行时提供的信息、明确声明的业务资料或工具能力完成；不得要求 Agent 猜测价格、成分、属性或排名等未提供事实。public_input 是训练时真实交付给 Agent 的公开输入：initial_user_message 必须是完整请求；任务若提到“以下文本、用户提供的资料、给定数据、附件内容”等输入，必须把实际合成内容逐项放入 materials，不能只写“用户已提供”。业务数据库中的隐藏事实不得复制到 public_input。修改、执行或排程任务若涉及事实替换，必须在 public_input、context 或 requirements 中给出权威替换值或确定性规则；当前任务契约尚不能把未定义的新业务真值推迟到后续 User Simulator 回合，因此禁止“先问我、稍后提供、暂时没想好”等未决关键输入。当前 Agent 运行时只能提交自然语言最终回答，不能上传或返回 PDF、PNG、DOCX、XLSX、PPTX 等二进制文件；除非任务明确提供了可执行文件交付能力，否则 output_format 必须是文本、Markdown、JSON 或表格内容，禁止让 Agent 声称已经生成不可验证的文件。只有任务确实需要图片、音频、视频或文件输入时，requirements.input_modalities 才能包含对应媒体类型；否则只使用 text 或 structured_data。{source_safety_hint}",
-            {"keywords": keywords, "task_type": task_type, "style": style, "task_intent": task_intent,
+            {"keywords": keywords, "scene_business_plan": scene_business_plan,
+             "task_type": task_type, "style": style, "task_intent": task_intent,
              "training_category": training_category,
              "graph_context": graph_context, "output": description_output},
         )
+        description = self._normalize_reasoning_request(description)
         route_error: PipelineGenerationError | None = None
         for route_contract_attempt in range(1, self.retries + 1):
             try:
                 self._validate_route_plan(description.get("route_plan"), training_category)
-                self._validate_route_input_boundary(description, training_category)
+                self._validate_route_input_boundary(description, training_category, task_intent)
                 self._validate_no_deferred_business_truth(description, task_intent)
+                if unsourced_real_world_exemplars(description, training_category=training_category):
+                    raise PipelineGenerationError(
+                        "direct_response requires sourced real-world exemplars; "
+                        "regenerate without unsupported named examples"
+                    )
                 task_desc = description.get("task")
                 if not isinstance(task_desc, str) or not task_desc.strip():
                     raise PipelineGenerationError("task_description.task must be non-empty")
+                self._validate_graph_keyword_alignment(description, keywords, graph_context)
+                if scene_business_plan is not None:
+                    self._validate_scene_anchor_in_task(description, scene_business_plan)
                 returned_intent = description.get("task_intent")
                 if returned_intent is not None and returned_intent != task_intent:
                     raise PipelineGenerationError(
@@ -239,6 +336,12 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                 if route_contract_attempt >= self.retries:
                     break
                 public_only_route = "fully solvable from public user input" in str(exc)
+                graph_drift = (
+                    "does not use any sampled Scene keyword" in str(exc)
+                    or "omits the selected Scene anchor" in str(exc)
+                    or "exposes generation or sandbox internals" in str(exc)
+                )
+                unsupported_exemplars = "requires sourced real-world exemplars" in str(exc)
                 repair_payload = {
                     "task_description": description,
                     "training_category": training_category,
@@ -249,7 +352,7 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                 repair_instruction = (
                     "只修复任务描述的训练路由契约并返回完整任务描述。"
                 )
-                if public_only_route:
+                if public_only_route or graph_drift or unsupported_exemplars:
                     # Rewriting the same fully supplied public task usually
                     # preserves the defect. Regenerate from the route and
                     # grounded context while keeping the requested intent.
@@ -260,14 +363,27 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                         "task_intent": task_intent,
                         "training_category": training_category,
                         "graph_context": graph_context,
+                        "scene_business_plan": scene_business_plan,
+                        "required_anchor_term": (
+                            scene_business_plan["anchor_term"]
+                            if scene_business_plan is not None else None
+                        ),
                         "validation_error": str(exc),
                         "output": description_output,
                     }
                     repair_instruction = (
-                        "重新生成完整任务描述，不复用上一版只依赖公开输入即可完成的目标。"
-                        "至少一个必要操作必须读取沙箱内部业务记录，公开输入只给查询标识、"
-                        "筛选条件或待处理请求；另一个操作必须真实依赖前序工具的公开结果。"
-                        "后续阶段会按任务描述生成内部合成数据，不得把隐藏事实或最终答案写入 public_input。"
+                        "重新生成完整任务描述。"
+                        + (
+                            f"task 或 initial_user_message 必须逐字出现主题词《{scene_business_plan['anchor_term']}》，"
+                            "并让业务目标、工具需求和该主题自然一致；不得仅使用其他 Scene 关键词替代。"
+                            if scene_business_plan is not None else
+                            "task 或 initial_user_message 必须保留至少一个采样 Scene 的具体主题词。"
+                        )
+                        + "不得改写成与 graph_context 无关的地点、产品或业务。"
+                        "用户可见描述不得出现沙箱、图谱节点、采样关键词等生产内部术语。"
+                        "公开输入不得包含沙箱私有事实或最终答案。"
+                        + ("至少一个必要操作必须读取沙箱内部业务记录，后续操作必须真实依赖前序结果。" if public_only_route else "")
+                        + ("不得要求无来源的现实领域代表作品、人物或历史实例；改为纯文本加工或明确虚构的案例，不得虚构来源网址。" if unsupported_exemplars else "")
                     )
                 repaired = self._call(
                     "task_description.route_repair",
@@ -280,14 +396,16 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                     + source_safety_hint,
                     repair_payload,
                 )
-                description = self._unwrap_task_description(repaired)
+                description = self._normalize_reasoning_request(
+                    self._unwrap_task_description(repaired)
+                )
         if route_error is not None:
             raise route_error
         grounding_error: PipelineGenerationError | None = None
         for grounding_attempt in range(1, self.retries + 1):
             audit = self._call(
                 "task_description_grounding_audit",
-                "独立审查任务是否可完成且内部一致。self_contained 表示任务或明确约定的运行时用户输入提供了完成目标所需的信息；no_unprovided_facts 表示任务不要求 Agent 猜测价格、成分、属性、排名或其他事实；expected_result_derivable 表示预期结论可以从已声明输入、业务资料或工具能力推出；internally_consistent 表示 task、goal、context、expected_result、requirements 全部描述同一组对象、约束和交付物，不得混入其他任务的地点、产品、人物或字段。允许任务明确要求信息不足时向用户澄清。issues 必须具体。",
+                "独立审查任务是否可完成且内部一致。先区分 public_input 中的公开材料和 route_plan.environment_operations 声明的运行时私有业务工具：对于 Agentic 任务，工具将读取的私有记录无需也不应出现在公开材料中；若操作明确声明可查询相关业务记录，不能仅因尚未给出记录行或工具返回值就判定缺失输入。self_contained 表示公开输入加已声明的必要工具能力足以在运行时完成目标；no_unprovided_facts 表示任务不要求 Agent 猜测无法由公开输入或工具获得的事实；expected_result_derivable 表示预期结果的规则可由这些来源推出，但若 expected_result 写死了依赖尚未生成的私有记录的具体数值，仍须判失败。检查相对日期的统计边界、无来源的事实和领域/对象矛盾。internally_consistent 表示 task、goal、context、expected_result、requirements 全部描述同一组对象、约束和交付物。允许任务明确要求信息不足时向用户澄清。issues 必须具体，指出真正缺失的来源或矛盾，不要要求把私有记录复制到 public_input。",
                 {
                     "task_description": description,
                     "output": {
@@ -309,6 +427,7 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             try:
                 self._validate_task_grounding_audit(audit)
                 self._validate_task_description_consistency(description)
+                self._validate_graph_keyword_alignment(description, keywords, graph_context)
                 self._validate_task_generation_scope(
                     description, graph_context=graph_context
                 )
@@ -320,7 +439,9 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                     "task description grounding failed: attempt=%d/%d error=%s",
                     grounding_attempt, self.retries, exc,
                 )
-                if grounding_attempt >= self.retries:
+                if (grounding_attempt >= self.retries
+                        or (grounding_attempt >= 2 and not has_source_urls
+                            and "high-stakes task requires authoritative source URLs" in str(exc))):
                     break
                 repair_payload: dict[str, Any] = {
                     "task_description": description,
@@ -353,10 +474,11 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                     )
                 repaired_description = self._call(
                     "task_description.grounding_repair",
-                    "修复任务描述，使任务能够由用户运行时输入、明确业务资料或工具能力完成。补充缺失的权威值或规则，或明确要求 Agent 在信息不足时向用户澄清；不得直接编造隐藏答案。必须逐条解决 grounding_issues 中的真实校验错误。若错误指出缺少权威来源，必须彻底移除医疗诊断、食物中毒判断、用药、法律、合规、税务、证券或投资建议等高风险目标，并在保持 task_intent 的前提下改写为无需权威事实的低风险主题；仅改措辞但保留高风险目标不算修复。不得要求输出思考过程、推理过程或隐藏思维链，只能要求简短结论依据。保持原 task_intent 不变，返回完整任务描述对象。" + repair_instruction,
+                    "修复任务描述，使任务能够由用户运行时输入、明确业务资料或工具能力完成。route_plan 中已声明的私有业务工具可在运行时获取相应记录；不要因为公开材料没有这些私有记录就删掉工具、公开隐藏记录或要求用户补交。保持训练路由的环境操作数量、动作名和依赖关系；补充工具 purpose 中缺失的数据范围和关键字段。移除 expected_result 中无依据的具体业务数值，改为可由工具结果计算的结果规则，并明确相对日期的统计区间。补充真正缺失的权威值或规则，或明确要求 Agent 在信息不足时向用户澄清；不得直接编造隐藏答案。必须逐条解决 grounding_issues 中的真实校验错误。若错误指出缺少权威来源，必须彻底移除医疗诊断、食物中毒判断、用药、法律、合规、税务、证券或投资建议等高风险目标，并在保持 task_intent 的前提下改写为无需权威事实的低风险主题；仅改措辞但保留高风险目标不算修复。不得要求输出思考过程、推理过程或隐藏思维链，只能要求简短结论依据。保持原 task_intent 不变，返回完整任务描述对象。" + repair_instruction,
                     repair_payload,
                 )
                 description = self._unwrap_task_description(repaired_description)
+                description = self._normalize_reasoning_request(description)
                 if (
                     not isinstance(description.get("task"), str)
                     or not description["task"].strip()
@@ -369,12 +491,14 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                 self._validate_route_plan(
                     description.get("route_plan"), training_category
                 )
-                self._validate_route_input_boundary(description, training_category)
+                self._validate_route_input_boundary(description, training_category, task_intent)
+                self._validate_graph_keyword_alignment(description, keywords, graph_context)
                 self._validate_no_deferred_business_truth(description, task_intent)
         if grounding_error is not None:
             if "hidden chain-of-thought" in str(grounding_error):
                 description = self._normalize_reasoning_request(description)
                 self._validate_task_description_consistency(description)
+                self._validate_graph_keyword_alignment(description, keywords, graph_context)
                 try:
                     self._validate_task_generation_scope(
                         description, graph_context=graph_context
@@ -390,6 +514,7 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                 description = self._normalize_unsourced_governance_task(description)
                 try:
                     self._validate_task_description_consistency(description)
+                    self._validate_graph_keyword_alignment(description, keywords, graph_context)
                     self._validate_task_generation_scope(
                         description, graph_context=graph_context
                     )
@@ -403,6 +528,8 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                 raise grounding_error
         # Repairs must not silently replace failed tasks with unrelated templates.
         task_desc = description["task"]
+        if scene_business_plan is not None:
+            description["_scene_business_plan"] = scene_business_plan
         complexity = description["complexity"]
         requirements = description.get("requirements")
         if not isinstance(requirements, dict):
@@ -416,18 +543,6 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
         deliverable_required = self._requires_file_deliverable(description)
         media_required = input_media_required or deliverable_required
 
-        environment_candidate = self._call(
-            "environment_plan",
-            "判断任务运行时真正需要的环境模式。stateless 表示只处理用户提供的文本或结构化输入，不需要预置业务数据或持久化；reference_data 表示需要只读业务资料；stateful 表示任务明确要求创建、修改、审批、排程、交易或持久化业务状态；external_capability 表示核心依赖搜索、天气、计算或其他外部能力。training_category=direct_response 时必须选择 stateless；其他训练类别必须选择能支持必要业务工具的非 stateless 模式。不要因为后续对话可能提出扩展请求而选择 stateful；只依据 task_description 中明确的任务目标和预期结果。",
-            {
-                "task_description": description, "training_category": training_category,
-                "task_intent": task_intent,
-                "output": {"mode": "stateless|reference_data|stateful|external_capability", "requires_business_data": False, "requires_persistence": False, "reason": "string"},
-            },
-        )
-        environment_plan = self._resolve_environment_plan(
-            environment_candidate, task_description=description, task_intent=task_intent
-        )
         if training_category == "direct_response":
             environment_plan = {
                 "mode": "stateless",
@@ -436,6 +551,18 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                 "reason": "direct_response curriculum route",
             }
         else:
+            environment_candidate = self._call(
+                "environment_plan",
+                "判断任务运行时真正需要的环境模式。stateless 表示只处理用户提供的文本或结构化输入，不需要预置业务数据或持久化；reference_data 表示需要只读业务资料；stateful 表示任务明确要求创建、修改、审批、排程、交易或持久化业务状态；external_capability 表示核心依赖搜索、天气、计算或其他外部能力。当前训练类别需要业务工具，必须选择能支持必要业务工具的非 stateless 模式。不要因为后续对话可能提出扩展请求而选择 stateful；只依据 task_description 中明确的任务目标和预期结果。",
+                {
+                    "task_description": description, "training_category": training_category,
+                    "task_intent": task_intent,
+                    "output": {"mode": "stateless|reference_data|stateful|external_capability", "requires_business_data": False, "requires_persistence": False, "reason": "string"},
+                },
+            )
+            environment_plan = self._resolve_environment_plan(
+                environment_candidate, task_description=description, task_intent=task_intent
+            )
             environment_plan = self._align_environment_plan_with_route(
                 environment_plan,
                 route_plan=description["route_plan"],
@@ -447,18 +574,55 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                 "task buildability: environment mode "
                 f"{environment_plan['mode']!r} is unavailable; supported={sorted(supported_modes)}"
             )
-        self._validate_public_input(
-            task_description=description,
-            public_input=public_input,
-            environment_mode=environment_plan["mode"],
-        )
+        if (environment_plan["mode"] == "stateful"
+                and self._has_conditional_noop_branch(description, public_input)):
+            raise PipelineGenerationError(
+                "stateful task has a valid no-write branch, but the current goal and "
+                "process reward contract require a state change"
+            )
+        try:
+            self._validate_public_input(
+                task_description=description,
+                public_input=public_input,
+                environment_mode=environment_plan["mode"],
+            )
+        except PipelineGenerationError as exc:
+            if str(exc) != "public_input is missing the concrete material referenced by the task":
+                raise
+            repaired = self._call(
+                "public_input_material_repair",
+                "仅修复公开输入材料缺失：如果任务确实引用用户给定的文本、清单或附件，"
+                "在 public_input.materials 中给出完整、具体、合成的内容；如果指的是必须由业务工具"
+                "查询的私有记录，则改写 task/context/requirements 中误称为用户已给材料的措辞。"
+                "保持业务目标、task_intent、route_plan、依赖关系与训练类别不变，"
+                "不得把私有业务真值、最终答案或内部生成术语放进公开输入。返回完整任务描述。",
+                {"task_description": description, "validation_error": str(exc),
+                 "output": description_output},
+            )
+            revised = self._unwrap_task_description(repaired)
+            if (revised.get("task_intent", task_intent) != task_intent
+                    or revised.get("route_plan") != description.get("route_plan")):
+                raise PipelineGenerationError("public material repair changed task intent or route")
+            self._validate_task_description_consistency(revised)
+            self._validate_graph_keyword_alignment(revised, keywords, graph_context)
+            if scene_business_plan is not None:
+                self._validate_scene_anchor_in_task(revised, scene_business_plan)
+                revised["_scene_business_plan"] = scene_business_plan
+            description = revised
+            public_input = self._normalize_public_input(description)
+            description["public_input"] = public_input
+            self._validate_public_input(
+                task_description=description,
+                public_input=public_input,
+                environment_mode=environment_plan["mode"],
+            )
         self._validate_authoritative_task_input(
             task_description=description,
             environment_mode=environment_plan["mode"],
             graph_context=graph_context,
         )
 
-        materialized_dir = Path(artifact_dir) if artifact_dir is not None else Path("output/task_artifacts") / f"task-{uuid.uuid4().hex}"
+        materialized_dir = Path(artifact_dir) if artifact_dir is not None else Path("output/task") / f"task-{uuid.uuid4().hex}"
         if environment_plan["mode"] in {"stateless", "external_capability"}:
             entity_plan = {"entities": []}
             table_definitions: list[dict[str, Any]] = []
@@ -469,39 +633,15 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                 [], data_document, materialized_dir / "data" / "business_data",
                 environment_mode=environment_plan["mode"],
                 manifest_root="data/business_data",
-                data_governance=source_data.get("data_governance") if source_data else None,
-            )
-        elif source_data is not None:
-            # Dataset trials keep the supplied business rows authoritative.
-            # Downstream tools, rewards, scenarios and TaskSpec use these rows
-            # through the same path as model-generated business data.
-            entity_plan = {"entities": source_data.get("entities", [])}
-            data_tables = source_data.get("data_tables")
-            if not isinstance(data_tables, list) or not data_tables:
-                raise PipelineGenerationError("source_data requires non-empty data_tables")
-            self._validate_relational_data(data_tables)
-            table_definitions = [
-                {key: value for key, value in table.items() if key != "rows"}
-                for table in data_tables
-            ]
-            records = []
-            data_document = source_data.get("data_document")
-            if not isinstance(data_document, str) or not data_document.strip():
-                raise PipelineGenerationError("source_data requires data_document")
-            data_manifest = self._materialize_business_data(
-                data_tables,
-                data_document,
-                materialized_dir / "data" / "business_data",
-                environment_mode=environment_plan["mode"],
-                manifest_root="data/business_data",
-                data_governance=source_data.get("data_governance"),
             )
         else:
             # 2a. Analyze business entities. This stage does not generate state or perform web search.
             entity_plan = self._call(
             "environment_entities",
-            "根据任务描述分析完成任务所需的最小必要业务实体。只保留完成任务、支持 Agent 查询或修改、以及奖励评测真正需要持久化的业务事实；不需要独立查询、复用或更新的静态说明、标签和建议作为其他实体的字段或 JSON 保存。只有存在独立生命周期、独立查询/更新需求或明确业务关系时才拆分实体。输出实体、用途、必须保存的业务事实和实体关系，实体必须足够覆盖完整任务但遵循最小必要原则。",
-            {"task_description": description, "task_type": task_type, "keywords": keywords,
+            "根据任务描述分析完成任务所需的最小必要业务实体。只保留完成任务、支持 Agent 查询或修改、以及奖励评测真正需要持久化的业务事实；不需要独立查询、复用或更新的静态说明、标签和建议作为其他实体的字段或 JSON 保存。只有存在独立生命周期、独立查询/更新需求或明确业务关系时才拆分实体。输出实体、用途、必须保存的业务事实和实体关系，实体必须足够覆盖完整任务但遵循最小必要原则。"
+            + ("当前为 reference_data，只保留预置的权威参考事实；问题清单、比对结论和回答不是待写入的业务实体。" if environment_plan["mode"] == "reference_data" else ""),
+            {"task_description": description, "scene_business_plan": scene_business_plan,
+             "task_type": task_type, "keywords": keywords,
              "output": {"entities": [{"entity_id": "string", "name": "string", "description": "string", "required_facts": [], "relationships": []}]}},
         )
             self._validate_entities(entity_plan.get("entities"))
@@ -527,8 +667,12 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                     )
                 table_design = self._call(
                     "environment_table_design" if table_attempt == 1 else "environment_table_design.repair",
-                    "根据任务描述和最小必要业务实体设计可持久化的原子数据库表。对需要持久化的关系数据遵循第三范式（3NF）：每个表表达一个清晰主题，字段依赖候选键、依赖整个键且不通过非键字段传递依赖；使用主键、外键和必要的关联表表达关系。外键严格使用 column、ref_table、ref_column；唯一性使用 unique index，非空使用 nullable=false；constraints 只允许 field IN (...) 或 field 与常量的比较表达式，可用 AND 连接，禁止自然语言约束。优先使用最少数量的表完整覆盖任务；只有确有独立生命周期、独立访问需求或必要的一对多/多对多业务关系时才拆表，否则将信息作为字段、枚举、JSON 或文本保存。如果任务要求推荐唯一最佳项、排序、判断是否合规或选择首选项，表结构必须包含足以确定该结论的优先级、适配分数、首选标记、规则结果或理由字段，不能只建立无方向的多对多关联。法律、法规、政策、医疗、投资、税务等权威参考资料必须带 source_url、retrieved_at 和 content_hash 字段，且来源必须可追溯；不得由模型凭空编写权威原文。每张表说明存在必要性，并声明主键、外键、字段类型、可见性、索引和约束。输出表定义。" + repair_hint,
-                    {"task_description": description, "entities": entity_plan["entities"],
+                    "根据任务描述和最小必要业务实体设计可持久化的原子数据库表。对需要持久化的关系数据遵循第三范式（3NF）：每个表表达一个清晰主题，字段依赖候选键、依赖整个键且不通过非键字段传递依赖；使用主键、外键和必要的关联表表达关系。外键严格使用 column、ref_table、ref_column；唯一性使用 unique index，非空使用 nullable=false；constraints 只允许 field IN (...)、field 与常量比较、同一行两个字段比较或同一行两个数值字段相乘后的比较，可用 AND 连接，禁止自然语言约束。优先使用最少数量的表完整覆盖任务；只有确有独立生命周期、独立访问需求或必要的一对多/多对多业务关系时才拆表，否则将信息作为字段、枚举、JSON 或文本保存。如果任务要求推荐唯一最佳项、排序、判断是否合规或选择首选项，表结构必须包含足以确定该结论的优先级、适配分数、首选标记、规则结果或理由字段，不能只建立无方向的多对多关联。法律、法规、政策、医疗、投资、税务等权威参考资料必须带 source_url、retrieved_at 和 content_hash 字段，且来源必须可追溯；不得由模型凭空编写权威原文。每张表说明存在必要性，并声明主键、外键、字段类型、可见性、索引和约束。输出表定义。"
+                    + (" 当前为 reference_data，不得为任务推导出的结果、问题清单或最终回答建立输出表。" if environment_plan["mode"] == "reference_data" else "")
+                    + (" 当前为 stateful：若任务需要创建新记录，目标表中每个非空字段必须能由用户公开输入、前序查询结果或平台生成的单列整数主键确定；无法取得且并非完成目标所需的字段应删除或设为 nullable=true。平台不会自动生成 created_at、updated_at、业务单号或文本主键；若题面和上游数据未给这些值，不得设为必填。不要增加登记人、冲突编号、审批状态等无来源的必填辅助字段。" if environment_plan["mode"] == "stateful" else "")
+                    + repair_hint,
+                    {"task_description": description, "scene_business_plan": scene_business_plan,
+                     "entities": entity_plan["entities"],
                      "previous_tables": table_definitions, "output": table_output},
                 )
                 try:
@@ -556,55 +700,41 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
         # 2c. Generate each table's rows independently so tables can be built
         # concurrently and retried without regenerating unrelated data.
             generated_tables: list[dict[str, Any]] = []
-            with ThreadPoolExecutor(max_workers=min(8, len(table_definitions))) as executor:
-                futures = [executor.submit(
-                    self._generate_table_rows, table,
-                    task_description=description, entities=entity_plan["entities"],
-                ) for table in table_definitions]
-                for future in as_completed(futures):
-                    generated_tables.append(future.result())
+            for layer in self._table_generation_layers(table_definitions):
+                completed = {table["table_name"]: table for table in generated_tables}
+                with ThreadPoolExecutor(max_workers=min(8, len(layer))) as executor:
+                    futures = [executor.submit(
+                        self._generate_table_rows, table,
+                        task_description=description, entities=entity_plan["entities"],
+                        scene_business_plan=scene_business_plan,
+                        parent_tables=[completed[name] for name in self._table_parent_names(table)
+                                       if name in completed],
+                    ) for table in layer]
+                    for future in as_completed(futures):
+                        generated_tables.append(future.result())
             generated_tables.sort(key=lambda table: str(table.get("table_name", "")))
             data_tables = generated_tables
             self._validate_data_tables(data_tables)
 
-        # 2d. Check cross-table consistency and return actual business records.
-            consistency = self._call(
-            "environment_data_consistency",
-            "检查并修正完整初始业务表数据，校验主键唯一、外键存在、字段类型、必填字段、业务关系和任务覆盖度。必须跨表复核冗余汇总字段：数量、总额、当前状态、有效对象数等若可由明细表计算，必须与明细状态以及日期/季度等时间边界一致；不能一张表声明对象已关闭或失效，另一张较晚快照仍把它计入当前总数。stateful 任务的 rows 是每个 episode reset 后的执行前基线，不是任务完成后的最终状态；任务明确要求从旧值改为新值时，基线必须包含旧值且不得提前包含目标终态。任务要求唯一推荐、排序、合规判断或首选结论时，数据必须提供唯一且可追溯的决定性证据；不得同时保留多个等价候选却在预期答案中武断指定其中一个。所有结论所引用的数值、属性和理由必须与 rows 精确一致。返回修正后的 data_tables 与 records。",
-            {"task_description": description, "entities": entity_plan["entities"], "tables": data_tables,
-             "output": {"data_tables": data_tables, "records": []}},
-        )
-            data_tables = consistency.get("data_tables")
-            self._validate_data_tables(data_tables)
-            records = consistency.get("records", [])
-            if not isinstance(records, list):
-                raise PipelineGenerationError("environment_data_consistency.records must be a list")
+        # 2d. Preserve valid per-table rows. A whole-dataset model rewrite can
+        # corrupt rows already repaired against their CHECK and FK constraints.
+        # The independent grounding audit below still checks semantic facts;
+        # use whole-dataset reconciliation only when deterministic checks fail.
+            data_tables, records = self._accept_or_reconcile_data_tables(
+                task_description=description,
+                scene_business_plan=scene_business_plan,
+                entities=entity_plan["entities"],
+                generated_tables=data_tables,
+                keywords=keywords,
+                environment_mode=environment_plan["mode"],
+            )
 
             grounding_error: PipelineGenerationError | None = None
             for grounding_attempt in range(1, self.retries + 1):
-                audit = self._call(
-                    "environment_data_grounding_audit",
-                    "独立审查业务数据是否足以完成任务。task_supported 表示 rows 覆盖任务所需事实；decision_determinate 表示任务要求唯一推荐、排序、合规判断或首选结论时，数据存在唯一且可追溯的决定性证据，没有多个等价候选；facts_consistent 表示输入事实彼此不矛盾，且预期结论可由 rows 直接读取或通过题面明确规则确定性计算得到。逐表重算可验证的 count、total、current、active 等冗余汇总，并结合日期、季度、关闭/失效状态检查跨表时间一致性；明细与汇总不一致必须判 false。不得因为 rows 未预先存储汇总值、对比表、计算结果或最终答案而判 false；这些应由 Agent 调用工具后推导。只有原始事实矛盾、缺少计算所需输入或预期结论无法由数据推导时才判 false。若任务不要求唯一决策，decision_determinate 应为 true。issues 必须具体说明问题。",
-                    {
-                        "task_description": description,
-                        "data_tables": data_tables,
-                        "output": {
-                            "task_supported": True,
-                            "decision_determinate": True,
-                            "facts_consistent": True,
-                            "issues": [],
-                        },
-                    },
-                )
-                audit = self._unwrap_structured_output(
-                    audit,
-                    expected_fields={
-                        "task_supported", "decision_determinate",
-                        "facts_consistent", "issues",
-                    },
-                )
+                audit: dict[str, Any] = {"issues": []}
                 try:
-                    self._validate_data_grounding_audit(audit)
+                    # These checks are deterministic. Reject invalid rows before
+                    # paying for an independent model review of those rows.
                     self._validate_relational_data(data_tables)
                     self._validate_data_keyword_alignment(
                         data_tables,
@@ -616,10 +746,40 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                         task_description=description,
                         environment_mode=environment_plan["mode"],
                     )
-                    grounding_error = None
-                    break
                 except PipelineGenerationError as exc:
                     grounding_error = exc
+                else:
+                    audit = self._call(
+                        "environment_data_grounding_audit",
+                        "独立审查业务数据是否足以完成任务。task_supported 表示 rows 覆盖任务所需事实；decision_determinate 表示任务要求唯一推荐、排序、合规判断或首选结论时，数据存在唯一且可追溯的决定性证据，没有多个等价候选；facts_consistent 表示输入事实彼此不矛盾，且预期结论可由 rows 直接读取或通过题面明确规则确定性计算得到。逐表重算可验证的 count、total、current、active 等冗余汇总，并结合日期、季度、关闭/失效状态检查跨表时间一致性；明细与汇总不一致必须判 false。不得因为 rows 未预先存储汇总值、对比表、计算结果或最终答案而判 false；这些应由 Agent 调用工具后推导。只有原始事实矛盾、缺少计算所需输入或预期结论无法由数据推导时才判 false。若任务不要求唯一决策，decision_determinate 应为 true。issues 必须具体说明问题。",
+                        {
+                            "task_description": description,
+                            "scene_business_plan": scene_business_plan,
+                            "data_tables": data_tables,
+                            "output": {
+                                "task_supported": True,
+                                "decision_determinate": True,
+                                "facts_consistent": True,
+                                "issues": [],
+                            },
+                        },
+                    )
+                    audit = self._unwrap_structured_output(
+                        audit,
+                        expected_fields={
+                            "task_supported", "decision_determinate",
+                            "facts_consistent", "issues",
+                        },
+                    )
+                    try:
+                        self._validate_data_grounding_audit(audit)
+                    except PipelineGenerationError as exc:
+                        grounding_error = exc
+                    else:
+                        grounding_error = None
+                        break
+                if grounding_error is not None:
+                    exc = grounding_error
                     logger.warning(
                         "environment data grounding failed: attempt=%d/%d error=%s",
                         grounding_attempt, self.retries, exc,
@@ -631,6 +791,7 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                         "根据独立 grounding 审计问题和确定性校验错误修正表结构与 rows。必须保持主键、外键和字段类型合法，数据内容必须直接覆盖 task_description 中的任务主题和 required_grounding_keywords。跨表冗余数量、总额、当前/有效状态必须与明细行及其时间边界一致；优先删除非必要冗余汇总，保留时必须能从明细确定性复算。stateful 任务必须保留执行前基线：从旧值改为新值时 rows 必须含旧值、不得提前含目标终态。并让推荐、排序、合规判断或首选结论具有唯一、可追溯且数值一致的证据。返回完整 data_tables 与 records。",
                         {
                             "task_description": description,
+                            "scene_business_plan": scene_business_plan,
                             "data_tables": data_tables,
                             "grounding_issues": audit.get("issues", []),
                             "validation_error": str(exc),
@@ -657,35 +818,28 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                         )
             if grounding_error is not None:
                 raise grounding_error
+            public_materials = public_input.get("materials", []) if isinstance(public_input, dict) else []
+            visible_row_sets = public_row_sets([
+                item for item in public_materials if isinstance(item, dict)
+            ])
+            copied_tables = [
+                table.get("table_name") for table in data_tables
+                if isinstance(table, dict) and isinstance(table.get("rows"), list)
+                and table["rows"] and {
+                    json.dumps(row, ensure_ascii=False, sort_keys=True)
+                    for row in table["rows"] if isinstance(row, dict)
+                } in visible_row_sets
+            ]
+            if copied_tables:
+                raise PipelineGenerationError(
+                    "private business tables duplicate public input rows: "
+                    + ", ".join(str(name) for name in copied_tables)
+                )
 
-        # 2e. Write the persistence handoff document from final tables.
-            document_prompt = "根据已验证的初始业务表和完整 rows 编写给 Code Agent 的 data_document。说明这些 rows 是每个 episode reset 后、Agent 执行任务之前的基线状态，并说明每张表的用途、字段、类型、可见性、主键、外键、索引、约束、初始化顺序、关系和持久化要求。不得把目标终态描述成初始化数据。返回非空、完整、可执行的 Markdown 文档，至少包含每张表的初始化说明和字段说明。"
-            document_payload = {"task_description": description, "entities": entity_plan["entities"], "data_tables": data_tables,
-                            "output": {"data_document": "# 业务数据说明\n"}}
-            data_document: str | None = None
-            document_error: PipelineGenerationError | None = None
-            for document_attempt in range(1, self.retries + 1):
-                repair_hint = ""
-                if document_error is not None:
-                    repair_hint = f"\n上一版文档未通过校验，必须修复以下错误后重新输出完整文档：{document_error}"
-                document = self._call(
-                "environment_data_document" if document_attempt == 1 else "environment_data_document.repair",
-                document_prompt + repair_hint,
-                document_payload,
-            )
-                candidate_document = document.get("data_document")
-                if isinstance(candidate_document, str) and candidate_document.strip():
-                    data_document = candidate_document
-                    break
-                document_error = PipelineGenerationError("environment_data_document requires a non-empty data_document")
-                logger.warning(
-                "environment data document validation failed: attempt=%d/%d error=%s",
-                document_attempt,
-                self.retries,
-                document_error,
-            )
-            if data_document is None:
-                raise document_error or PipelineGenerationError("environment_data_document requires a non-empty data_document")
+        # 2e. The handoff document is a projection of validated schemas and
+        # rows. Generating it again with a model can invent fields or describe
+        # the target state as the initial state.
+            data_document = self._render_data_document(data_tables)
             data_manifest = self._materialize_business_data(
                 data_tables,
                 data_document,
@@ -756,58 +910,11 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
         environment_summary = {"records": [], "data_manifest": data_manifest,
                                "media_generation": media_generation}
 
-        # 3. User profiles and task-specific scripts are deliberately generated
-        # by separate prompts. Profiles are free-form persona variation and do
-        # not need to match the task; scripts are task-specific behavior plans
-        # grounded in the generated business environment.
-        profiles_result = self._call(
-            "user_profiles",
-            "自由设计多样、真实且彼此有明显差异的用户画像。画像独立于当前任务和业务环境，不要把任务关键词、业务实体或隐藏真值写入画像。每个画像使用结构化字段：profile_id、identity_summary、age_range、occupation_or_life_stage、location_context、education_background、domain_knowledge、goals_and_motivations、communication_style、language_habits、decision_style、risk_tolerance、patience_level、trust_level、information_disclosure_style、questioning_style、feedback_style、budget_or_resource_sensitivity、time_sensitivity、accessibility_needs、frustration_triggers、misconceptions_or_biases、known_facts、unknown_facts、behavior_tendencies。数组字段至少提供 2 项，枚举或等级字段要给出清晰值和简短解释；画像应能指导 User LLM 在对话中表现出不同的措辞、节奏、追问、犹豫、接受和拒绝行为。只输出画像对象。",
-            {"count": self.script_count, "output": {"user_profiles": [{
-                "profile_id": "profile-1",
-                "identity_summary": "...",
-                "age_range": "...",
-                "occupation_or_life_stage": "...",
-                "location_context": "...",
-                "education_background": "...",
-                "domain_knowledge": {"level": "...", "areas": [], "evidence": "..."},
-                "goals_and_motivations": [],
-                "communication_style": {"tone": "...", "verbosity": "...", "directness": "..."},
-                "language_habits": [],
-                "decision_style": {"pattern": "...", "needs": []},
-                "risk_tolerance": "...",
-                "patience_level": "...",
-                "trust_level": "...",
-                "information_disclosure_style": "...",
-                "questioning_style": "...",
-                "feedback_style": "...",
-                "budget_or_resource_sensitivity": "...",
-                "time_sensitivity": "...",
-                "accessibility_needs": [],
-                "frustration_triggers": [],
-                "misconceptions_or_biases": [],
-                "known_facts": [],
-                "unknown_facts": [],
-                "behavior_tendencies": []
-            }]}},
+        # 3. Personas are independent of task facts. Reuse a validated,
+        # diverse scaffold and reserve model calls for business semantics.
+        profiles = self._deterministic_user_profiles(
+            self.script_count, selection_key=str(description.get("description") or description.get("task") or ""),
         )
-        profiles = self._list(profiles_result.get("user_profiles"), "user_profiles", minimum=self.script_count)
-        normalized_profiles: list[dict[str, Any]] = []
-        seen_profile_ids: set[str] = set()
-        for index, raw_profile in enumerate(profiles[:self.script_count], start=1):
-            if not isinstance(raw_profile, dict):
-                raise PipelineGenerationError(f"user_profiles[{index - 1}] must be an object")
-            profile = dict(raw_profile)
-            profile_id = profile.get("profile_id")
-            profile_id = profile_id.strip() if isinstance(profile_id, str) else ""
-            if not profile_id or profile_id in seen_profile_ids:
-                profile_id = f"profile-{index}"
-                while profile_id in seen_profile_ids:
-                    profile_id = f"profile-{index + len(seen_profile_ids)}"
-            profile["profile_id"] = profile_id
-            seen_profile_ids.add(profile_id)
-            normalized_profiles.append(profile)
-        profiles = normalized_profiles
         # FSM topology is an executable protocol owned by EnvFactory, not
         # creative task content.  Asking a medium model to regenerate the same
         # graph caused avoidable cycles, missing outcome classes and invalid
@@ -850,22 +957,7 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
         # rewards and acceptance are proposed by independent model calls.
         semantic_goal = None
         if environment_plan["mode"] == "stateful":
-            from .tasks.task_spec import TaskSpecError, validate_goal_contract
-            goal_error = None
-            for attempt in range(self.retries):
-                candidate = self._call("business_goal_contract", "把题面明确要求的最终业务状态转换为 row_predicates。每项 table/where 定位目标，values 是期望字段值，count 是同时满足 where 和 values 的记录数；删除用 count=0，新增用目标属性定位。仅使用给定表字段和题面目标；初始数据必须尚未满足完整目标。禁止凭空扩大目标。", {
-                    "task_description": description, "tables": data_tables,
-                    "validation_error": goal_error,
-                    "output": {"row_predicates": [{"table": "string", "where": {}, "values": {}, "count": 1}]},
-                })
-                try:
-                    validate_goal_contract(candidate, data_tables)
-                    semantic_goal = {"row_predicates": candidate["row_predicates"], "requires_state_change": True}
-                    break
-                except TaskSpecError as exc:
-                    goal_error = str(exc)
-            if semantic_goal is None:
-                raise PipelineGenerationError(f"business goal contract invalid: {goal_error}")
+            semantic_goal = self._compile_stateful_goal(description, data_tables)
         action_payload = {
             "goal_fields": [{"table": item["table"], "fields": sorted(set(item["where"]) | set(item["values"]))}
                             for item in (semantic_goal or {}).get("row_predicates", [])],
@@ -896,14 +988,6 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                 candidate_actions = self._normalize_action_numeric_examples(
                     candidate_actions,
                     task_description=description,
-                    grounding_context={
-                        "constraints": [
-                            constraint
-                            for table in business_model.get("tables", [])
-                            if isinstance(table, dict)
-                            for constraint in table.get("constraints", [])
-                        ]
-                    },
                 )
                 self._validate_actions(candidate_actions)
                 self._validate_action_grounding(
@@ -1003,22 +1087,6 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             )
             try:
                 candidate_capabilities = self._list(capability_result.get("capabilities"), "capabilities")
-                if source_data is not None:
-                    # The source-backed route already fixes the atomic action
-                    # set. A wording change must not create a third business
-                    # capability for local reasoning such as finding a minimum.
-                    known_names = {item["name"] for item in action_list}
-                    seen_names: set[str] = set()
-                    scoped_capabilities = []
-                    for item in candidate_capabilities:
-                        if not isinstance(item, dict):
-                            continue
-                        name = item.get("action_name")
-                        if not isinstance(name, str) or name not in known_names or name in seen_names:
-                            continue
-                        seen_names.add(name)
-                        scoped_capabilities.append(item)
-                    candidate_capabilities = scoped_capabilities
                 candidate_capabilities = self._normalize_data_access_capabilities(
                     candidate_capabilities,
                     actions=action_list,
@@ -1096,10 +1164,24 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             for index, category in enumerate(noise_categories)
         ]
         tool_prompt = TOOL_DEFINITION_PROMPT
+        tool_prompt += (
+            " 每个必填参数必须能从 public_input 的具体值或前序业务工具公开返回字段取得；"
+            "不得新增用户未给且前序工具也不返回的生效日期、门店名、档案编号等隐藏选择器。"
+            "若后续操作需要私有标识，先让上游工具返回该标识，并让下游工具以它作为必填参数。"
+        )
+        if training_category == "simple_agentic":
+            tool_prompt += (
+                " 当前是单工具任务：唯一业务工具的公开返回必须包含 expected_result 中每项"
+                "需要私有数据支撑的事实；不能让 Agent 凭空补充第二个对象或未查询字段。"
+            )
         if environment_plan["mode"] == "stateful":
-            tool_prompt += " 当前任务是 stateful：payload.goal_contract 的每个 row_predicate 必须有一个明确的创建、更新或删除业务工具；该工具 parameters 必须覆盖对应 where/values 的每个字段，优先使用目标表字段同名参数，也可使用可唯一映射的 entity_field 或 new_field 命名，以便平台编译 selector 和变更映射。payload.business_model 给出实际表字段，不得编造字段。"
+            tool_prompt += " 当前任务是 stateful：payload.mutation_surface_plan 是平台从已确认目标和表结构推导的必填变更接口，必须逐项实现；每个目标表至少有一个对应的创建、更新或删除业务工具。变更工具 parameters.required 必须完整覆盖 required_fields，使用同名参数并遵守 json_type；不得遗漏、改成可选或增加无法映射到存储列的参数。platform_filled_fields 由运行时自动生成整数主键或安全的空值，不得作为工具参数；其余 insert 字段必须从 public_input 或上游工具取得，不能凭空生成隐藏真值。"
+        mutation_surface_plan = self._stateful_mutation_surface_plan(
+            semantic_goal, data_tables
+        ) if environment_plan["mode"] == "stateful" else []
         tool_payload = {"task_description": description,
                         "goal_contract": semantic_goal,
+                        "mutation_surface_plan": mutation_surface_plan,
                         "business_model": business_model,
                         "capability_plan": capability_plan,
                         "agent_actions": tool_actions,
@@ -1132,6 +1214,10 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             )
             try:
                 candidate_tools = self._list(tools.get("tools"), "tools", minimum=0)
+                if mutation_surface_plan:
+                    candidate_tools = self._complete_stateful_tool_schemas(
+                        candidate_tools, mutation_surface_plan,
+                    )
                 self._fill_tool_schema_descriptions(candidate_tools)
                 self._validate_tools(candidate_tools)
                 if any(item["function"]["name"] == "ask_user" for item in candidate_tools):
@@ -1232,7 +1318,8 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                     raise PipelineGenerationError("multi_step_agentic requires at least two business tools")
                 if environment_plan["mode"] == "stateful":
                     self._validate_stateful_tool_surface(
-                        candidate_tools, semantic_goal=semantic_goal
+                        candidate_tools, semantic_goal=semantic_goal,
+                        tables=business_model["tables"],
                     )
                 if environment_plan["mode"] == "external_capability" and not primary_names:
                     raise PipelineGenerationError(
@@ -1295,58 +1382,58 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             except PipelineGenerationError as exc:
                 tool_error = exc
                 tool_payload["previous_proposal"] = tools
+                if "stateful tool schema has no compilable mutation parameters" in str(exc):
+                    surfaces = []
+                    for proposed in candidate_tools if isinstance(candidate_tools, list) else []:
+                        function = proposed.get("function", {}) if isinstance(proposed, dict) else {}
+                        parameters = function.get("parameters", {}) if isinstance(function, dict) else {}
+                        surfaces.append({
+                            "name": function.get("name"),
+                            "properties": sorted(parameters.get("properties", {}))
+                            if isinstance(parameters.get("properties"), dict) else [],
+                            "required": parameters.get("required", []),
+                        })
+                    logger.info("stateful tool surface candidates: %s", surfaces)
                 logger.warning("openai tool schema validation failed: attempt=%d/%d error=%s", tool_attempt, self.retries, exc)
         if tool_list is None:
             raise tool_error or PipelineGenerationError("openai tool generation failed")
-        # Noise is implemented over independent read-only fixtures. Its public
-        # result never contains the private noise label or usefulness verdict.
+        # Noise tools are read-only distractors. Their fixtures are fully
+        # determined by the validated tool schemas, so a separate model call
+        # adds latency and can only introduce cross-stage inconsistencies.
         for metadata in noise_tool_metadata:
-
             noise_function = next(tool["function"] for tool in tool_list if tool["function"]["name"] == metadata["name"])
-            fixture_error = None
-            for attempt in range(self.retries):
-                fixture = self._call("noise_tool_fixture", "为此只读工具生成独立的小型合成数据集，至少两行。所有参数必须通过 parameter_columns 映射到记录字段，使用精确匹配过滤。数据必须符合工具描述，不包含噪声标签、任务答案或评价信息。仅支持此查询语义；若工具语义不能用精确过滤表达则返回 supported=false。", {
-                    "function": noise_function, "validation_error": fixture_error,
-                    "output": {"supported": True, "records": [], "parameter_columns": {}},
-                })
-                rows, mapping = fixture.get("records"), fixture.get("parameter_columns")
-                properties = noise_function.get("parameters", {}).get("properties", {})
-                if (fixture.get("supported") is True and isinstance(rows, list) and len(rows) >= 2
-                    and all(isinstance(row, dict) for row in rows) and isinstance(mapping, dict)
-                    and set(mapping) == set(properties)
-                    and all(isinstance(column, str) and all(column in row for row in rows) for column in mapping.values())):
-                    metadata.update(records=rows, parameter_columns=mapping)
-                    break
-                fixture_error = "fixture must support exact filtering, contain two rows and map every parameter to a present column"
-            else:
-                rows, mapping = self._build_noise_fixture(noise_function)
-                metadata.update(records=rows, parameter_columns=mapping)
-                logger.warning(
-                    "noise fixture proposals remained invalid; using schema-derived fixture: tool=%s error=%s",
-                    metadata["name"], fixture_error,
-                )
+            rows, mapping = self._build_noise_fixture(noise_function)
+            metadata.update(records=rows, parameter_columns=mapping)
         tools_manifest = self._materialize_tools(tool_list, materialized_dir)
 
-        implementation_result = self._call(
-            "tool_implementation_specs",
-            "为可以直接由数据表操作实现的业务工具生成声明式实现。operation 支持 select、aggregate_count、insert、update、delete；复杂计算、跨表业务决策、文档生成和噪声工具不要生成 spec。filters.argument 以及 selector/values/changes 的键必须来自工具 parameters，对应值必须是目标表字段。operator 只能是 eq、in、contains、gte、lte。若公开参数是关联实体的可读字段而目标列是外键，filter.resolve 必须声明关联表 table、匹配字段 match_column 和写入外键比较的 value_column。若公开返回字段名与表字段名不同，projection_aliases 使用公开字段名到表字段名的映射。只返回 specs 数组。",
-            {
-                "business_model": business_model,
-                "tools": candidate_tools,
-                "output": {"specs": [{
-                    "tool_name": "string", "operation": "select", "table": "string",
-                    "filters": [{"argument": "string", "column": "string", "operator": "eq", "resolve": {"table": "string", "match_column": "string", "value_column": "string"}}],
-                    "projection": ["string"], "projection_aliases": {"public_field": "table_column"},
-                    "order_by": ["string"], "result_field": "records",
-                    "selector": {"tool_argument": "table_column"},
-                    "values": {"tool_argument": "table_column"},
-                    "changes": {"tool_argument": "table_column"},
-                }]},
-            },
-        )
+        if candidate_tools:
+            implementation_result = self._call(
+                "tool_implementation_specs",
+                "为可以直接由数据表操作实现的业务工具生成声明式实现。operation 支持 select、aggregate_count、insert、update、delete；复杂计算、跨表业务决策、文档生成和噪声工具不要生成 spec。stateful 目标表必须按 payload.mutation_surface_plan 生成可执行的声明式变更，与工具定义阶段使用同一份字段契约。insert.values 必须覆盖除平台自动填充字段外的全部存储列；单列整数主键和无约束可空字段由运行时填充，不要暴露为工具参数。其他缺失字段会使当前任务候选被拒绝，不要虚构参数映射。insert.values、update.selector、update.changes 和 delete.selector 使用的参数都必须在对应工具 schema 的 required 中，不能映射可选参数。filters.argument 以及 selector/values/changes 的键必须来自工具 parameters，对应值必须是目标表字段。operator 只能是 eq、in、contains、gte、lte。若公开参数是关联实体的可读字段而目标列是外键，filter.resolve 必须声明关联表 table、匹配字段 match_column 和写入外键比较的 value_column。若公开返回字段名与表字段名不同，projection_aliases 使用公开字段名到表字段名的映射。只返回 specs 数组。"
+                + ("当前为 reference_data，所有工具必须只读，只允许 select 或 aggregate_count，不得写入、更新或删除业务表。" if environment_plan["mode"] == "reference_data" else ""),
+                {
+                    "business_model": business_model,
+                    "mutation_surface_plan": mutation_surface_plan,
+                    "tools": candidate_tools,
+                    "output": {"specs": [{
+                        "tool_name": "string", "operation": "select", "table": "string",
+                        "filters": [{"argument": "string", "column": "string", "operator": "eq", "resolve": {"table": "string", "match_column": "string", "value_column": "string"}}],
+                        "projection": ["string"], "projection_aliases": {"public_field": "table_column"},
+                        "order_by": ["string"], "result_field": "records",
+                        "selector": {"tool_argument": "table_column"},
+                        "values": {"tool_argument": "table_column"},
+                        "changes": {"tool_argument": "table_column"},
+                    }]},
+                },
+            )
+        else:
+            implementation_result = {"specs": []}
         tool_implementations = []
         proposed_specs = implementation_result.get("specs", [])
         for proposed in proposed_specs if isinstance(proposed_specs, list) else []:
+            proposed = self._complete_insert_values_from_tool(
+                proposed, tools=candidate_tools, tables=business_model["tables"],
+            )
             for attempt in range(self.retries):
                 try:
                     self._validate_tool_implementations(
@@ -1360,6 +1447,7 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                         break
                     repaired = self._call("tool_implementation_specs.repair", "仅修复给定的声明式工具实现，保持工具业务语义。能够表达时返回 supported=true 和 spec 对象；不能表达时返回 supported=false 和空 spec 对象。不要修改其他工具。", {
                         "spec": proposed, "validation_error": str(exc), "business_model": business_model,
+                        "mutation_surface_plan": mutation_surface_plan,
                         "tools": candidate_tools, "output": {"supported": True, "spec": {}},
                     })
                     if repaired.get("supported") is False:
@@ -1392,6 +1480,7 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                         {
                             "validation_error": str(coverage_error),
                             "semantic_goal": semantic_goal,
+                            "mutation_surface_plan": mutation_surface_plan,
                             "business_model": business_model,
                             "tools": candidate_tools,
                             "previous_specs": tool_implementations,
@@ -1447,6 +1536,13 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             tools=candidate_tools,
             tables=business_model["tables"],
         )
+        if environment_plan["mode"] == "reference_data" and any(
+            item.get("operation") not in {"select", "aggregate_count"}
+            for item in tool_implementations
+        ):
+            raise PipelineGenerationError(
+                "reference_data tool implementations must not modify business tables"
+            )
         tool_implementations = self._complete_dependency_projections(
             implementations=tool_implementations,
             tools=candidate_tools,
@@ -1615,15 +1711,13 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
         reward_prompt += " payload.key_steps 是上一阶段确认的关键步骤。process 指标只能评价这些 key_steps 中的 action_name；不得为非关键读取、噪声工具、可选探索或每个工具机械创建过程奖励。先使用 key_steps 判断是否确实需要过程奖励，再生成最少且必要的 process metrics。"
         reward_prompt += " metric 的 rubric、criteria、condition 和 assertion 中不得新增任务描述未提出的数量、字数、比例、时间或最低条目数；只能检验任务中已有的明确约束。"
         reward_prompt += " payload.task_description 只包含 Agent 在运行时可见的公开请求。结果指标不得引用生成阶段隐藏的 goal、context、expected_result 或 requirements，也不得把公开请求未要求的文件格式、Markdown 语法、表格样式、应用场景或措辞设为成功条件。"
-        if source_data is not None and source_data.get("verified_reward_facts"):
-            reward_prompt += (
-                " 对于本次数据集试验，task_description.verified_reward_facts 是从源数据确定性计算的答案键，"
-                "可用于核对公开请求明确要求的每一项结果；不得将答案键作为 Agent 的公开输入，"
-                "也不得额外增加用户未要求的成功条件。"
-            )
         reward_prompt += " 优先使用可执行的 runtime_rule 结果指标，并将多个关键动作合并为最少必要的过程指标。"
         if environment_plan["mode"] == "stateless":
             reward_prompt += " 当前任务是 stateless：不得生成 process 指标，不得以 business_data 或数据库变化作为成功条件。结果指标必须根据运行时 conversation 与 final_agent_response 评价任务完成度、忠实性和格式；噪声工具调用只能作为轨迹惩罚。"
+        elif environment_plan["mode"] == "reference_data":
+            reward_prompt += " 当前任务依赖私有业务记录：model-based/hybrid 结果指标必须同时读取 final_agent_response、tool_results 和 business_data，并逐项核对回答中的业务事实与实际查询结果及当前业务记录一致；只检查是否输出清单、报告或格式不能构成结果奖励。"
+        elif environment_plan["mode"] == "stateful":
+            reward_prompt += " 当前任务要变更持久化业务状态：model-based/hybrid 结果指标必须读取 final_agent_response、tool_results 和 business_data，核对最终业务状态满足目标断言且确实完成所需变更；只看最终回复或调用次数不能构成结果奖励。"
         reward_environment = {
             "data_manifest": data_manifest,
             "tables": business_model["tables"] if "business_model" in locals() else [
@@ -1640,8 +1734,6 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             "public_input": public_input,
             "training_category": training_category,
         }
-        if source_data is not None and source_data.get("verified_reward_facts"):
-            public_reward_task["verified_reward_facts"] = source_data["verified_reward_facts"]
         reward_payload = {"task_description": public_reward_task, "environment": reward_environment,
                           "goal_contract": semantic_goal,
                           "environment_plan": environment_plan,
@@ -1685,22 +1777,16 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             )
             try:
                 candidate_metrics = self._list(candidate_rewards.get("metrics"), "metrics")
+                candidate_metrics = self._canonicalize_process_metrics(candidate_metrics)
                 candidate_metrics = self._normalize_metric_types(candidate_metrics)
+                candidate_metrics = self._normalize_metric_scopes(candidate_metrics)
                 candidate_metrics = self._normalize_metric_evaluators(candidate_metrics)
                 candidate_metrics = self._normalize_metrics_for_environment(
                     candidate_metrics, environment_mode=environment_plan["mode"]
                 )
-                if source_data is not None and source_data.get("verified_reward_criterion"):
-                    criterion = str(source_data["verified_reward_criterion"])
-                    for metric in candidate_metrics:
-                        evaluator = metric.get("evaluator") if isinstance(metric, dict) else None
-                        if (isinstance(metric, dict) and metric.get("category") == "outcome"
-                                and isinstance(evaluator, dict)
-                                and evaluator.get("kind") in {"external_llm_judge", "hybrid_outcome"}):
-                            metric["rubric"] = criterion
-                            metric["criteria"] = [criterion]
-                            if evaluator.get("kind") == "external_llm_judge":
-                                evaluator["criteria"] = [criterion]
+                self._ground_reference_outcome_metrics(
+                    candidate_metrics, environment_mode=environment_plan["mode"],
+                )
                 candidate_metrics = self._drop_ungrounded_numeric_metrics(
                     candidate_metrics, task_description=public_reward_task
                 )
@@ -1759,6 +1845,9 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                     baseline_metrics,
                     noise_names=[str(item["name"]) for item in noise_tool_metadata],
                 )
+            self._ground_reference_outcome_metrics(
+                baseline_metrics, environment_mode=environment_plan["mode"],
+            )
             rewards = {
                 "observation_schema": {},
                 "metrics": baseline_metrics,
@@ -1777,6 +1866,9 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
         # JSON path.
         self._promote_unstructured_document_rules(rewards["metrics"])
         self._promote_mixed_response_business_rules(rewards["metrics"])
+        self._ground_reference_outcome_metrics(
+            rewards["metrics"], environment_mode=environment_plan["mode"],
+        )
         rewards["reward_formula"] = self._canonical_reward_formula(rewards["metrics"])
 
         metric_impl_result = self._call(
@@ -1815,6 +1907,10 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                 "expected": [str(item["name"]) for item in noise_tool_metadata],
                 "score_mapping": {"pass": 0, "fail": -1},
             })
+        metric_implementations = self._drop_initially_satisfied_stateful_outcome_specs(
+            rewards["metrics"], metric_implementations,
+            data_tables=data_tables, environment_mode=environment_plan["mode"],
+        )
         try:
             self._validate_metric_implementations(metric_implementations, rewards["metrics"])
             if environment_plan["mode"] == "stateless" and any(
@@ -1840,6 +1936,9 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             rewards["metrics"], metric_implementations,
             environment_mode=environment_plan["mode"],
         )
+        self._ground_reference_outcome_metrics(
+            rewards["metrics"], environment_mode=environment_plan["mode"],
+        )
         self._prune_literal_payload_process_metrics(
             rewards["metrics"], metric_implementations,
         )
@@ -1847,20 +1946,6 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             rewards["metrics"], metric_implementations,
             environment_mode=environment_plan["mode"],
         )
-        if source_data is not None and source_data.get("verified_reward_criterion"):
-            criterion = str(source_data["verified_reward_criterion"])
-            for metric in rewards["metrics"]:
-                if not isinstance(metric, dict) or metric.get("category") != "outcome":
-                    continue
-                evaluator = metric.get("evaluator")
-                if not isinstance(evaluator, dict) or evaluator.get("kind") not in {
-                    "external_llm_judge", "hybrid_outcome",
-                }:
-                    continue
-                metric["rubric"] = criterion
-                metric["criteria"] = [criterion]
-                if evaluator.get("kind") == "external_llm_judge":
-                    evaluator["criteria"] = [criterion]
         self._validate_metrics(rewards["metrics"], key_steps=key_steps)
         self._validate_metrics_for_environment(
             rewards["metrics"], environment_mode=environment_plan["mode"]
@@ -1881,6 +1966,23 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             reward_formula=rewards["reward_formula"],
             tool_implementations=tool_implementations,
         )
+        acceptance_needs_model = self._acceptance_requires_model(
+            tools=tool_list,
+            noise_tools=noise_tool_metadata,
+            tool_implementations=tool_implementations,
+            metrics=rewards["metrics"],
+            metric_implementations=metric_implementations,
+            environment_mode=environment_plan["mode"],
+        )
+        if not acceptance_needs_model:
+            try:
+                self._validate_acceptance_contract(
+                    acceptance_seed, actions=action_list, tools=tool_list,
+                    metrics=rewards["metrics"],
+                )
+            except PipelineGenerationError as exc:
+                logger.warning("deterministic acceptance contract needs model repair: %s", exc)
+                acceptance_needs_model = True
         acceptance_payload = {
             "goal_contract": semantic_goal,
             "task_description": description,
@@ -1894,9 +1996,13 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             "baseline_contract": acceptance_seed,
             "output": {"acceptance_contract": acceptance_seed},
         }
-        acceptance_contract: dict[str, Any] | None = None
+        acceptance_contract: dict[str, Any] | None = (
+            None if acceptance_needs_model else acceptance_seed
+        )
+        if not acceptance_needs_model:
+            logger.info("using validated deterministic acceptance contract")
         acceptance_error: PipelineGenerationError | None = None
-        for acceptance_attempt in range(1, self.retries + 1):
+        for acceptance_attempt in range(1, self.retries + 1 if acceptance_needs_model else 1):
             repair_hint = ""
             if acceptance_error is not None:
                 repair_hint = (
@@ -1906,11 +2012,20 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                     "expected object；每个 reward_cases 项必须包含 case_id、已有 metric_id 和数值 expected_score。"
                     "不要返回缺字段、空字符串或 null。"
                 )
-            candidate = self._call(
-                "acceptance_contract" if acceptance_attempt == 1 else "acceptance_contract.repair",
-                "根据任务、完整业务数据、原子动作、工具和奖励指标生成 EnvFactory 独立业务验收契约。该契约供外层黑盒验收使用，不由 Code Agent 修改。必须覆盖真实业务成功路径、失败路径、前置条件、业务数据前后变化、隐藏真值不泄露、工具不返回 reward/observation、reset/episode 隔离、replay、幂等、反事实奖励和 mutation testing。不要只生成 HTTP smoke；每个关键步骤要给出可执行的场景和断言。不要生成新的业务语义，所有表、字段、工具、动作和指标必须来自输入。只输出 acceptance_contract 对象。" + repair_hint,
-                acceptance_payload,
-            )
+            try:
+                candidate = self._call(
+                    "acceptance_contract" if acceptance_attempt == 1 else "acceptance_contract.repair",
+                    "根据任务、完整业务数据、原子动作、工具和奖励指标生成 EnvFactory 独立业务验收契约。该契约供外层黑盒验收使用，不由 Code Agent 修改。必须覆盖真实业务成功路径、失败路径、前置条件、业务数据前后变化、隐藏真值不泄露、工具不返回 reward/observation、reset/episode 隔离、replay、幂等、反事实奖励和 mutation testing。不要只生成 HTTP smoke；每个关键步骤要给出可执行的场景和断言。不要生成新的业务语义，所有表、字段、工具、动作和指标必须来自输入。只输出 acceptance_contract 对象。" + repair_hint,
+                    acceptance_payload,
+                    stop_on_structural_error=True,
+                )
+            except PipelineGenerationError as exc:
+                acceptance_error = exc
+                logger.warning(
+                    "acceptance contract stage failed; checking deterministic baseline: %s",
+                    exc,
+                )
+                break
             candidate_contract = candidate.get("acceptance_contract", candidate)
             candidate_contract = self._merge_acceptance_contract(candidate_contract, acceptance_seed)
             try:
@@ -1966,7 +2081,7 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
         try:
             fixture_result = self._call(
                 "acceptance_success_fixture",
-                "根据任务描述、用户消息、公开环境数据和结果指标生成一份真正完成任务的最终回答，用作成功验收 fixture。只有任务描述、用户消息和 grounding_environment 才是事实来源；不得沿用模拟 Agent 先前产生的事实。必须忠实保留用户提供的实体、数值、规则和格式范围；不得新增未提供的价格、成分、属性、排行、安全阈值、操作时长或其他业务事实。信息不足时应明确缺口并请求澄清，不能伪造完整答案。回答必须直接解决具体任务，不能只复述输出格式、提纲或评分标准。只返回 content 字段。",
+                "根据任务描述、用户消息、公开环境数据和结果指标生成一份真正完成任务的最终回答，用作成功验收 fixture。只有任务描述、用户消息和 grounding_environment 才是事实来源；不得沿用模拟 Agent 先前产生的事实。若任务要求计算，先按 data_tables 的实际记录、用户给出的常量和明确统计范围逐项重算，再把核对后的数值写入回答；不要沿用 expected_result 中尚未验证的固定数值。最终数值结论应使用与数值紧邻的清晰业务标签，便于独立公式校验。必须忠实保留用户提供的实体、数值、规则和格式范围；不得新增未提供的价格、成分、属性、排行、安全阈值、操作时长或其他业务事实。信息不足时应明确缺口并请求澄清，不能伪造完整答案。回答必须直接解决具体任务，不能只复述输出格式、提纲或评分标准。只返回 content 字段。",
                 {
                     "task_description": description,
                     "representative_conversation": fixture_conversation,
@@ -1988,12 +2103,15 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             logger.warning("success response fixture generation failed; using dialogue-derived fallback: %s", exc)
         fixture_audit_error: PipelineGenerationError | None = None
         for fixture_attempt in range(1, self.retries + 1):
+            success_fixture = self._strip_unrequested_identifier_rows(
+                success_fixture, public_input=public_input,
+            )
             success_fixture = self._normalize_success_fixture_length(
                 success_fixture, task_description=description
             )
             fixture_audit = self._call(
                 "acceptance_success_fixture_audit",
-                "独立审查成功回答 fixture。latest_instructions_satisfied 表示回答遵循用户消息中最后出现的格式、措辞、增删、纠正和撤销要求；grounded 表示每项价格、属性、适用性、排行、安全阈值、操作时长等事实均可在任务、用户消息或 grounding_environment 中找到，不能把模型常识当作验收真值；goal_completed 表示回答完成当前有证据支持的目标，确实缺少必要输入时准确说明缺口并请求补充也算完成。issues 必须具体指出遗漏或无来源断言。",
+                "独立审查成功回答 fixture。latest_instructions_satisfied 表示回答遵循用户消息中最后出现的格式、措辞、增删、纠正和撤销要求；grounded 表示每项价格、属性、适用性、排行、安全阈值、操作时长等事实均可在任务、用户消息或 grounding_environment 中找到，不能把模型常识当作验收真值；计算任务还必须按 grounding_environment.data_tables 的当前记录独立复算最终数值，算术不一致时 grounded=false 并指出具体差额；goal_completed 表示回答完成当前有证据支持的目标，确实缺少必要输入时准确说明缺口并请求补充也算完成。issues 必须具体指出遗漏或无来源断言。",
                 {
                     "task_description": description,
                     "representative_conversation": fixture_conversation,
@@ -2089,7 +2207,9 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                 if not isinstance(fallback_content, str) or len(fallback_content.strip()) < 20:
                     raise PipelineGenerationError("final success fixture fallback is empty or too short")
                 fallback_content = self._normalize_success_fixture_length(
-                    fallback_content.strip(), task_description=description
+                    self._strip_unrequested_identifier_rows(
+                        fallback_content.strip(), public_input=public_input,
+                    ), task_description=description
                 )
                 fallback_audit = self._call(
                     "acceptance_success_fixture.final_fallback_audit",
@@ -2118,6 +2238,27 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                 logger.warning("final success fixture fallback failed: %s", fallback_exc)
         if fixture_audit_error is not None:
             raise fixture_audit_error
+        if task_intent == "calculate" and environment_plan["mode"] == "reference_data":
+            outcome_metric = next((
+                item for item in rewards["metrics"]
+                if isinstance(item, dict) and item.get("category") == "outcome"
+                and item.get("type") == "model-based"
+            ), None)
+            if outcome_metric is not None:
+                oracle_metric, oracle_spec = self._build_numeric_outcome_oracle(
+                    metric=outcome_metric,
+                    task_description=description,
+                    public_input=public_input,
+                    data_tables=data_tables,
+                    success_fixture=success_fixture,
+                )
+                outcome_metric.clear()
+                outcome_metric.update(oracle_metric)
+                metric_implementations.append(oracle_spec)
+                self._validate_metrics(rewards["metrics"], key_steps=key_steps)
+                self._validate_metric_implementations(
+                    metric_implementations, rewards["metrics"]
+                )
         executable_baseline = self._build_business_scenario_baseline(
             task_description=description,
             tools=tool_list,
@@ -2155,48 +2296,77 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             except TaskSpecError as exc:
                 raise PipelineGenerationError(f"task_spec compilation failed: {exc}") from exc
             self._validate_compiled_tool_chain(preview_spec, scenarios)
+            if training_category == "multi_step_agentic" and not has_private_tool_dependency(scenarios):
+                raise PipelineGenerationError(
+                    "multi-step success only echoes a public selector; use a private field from the first tool"
+                )
+            self._preview_success_tool_results(
+                scenarios=scenarios,
+                data_tables=data_tables,
+                tool_implementations=tool_implementations,
+                environment_mode=environment_plan["mode"],
+                tools=tool_list,
+                semantic_goal=semantic_goal,
+            )
 
         executable_payload["output"] = {"scenarios": [{"kind": "goal_success", "steps": [
             {"operation": "tool_call", "tool_name": "string", "arguments": {}, "capture": {}}
         ]}]}
-        for executable_attempt in range(1, self.retries + 1):
-            repair_hint = ""
-            if executable_error is not None:
-                repair_hint = (
-                    f"\n上一版轨迹未通过校验：{executable_error}。必须返回完整 scenarios，"
-                    "只修复 goal_success 的业务调用；不要生成平台控制步骤或断言。"
+        try:
+            self._validate_executable_scenarios(
+                executable_baseline, tools=tool_list, noise_tools=noise_tool_metadata,
+                training_category=training_category,
+                tool_implementations=tool_implementations,
+                semantic_goal=semantic_goal,
+            )
+            validate_compiled_chain(executable_baseline)
+            business_scenarios = executable_baseline
+            logger.info("validated deterministic business success trajectory")
+        except PipelineGenerationError as exc:
+            logger.info("deterministic business trajectory needs model repair: %s", exc)
+        if business_scenarios is None:
+            for executable_attempt in range(1, self.retries + 1):
+                repair_hint = ""
+                if executable_error is not None:
+                    repair_hint = (
+                        f"\n上一版轨迹未通过校验：{executable_error}。必须返回完整 scenarios，"
+                        "只修复 goal_success 的业务调用；不要生成平台控制步骤或断言。"
+                    )
+                executable_result = self._call(
+                    "acceptance_executable_scenarios" if executable_attempt == 1 else "acceptance_executable_scenarios.repair",
+                    "只规划一条真实业务成功路径。返回 scenarios=[{kind: goal_success, steps: [...]}]，steps 只能包含 operation=tool_call、tool_name、arguments 和可选 capture。不得生成 reset、agent_response、reward 或 assertions，它们由平台编译。参数来自题面和给定数据，capture 为变量名到工具结果 JSONPath 的映射（例如 $.records[0].id），后续参数使用 {$ref: 变量名}。捕获的输出类型、对象字段和下游参数 schema 必须兼容；必要时捕获单个字段并用多个 $ref 组装下游对象。多步任务必须具有真实的数据依赖，禁止凭空凑调用。必须遵守 goal_contract 和 capability_dependencies。工具、表、字段和数据必须来自输入；不允许代码、SQL、占位值或绕过工具直接修改状态。" + repair_hint,
+                    executable_payload,
                 )
-            executable_result = self._call(
-                "acceptance_executable_scenarios" if executable_attempt == 1 else "acceptance_executable_scenarios.repair",
-                "只规划一条真实业务成功路径。返回 scenarios=[{kind: goal_success, steps: [...]}]，steps 只能包含 operation=tool_call、tool_name、arguments 和可选 capture。不得生成 reset、agent_response、reward 或 assertions，它们由平台编译。参数来自题面和给定数据，capture 为变量名到工具结果 JSONPath 的映射（例如 $.records[0].id），后续参数使用 {$ref: 变量名}。捕获的输出类型、对象字段和下游参数 schema 必须兼容；必要时捕获单个字段并用多个 $ref 组装下游对象。多步任务必须具有真实的数据依赖，禁止凭空凑调用。必须遵守 goal_contract 和 capability_dependencies。工具、表、字段和数据必须来自输入；不允许代码、SQL、占位值或绕过工具直接修改状态。" + repair_hint,
-                executable_payload,
-            )
-            candidate_scenarios = self._normalize_executable_scenarios(
-                executable_result.get("scenarios", []),
-                success_content=success_fixture,
-            )
-            candidate_scenarios = self._repair_business_scenario_arguments(
-                candidate_scenarios, baseline=executable_baseline, tools=tool_list
-            )
-            candidate_scenarios = self._compile_business_scenario_structure(
-                candidate_scenarios, executable_baseline
-            )
-            if not candidate_scenarios:
-                candidate_scenarios = executable_baseline
-            try:
-                self._validate_executable_scenarios(
-                    candidate_scenarios, tools=tool_list, noise_tools=noise_tool_metadata,
-                    training_category=training_category,
-                    tool_implementations=tool_implementations,
-                    semantic_goal=semantic_goal,
+                candidate_scenarios = self._normalize_executable_scenarios(
+                    executable_result.get("scenarios", []),
+                    success_content=success_fixture,
                 )
-                validate_compiled_chain(candidate_scenarios)
-                business_scenarios = candidate_scenarios
-                break
-            except PipelineGenerationError as exc:
-                executable_error = exc
-                executable_payload["previous_scenarios"] = candidate_scenarios
-                logger.warning("business executable scenarios invalid: attempt=%d/%d error=%s", executable_attempt, self.retries, exc)
+                candidate_scenarios = self._repair_business_scenario_arguments(
+                    candidate_scenarios, baseline=executable_baseline, tools=tool_list
+                )
+                candidate_scenarios = self._compile_business_scenario_structure(
+                    candidate_scenarios, executable_baseline
+                )
+                if environment_plan["mode"] == "reference_data":
+                    candidate_scenarios = self._apply_baseline_dependency(
+                        candidate_scenarios, executable_baseline
+                    )
+                if not candidate_scenarios:
+                    candidate_scenarios = executable_baseline
+                try:
+                    self._validate_executable_scenarios(
+                        candidate_scenarios, tools=tool_list, noise_tools=noise_tool_metadata,
+                        training_category=training_category,
+                        tool_implementations=tool_implementations,
+                        semantic_goal=semantic_goal,
+                    )
+                    validate_compiled_chain(candidate_scenarios)
+                    business_scenarios = candidate_scenarios
+                    break
+                except PipelineGenerationError as exc:
+                    executable_error = exc
+                    executable_payload["previous_scenarios"] = candidate_scenarios
+                    logger.warning("business executable scenarios invalid: attempt=%d/%d error=%s", executable_attempt, self.retries, exc)
         if business_scenarios is None:
             self._validate_executable_scenarios(
                 executable_baseline, tools=tool_list, noise_tools=noise_tool_metadata,
@@ -2210,6 +2380,128 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                 executable_error,
             )
             business_scenarios = executable_baseline
+        for observability_attempt in range(self.retries + 1):
+            observed_tool_results = self._preview_success_tool_results(
+                scenarios=business_scenarios,
+                data_tables=data_tables,
+                tool_implementations=tool_implementations,
+                environment_mode=environment_plan["mode"],
+                tools=tool_list,
+                semantic_goal=semantic_goal,
+            )
+            if training_category == "direct_response":
+                break
+            observability = self._call(
+                "task_observability_audit",
+                "独立审查 Agent 在成功轨迹中是否真的能取得完成任务和获得结果奖励所需的证据。"
+                "observed_tool_results 是已实际预演的工具调用，必须以其中的真实返回内容为准；"
+                "未出现在 observed_tool_results 的定制工具，才按声明的输出 schema 与成功调用参数判断；"
+                "data_tables 的未查询行、成功答案文本、环境设计说明和审核者常识都不是证据。"
+                "answer_observable 表示成功答案中的每项关键业务断言都能由可观察事实推出；"
+                "goal_covered 表示成功轨迹和 outcome 指标覆盖 task、goal、expected_result 中的全部主要交付物，"
+                "比较两个对象时必须能取得两个对象的证据，不能只查一个对象却在答案中编造另一个。"
+                "若输出 schema 看似包含字段但调用参数只选择一条记录，应按实际筛选范围判断。"
+                "issues 必须说明缺失的对象、字段或奖励条件；不要要求把私有记录复制到公开输入。",
+                {
+                    "task_description": description,
+                    "public_input": public_input,
+                    "business_tools": [tool for tool in tool_list if isinstance(tool, dict)
+                                       and tool.get("function", {}).get("name") not in {
+                                           item.get("name") for item in noise_tool_metadata
+                                           if isinstance(item, dict)
+                                       }],
+                    "tool_implementations": tool_implementations,
+                    "success_scenarios": [item for item in business_scenarios
+                                          if isinstance(item, dict) and item.get("kind") == "goal_success"],
+                    "observed_tool_results": observed_tool_results,
+                    "outcome_metrics": [item for item in rewards["metrics"]
+                                        if isinstance(item, dict) and item.get("category") == "outcome"],
+                    "output": {"answer_observable": True, "goal_covered": True, "issues": []},
+                },
+            )
+            observability = self._unwrap_structured_output(
+                observability, expected_fields={"answer_observable", "goal_covered", "issues"},
+            )
+            try:
+                self._validate_task_observability_audit(observability)
+                break
+            except PipelineGenerationError as observability_error:
+                if observability_attempt >= self.retries:
+                    raise
+                repair_error: PipelineGenerationError | None = None
+                repair_limit = 1 if training_category == "simple_agentic" else self.retries
+                for repair_attempt in range(1, repair_limit + 1):
+                    try:
+                        proposal = self._call(
+                            "acceptance_executable_scenarios.observability_repair",
+                            "成功轨迹的独立审查发现答案引用了未查询的业务事实。只返回 goal_success 中完整的"
+                            "工具调用步骤数组 tool_steps，不要回传 reset、agent_response、reward、断言或整个场景。"
+                            "补齐完成用户请求和支撑最终答案所需的所有对象查询。使用现有工具、真实参数与"
+                            "可执行 capture/$ref；不得修改用户任务、业务数据或最终答案，不得凭空编造工具结果。"
+                            "若上一次修复结构无效，按 validation_error 修正。",
+                            {
+                                "task_description": {
+                                    key: description.get(key) for key in (
+                                        "task", "goal", "expected_result", "public_input",
+                                    )
+                                },
+                                "training_category": training_category,
+                                "business_tables": data_tables,
+                                "tools": [item for item in tool_list if item.get("function", {}).get("name") not in {
+                                    noise.get("name") for noise in noise_tool_metadata
+                                }],
+                                "tool_implementations": tool_implementations,
+                                "previous_tool_steps": [
+                                    step for scenario in business_scenarios
+                                    if scenario.get("kind") == "goal_success"
+                                    for step in scenario.get("steps", [])
+                                    if isinstance(step, dict) and step.get("operation") == "tool_call"
+                                ],
+                                "observed_tool_results": observed_tool_results,
+                                "observability_issues": observability.get("issues", []),
+                                "validation_error": str(repair_error) if repair_error else None,
+                                "output": {"tool_steps": [{
+                                    "step_id": "lookup", "operation": "tool_call",
+                                    "tool_name": "declared_tool", "arguments": {},
+                                    "capture": {"record_id": "$.records[0].id"},
+                                    "expected_status": 200,
+                                }]},
+                            },
+                        )
+                        candidate = self._replace_success_tool_steps(
+                            business_scenarios, proposal.get("tool_steps"),
+                        )
+                        candidate = self._repair_business_scenario_arguments(
+                            candidate, baseline=executable_baseline, tools=tool_list,
+                        )
+                        candidate = self._compile_business_scenario_structure(
+                            candidate, executable_baseline,
+                        )
+                        if environment_plan["mode"] == "reference_data":
+                            candidate = self._apply_baseline_dependency(
+                                candidate, executable_baseline,
+                            )
+                        self._validate_executable_scenarios(
+                            candidate, tools=tool_list, noise_tools=noise_tool_metadata,
+                            training_category=training_category,
+                            tool_implementations=tool_implementations,
+                            semantic_goal=semantic_goal,
+                        )
+                        validate_compiled_chain(candidate)
+                        self._validate_observability_repair_progress(
+                            business_scenarios, candidate,
+                        )
+                    except PipelineGenerationError as exc:
+                        repair_error = exc
+                        logger.warning(
+                            "observability trajectory repair invalid: attempt=%d/%d error=%s",
+                            repair_attempt, self.retries, exc,
+                        )
+                        continue
+                    business_scenarios = candidate
+                    break
+                else:
+                    raise repair_error or observability_error
         acceptance_contract["executable_scenarios"] = [
             *acceptance_contract.get("executable_scenarios", []), *business_scenarios
         ]
@@ -2227,6 +2519,21 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
         )
         self._validate_metric_implementations(
             metric_implementations, rewards["metrics"], require_process=True
+        )
+        self._audit_outcome_metric_claims(
+            task_description=description,
+            public_input=public_input,
+            environment=environment,
+            metrics=rewards["metrics"],
+        )
+        self._audit_reward_contract_consistency(
+            task_description=description,
+            public_input=public_input,
+            environment=environment,
+            semantic_goal=semantic_goal,
+            metrics=rewards["metrics"],
+            acceptance_contract=acceptance_contract,
+            success_fixture=success_fixture,
         )
 
         requirements = description.get("requirements")
@@ -2359,14 +2666,16 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                 "errors": [],
                 "warnings": readiness_warnings,
             },
-            "generation_pipeline": {"version": "1.0", "stages": [
-                "task_description", "public_input_contract", "environment_plan", "environment_entities", "environment_table_design",
+            "generation_pipeline": {"version": "1.0", "scene_business_plan": scene_business_plan,
+                                    "stages": [
+                "scene_business_plan", "task_description", "public_input_contract", "environment_plan", "environment_entities", "environment_table_design",
                 "environment_table_data", "environment_data_consistency", "environment_data_document",
                 "environment_media_generation", "user_profiles", "user_scripts",
                 "agent_actions", "capability_plan", "openai_tools", "tool_implementation_specs", "reward_key_steps",
                 "observations_rewards", "metric_implementation_specs", "acceptance_contract",
                 "acceptance_executable_scenarios",
             ]},
+            "graph_context": graph_context,
         }
         reward_issues = reward_contract_issues(result)
         if reward_issues:
@@ -2374,6 +2683,21 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                 "reward contract failed final assembly: "
                 + ", ".join(item["code"] for item in reward_issues)
             )
+        if environment_plan["mode"] in {"reference_data", "stateful"}:
+            preview = self._preview_success_tool_results(
+                scenarios=acceptance_contract.get("executable_scenarios", []),
+                data_tables=data_tables,
+                tool_implementations=tool_implementations,
+                environment_mode=environment_plan["mode"],
+                tools=tool_list,
+                semantic_goal=semantic_goal,
+            )
+            ambiguous = ambiguous_metric_captures(result, preview)
+            if ambiguous:
+                raise PipelineGenerationError(
+                    "reward contract uses ambiguous positional tool capture: "
+                    + ", ".join(str(item.get("metric_id")) for item in ambiguous)
+                )
         logger.info(
             "task pipeline completed: task_type=%s complexity=%s actions=%d tools=%d metrics=%d duration_ms=%.1f artifact_dir=%s",
             task_type,
@@ -2448,6 +2772,8 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                 values = fixture_values.get(singular_name, [])
             if not values and singular_name.startswith("target_"):
                 values = fixture_values.get(singular_name.removeprefix("target_"), [])
+            if not values and field_name.endswith("keywords"):
+                values = fixture_values.get("keywords", [])
             if values:
                 return values[: min(3, len(values))]
             return [TaskGenerationPipeline._schema_fixture(
@@ -2455,9 +2781,14 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                 fixture_values=fixture_values,
                 fixture_rows=fixture_rows,
             )]
-        if kind == "integer" or kind == "number":
+        if kind == "integer":
             values = fixture_values.get(field_name, [])
-            if values and isinstance(values[0], (int, float)) and not isinstance(values[0], bool):
+            if values and isinstance(values[0], int) and not isinstance(values[0], bool):
+                return values[0]
+            return 1
+        if kind == "number":
+            values = fixture_values.get(field_name, [])
+            if values and _finite_number(values[0]):
                 return values[0]
             return 1
         if kind == "boolean":
@@ -2472,7 +2803,7 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
         description = str(schema.get("description", ""))
         example_match = re.search(r"(?:例如|示例|如)\s*[:：]?\s*([^，。；,;]+)", description)
         if example_match:
-            return example_match.group(1).strip(" '\"`")
+            return example_match.group(1).strip(" '\"`“”‘’「」『』")
         return f"任务输入中的{field_name or '值'}"
 
     @staticmethod
@@ -2480,6 +2811,7 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
         """Index real generated row values for deterministic acceptance fixtures."""
         values: dict[str, list[Any]] = {}
         table_names: list[str] = []
+        observed_dates: list[str] = []
         for table in data_tables:
             table_name = table.get("table_name")
             if isinstance(table_name, str) and table_name:
@@ -2491,6 +2823,13 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                 for name, value in row.items():
                     if value in (None, "", [], {}):
                         continue
+                    if (isinstance(value, str)
+                            and re.match(r"^\d{4}-\d{2}-\d{2}(?:$|[ T])", value)
+                            and (str(name).lower().endswith("_at") or any(
+                                marker in str(name).lower() for marker in (
+                                "date", "time", "日期", "时间",
+                            )))):
+                        observed_dates.append(value[:10])
                     bucket = values.setdefault(str(name), [])
                     if value not in bucket:
                         bucket.append(value)
@@ -2514,6 +2853,9 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
         if table_names:
             values["reference_data"] = table_names
             values["data_source"] = table_names
+        if observed_dates:
+            values.setdefault("start_date", [min(observed_dates)])
+            values.setdefault("end_date", [max(observed_dates)])
         return values
 
     @classmethod
@@ -2522,6 +2864,15 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
     ) -> tuple[dict[str, list[Any]], dict[str, list[dict[str, Any]]]]:
         """Index generated rows and concrete public inputs for executable calls."""
         values = cls._business_fixture_values(data_tables)
+        scene_plan = task_description.get("_scene_business_plan", {})
+        anchor = scene_plan.get("anchor_term") if isinstance(scene_plan, dict) else None
+        visible_text = " ".join((
+            str(task_description.get("task", "")),
+            str(task_description.get("public_input", {}).get("initial_user_message", ""))
+            if isinstance(task_description.get("public_input"), dict) else "",
+        ))
+        if isinstance(anchor, str) and anchor.strip() and anchor in visible_text:
+            values.setdefault("keywords", [anchor])
         rows = {
             str(table.get("table_name")): [row for row in table.get("rows", []) if isinstance(row, dict)]
             for table in data_tables if isinstance(table, dict) and table.get("table_name")
@@ -2572,6 +2923,38 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
         if material_rows:
             rows.setdefault("materials", material_rows)
         return values, rows
+
+    @staticmethod
+    def _acceptance_requires_model(
+        *, tools: list[dict[str, Any]], noise_tools: list[dict[str, Any]],
+        tool_implementations: list[dict[str, Any]], metrics: list[dict[str, Any]],
+        metric_implementations: list[dict[str, Any]], environment_mode: str,
+    ) -> bool:
+        """Use model review only where EnvFactory cannot execute the contract itself."""
+        if environment_mode == "external_capability":
+            return True
+        compiled_tools = {
+            item.get("tool_name") for item in tool_implementations
+            if isinstance(item, dict)
+        } | {
+            item.get("name") for item in noise_tools if isinstance(item, dict)
+        }
+        if any(
+            tool.get("function", {}).get("name") not in compiled_tools
+            for tool in tools if isinstance(tool, dict)
+        ):
+            return True
+        compiled_metrics = {
+            item.get("metric_id") for item in metric_implementations
+            if isinstance(item, dict)
+        }
+        return any(
+            metric.get("id") not in compiled_metrics
+            and metric.get("evaluator", {}).get("kind") not in {
+                "external_llm_judge", "hybrid_outcome",
+            }
+            for metric in metrics if isinstance(metric, dict)
+        )
 
     @classmethod
     def _build_acceptance_contract(
@@ -2715,7 +3098,17 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             "scenarios": [
                 {"scenario_id": "reset_isolation", "kind": "lifecycle", "steps": ["reset(seed=17)", "write_episode_a", "reset(seed=17)", "assert_episode_a_not_visible"]},
                 {"scenario_id": "replay_integrity", "kind": "replay", "steps": ["reset(seed=17)", "execute_tool_cases", "get_replay", "assert_trace_hash"]},
-                *[{"scenario_id": f"key_step_{step['step_id']}", "kind": "goal_critical", "action_name": step["action_name"], "required_for_goal": step["required_for_goal"]} for step in key_steps],
+                *[{
+                    "scenario_id": f"key_step_{step['step_id']}",
+                    "kind": "goal_critical",
+                    "action_name": step["action_name"],
+                    "required_for_goal": step["required_for_goal"],
+                    "steps": [
+                        "reset(seed=17)",
+                        f"execute declared action {step['action_name']}",
+                        "assert the executable success trajectory covers this action",
+                    ],
+                } for step in key_steps],
             ],
             "tool_cases": tool_cases,
             "argument_probes": argument_probes,
@@ -2812,6 +3205,15 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             "tool_cases": "case_id",
             "reward_cases": "case_id",
         }
+        allowed_actions = {
+            action.get("name") for action in baseline.get("actions", [])
+            if isinstance(action, dict) and isinstance(action.get("name"), str)
+        }
+        allowed_actions.update(
+            scenario.get("action_name") for scenario in baseline.get("scenarios", [])
+            if isinstance(scenario, dict)
+            and isinstance(scenario.get("action_name"), str)
+        )
 
         def safe_overlay(base_item: Any, candidate_item: Any) -> dict[str, Any]:
             if not isinstance(base_item, dict):
@@ -2855,6 +3257,13 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                     used.add(index)
                 if isinstance(base_item, dict):
                     combined = safe_overlay(base_item, overlay)
+                    # Positional enrichment must never replace the stable
+                    # identity of an EnvFactory-owned baseline case.
+                    combined[id_field] = base_item[id_field]
+                    if key == "scenarios":
+                        for field in ("kind", "action_name", "required_for_goal"):
+                            if field in base_item:
+                                combined[field] = base_item[field]
                     if key == "tool_cases":
                         # The executable request and status expectation are
                         # derived from validated tools and business fixtures.
@@ -2867,7 +3276,33 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                 else:
                     result.append(overlay or base_item)
             for index, item in enumerate(candidate_items):
-                if index not in used and isinstance(item, dict) and item not in result:
+                if index in used or not isinstance(item, dict) or item in result:
+                    continue
+                if key == "scenarios" and not (
+                    isinstance(item.get("scenario_id"), str) and item["scenario_id"]
+                    and isinstance(item.get("kind"), str) and item["kind"]
+                    and isinstance(item.get("steps"), list)
+                ):
+                    continue
+                if (key == "scenarios" and item.get("kind") == "goal_critical"
+                        and item.get("action_name") not in allowed_actions):
+                    continue
+                if key == "tool_cases" and not (
+                    isinstance(item.get("case_id"), str) and item["case_id"]
+                    and isinstance(item.get("tool_name"), str)
+                    and isinstance(item.get("expected"), dict)
+                ):
+                    continue
+                if key == "reward_cases" and not (
+                    isinstance(item.get("case_id"), str) and item["case_id"]
+                    and isinstance(item.get("metric_id"), str)
+                    and isinstance(item.get("expected_score"), (int, float))
+                    and not isinstance(item["expected_score"], bool)
+                ):
+                    continue
+                if item.get(id_field) not in {
+                    existing.get(id_field) for existing in result if isinstance(existing, dict)
+                }:
                     result.append(item)
             merged[key] = result
         return merged
@@ -2902,8 +3337,14 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                 value for value in mapping.values()
                 if isinstance(value, (int, float)) and not isinstance(value, bool)
             ]
-            expected = max(values) if str(case["case_id"]).endswith(".pass") else min(values)
-            if values and case["expected_score"] != expected:
+            case_id = str(case["case_id"])
+            if case_id.endswith(".pass"):
+                allowed_scores = {max(values)} if values else set()
+            elif case_id.endswith(".partial"):
+                allowed_scores = set(values)
+            else:
+                allowed_scores = {min(values)} if values else set()
+            if values and case["expected_score"] not in allowed_scores:
                 raise PipelineGenerationError(
                     f"acceptance_contract reward case {case['case_id']} has reversed expected score"
                 )
@@ -2943,19 +3384,30 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             if isinstance(item, dict) and isinstance(item.get("tool_name"), str)
         }
 
-        def validate_value(value: Any, schema: dict[str, Any], path: str) -> None:
+        def validate_value(
+            value: Any, schema: dict[str, Any], path: str, *, require_content: bool = True
+        ) -> None:
             if isinstance(value, dict) and set(value) == {"$ref"}:
                 if not isinstance(value["$ref"], str) or not value["$ref"].strip():
                     raise PipelineGenerationError(f"{path} has an invalid reference")
                 return
-            kind = schema.get("type")
+            declared_types = schema.get("type")
+            if isinstance(declared_types, list):
+                if value is None and "null" in declared_types:
+                    return
+                kind = next((item for item in declared_types if item != "null"), None)
+            else:
+                kind = declared_types
             if kind == "array":
-                if not isinstance(value, list) or not value:
+                if not isinstance(value, list) or (require_content and not value):
                     raise PipelineGenerationError(f"{path} must be a non-empty array")
                 for item_index, item in enumerate(value):
-                    validate_value(item, schema.get("items", {}), f"{path}[{item_index}]")
+                    validate_value(
+                        item, schema.get("items", {}), f"{path}[{item_index}]",
+                        require_content=require_content,
+                    )
             elif kind == "object":
-                if not isinstance(value, dict) or not value:
+                if not isinstance(value, dict) or (require_content and not value):
                     raise PipelineGenerationError(f"{path} must be a non-empty object")
                 properties = schema.get("properties", {})
                 for required_name in schema.get("required", []):
@@ -2963,9 +3415,12 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                         raise PipelineGenerationError(f"{path} misses required field {required_name}")
                 for child_name, child_value in value.items():
                     if child_name in properties:
-                        validate_value(child_value, properties[child_name], f"{path}.{child_name}")
+                        validate_value(
+                            child_value, properties[child_name], f"{path}.{child_name}",
+                            require_content=child_name in schema.get("required", []),
+                        )
             elif kind == "string":
-                if not isinstance(value, str) or not value.strip():
+                if not isinstance(value, str) or (require_content and not value.strip()):
                     raise PipelineGenerationError(f"{path} must be a non-empty string")
                 lowered = value.strip().lower()
                 if any(marker in lowered for marker in (
@@ -2973,6 +3428,15 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                     "任务输入中", "待提供", "请填写", "示例值",
                 )):
                     raise PipelineGenerationError(f"{path} uses a placeholder value")
+            elif kind == "integer":
+                if isinstance(value, bool) or not isinstance(value, int):
+                    raise PipelineGenerationError(f"{path} must be an integer")
+            elif kind == "number":
+                if not _finite_number(value):
+                    raise PipelineGenerationError(f"{path} must be a finite number")
+            elif kind == "boolean":
+                if not isinstance(value, bool):
+                    raise PipelineGenerationError(f"{path} must be a boolean")
         def references(value: Any) -> set[str]:
             if isinstance(value, dict):
                 if set(value) == {"$ref"} and isinstance(value.get("$ref"), str):
@@ -3019,13 +3483,14 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                     if set(schema.get("required", [])) - set(arguments):
                         raise PipelineGenerationError(f"executable_scenarios[{index}] misses required tool arguments")
                     if scenario["kind"] == "goal_success":
-                        for argument_name in schema.get("required", []):
+                        for argument_name, argument in arguments.items():
+                            required_argument = argument_name in schema.get("required", [])
                             validate_value(
-                                arguments[argument_name],
+                                argument,
                                 schema.get("properties", {}).get(argument_name, {}),
                                 f"executable_scenarios[{index}].{name}.{argument_name}",
+                                require_content=required_argument,
                             )
-                            argument = arguments[argument_name]
                             argument_schema = schema.get("properties", {}).get(argument_name, {})
                             if isinstance(argument, dict) and set(argument) == {"$ref"}:
                                 projected = capture_shapes.get(argument["$ref"])
@@ -3213,6 +3678,14 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
         fixture_values, fixture_rows = cls._business_fixture_context(
             data_tables or [], task_description,
         )
+        public_text = json.dumps({
+            key: task_description.get(key)
+            for key in ("task", "goal", "public_input", "requirements")
+        }, ensure_ascii=False)
+        public_numbers = {
+            Decimal(token)
+            for token in re.findall(r"(?<!\d)-?\d+(?:\.\d+)?(?!\d)", public_text)
+        }
         success_steps: list[dict[str, Any]] = [
             {"operation": "reset", "body": {"episode_id": "goal-success", "seed": 17}, "expected_status": 200}
         ]
@@ -3233,6 +3706,31 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                 function["parameters"], fixture_values=fixture_values,
                 fixture_rows=fixture_rows,
             )
+            properties = function["parameters"].get("properties", {})
+            if isinstance(properties, dict):
+                for argument_name, argument_schema in properties.items():
+                    if (
+                        argument_name in fixture_values
+                        or not isinstance(argument_schema, dict)
+                        or argument_schema.get("type") not in ("integer", "number")
+                        or fixture_arguments.get(argument_name) != 1
+                    ):
+                        continue
+                    description_text = str(argument_schema.get("description", ""))
+                    examples = {
+                        Decimal(token) for token in re.findall(
+                            r"(?:例如|示例|如)\s*[:：]?\s*(-?\d+(?:\.\d+)?)",
+                            description_text,
+                        )
+                    }
+                    grounded = examples & public_numbers
+                    if len(grounded) == 1:
+                        value = grounded.pop()
+                        if argument_schema["type"] == "number" or value == int(value):
+                            fixture_arguments[argument_name] = (
+                                float(value) if argument_schema["type"] == "number"
+                                else int(value)
+                            )
             implementation = implementation_by_tool.get(function["name"], {})
             # Business tool argument names often differ from source table columns.
             # Bind schema placeholders through the declared selector before asking
@@ -3269,8 +3767,18 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                 if training_category == "multi_step_agentic" and prior_outputs and not dependency_added:
                     required = function["parameters"].get("required", [])
                     properties = function["parameters"].get("properties", {})
+                    argument_fields = {
+                        argument: field
+                        for mapping_name in ("selector", "values", "changes")
+                        for argument, field in (
+                            implementation.get(mapping_name, {}).items()
+                            if isinstance(implementation.get(mapping_name), dict) else ()
+                        )
+                        if isinstance(argument, str) and isinstance(field, str)
+                    }
                     dependency = cls._match_baseline_dependency(
-                        required=required, properties=properties, prior_outputs=prior_outputs
+                        required=required, properties=properties, prior_outputs=prior_outputs,
+                        argument_fields=argument_fields,
                     )
                     if dependency is not None:
                         argument_name, variable_name, json_path = dependency
@@ -3348,20 +3856,29 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
     def _match_baseline_dependency(
         *, required: list[Any], properties: dict[str, Any],
         prior_outputs: list[tuple[str, list[str]]],
+        argument_fields: dict[str, str] | None = None,
     ) -> tuple[str, str, str] | None:
         """Find a schema-compatible, fixture-backed edge for a multi-tool trace."""
         for result_field, projection in reversed(prior_outputs):
-            for argument_name in required:
-                if not isinstance(argument_name, str):
-                    continue
-                if argument_name in projection:
-                    variable = f"upstream_{argument_name}"
-                    return argument_name, variable, f"$.{result_field}[0].{argument_name}"
             for argument_name in required:
                 schema = properties.get(argument_name, {})
                 if not isinstance(argument_name, str) or schema.get("type") != "array":
                     continue
                 item_schema = schema.get("items", {})
+                if isinstance(item_schema, dict) and item_schema.get("type") in {
+                    "string", "integer", "number",
+                }:
+                    candidates = [
+                        (argument_fields or {}).get(argument_name),
+                        TaskGenerationPipeline._fixture_singular_name(argument_name),
+                    ]
+                    matched = next(
+                        (field for field in candidates
+                         if isinstance(field, str) and field in projection), None
+                    )
+                    if matched is not None:
+                        variable = f"upstream_{argument_name}"
+                        return argument_name, variable, f"$.{result_field}[*].{matched}"
                 if not isinstance(item_schema, dict) or item_schema.get("type") != "object":
                     continue
                 item_required = item_schema.get("required", [])
@@ -3371,6 +3888,18 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                     continue
                 variable = f"upstream_{result_field}"
                 return argument_name, variable, f"$.{result_field}"
+            for argument_name in required:
+                if not isinstance(argument_name, str):
+                    continue
+                if argument_name in projection:
+                    variable = f"upstream_{argument_name}"
+                    return argument_name, variable, f"$.{result_field}[0].{argument_name}"
+                source_field = (argument_fields or {}).get(argument_name)
+                schema = properties.get(argument_name, {})
+                if (source_field in projection and isinstance(schema, dict)
+                        and schema.get("type") in {"string", "integer", "number", "boolean"}):
+                    variable = f"upstream_{argument_name}"
+                    return argument_name, variable, f"$.{result_field}[0].{source_field}"
         return None
 
     @staticmethod
@@ -3395,11 +3924,74 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             return result
         calls = [copy.deepcopy(step) for step in success.get("steps", [])
                  if isinstance(step, dict) and step.get("operation") == "tool_call"]
+        def references(value: Any) -> set[str]:
+            if isinstance(value, dict):
+                if set(value) == {"$ref"} and isinstance(value["$ref"], str):
+                    return {value["$ref"]}
+                return set().union(*(references(item) for item in value.values()))
+            if isinstance(value, list):
+                return set().union(*(references(item) for item in value))
+            return set()
+        for index, step in enumerate(calls):
+            capture = step.get("capture")
+            if not isinstance(capture, dict):
+                continue
+            used = set().union(*(references(later.get("arguments", {}))
+                                 for later in calls[index + 1:]))
+            retained = {name: path for name, path in capture.items() if name in used}
+            if retained:
+                step["capture"] = retained
+            else:
+                step.pop("capture", None)
         compiled = next(item for item in result if item.get("kind") == "goal_success")
         for index, step in enumerate(calls):
             step["step_id"] = f"business_tool_{index + 1}"
             step["expected_status"] = 200
         compiled["steps"] = [compiled["steps"][0], *calls, *compiled["steps"][-2:]]
+        return result
+
+    @staticmethod
+    def _apply_baseline_dependency(
+        scenarios: list[dict[str, Any]], baseline: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Fill a missing read-only data edge when the two tool sequences agree."""
+        import copy
+
+        result = copy.deepcopy(scenarios)
+        success = next((item for item in result if item.get("kind") == "goal_success"), None)
+        baseline_success = next((item for item in baseline if item.get("kind") == "goal_success"), None)
+        if success is None or baseline_success is None:
+            return result
+        calls = [step for step in success.get("steps", []) if step.get("operation") == "tool_call"]
+        baseline_calls = [step for step in baseline_success.get("steps", [])
+                          if step.get("operation") == "tool_call"]
+        if ([step.get("tool_name") for step in calls]
+                != [step.get("tool_name") for step in baseline_calls]):
+            return result
+        for index, (call, original) in enumerate(zip(calls, baseline_calls)):
+            baseline_arguments = original.get("arguments", {})
+            arguments = call.get("arguments", {})
+            if not isinstance(arguments, dict) or not isinstance(baseline_arguments, dict):
+                continue
+            for name, value in baseline_arguments.items():
+                if not (isinstance(value, dict) and set(value) == {"$ref"}
+                        and isinstance(value["$ref"], str)):
+                    continue
+                if isinstance(arguments.get(name), dict) and set(arguments[name]) == {"$ref"}:
+                    continue
+                variable = value["$ref"]
+                source = next((source for source, prior in zip(calls[:index], baseline_calls[:index])
+                               if variable in prior.get("capture", {})), None)
+                original_source = next((prior for prior in baseline_calls[:index]
+                                        if variable in prior.get("capture", {})), None)
+                if source is None or original_source is None:
+                    continue
+                path = original_source["capture"][variable]
+                existing = source.setdefault("capture", {})
+                if variable in existing and existing[variable] != path:
+                    continue
+                existing[variable] = path
+                arguments[name] = copy.deepcopy(value)
         return result
 
     @staticmethod
@@ -3423,11 +4015,22 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             (item for item in baseline if isinstance(item, dict) and item.get("kind") == "goal_success"),
             {},
         )
-        fallback_arguments = {
-            step.get("tool_name"): step.get("arguments", {})
-            for step in baseline_success.get("steps", []) if isinstance(step, dict)
+        baseline_calls = [
+            step for step in baseline_success.get("steps", []) if isinstance(step, dict)
             and step.get("operation") == "tool_call"
-        }
+        ]
+        fallback_by_name: dict[str, dict[str, Any]] = {}
+        repeated_names: set[str] = set()
+        for step in baseline_calls:
+            name = step.get("tool_name")
+            if not isinstance(name, str):
+                continue
+            if name in fallback_by_name:
+                repeated_names.add(name)
+            elif isinstance(step.get("arguments"), dict):
+                fallback_by_name[name] = step["arguments"]
+        for name in repeated_names:
+            fallback_by_name.pop(name, None)
 
         def repair(value: Any, schema: dict[str, Any], fallback: Any, field_name: str = "") -> Any:
             if isinstance(value, dict) and set(value) == {"$ref"}:
@@ -3436,6 +4039,8 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                     return value
             kind = schema.get("type")
             if isinstance(kind, list):
+                if value is None and "null" in kind:
+                    return None
                 kind = next((item for item in kind if item != "null"), None)
             if kind == "object":
                 properties = schema.get("properties", {})
@@ -3476,8 +4081,23 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                     )
                 return copy.deepcopy(fallback)
             if kind in {"integer", "number"}:
-                valid = isinstance(value, (int, float)) and not isinstance(value, bool)
-                return value if valid else copy.deepcopy(fallback)
+                valid = (
+                    isinstance(value, int) and not isinstance(value, bool)
+                    if kind == "integer" else _finite_number(value)
+                )
+                if valid:
+                    return value
+                if isinstance(fallback, dict) and set(fallback) == {"$ref"}:
+                    return copy.deepcopy(fallback)
+                valid_fallback = (
+                    isinstance(fallback, int) and not isinstance(fallback, bool)
+                    if kind == "integer" else _finite_number(fallback)
+                )
+                if not valid_fallback:
+                    fallback = TaskGenerationPipeline._schema_fixture(
+                        schema, field_name=field_name,
+                    )
+                return copy.deepcopy(fallback)
             if kind == "boolean":
                 return value if isinstance(value, bool) else copy.deepcopy(fallback)
             return value if value is not None else copy.deepcopy(fallback)
@@ -3486,16 +4106,25 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
         for scenario in repaired:
             if not isinstance(scenario, dict) or scenario.get("kind") != "goal_success":
                 continue
+            call_index = 0
             for step in scenario.get("steps", []):
                 if not isinstance(step, dict) or step.get("operation") != "tool_call":
                     continue
                 name = step.get("tool_name")
                 schema = schemas.get(name)
                 if not isinstance(schema, dict):
+                    call_index += 1
                     continue
-                step["arguments"] = repair(
-                    step.get("arguments"), schema, fallback_arguments.get(name, {})
+                baseline_step = baseline_calls[call_index] if call_index < len(baseline_calls) else {}
+                fallback = (
+                    baseline_step.get("arguments", {})
+                    if baseline_step.get("tool_name") == name
+                    else fallback_by_name.get(name, {})
                 )
+                step["arguments"] = repair(
+                    step.get("arguments"), schema, fallback
+                )
+                call_index += 1
         return repaired
 
     @staticmethod
@@ -3640,6 +4269,37 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
         return rows, mapping
 
     @staticmethod
+    def _render_data_document(tables: list[dict[str, Any]]) -> str:
+        """Describe the actual reset fixture without a second source of truth."""
+        lines = [
+            "# 业务数据说明", "",
+            "以下各表及行是每个 episode reset 后、Agent 执行前的基线状态；目标终态由任务契约与实际操作决定。",
+            "运行时按 manifest 加载 schemas/<表名>.json 和 rows/<表名>.jsonl，并为每个 episode 保持独立副本。",
+            "",
+        ]
+        for table in tables:
+            name = table["table_name"]
+            lines.extend([f"## {name}", "", str(table.get("description") or "业务数据表"), ""])
+            lines.extend([
+                f"- 初始行数：{len(table.get('rows', []))}",
+                f"- 主键：{json.dumps(table.get('primary_key', []), ensure_ascii=False)}",
+                f"- 外键：{json.dumps(table.get('foreign_keys', []), ensure_ascii=False)}",
+                f"- 索引：{json.dumps(table.get('indexes', []), ensure_ascii=False)}",
+                f"- 约束：{json.dumps(table.get('constraints', []), ensure_ascii=False)}",
+                "", "| 字段 | 类型 | 可空 | 说明 |", "| --- | --- | --- | --- |",
+            ])
+            for column in table.get("columns", []):
+                if not isinstance(column, dict):
+                    continue
+                description = str(column.get("description") or "").replace("|", "\\|").replace("\n", " ")
+                lines.append(
+                    f"| {column.get('name', '')} | {column.get('type', '')} | "
+                    f"{'是' if column.get('nullable') else '否'} | {description} |"
+                )
+            lines.extend(["", "初始记录以对应的 `rows/<表名>.jsonl` 文件为准。", ""])
+        return "\n".join(lines).rstrip() + "\n"
+
+    @staticmethod
     def _validate_noise_tool_safety(tools: list[Any]) -> None:
         """Noise tools must not claim real-world writes the shared runtime cannot perform."""
         mutation_name_prefixes = (
@@ -3728,11 +4388,91 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             names.add(name)
 
     @staticmethod
+    def _missing_insert_columns(spec: dict[str, Any], tables: list[dict[str, Any]]) -> list[str]:
+        """Only Agent-sourced columns must have declarative insert mappings."""
+        from .sandbox_runtime import ManifestDataStore
+
+        if spec.get("operation") != "insert":
+            return []
+        table = next((item for item in tables if item.get("table_name") == spec.get("table")), None)
+        if table is None:
+            return []
+        columns = {item.get("name") for item in table.get("columns", []) if isinstance(item, dict)}
+        values = spec.get("values")
+        supplied = set(values.values()) if isinstance(values, dict) else set()
+        platform_fields = ManifestDataStore.platform_insert_fields(table)
+        return sorted(name for name in columns - supplied - platform_fields if isinstance(name, str))
+
+    @staticmethod
+    def _complete_insert_values_from_tool(
+        spec: Any, *, tools: list[dict[str, Any]], tables: list[dict[str, Any]],
+    ) -> Any:
+        """Fill exact-name insert mappings; reject an impossible tool surface early."""
+        if not isinstance(spec, dict) or spec.get("operation") != "insert":
+            return spec
+        missing = TaskGenerationPipeline._missing_insert_columns(spec, tables)
+        if not missing:
+            return spec
+        function = next((
+            item.get("function") for item in tools
+            if isinstance(item, dict) and isinstance(item.get("function"), dict)
+            and item["function"].get("name") == spec.get("tool_name")
+        ), {})
+        parameter_schema = function.get("parameters")
+        parameters = parameter_schema.get("properties") if isinstance(parameter_schema, dict) else None
+        values = spec.get("values")
+        if not isinstance(parameters, dict) or not isinstance(values, dict):
+            return spec
+        raw_required = parameter_schema.get("required")
+        required_arguments = set(raw_required) & set(parameters) if isinstance(raw_required, list) else set()
+        unused_arguments = required_arguments - set(values)
+        same_name = set(missing) & unused_arguments
+        completed = copy.deepcopy(spec)
+        completed["values"].update({name: name for name in same_name})
+        missing = TaskGenerationPipeline._missing_insert_columns(completed, tables)
+        if missing and not (unused_arguments - same_name):
+            raise PipelineGenerationError(
+                "declarative insert cannot supply storage columns from tool inputs: "
+                f"tool={spec.get('tool_name')} table={spec.get('table')} missing={missing}"
+            )
+        return completed
+
+    @staticmethod
+    def _optional_mutation_arguments(
+        spec: dict[str, Any], tools: list[dict[str, Any]],
+    ) -> list[str]:
+        """Mutation mappings index their arguments unconditionally at runtime."""
+        if spec.get("operation") not in {"insert", "update", "delete"}:
+            return []
+        function = next((
+            item.get("function") for item in tools
+            if isinstance(item, dict) and isinstance(item.get("function"), dict)
+            and item["function"].get("name") == spec.get("tool_name")
+        ), None)
+        if not isinstance(function, dict):
+            return []
+        parameters = function.get("parameters")
+        if not isinstance(parameters, dict):
+            return []
+        raw_required = parameters.get("required")
+        required = set(raw_required) if isinstance(raw_required, list) else set()
+        mapped = set()
+        for field in ("values", "selector", "changes"):
+            mapping = spec.get(field)
+            if isinstance(mapping, dict):
+                mapped.update(mapping)
+        return sorted(mapped - required)
+
+    @staticmethod
     def _validate_tool_implementations(
         specs: list[Any], *, tools: list[dict[str, Any]], tables: list[dict[str, Any]]
     ) -> None:
         tool_parameters = {
             tool["function"]["name"]: set(tool["function"]["parameters"].get("properties", {}))
+            for tool in tools
+        }
+        tool_parameter_schemas = {
+            tool["function"]["name"]: tool["function"]["parameters"].get("properties", {})
             for tool in tools
         }
         table_columns = {
@@ -3768,6 +4508,21 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                     or rule.get("operator") not in {"eq", "in", "contains", "gte", "lte"}
                 ):
                     raise PipelineGenerationError(f"tool_implementations[{index}] has an invalid filter")
+                argument_schema = tool_parameter_schemas[name].get(rule["argument"], {})
+                item_schema = argument_schema.get("items", {}) if isinstance(argument_schema, dict) else {}
+                if isinstance(item_schema, dict) and item_schema.get("type") == "object":
+                    item_properties = item_schema.get("properties", {})
+                    resolver = rule.get("resolve")
+                    item_field = resolver.get("match_column") if isinstance(resolver, dict) else rule["column"]
+                    if (
+                        rule["operator"] != "in"
+                        or not isinstance(item_properties, dict)
+                        or item_field not in item_properties
+                    ):
+                        raise PipelineGenerationError(
+                            f"tool_implementations[{index}] object-array filter must use in "
+                            f"and expose matching field {item_field}"
+                        )
                 resolver = rule.get("resolve")
                 if resolver is not None:
                     if not isinstance(resolver, dict):
@@ -3832,8 +4587,20 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                 raise PipelineGenerationError(f"tool_implementations[{index}] requires selector")
             if operation == "insert" and not spec.get("values"):
                 raise PipelineGenerationError(f"tool_implementations[{index}] requires values")
+            missing_insert_columns = TaskGenerationPipeline._missing_insert_columns(spec, tables)
+            if missing_insert_columns:
+                raise PipelineGenerationError(
+                    f"tool_implementations[{index}] insert row omits storage columns "
+                    f"{missing_insert_columns}; use a custom handler for generated fields"
+                )
             if operation == "update" and not spec.get("changes"):
                 raise PipelineGenerationError(f"tool_implementations[{index}] requires changes")
+            optional_mutation_arguments = TaskGenerationPipeline._optional_mutation_arguments(spec, tools)
+            if optional_mutation_arguments:
+                raise PipelineGenerationError(
+                    f"tool_implementations[{index}] mutation arguments must be required: "
+                    f"{optional_mutation_arguments}"
+                )
             seen.add(name)
 
     @staticmethod
@@ -3892,9 +4659,9 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             item.get("tool_name"): item for item in implementations
             if isinstance(item, dict) and isinstance(item.get("tool_name"), str)
         }
-        read_tokens = {"get", "query", "search", "lookup", "list", "find", "fetch", "inspect"}
+        read_tokens = {"get", "read", "retrieve", "query", "search", "lookup", "list", "find", "fetch", "inspect"}
         mutation_tokens = {
-            "create", "insert", "add", "update", "modify", "correct", "set", "save", "mark",
+            "create", "insert", "add", "write", "update", "modify", "correct", "set", "save", "mark",
             "delete", "remove",
         }
         semantic_tokens = {
@@ -3997,8 +4764,151 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                 )
 
     @staticmethod
+    def _complete_stateful_tool_schemas(
+        tools: list[dict[str, Any]], plans: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Compile required mutation arguments when the target tool is unambiguous."""
+        completed = copy.deepcopy(tools)
+        mutation_markers = {
+            "insert": ("create", "insert", "add", "write", "book", "booking", "reserve", "place", "submit",
+                       "创建", "新增", "添加", "预订", "预约", "提交"),
+            "update": ("update", "modify", "correct", "write", "更新", "修改", "修正"),
+            "delete": ("delete", "remove", "删除", "移除"),
+        }
+        used_tools: set[str] = set()
+        for plan in plans:
+            if not isinstance(plan, dict) or plan.get("operation") not in mutation_markers:
+                continue
+            table = plan.get("table")
+            if not isinstance(table, str):
+                continue
+            candidates: list[tuple[int, dict[str, Any]]] = []
+            for tool in completed:
+                function = tool.get("function", {}) if isinstance(tool, dict) else {}
+                if not isinstance(function, dict):
+                    continue
+                name = function.get("name")
+                if not isinstance(name, str) or name in used_tools:
+                    continue
+                label = f"{function.get('name', '')} {function.get('description', '')}".lower()
+                parameters = function.get("parameters")
+                properties = parameters.get("properties") if isinstance(parameters, dict) else None
+                if not isinstance(properties, dict):
+                    continue
+                field_names = {
+                    field["name"] for field in plan.get("required_fields", [])
+                    if isinstance(field, dict) and isinstance(field.get("name"), str)
+                }
+                overlap = sum(any(
+                    argument == field or argument.endswith(f"_{field}")
+                    or argument.removeprefix("new_") == field
+                    or argument.removeprefix("target_") == field
+                    for argument in properties if isinstance(argument, str)
+                ) for field in field_names)
+                table_match = table.lower() in label
+                operation_label = label.replace(table.lower(), "")
+                operation_match = any(
+                    (marker in operation_label if not marker.isascii() else bool(re.search(
+                        rf"(?<![a-z]){re.escape(marker)}(?![a-z])", operation_label,
+                    )))
+                    for marker in mutation_markers[plan["operation"]]
+                )
+                if not operation_match or not (table_match or overlap or len(plans) == 1):
+                    continue
+                candidates.append((100 * table_match + 10 * operation_match + overlap,
+                                   function))
+            if not candidates:
+                continue
+            candidates.sort(key=lambda item: item[0], reverse=True)
+            if len(candidates) > 1 and candidates[0][0] == candidates[1][0]:
+                continue
+            function = candidates[0][1]
+            parameters = function.get("parameters")
+            if not isinstance(parameters, dict):
+                continue
+            properties = parameters.get("properties")
+            required = parameters.get("required")
+            if not isinstance(properties, dict) or not isinstance(required, list):
+                continue
+            for field in plan.get("required_fields", []):
+                if not isinstance(field, dict) or not isinstance(field.get("name"), str):
+                    continue
+                column = field["name"]
+                aliases = [name for name in properties if isinstance(name, str) and (
+                    name == column or name.endswith(f"_{column}")
+                    or name.removeprefix("new_") == column
+                    or name.removeprefix("target_") == column
+                )]
+                if len(aliases) > 1:
+                    continue
+                argument = aliases[0] if aliases else column
+                if not aliases:
+                    properties[argument] = {
+                        "type": field.get("json_type", "string"),
+                        "description": f"{table}.{column} 的业务变更值",
+                    }
+                elif isinstance(properties[argument], dict):
+                    properties[argument]["type"] = field.get("json_type", "string")
+                if argument not in required:
+                    required.append(argument)
+            used_tools.add(function["name"])
+        return completed
+
+    @staticmethod
+    def _stateful_mutation_surface_plan(
+        semantic_goal: dict[str, Any] | None, tables: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Expose exact mutation parameter requirements before tool generation."""
+        from .sandbox_runtime import ManifestDataStore
+
+        goals = semantic_goal.get("row_predicates", []) if isinstance(semantic_goal, dict) else []
+        by_name = {table.get("table_name"): table for table in tables if isinstance(table, dict)}
+        plan: list[dict[str, Any]] = []
+        for goal in goals if isinstance(goals, list) else []:
+            if not isinstance(goal, dict):
+                continue
+            table_name = goal.get("table")
+            table = by_name.get(table_name)
+            if not isinstance(table, dict):
+                continue
+            where, values = goal.get("where", {}), goal.get("values", {})
+            if not isinstance(where, dict) or not isinstance(values, dict):
+                continue
+            rows = table.get("rows", [])
+            matching = [row for row in rows if isinstance(row, dict)
+                        and all(row.get(field) == value for field, value in where.items())] if isinstance(rows, list) else []
+            operation = "delete" if goal.get("count") == 0 else ("update" if matching else "insert")
+            columns = {column.get("name"): column for column in table.get("columns", [])
+                       if isinstance(column, dict) and isinstance(column.get("name"), str)}
+            required = set(where) | set(values)
+            platform_fields: set[str] = set()
+            if operation == "insert":
+                required.update(columns)
+                platform_fields = ManifestDataStore.platform_insert_fields(table)
+                platform_fields.difference_update(where)
+                platform_fields.difference_update(
+                    field for field, value in values.items() if value is not None
+                )
+                required.difference_update(platform_fields)
+            elif operation == "delete":
+                required = set(where)
+            fields = []
+            for name in sorted(required):
+                sql_type = str(columns.get(name, {}).get("type", "")).upper()
+                json_type = ("boolean" if sql_type.startswith(("BOOL", "BOOLEAN"))
+                             else "integer" if "INT" in sql_type
+                             else "number" if any(part in sql_type for part in ("DECIMAL", "NUMERIC", "REAL", "FLOAT", "DOUBLE"))
+                             else "string")
+                fields.append({"name": name, "json_type": json_type})
+            plan.append({"table": table_name, "operation": operation,
+                         "required_fields": fields,
+                         "platform_filled_fields": sorted(platform_fields)})
+        return plan
+
+    @staticmethod
     def _validate_stateful_tool_surface(
-        tools: list[Any], *, semantic_goal: dict[str, Any] | None
+        tools: list[Any], *, semantic_goal: dict[str, Any] | None,
+        tables: list[dict[str, Any]] | None = None,
     ) -> None:
         """Require a compilable mutation surface before accepting tool schemas."""
         predicates = (
@@ -4006,32 +4916,61 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             if isinstance(semantic_goal, dict) else []
         )
         mutation_markers = (
-            "create", "insert", "add", "update", "modify", "correct", "delete", "remove",
+            "create", "insert", "add", "write", "update", "modify", "correct", "delete", "remove",
             "创建", "新增", "添加", "更新", "修改", "修正", "删除", "移除",
         )
-        surfaces: list[set[str]] = []
+        surfaces: list[tuple[set[str], set[str]]] = []
         for tool in tools:
             function = tool.get("function", {}) if isinstance(tool, dict) else {}
             label = f"{function.get('name', '')} {function.get('description', '')}".lower()
             if not any(marker in label for marker in mutation_markers):
                 continue
-            properties = function.get("parameters", {}).get("properties", {})
-            if isinstance(properties, dict):
-                surfaces.append(set(properties))
+            parameters = function.get("parameters", {})
+            properties = parameters.get("properties", {}) if isinstance(parameters, dict) else {}
+            required = parameters.get("required", []) if isinstance(parameters, dict) else []
+            if isinstance(properties, dict) and isinstance(required, list):
+                # Declarative mutations index mapped arguments unconditionally.
+                # An optional field cannot establish a goal predicate at runtime.
+                surfaces.append((set(properties), set(properties) & {
+                    name for name in required if isinstance(name, str)
+                }))
+        columns_by_table = {
+            table.get("table_name"): {
+                column.get("name") for column in table.get("columns", [])
+                if isinstance(column, dict) and isinstance(column.get("name"), str)
+            }
+            for table in (tables or []) if isinstance(table, dict)
+        }
+
+        def maps_to_column(argument: str, column: str) -> bool:
+            return (argument == column or argument.endswith(f"_{column}")
+                    or argument.removeprefix("new_") == column
+                    or argument.removeprefix("target_") == column)
+
         for predicate in predicates if isinstance(predicates, list) else []:
             if not isinstance(predicate, dict):
                 continue
             required = set(predicate.get("where", {})) | set(predicate.get("values", {}))
-            def covers(surface: set[str]) -> bool:
+            if tables:
+                matching_plan = next((item for item in TaskGenerationPipeline._stateful_mutation_surface_plan(
+                    {"row_predicates": [predicate]}, tables,
+                ) if item.get("table") == predicate.get("table")), None)
+                if matching_plan is not None:
+                    required = {item["name"] for item in matching_plan["required_fields"]}
+            columns = columns_by_table.get(predicate.get("table"))
+            def covers(surface: tuple[set[str], set[str]]) -> bool:
+                properties, required_arguments = surface
                 return all(
                     len([
-                        argument for argument in surface
-                        if argument == field
-                        or argument.endswith(f"_{field}")
-                        or argument.removeprefix("new_") == field
-                        or argument.removeprefix("target_") == field
+                        argument for argument in required_arguments
+                        if maps_to_column(argument, field)
                     ]) == 1
                     for field in required
+                ) and (
+                    columns is None or all(
+                        any(maps_to_column(argument, column) for column in columns)
+                        for argument in properties
+                    )
                 )
             if not required or not any(covers(surface) for surface in surfaces):
                 raise PipelineGenerationError(
@@ -4054,6 +4993,138 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             raise PipelineGenerationError(
                 f"compiled tool-chain schema conflicts: {details}"
             )
+
+    @staticmethod
+    def _preview_success_tool_results(
+        *, scenarios: list[dict[str, Any]], data_tables: list[dict[str, Any]],
+        tool_implementations: list[dict[str, Any]], environment_mode: str,
+        tools: list[dict[str, Any]] | None = None,
+        semantic_goal: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Execute the declarative success prefix against shared data-store rules."""
+        if environment_mode not in {"reference_data", "stateful"}:
+            return []
+        success = next((item for item in scenarios if item.get("kind") == "goal_success"), None)
+        if success is None:
+            return []
+        by_name = {item.get("tool_name"): item for item in tool_implementations}
+        # A custom handler ends the executable prefix. Earlier declarative
+        # results still provide concrete evidence to the observability audit.
+        preview_steps = []
+        for step in success.get("steps", []):
+            if step.get("operation") == "reset":
+                preview_steps.append(step)
+            elif step.get("operation") == "tool_call":
+                spec = by_name.get(step.get("tool_name"), {})
+                allowed = ({"select", "aggregate_count"} if environment_mode == "reference_data"
+                           else {"select", "aggregate_count", "insert", "update", "delete"})
+                if spec.get("operation") not in allowed:
+                    break
+                preview_steps.append(step)
+        steps = [step for step in preview_steps if step.get("operation") == "tool_call"]
+        if not steps:
+            return []
+        from .sandbox_runtime import (
+            AcceptanceScenarioRunner, DeclarativeToolCompiler, ManifestDataStore,
+            SandboxError, validate_json_schema,
+        )
+        tool_schemas = {
+            function["name"]: function.get("parameters", {})
+            for item in (tools or []) if isinstance(item, dict)
+            for function in [item.get("function")]
+            if isinstance(function, dict) and isinstance(function.get("name"), str)
+            and isinstance(function.get("parameters", {}), dict)
+        }
+
+        class PreviewState:
+            def __init__(self) -> None:
+                self.values: dict[str, Any] = {}
+
+            def get_state(self, key: str) -> Any:
+                return copy.deepcopy(self.values.get(key))
+
+            def set_state(self, key: str, value: Any) -> None:
+                self.values[key] = copy.deepcopy(value)
+
+        class PreviewData(ManifestDataStore):
+            def __init__(self) -> None:
+                self.baseline = {
+                    item["table_name"]: [dict(row) for row in item.get("rows", [])]
+                    for item in data_tables
+                }
+                self.schemas = {}
+                for item in data_tables:
+                    schema = copy.deepcopy(item)
+                    if not schema.get("columns") and schema.get("rows"):
+                        # Unit callers may provide only rows. Production data
+                        # tables carry the complete validated schema.
+                        schema["columns"] = [
+                            {"name": name, "nullable": True}
+                            for name in schema["rows"][0]
+                        ]
+                    self.schemas[item["table_name"]] = schema
+                self.episode_store = PreviewState()
+                self._validate_tables(self.baseline)
+                self.reset()
+
+        try:
+            preview_data = PreviewData()
+            handlers = DeclarativeToolCompiler(preview_data).compile_all(
+                [by_name[name] for name in dict.fromkeys(step["tool_name"] for step in steps)]
+            )
+        except (SandboxError, KeyError) as exc:
+            raise PipelineGenerationError(f"success tool preview cannot compile: {exc}") from exc
+
+        executed_arguments: list[dict[str, Any]] = []
+
+        def call(method: str, path: str, body: Any, headers: dict[str, str]) -> tuple[int, Any, dict[str, str]]:
+            if path == "/v1/reset":
+                preview_data.reset()
+                return 200, {}, {}
+            name = path.removeprefix("/v1/tools/")
+            if tools is not None:
+                if name not in tool_schemas:
+                    raise SandboxError("TOOL_NOT_FOUND", f"tool schema is missing: {name}", 400)
+                validate_json_schema(tool_schemas[name], body)
+            executed_arguments.append(copy.deepcopy(body))
+            return 200, handlers[name](body), {}
+
+        try:
+            replay = AcceptanceScenarioRunner(call).run({"steps": preview_steps, "assertions": []})
+        except (SandboxError, KeyError, TypeError, ValueError) as exc:
+            raise PipelineGenerationError(f"success tool preview failed: {exc}") from exc
+        if (semantic_goal and isinstance(semantic_goal.get("row_predicates"), list)
+                and len(steps) == sum(step.get("operation") == "tool_call"
+                                      for step in success.get("steps", []))):
+            from .sandbox_runtime import BusinessGoalEvaluator
+
+            final_state = {name: preview_data.table(name) for name in preview_data.baseline}
+            predicates = semantic_goal["row_predicates"]
+            if not BusinessGoalEvaluator.evaluate(predicates, final_state, preview_data.baseline):
+                raise PipelineGenerationError(
+                    "success tool preview does not establish the stateful goal"
+                )
+            if semantic_goal.get("requires_state_change") and final_state == preview_data.baseline:
+                raise PipelineGenerationError(
+                    "success tool preview leaves business state unchanged"
+                )
+        observed = []
+        tool_index = 0
+        for step, result in zip(preview_steps, replay["history"]):
+            if step.get("operation") != "tool_call":
+                continue
+            observed.append({
+                "tool_name": step["tool_name"],
+                "arguments": executed_arguments[tool_index],
+                "result": result["body"],
+            })
+            tool_index += 1
+            for variable, path in step.get("capture", {}).items():
+                if replay["variables"].get(variable) in (None, [], {}):
+                    raise PipelineGenerationError(
+                        f"success tool preview capture is empty: {step['tool_name']}.{path}"
+                    )
+        return observed
 
     @staticmethod
     def _tool_chain_projection_gaps(
@@ -4249,6 +5320,8 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
 
         def compatible(schema: dict[str, Any], sql_type: str) -> bool:
             json_type = schema.get("type")
+            if sql_type.upper().startswith(("BOOL", "BOOLEAN")):
+                return json_type == "boolean"
             is_numeric = any(token in sql_type.upper() for token in numeric_types)
             return json_type in ({"number", "integer"} if is_numeric else {"string"})
 
@@ -4902,12 +5975,33 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             item = dict(capability)
             route_operation = operations.get(item.get("action_name"))
             if route_operation is not None:
+                reason = str(item.get("reason", ""))
+                if capability_disclaims_tool(reason) or (
+                    re.search(
+                        r"(?:前序|上一步|已有|给定).{0,40}"
+                        r"(?:求和|合计|统计字符|格式化|生成.{0,8}表格)",
+                        reason,
+                    )
+                    and not any(marker in reason for marker in (
+                        "私有", "内部业务", "数据表", "外部系统",
+                    ))
+                ):
+                    raise PipelineGenerationError(
+                        "route operation is agent reasoning or response composition: "
+                        f"{item.get('action_name')}"
+                    )
                 item["kind"] = "environment_operation"
                 item["requires_tool"] = True
                 item["dependencies"] = list(route_operation.get("dependencies", []))
                 if not isinstance(item.get("reason"), str) or not item["reason"].strip():
                     item["reason"] = str(route_operation.get("purpose", "环境操作"))
             normalized.append(item)
+        prior_only = prior_result_only_tool_actions(normalized)
+        if prior_only:
+            raise PipelineGenerationError(
+                "route operation only processes prior results without new environment access: "
+                + ", ".join(prior_only)
+            )
         return normalized
 
     @staticmethod
@@ -4943,6 +6037,10 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                 raise PipelineGenerationError(f"capabilities[{index}] requires boolean requires_tool")
             if requires_tool != (kind == "environment_operation"):
                 raise PipelineGenerationError(f"capabilities[{index}] kind/requires_tool conflict")
+            if requires_tool and capability_disclaims_tool(capability.get("reason")):
+                raise PipelineGenerationError(
+                    f"capabilities[{index}] declares a tool unnecessary"
+                )
             if requires_tool and any(marker in str(action_name).lower() for marker in response_markers):
                 raise PipelineGenerationError(
                     f"capabilities[{index}] delegates response composition to a tool"
@@ -5024,6 +6122,79 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             )
 
     @staticmethod
+    def _validate_task_observability_audit(audit: Any) -> None:
+        if not isinstance(audit, dict):
+            raise PipelineGenerationError("task observability audit must be an object")
+        if any(not isinstance(audit.get(field), bool)
+               for field in ("answer_observable", "goal_covered")):
+            raise PipelineGenerationError("task observability audit requires boolean verdicts")
+        issues = audit.get("issues")
+        if not isinstance(issues, list) or any(
+            not isinstance(item, str) or not item.strip() for item in issues
+        ):
+            raise PipelineGenerationError("task observability audit requires issue strings")
+        failed = [field for field in ("answer_observable", "goal_covered")
+                  if audit[field] is False]
+        if failed:
+            raise PipelineGenerationError(
+                f"task success is not observable: failed={failed}; "
+                f"issues={'; '.join(issues) if issues else 'no details supplied'}"
+            )
+
+    @staticmethod
+    def _validate_observability_repair_progress(
+        previous: list[Any], candidate: list[Any],
+    ) -> None:
+        """A second audit must examine a materially changed success trace."""
+        def business_calls(scenarios: list[Any]) -> list[dict[str, Any]]:
+            success = next(
+                (item for item in scenarios
+                 if isinstance(item, dict) and item.get("kind") == "goal_success"),
+                {},
+            )
+            return [
+                {key: step.get(key) for key in ("tool_name", "arguments", "capture")}
+                for step in success.get("steps", [])
+                if isinstance(step, dict) and step.get("operation") == "tool_call"
+            ]
+
+        if business_calls(previous) == business_calls(candidate):
+            raise PipelineGenerationError(
+                "observability repair left business tool calls unchanged"
+            )
+
+    @staticmethod
+    def _replace_success_tool_steps(
+        scenarios: list[Any], tool_steps: Any,
+    ) -> list[Any]:
+        """Apply a focused tool trace patch without rewriting answer or assertions."""
+        if (not isinstance(tool_steps, list) or not tool_steps
+                or any(not isinstance(step, dict) or step.get("operation") != "tool_call"
+                       for step in tool_steps)):
+            raise PipelineGenerationError("observability repair requires non-empty tool_call steps")
+        candidate = copy.deepcopy(scenarios)
+        success = next((item for item in candidate
+                        if isinstance(item, dict) and item.get("kind") == "goal_success"), None)
+        if success is None or not isinstance(success.get("steps"), list):
+            raise PipelineGenerationError("observability repair lacks goal_success steps")
+        steps = success["steps"]
+        positions = [index for index, step in enumerate(steps)
+                     if isinstance(step, dict) and step.get("operation") == "tool_call"]
+        if positions and positions != list(range(positions[0], positions[-1] + 1)):
+            raise PipelineGenerationError("observability repair requires contiguous business calls")
+        insertion = positions[0] if positions else next(
+            (index for index, step in enumerate(steps)
+             if isinstance(step, dict) and step.get("operation") == "agent_response"),
+            len(steps),
+        )
+        retained = [step for step in steps
+                    if not isinstance(step, dict) or step.get("operation") != "tool_call"]
+        success["steps"] = [
+            *retained[:insertion], *copy.deepcopy(tool_steps), *retained[insertion:],
+        ]
+        return candidate
+
+    @staticmethod
     def _validate_task_description_consistency(description: Any) -> None:
         """Check structure only; task-specific semantics belong to grounding audits."""
         if not isinstance(description, dict):
@@ -5032,6 +6203,90 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             raise PipelineGenerationError("task description requires non-empty task")
         if not isinstance(description.get("requirements", {}), dict):
             raise PipelineGenerationError("task requirements must be an object")
+
+    @staticmethod
+    def _validate_scene_business_plan(
+        plan: Any, *, keywords: list[str], graph_context: dict[str, Any],
+        training_category: str,
+    ) -> None:
+        if not isinstance(plan, dict):
+            raise PipelineGenerationError("scene business plan must be an object")
+        terms = [*keywords, *graph_context.get("nodes", [])]
+        canonical = {
+            unicodedata.normalize("NFKC", item).strip().casefold()
+            for item in terms if isinstance(item, str) and item.strip()
+        }
+        anchor = plan.get("anchor_term")
+        if (not isinstance(anchor, str)
+                or unicodedata.normalize("NFKC", anchor).strip().casefold() not in canonical):
+            raise PipelineGenerationError("scene business plan anchor must come from sampled Scene")
+        for field in ("business_context", "user_role", "user_need"):
+            value = plan.get(field)
+            if not isinstance(value, str) or len(value.strip()) < 2:
+                raise PipelineGenerationError(f"scene business plan lacks {field}")
+        records = plan.get("source_records")
+        if training_category != "direct_response" and (
+            not isinstance(records, list) or not records
+            or any(not isinstance(item, str) or not item.strip() for item in records)
+        ):
+            raise PipelineGenerationError("agentic scene business plan lacks source records")
+        dependency = plan.get("tool_dependency")
+        if training_category == "multi_step_agentic" and (
+            not isinstance(dependency, str) or len(dependency.strip()) < 8
+        ):
+            raise PipelineGenerationError("multi-step scene business plan lacks tool dependency")
+        visible = " ".join(str(plan.get(field, "")) for field in (
+            "business_context", "user_role", "user_need",
+        ))
+        if any(marker in visible for marker in (
+            "沙箱", "图谱节点", "采样关键词", "任务生成",
+        )):
+            raise PipelineGenerationError("scene business plan exposes generation internals")
+
+    @staticmethod
+    def _validate_scene_anchor_in_task(
+        description: dict[str, Any], plan: dict[str, Any],
+    ) -> None:
+        public = description.get("public_input")
+        initial = public.get("initial_user_message", "") if isinstance(public, dict) else ""
+        prose = unicodedata.normalize(
+            "NFKC", str(description.get("task", "")) + " " + str(initial),
+        ).casefold()
+        anchor = unicodedata.normalize("NFKC", plan["anchor_term"]).strip().casefold()
+        if anchor not in prose:
+            raise PipelineGenerationError("task description omits the selected Scene anchor")
+
+    @staticmethod
+    def _validate_graph_keyword_alignment(
+        description: dict[str, Any], keywords: list[str], graph_context: dict[str, Any],
+    ) -> None:
+        """Keep the user-facing task anchored to the sampled Scene path."""
+        nodes = graph_context.get("nodes", []) if isinstance(graph_context, dict) else []
+        terms = [
+            unicodedata.normalize("NFKC", item).strip().casefold()
+            for item in [*keywords, *(nodes if isinstance(nodes, list) else [])]
+            if isinstance(item, str) and len(item.strip()) >= 2
+        ]
+        if not terms:
+            raise PipelineGenerationError("sampled Scene path has no usable keywords")
+        public = description.get("public_input")
+        initial = public.get("initial_user_message", "") if isinstance(public, dict) else ""
+        prose = unicodedata.normalize(
+            "NFKC", str(description.get("task", "")) + " " + str(initial),
+        ).casefold()
+        relation = graph_context.get("relation")
+        if isinstance(relation, str) and relation and relation.casefold() in prose:
+            raise PipelineGenerationError("task description exposes internal graph relation metadata")
+        if any(marker in prose for marker in (
+            "沙箱", "图谱节点", "采样关键词", "场景关键词", "关键词组合", "任务生成",
+        )):
+            raise PipelineGenerationError(
+                "task description exposes generation or sandbox internals"
+            )
+        if not any(term in prose for term in terms):
+            raise PipelineGenerationError(
+                "task description does not use any sampled Scene keyword"
+            )
 
     @staticmethod
     def _validate_route_plan(route_plan: Any, training_category: str) -> None:
@@ -5055,6 +6310,17 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             if not isinstance(name, str) or not name.strip() or name in names:
                 raise PipelineGenerationError(
                     f"route_plan.environment_operations[{index}] has invalid action_name"
+                )
+            if (
+                re.search(
+                    r"^(?:generate|format|summarize|compose|render)_.*"
+                    r"(?:table|report|summary|answer|response)$",
+                    name, re.I,
+                )
+                or re.search(r"(?:生成|整理|撰写|格式化).{0,16}(?:表格|报告|清单|最终回答)", name)
+            ):
+                raise PipelineGenerationError(
+                    f"route_plan.environment_operations[{index}] delegates final response composition"
                 )
             if not isinstance(purpose, str) or not purpose.strip():
                 raise PipelineGenerationError(
@@ -5085,7 +6351,7 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
 
     @staticmethod
     def _validate_route_input_boundary(
-        description: dict[str, Any], training_category: str
+        description: dict[str, Any], training_category: str, task_intent: str | None = None,
     ) -> None:
         """Reject tool routes whose complete truth is already in public input."""
         if training_category == "direct_response":
@@ -5113,6 +6379,10 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             "catalog", "system record",
         )
         has_private_route = any(marker in route_text for marker in private_markers)
+        from .tasks.task_routing import public_calculation_is_self_contained
+        if public_calculation_is_self_contained(description, task_intent):
+            complete_input_supplied = True
+            has_private_route = False
         if complete_input_supplied and not has_private_route:
             raise PipelineGenerationError(
                 f"{training_category} task is fully solvable from public user input; "
@@ -5194,7 +6464,13 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
         actions: list[Any], *, task_description: dict[str, Any], keywords: list[str]
     ) -> None:
         """Reject action plans that import entities or numbers from another task."""
-        task_text = json.dumps(task_description, ensure_ascii=False).lower()
+        public_input = task_description.get("public_input", {})
+        public_message = (public_input.get("initial_user_message", "")
+                          if isinstance(public_input, dict) else "")
+        task_text = json.dumps(
+            {"task": task_description.get("task", ""), "initial_user_message": public_message},
+            ensure_ascii=False,
+        ).lower()
         action_core = []
         for item in actions:
             if not isinstance(item, dict):
@@ -5250,19 +6526,29 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
     @staticmethod
     def _normalize_action_numeric_examples(
         actions: list[Any], *, task_description: dict[str, Any],
-        grounding_context: dict[str, Any] | None = None,
     ) -> list[Any]:
         """Remove model-invented example numbers without changing action structure."""
+        public_input = task_description.get("public_input", {})
+        public_message = (public_input.get("initial_user_message", "")
+                          if isinstance(public_input, dict) else "")
         allowed = set(re.findall(
             r"\d+(?:\.\d+)?",
             json.dumps(
-                {"task": task_description, "grounding": grounding_context or {}},
+                {"task": task_description.get("task", ""),
+                 "initial_user_message": public_message},
                 ensure_ascii=False,
             ),
         ))
 
         def clean(value: Any) -> Any:
             if isinstance(value, str):
+                # Only examples can be discarded safely. Replacing a numeric
+                # business rule (for example ">0" or "+2 days") with a
+                # placeholder silently changes the requested operation.
+                if not any(marker in value.lower() for marker in (
+                    "例如", "比如", "示例", "举例", "e.g.", "for example",
+                )) or re.search(r"(?:>=|<=|[><=]|\+\s*\d)", value):
+                    return value
                 return re.sub(
                     r"\d+(?:\.\d+)?",
                     lambda match: match.group(0) if match.group(0) in allowed else "用户提供值",
@@ -5425,6 +6711,22 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
         )
 
     @staticmethod
+    def _validate_scene_source_scope(
+        plan: dict[str, Any], *, has_source_urls: bool,
+    ) -> None:
+        if has_source_urls:
+            return
+        projected_task = {
+            "task": plan.get("user_need"),
+            "goal": plan.get("tool_dependency"),
+            "context": plan.get("business_context"),
+        }
+        if TaskGenerationPipeline._is_high_stakes_task(projected_task):
+            raise PipelineGenerationError(
+                "unsourced high-stakes scene business plan"
+            )
+
+    @staticmethod
     def _normalize_reasoning_request(value: Any) -> Any:
         """Rewrite requests for hidden reasoning into an observable short rationale."""
         replacements = (
@@ -5435,7 +6737,16 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             ("show your reasoning", "give a concise rationale"),
         )
         if isinstance(value, str):
-            result = value
+            # A prohibition on exposing private reasoning is already a valid
+            # constraint. Rewriting its object to "简要依据" reverses the
+            # meaning and contradicts requests for a short conclusion basis.
+            result = re.sub(
+                r"(?:不要|不得|禁止|无需|无须|不必|不应)\s*"
+                r"(?:输出|展示|提供|写出|呈现|包含)?\s*"
+                r"(?:你的|完整的)?\s*"
+                r"(?:思考过程|推理过程|内心推理|逐步思考)",
+                "不要输出内部思维链", value,
+            )
             for old, new in replacements:
                 result = re.sub(re.escape(old), new, result, flags=re.I)
             return result
@@ -5740,6 +7051,221 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             )
 
     @staticmethod
+    def _has_conditional_noop_branch(
+        task_description: dict[str, Any], public_input: dict[str, Any],
+    ) -> bool:
+        """Spot explicit idempotent branches that the single-delta goal cannot score."""
+        text = "\n".join((
+            str(task_description.get("task", "")),
+            str(task_description.get("expected_result", "")),
+            str(public_input.get("initial_user_message", "")),
+        ))
+        chinese = re.search(
+            r"(?:若|如果|当|如)[^。；\n]{0,80}(?:已|已经|原本|当前)[^。；\n]{0,80}"
+            r"(?:则|就)[^。；\n]{0,50}(?:无需|不用|不必|保持|不做|不再|原样)",
+            text,
+        )
+        english = re.search(
+            r"\bif\b[^.!?\n]{0,90}\balready\b[^.!?\n]{0,90}"
+            r"\b(?:do not|don't|leave unchanged|keep as is|no update)\b",
+            text, flags=re.I,
+        )
+        return bool(chinese or english)
+
+    @staticmethod
+    def _apply_reward_metric_repairs(
+        metrics: list[dict[str, Any]], repairs: Any,
+    ) -> None:
+        """Only prose for semantic outcome judges may be repaired after compilation."""
+        if not isinstance(repairs, list) or not repairs:
+            raise PipelineGenerationError("reward contract audit supplied no metric repairs")
+        eligible = {
+            metric["id"]: metric for metric in metrics
+            if isinstance(metric, dict) and metric.get("category") == "outcome"
+            and metric.get("type") == "model-based"
+            and isinstance(metric.get("id"), str)
+        }
+        seen: set[str] = set()
+        for repair in repairs:
+            if not isinstance(repair, dict) or repair.get("id") not in eligible:
+                raise PipelineGenerationError("reward contract repair targets a non-semantic outcome metric")
+            metric_id = repair["id"]
+            if metric_id in seen:
+                raise PipelineGenerationError("reward contract repair duplicates a metric")
+            seen.add(metric_id)
+            rubric = repair.get("rubric")
+            criteria = repair.get("criteria")
+            if (not isinstance(rubric, str) or not rubric.strip()
+                    or not isinstance(criteria, list) or not criteria
+                    or any(not isinstance(item, str) or not item.strip() for item in criteria)):
+                raise PipelineGenerationError("reward contract repair needs rubric and criteria")
+        for repair in repairs:
+            metric = eligible[repair["id"]]
+            metric["rubric"] = repair["rubric"].strip()
+            metric["criteria"] = [item.strip() for item in repair["criteria"]]
+
+    def _audit_outcome_metric_claims(
+        self, *, task_description: dict[str, Any], public_input: dict[str, Any],
+        environment: Any, metrics: list[dict[str, Any]],
+    ) -> None:
+        """Ground each semantic outcome criterion before it becomes a reward oracle."""
+        semantic_metrics = [
+            metric for metric in metrics if isinstance(metric, dict)
+            and metric.get("category") == "outcome" and metric.get("type") == "model-based"
+        ]
+        if not semantic_metrics:
+            return
+        expected_ids = {metric["id"] for metric in semantic_metrics}
+        repaired_ids: set[str] = set()
+        for attempt in range(len(semantic_metrics) + 1):
+            audit = self._call(
+                "outcome_metric_claim_audit" if attempt == 0 else "outcome_metric_claim_verify",
+                "逐条独立检查结果指标的 rubric 和 criteria 是否有原始材料不支持或与之相反的业务断言。"
+                "只以用户公开输入、材料、任务要求和 grounding_environment 的事实为依据；"
+                "不要参考成功回答、指标自身的其他断言或模型常识来证明该断言。"
+                "尤其要实际复算数值、音高、日期、大小关系和条件分支。"
+                "每个指标各返回一个 supported 布尔结论；只要其中一条判分条件与事实矛盾即为 false。"
+                "reason 必须指出具体错误断言及正确依据。",
+                {
+                    "task_description": task_description,
+                    "public_input": public_input,
+                    "grounding_environment": environment,
+                    "outcome_metrics": [
+                        {key: metric.get(key) for key in ("id", "rubric", "criteria")}
+                        for metric in semantic_metrics
+                    ],
+                    "output": {"verdicts": [{
+                        "id": "metric_id", "supported": True, "reason": "具体事实依据",
+                    }]},
+                },
+            )
+            verdicts = audit.get("verdicts") if isinstance(audit, dict) else None
+            if (not isinstance(verdicts, list) or len(verdicts) != len(expected_ids)
+                    or any(not isinstance(item, dict)
+                           or not isinstance(item.get("id"), str)
+                           or not isinstance(item.get("supported"), bool)
+                           or not isinstance(item.get("reason"), str)
+                           or not item["reason"].strip() for item in verdicts)
+                    or {item["id"] for item in verdicts} != expected_ids):
+                raise PipelineGenerationError("outcome metric claim audit omitted a verdict")
+            unsupported = [item for item in verdicts if not item["supported"]]
+            if not unsupported:
+                return
+            detail = "; ".join(f"{item['id']}: {item['reason']}" for item in unsupported)
+            unsupported_ids = {item["id"] for item in unsupported}
+            if attempt == len(semantic_metrics) or unsupported_ids & repaired_ids:
+                raise PipelineGenerationError(f"outcome metric claims contradict source: {detail}")
+            repair = self._call(
+                "outcome_metric_claim_repair",
+                "只修复审查明确指出的结果指标 rubric 与 criteria，使正确行为按原始材料获分。"
+                "不得修改 metric id、权重、类型、评价输入、过程指标或目标契约；"
+                "不得引入材料没有的事实。每个不支持的指标必须返回一个修复项。",
+                {
+                    "task_description": task_description,
+                    "public_input": public_input,
+                    "grounding_environment": environment,
+                    "unsupported_verdicts": unsupported,
+                    "outcome_metrics": semantic_metrics,
+                    "output": {"metric_repairs": [{
+                        "id": "metric_id", "rubric": "有依据的判分标准",
+                        "criteria": ["有依据的判分条件"],
+                    }]},
+                },
+            )
+            repairs = repair.get("metric_repairs") if isinstance(repair, dict) else None
+            if (not isinstance(repairs, list)
+                    or any(not isinstance(item, dict)
+                           or not isinstance(item.get("id"), str) for item in repairs)
+                    or {item["id"] for item in repairs}
+                    != {item["id"] for item in unsupported}):
+                raise PipelineGenerationError("outcome metric claim repair omitted a metric")
+            self._apply_reward_metric_repairs(metrics, repairs)
+            self._validate_metrics(metrics)
+            repaired_ids.update(unsupported_ids)
+        raise PipelineGenerationError("outcome metric claim audit did not pass")
+
+    def _audit_reward_contract_consistency(
+        self, *, task_description: dict[str, Any], public_input: dict[str, Any],
+        environment: dict[str, Any], semantic_goal: dict[str, Any] | None,
+        metrics: list[dict[str, Any]], acceptance_contract: dict[str, Any],
+        success_fixture: str,
+    ) -> None:
+        """Reject success paths that a valid Agent could follow without receiving credit."""
+        for attempt in range(2):
+            audit = self._call(
+                "reward_contract_consistency_audit" if attempt == 0
+                else "reward_contract_consistency_verify",
+                "独立核对题面、公开用户输入、业务事实、成功回答、成功工具轨迹与奖励契约。"
+                "逐项检查所有有效分支：若题目允许不写入、条件性回答或其他路径，奖励与目标状态不得强制另一条路径。"
+                "核对数值、阈值、比较方向、实体名称和工具参数；不得把成功回答或指标文字当作事实来源。"
+                "consistent 仅当正确完成任务的行为都能按相应指标获分，且错误行为不会因矛盾指标获分时为 true。"
+                "如果矛盾仅在 model-based outcome 的 rubric/criteria 文案，可提供这些指标的修正版；"
+                "任何 process、rule-based、goal_contract 或可执行轨迹的矛盾都必须 structural_conflict=true，不能靠改文案掩盖。"
+                "issues 具体指出矛盾和事实依据。只返回指定字段。",
+                {
+                    "task_description": task_description,
+                    "public_input": public_input,
+                    "grounding_environment": environment,
+                    "goal_contract": semantic_goal,
+                    "metrics": metrics,
+                    "success_fixture": success_fixture,
+                    "success_scenarios": [
+                        scenario for scenario in acceptance_contract.get("executable_scenarios", [])
+                        if isinstance(scenario, dict) and scenario.get("kind") == "goal_success"
+                    ],
+                    "output": {
+                        "consistent": True, "structural_conflict": False,
+                        "issues": [], "metric_repairs": [{
+                            "id": "outcome_metric_id", "rubric": "修正后的判分标准",
+                            "criteria": ["可由题面与环境事实支持的判分条件"],
+                        }],
+                    },
+                },
+            )
+            if not isinstance(audit, dict) or not isinstance(audit.get("consistent"), bool):
+                raise PipelineGenerationError("reward contract audit needs a boolean verdict")
+            issues = audit.get("issues")
+            if not isinstance(issues, list) or any(
+                not isinstance(issue, str) or not issue.strip() for issue in issues
+            ):
+                raise PipelineGenerationError("reward contract audit needs issue strings")
+            if audit["consistent"]:
+                return
+            detail = "; ".join(issues) if issues else "unspecified contradiction"
+            if audit.get("structural_conflict") is True or attempt == 1:
+                raise PipelineGenerationError(f"reward contract contradicts task: {detail}")
+            self._apply_reward_metric_repairs(metrics, audit.get("metric_repairs"))
+            self._validate_metrics(metrics)
+        raise PipelineGenerationError("reward contract consistency audit did not pass")
+
+    @staticmethod
+    def _strip_unrequested_identifier_rows(
+        content: str, *, public_input: dict[str, Any]
+    ) -> str:
+        """Keep generated answers from making gratuitous private ID claims.
+
+        Such claims can pass a numeric outcome oracle while a later sandbox
+        mutation correctly detects that the stale answer still gets reward.
+        Only remove a complete Markdown table row when its identifier label
+        was never requested in the user's public message.
+        """
+        if not isinstance(content, str) or not isinstance(public_input, dict):
+            return content
+        request = str(public_input.get("initial_user_message", ""))
+        if not request:
+            return content
+        kept: list[str] = []
+        for line in content.splitlines():
+            cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+            if (line.lstrip().startswith("|") and len(cells) == 2
+                    and re.search(r"(?:编号|代码|标识|\bID\b)", cells[0], re.I)
+                    and cells[0] not in request):
+                logger.info("removed unrequested identifier from success fixture: %s", cells[0])
+                continue
+            kept.append(line)
+        return "\n".join(kept).strip()
+
+    @staticmethod
     def _validate_success_fixture_constraints(
         content: Any, *, task_description: dict[str, Any]
     ) -> None:
@@ -6010,7 +7536,7 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             "requirements": task_description.get("requirements"),
         }, ensure_ascii=False).lower()
         references_runtime_material = re.search(
-            r"(?:以下|下列|上述|这段|这些|给定|提供|附上|附件).{0,12}"
+            r"(?:以下|下列|上述|这段|这些|给定|附上|附件|(?:用户|我|你)(?:已)?提供).{0,12}"
             r"(?:文本|资料|数据|列表|清单|内容|说明|笔记|记录|规格|描述|选项)",
             text,
         ) is not None
@@ -6176,6 +7702,25 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
         return metrics
 
     @staticmethod
+    def _canonicalize_process_metrics(metrics: list[Any]) -> list[Any]:
+        """Process reward semantics are fixed by the platform tool-call contract."""
+        for metric in metrics:
+            if not isinstance(metric, dict) or metric.get("category") != "process":
+                continue
+            metric["type"] = "hybrid"
+            metric["scope"] = "step"
+            metric["condition"] = "llm_expected_tool_call_exact_match"
+            metric["evaluation_inputs"] = [
+                "recent_conversation", "public_observation", "tool_call", "tool_arguments",
+            ]
+            metric["evaluator"] = {
+                "kind": "hybrid_tool_call", "source": "external_llm",
+                "comparison": "exact_tool_name_and_canonical_arguments",
+                "score_mapping": {"match": 1, "mismatch": 0},
+            }
+        return metrics
+
+    @staticmethod
     def _normalize_metric_types(metrics: list[Any]) -> list[Any]:
         """Derive the canonical metric type from an unambiguous evaluator."""
         evaluator_to_type = {
@@ -6198,6 +7743,30 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                     metric.get("id"), metric.get("type"), canonical,
                 )
                 metric["type"] = canonical
+        return metrics
+
+    @staticmethod
+    def _normalize_metric_scopes(metrics: list[Any]) -> list[Any]:
+        """Accept unambiguous scope names without weakening the scope gate."""
+        aliases = {
+            "final": "terminal", "final_answer": "terminal",
+            "final_response": "terminal", "terminal_response": "terminal",
+            "tool_call": "step", "action": "step", "per_step": "step",
+            "business_state": "state", "database_state": "state",
+            "final_state": "state", "full_trajectory": "trajectory",
+            "episode_trajectory": "trajectory", "whole_trajectory": "trajectory",
+        }
+        for metric in metrics:
+            if not isinstance(metric, dict) or not isinstance(metric.get("scope"), str):
+                continue
+            original = metric["scope"]
+            normalized = aliases.get(original.strip().lower())
+            if normalized:
+                metric["scope"] = normalized
+                logger.info(
+                    "normalized metric scope: metric=%s original=%r normalized=%s",
+                    metric.get("id"), original, normalized,
+                )
         return metrics
 
     @staticmethod
@@ -6277,7 +7846,9 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             if not isinstance(metric, dict) or metric.get("category") != "outcome":
                 continue
             evaluator = metric.get("evaluator")
-            if not isinstance(evaluator, dict) or evaluator.get("kind") != "business_state_rule":
+            if not isinstance(evaluator, dict) or evaluator.get("kind") not in {
+                "business_state_rule", "document_rule", "trajectory_rule",
+            }:
                 continue
             criterion = (
                 metric.get("rubric") or evaluator.get("assertion")
@@ -6544,7 +8115,9 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             if metric_type not in {"rule-based", "model-based", "hybrid"}:
                 raise PipelineGenerationError(f"metrics[{index}] has invalid type")
             if metric.get("scope") not in {"step", "state", "terminal", "trajectory"}:
-                raise PipelineGenerationError(f"metrics[{index}] has invalid scope")
+                raise PipelineGenerationError(
+                    f"metrics[{index}] has invalid scope: {metric.get('scope')!r}"
+                )
             if not isinstance(metric.get("rubric"), str) or not metric["rubric"].strip():
                 raise PipelineGenerationError(f"metrics[{index}] requires rubric")
             weight = metric.get("weight")
@@ -6663,6 +8236,40 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             raise PipelineGenerationError("outcome metric weight must exceed process metric weight")
 
     @staticmethod
+    def _ground_reference_outcome_metrics(
+        metrics: list[Any], *, environment_mode: str,
+    ) -> None:
+        """Give semantic outcome judges the evidence needed to check business goals."""
+        if environment_mode not in {"reference_data", "stateful"}:
+            return
+        for metric in metrics:
+            if not isinstance(metric, dict) or metric.get("category") != "outcome":
+                continue
+            evaluator = metric.get("evaluator")
+            if (not isinstance(evaluator, dict)
+                    or evaluator.get("kind") not in {"external_llm_judge", "hybrid_outcome"}):
+                continue
+            inputs = metric.get("evaluation_inputs")
+            inputs = [value for value in inputs if isinstance(value, str)] if isinstance(inputs, list) else []
+            for source in ("final_agent_response", "tool_results", "business_data"):
+                if source not in inputs:
+                    inputs.append(source)
+            metric["evaluation_inputs"] = inputs
+            criteria = metric.get("criteria")
+            criteria = [value for value in criteria if isinstance(value, str) and value.strip()] if isinstance(criteria, list) else []
+            if any(contradicts_reference_factuality(value) for value in criteria) or contradicts_reference_factuality(metric.get("rubric")):
+                raise PipelineGenerationError(
+                    f"business outcome metric contradicts business evidence checking: {metric.get('id')}"
+                )
+            required_criterion = (
+                REFERENCE_FACTUALITY_CRITERION if environment_mode == "reference_data"
+                else STATEFUL_GOAL_CRITERION
+            )
+            if required_criterion not in criteria:
+                criteria.append(required_criterion)
+            metric["criteria"] = criteria
+
+    @staticmethod
     def _validate_metrics_for_environment(
         metrics: list[Any], *, environment_mode: str
     ) -> None:
@@ -6687,6 +8294,281 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                 )
 
     @staticmethod
+    def _compile_row_product_total(
+        expected: dict[str, Any], public_input: dict[str, Any],
+        data_tables: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Compile a verified fixed-row product sum into a batch-wide aggregate."""
+        compiled = copy.deepcopy(expected)
+        public_text = json.dumps(public_input, ensure_ascii=False)
+        tables = {table.get("table_name"): table for table in data_tables if isinstance(table, dict)}
+        for target in compiled.get("targets", []):
+            expression = target.get("expression") if isinstance(target, dict) else None
+            if not isinstance(expression, dict) or expression.get("op") not in ("sum", "add"):
+                continue
+            terms = expression.get("args")
+            if not isinstance(terms, list) or len(terms) < 2:
+                continue
+            table_name: str | None = None
+            fields: list[str] | None = None
+            product_mode: bool | None = None
+            selected_ids: set[str] = set()
+            selected_rows: list[dict[str, Any]] = []
+            for term in terms:
+                is_product = isinstance(term, dict) and term.get("op") in ("mul", "multiply")
+                operands = term.get("args") if is_product else [term]
+                if (not isinstance(operands, list) or not 1 <= len(operands) <= 4
+                        or (is_product and len(operands) < 2)
+                        or (product_mode is not None and is_product != product_mode)):
+                    break
+                lookups = [operand.get("lookup") if isinstance(operand, dict) else None for operand in operands]
+                if any(not isinstance(item, dict) for item in lookups):
+                    break
+                candidate_table = lookups[0].get("table")
+                table = tables.get(candidate_table)
+                if not isinstance(table, dict) or any(item.get("table") != candidate_table for item in lookups):
+                    break
+                primary_key = table.get("primary_key")
+                where = lookups[0].get("where")
+                if (not isinstance(primary_key, list) or not primary_key
+                        or not isinstance(where, dict) or set(where) != set(primary_key)
+                        or any(item.get("where") != where for item in lookups)):
+                    break
+                term_fields = [item.get("field") for item in lookups]
+                if any(not isinstance(field, str) or not field for field in term_fields):
+                    break
+                rows = [row for row in table.get("rows", []) if isinstance(row, dict)
+                        and all(row.get(key) == value for key, value in where.items())]
+                identity = json.dumps(where, ensure_ascii=False, sort_keys=True)
+                if len(rows) != 1 or identity in selected_ids:
+                    break
+                if table_name is not None and (candidate_table != table_name or term_fields != fields):
+                    break
+                table_name, fields, product_mode = candidate_table, term_fields, is_product
+                selected_ids.add(identity)
+                selected_rows.append(rows[0])
+            else:
+                assert table_name is not None and fields is not None
+                table = tables[table_name]
+                group_selectors = []
+                for key, value in selected_rows[0].items():
+                    if (key in table["primary_key"] or not isinstance(value, str)
+                            or len(value) < 2 or value not in public_text
+                            or not re.search(r"batch|group|category|period|month|date|cohort|lot", key, re.I)
+                            or any(row.get(key) != value for row in selected_rows)):
+                        continue
+                    matching = [row for row in table["rows"] if isinstance(row, dict)
+                                and row.get(key) == value]
+                    if len(matching) == len(selected_rows) and all(
+                        row in selected_rows for row in matching
+                    ):
+                        group_selectors.append((key, value))
+                if len(group_selectors) == 1:
+                    key, value = group_selectors[0]
+                    aggregate = {"table": table_name, "where": {key: value}}
+                    if product_mode:
+                        aggregate.update({"fields": fields, "op": "sum_product"})
+                    else:
+                        aggregate.update({"field": fields[0], "op": "sum"})
+                    target["expression"] = {"aggregate": aggregate}
+        return compiled
+
+    def _build_numeric_outcome_oracle(
+        self, *, metric: dict[str, Any], task_description: dict[str, Any],
+        public_input: dict[str, Any], data_tables: list[dict[str, Any]],
+        success_fixture: str,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Compile a private-data-dependent arithmetic outcome before sandbox build."""
+        from .sandbox_runtime import DeclarativeMetricEvaluator, SandboxError
+
+        business_state = {
+            table["table_name"]: table["rows"] for table in data_tables
+            if isinstance(table, dict) and isinstance(table.get("table_name"), str)
+            and isinstance(table.get("rows"), list)
+        }
+        evaluator = DeclarativeMetricEvaluator()
+        failure: Exception | None = None
+        for attempt in range(1, self.retries + 1):
+            try:
+                response = self._call(
+                    "numeric_outcome_oracle" if attempt == 1 else "numeric_outcome_oracle.repair",
+                    "为只读数值计算任务生成可执行结果公式。targets 必须覆盖用户要求的关键采购量、金额或其他数值结论；"
+                    "每个 target 使用 label（必须是 success_fixture 最终结论里原样出现、且紧邻目标数字的短语）、"
+                    "unit、tolerance 和 expression。例如‘木耳2.2公斤’的 label 是‘木耳’，"
+                    "‘总金额为252元’的 label 是‘总金额’；不要写答案里不存在的‘木耳采购量’。"
+                    "expression 只允许 {literal:数值}、{lookup:{table,field,where}}、"
+                    "{aggregate:{table,field,where,op:sum|count}}、"
+                    "{aggregate:{table,fields:[数值字段1,数值字段2],where,op:sum_product}}、"
+                    "{op:add|sub|mul|div|max|min,args:[表达式,...]}。其中 sub/div 也必须有至少两个 args；"
+                    "lookup.where 必须使用现有业务表中的唯一行筛选条件；"
+                    "sum/count 聚合必须恰好含 table、field、where、op 四个键；"
+                    "sum_product 聚合必须恰好含 table、fields、where、op 四个键，不能同时写 field 与 fields；"
+                    "汇总全表时 where 必须明确写为 {}，"
+                    "例如 {aggregate:{table:'sales',field:'amount',where:{},op:'sum'}}；"
+                    "若要求对当前及未来符合条件的每条记录计算字段乘积再求和，必须用 sum_product，"
+                    "例如 {aggregate:{table:'inventory',fields:['unit_area_sqft','quantity'],"
+                    "where:{batch_number:'BATCH-1'},op:'sum_product'}}，不得逐个 ID 枚举现有行。"
+                    "需要私有数据的目标必须通过 lookup 或 aggregate 读取当前值，"
+                    "严禁把 rows 中的隐藏数值写成 literal。"
+                    "常量只可来自用户公开请求和单位换算。先从任务、公开常量和实际业务记录独立建立公式，"
+                    "不要为迎合 success_fixture 的数字而扭曲公式；系统会拒绝与成功答案不一致的公式。"
+                    "不要输出 Python、SQL、自然语言公式或额外字段。"
+                    + (f" 上次错误：{failure}" if failure else ""),
+                    {
+                        "task_description": task_description,
+                        "public_input": public_input,
+                        "business_tables": data_tables,
+                        "success_fixture": success_fixture,
+                        "outcome_metric": metric,
+                        "output": {"targets": [{
+                            "label": "总金额", "unit": "元", "tolerance": 0.01,
+                            "expression": {"op": "sub", "args": [
+                                {"literal": 3},
+                                {"lookup": {"table": "inventory", "field": "remaining_kg",
+                                            "where": {"ingredient_name": "木耳"}}},
+                            ]},
+                        }]},
+                    },
+                )
+                expected = {"targets": response.get("targets")}
+                DeclarativeMetricEvaluator.validate_numeric_targets(expected)
+                if fixed_row_total_targets(task_description, expected):
+                    expected = self._compile_row_product_total(
+                        expected, public_input, data_tables,
+                    )
+                    DeclarativeMetricEvaluator.validate_numeric_targets(expected)
+                if fixed_row_total_targets(task_description, expected):
+                    raise PipelineGenerationError(
+                        "open-record total enumerates fixed rows; use a filtered aggregate"
+                    )
+                missing_labels = [
+                    target["label"] for target in expected["targets"]
+                    if target["label"] not in success_fixture
+                ]
+                if missing_labels:
+                    raise PipelineGenerationError(
+                        f"numeric target labels must occur verbatim in the success answer: {missing_labels}"
+                    )
+                dependencies: list[tuple[str, dict[str, Any]]] = []
+                literals: list[Decimal] = []
+                def collect(value: Any) -> None:
+                    if not isinstance(value, dict):
+                        return
+                    if isinstance(value.get("lookup"), dict):
+                        dependencies.append(("lookup", value["lookup"]))
+                    if isinstance(value.get("aggregate"), dict):
+                        dependencies.append(("aggregate", value["aggregate"]))
+                    if "literal" in value:
+                        literals.append(Decimal(str(value["literal"])))
+                    for child in value.values():
+                        if isinstance(child, list):
+                            for item in child: collect(item)
+                        elif isinstance(child, dict):
+                            collect(child)
+                for target in expected["targets"]:
+                    collect(target["expression"])
+                if not dependencies:
+                    raise PipelineGenerationError("numeric oracle does not depend on private rows")
+                public_numbers = {
+                    Decimal(item) for item in re.findall(
+                        r"(?<![A-Za-z0-9_.])\d+(?:\.\d+)?(?![A-Za-z0-9_.])",
+                        json.dumps(public_input, ensure_ascii=False),
+                    )
+                }
+                if any(value not in public_numbers | {Decimal(0), Decimal(1),
+                                                       Decimal(100), Decimal(1000)}
+                       for value in literals):
+                    raise PipelineGenerationError(
+                        "numeric oracle uses a constant absent from public input"
+                    )
+                for kind, lookup in dependencies:
+                    rows = business_state.get(lookup["table"])
+                    selected = [
+                        row for row in rows if isinstance(row, dict)
+                        and all(row.get(key) == value for key, value in lookup["where"].items())
+                    ] if isinstance(rows, list) else []
+                    if not selected or (kind == "lookup" and len(selected) != 1):
+                        raise PipelineGenerationError(
+                            "numeric oracle lookup must select real business rows"
+                        )
+                spec = {
+                    "metric_id": metric["id"], "source": "final_agent_response",
+                    "path": "$", "operator": "numeric_targets", "expected": expected,
+                    "score_mapping": {"pass": 1, "fail": 0},
+                }
+                if evaluator.evaluate(spec, {
+                    "final_agent_response": success_fixture,
+                    "business_state": business_state,
+                }) != 1:
+                    differences = []
+                    for target in expected["targets"]:
+                        label = target["label"]
+                        position = success_fixture.rfind(label)
+                        differences.append({
+                            "label": label,
+                            "computed_from_rows": str(evaluator._numeric_expression(
+                                target["expression"], business_state,
+                            )),
+                            "answer_near_label": (
+                                success_fixture[position:position + len(label) + 45]
+                                if position >= 0 else "<label absent>"
+                            ),
+                            "unit": target["unit"],
+                        })
+                    raise PipelineGenerationError(
+                        "numeric oracle disagrees with grounded success answer: "
+                        + json.dumps(differences, ensure_ascii=False)
+                    )
+                counterfactual_found = False
+                for kind, lookup in dependencies:
+                    altered = copy.deepcopy(business_state)
+                    rows = altered[lookup["table"]]
+                    index = next(index for index, row in enumerate(rows)
+                                 if all(row.get(key) == value for key, value in lookup["where"].items()))
+                    if kind == "aggregate" and lookup.get("op") == "count":
+                        rows.pop(index)
+                        if evaluator.evaluate(spec, {
+                            "final_agent_response": success_fixture,
+                            "business_state": altered,
+                        }) == 0:
+                            counterfactual_found = True
+                            break
+                        continue
+                    row = rows[index]
+                    field = (lookup.get("fields") or [lookup.get("field")])[0]
+                    if isinstance(row.get(field), bool) or not isinstance(row.get(field), (int, float)):
+                        continue
+                    row[field] += 1
+                    if evaluator.evaluate(spec, {
+                        "final_agent_response": success_fixture,
+                        "business_state": altered,
+                    }) == 0:
+                        counterfactual_found = True
+                        break
+                if not counterfactual_found:
+                    raise PipelineGenerationError("numeric oracle ignores private-row changes")
+                compiled = dict(metric)
+                compiled.update({
+                    "type": "rule-based",
+                    "condition": "final_response_matches_current_business_numeric_targets",
+                    "evaluator": {
+                        "kind": "document_rule", "source": "runtime_rule",
+                        "assertion": "数值结论与当前私有业务数据重算结果一致",
+                        "score_mapping": {"pass": 1, "fail": 0},
+                    },
+                })
+                return compiled, spec
+            except (PipelineGenerationError, SandboxError, KeyError, TypeError, ValueError) as exc:
+                failure = exc
+                logger.warning(
+                    "numeric outcome oracle invalid: attempt=%d/%d error=%s",
+                    attempt, self.retries, exc,
+                )
+        raise PipelineGenerationError(
+            f"numeric outcome oracle could not be verified: {failure}"
+        )
+
+    @staticmethod
     def _validate_metric_implementations(
         specs: list[Any], metrics: list[Any], *, require_process: bool = False
     ) -> None:
@@ -6700,7 +8582,7 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
         allowed_sources = {"business_state", "trajectory", "final_agent_response", "observation"}
         allowed_operators = {
             "eq", "ne", "gte", "lte", "contains", "exists", "count_gte",
-            "count_eq", "none_tool_calls", "contains_tool_call",
+            "count_eq", "none_tool_calls", "contains_tool_call", "numeric_targets", "value_targets", "state_predicates",
         }
         for index, spec in enumerate(specs):
             if not isinstance(spec, dict):
@@ -6737,6 +8619,26 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                 raise PipelineGenerationError(
                     f"metric_implementations[{index}] cannot address final_agent_response through business_state"
                 )
+            if spec.get("operator") == "state_predicates":
+                if spec.get("source") != "business_state" or spec.get("path") != "$":
+                    raise PipelineGenerationError("state_predicates requires business_state at $")
+                try:
+                    DeclarativeMetricEvaluator.validate_state_predicates(spec.get("expected"))
+                except SandboxError as exc:
+                    raise PipelineGenerationError(f"invalid state reward: {exc}") from exc
+            if spec.get("operator") in {"numeric_targets", "value_targets"}:
+                if spec.get("source") != "final_agent_response" or spec.get("path") != "$":
+                    raise PipelineGenerationError(
+                        f"metric_implementations[{index}] numeric target source is invalid"
+                    )
+                try:
+                    validator = (DeclarativeMetricEvaluator.validate_numeric_targets if spec["operator"] == "numeric_targets"
+                                 else DeclarativeMetricEvaluator.validate_value_targets)
+                    validator(spec.get("expected"))
+                except SandboxError as exc:
+                    raise PipelineGenerationError(
+                        f"metric_implementations[{index}] numeric target spec is invalid: {exc}"
+                    ) from exc
             if is_process_call:
                 expected = spec.get("expected")
                 if (
@@ -6908,6 +8810,50 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             for item in value:
                 values.extend(TaskGenerationPipeline._walk_values(item))
         return values
+
+    @staticmethod
+    def _drop_initially_satisfied_stateful_outcome_specs(
+        metrics: list[Any], specs: list[Any], *, data_tables: list[dict[str, Any]],
+        environment_mode: str,
+    ) -> list[Any]:
+        """Promote a state outcome rule when it is true before any Agent action."""
+        if environment_mode != "stateful" or not data_tables:
+            return specs
+        from .sandbox_runtime import DeclarativeMetricEvaluator, SandboxError
+
+        state = {
+            table["table_name"]: table.get("rows", [])
+            for table in data_tables if isinstance(table, dict)
+            and isinstance(table.get("table_name"), str)
+        }
+        outcome_ids = {
+            metric.get("id") for metric in metrics if isinstance(metric, dict)
+            and metric.get("category") == "outcome"
+            and metric.get("type") == "rule-based"
+        }
+        retained: list[Any] = []
+        for spec in specs:
+            if (not isinstance(spec, dict) or spec.get("metric_id") not in outcome_ids
+                    or spec.get("source") != "business_state"):
+                retained.append(spec)
+                continue
+            try:
+                initial_score = DeclarativeMetricEvaluator().evaluate(spec, {
+                    "business_state": state, "initial_business_state": state,
+                    "trajectory": {"events": []}, "final_agent_response": "",
+                })
+                satisfied = initial_score == spec.get("score_mapping", {}).get("pass", 1)
+            except (SandboxError, ValueError, TypeError, KeyError):
+                retained.append(spec)
+                continue
+            if satisfied:
+                logger.warning(
+                    "promoting initially satisfied stateful outcome rule: metric=%s",
+                    spec.get("metric_id"),
+                )
+            else:
+                retained.append(spec)
+        return retained
 
     @staticmethod
     def _promote_unimplemented_rule_metrics(
@@ -7101,11 +9047,202 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             "tool_count": len(tools),
         }
 
+    @staticmethod
+    def _table_parent_names(table: dict[str, Any]) -> list[str]:
+        return list(dict.fromkeys(
+            name for foreign in table.get("foreign_keys", [])
+            if isinstance(foreign, dict)
+            if isinstance((name := foreign.get("ref_table") or foreign.get("references_table")), str)
+            and name != table.get("table_name")
+        ))
+
+    @classmethod
+    def _table_generation_layers(cls, tables: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+        """Generate parents before children while retaining independent parallelism."""
+        pending = {table["table_name"]: table for table in tables}
+        layers: list[list[dict[str, Any]]] = []
+        completed: set[str] = set()
+        while pending:
+            ready = [table for table in pending.values()
+                     if set(cls._table_parent_names(table)) <= completed]
+            if not ready:
+                # Cyclic schemas still receive the existing global consistency
+                # repair; row generation cannot order a cycle.
+                ready = list(pending.values())
+            layers.append(ready)
+            for table in ready:
+                name = table["table_name"]
+                completed.add(name)
+                del pending[name]
+        return layers
+
+    @staticmethod
+    def _validate_parent_references(
+        table: dict[str, Any], rows: list[dict[str, Any]],
+        parent_tables: list[dict[str, Any]],
+    ) -> None:
+        parents = {item["table_name"]: item for item in parent_tables}
+        for foreign in table.get("foreign_keys", []):
+            if not isinstance(foreign, dict):
+                continue
+            parent = parents.get(foreign.get("ref_table") or foreign.get("references_table"))
+            if parent is None:
+                continue
+            column = foreign.get("column")
+            parent_column = foreign.get("ref_column") or foreign.get("references_column")
+            allowed = {row.get(parent_column) for row in parent.get("rows", [])}
+            missing = sorted({row.get(column) for row in rows if row.get(column) is not None} - allowed,
+                             key=str)
+            if missing:
+                raise PipelineGenerationError(
+                    f"data table {table['table_name']}.{column} has missing foreign values: {missing[:5]}"
+                )
+
+    def _compile_stateful_goal(
+        self, task_description: dict[str, Any], data_tables: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Repair a broad goal predicate while preserving the actual task target."""
+        from .tasks.task_spec import TaskSpecError, validate_goal_contract
+
+        previous_goal: Any = None
+        goal_error: str | None = None
+        for attempt in range(1, self.retries + 1):
+            candidate = self._call(
+                "business_goal_contract" if attempt == 1 else "business_goal_contract.repair",
+                "把题面明确要求的最终业务状态转换为 row_predicates。"
+                "每项 table/where 定位目标，values 是期望字段值，count 是同时满足 where 和 values 的记录数；"
+                "删除用 count=0，新增用目标属性定位。仅使用给定表字段和题面目标，禁止凭空扩大目标。"
+                "目标必须描述 Agent 执行后的变化，初始 rows 不能已经满足完整目标。"
+                "若 previous_goal 被指出初始即满足，检查是否只判断记录存在或数量不变；"
+                "应补入题面明确要求的新字段值或状态，但不得为了通过校验而编造题面没有的目标。",
+                {
+                    "task_description": task_description,
+                    "tables": data_tables,
+                    "previous_goal": previous_goal,
+                    "validation_error": goal_error,
+                    "output": {"row_predicates": [{
+                        "table": "string", "where": {}, "values": {}, "count": 1,
+                    }]},
+                },
+            )
+            try:
+                validate_goal_contract(candidate, data_tables)
+                plan = self._stateful_mutation_surface_plan(candidate, data_tables)
+                for predicate, surface in zip(candidate["row_predicates"], plan):
+                    if surface["operation"] != "insert":
+                        continue
+                    table = next(item for item in data_tables
+                                 if item["table_name"] == surface["table"])
+                    from .sandbox_runtime import ManifestDataStore
+                    generated = ManifestDataStore.platform_insert_fields(table)
+                    asserted = set(predicate.get("where", {})) | {
+                        field for field, value in predicate.get("values", {}).items()
+                        if value is not None
+                    }
+                    if asserted & generated & set(table.get("primary_key", [])):
+                        raise PipelineGenerationError(
+                            "insert goal asserts a platform-generated primary key; "
+                            "identify the new row by its business fields instead"
+                        )
+                return {"row_predicates": candidate["row_predicates"], "requires_state_change": True}
+            except (TaskSpecError, PipelineGenerationError) as exc:
+                previous_goal = candidate
+                goal_error = str(exc)
+                logger.warning(
+                    "business goal contract invalid: attempt=%d/%d error=%s",
+                    attempt, self.retries, exc,
+                )
+        raise PipelineGenerationError(f"business goal contract invalid: {goal_error}")
+
+    def _accept_or_reconcile_data_tables(
+        self, *, task_description: dict[str, Any],
+        scene_business_plan: dict[str, Any] | None,
+        entities: list[dict[str, Any]],
+        generated_tables: list[dict[str, Any]],
+        keywords: list[str], environment_mode: str,
+    ) -> tuple[list[dict[str, Any]], list[Any]]:
+        try:
+            self._validate_relational_data(generated_tables)
+            self._validate_data_keyword_alignment(
+                generated_tables, task_description=task_description, keywords=keywords,
+            )
+            self._validate_stateful_preconditions(
+                generated_tables, task_description=task_description,
+                environment_mode=environment_mode,
+            )
+        except PipelineGenerationError:
+            return self._reconcile_data_tables(
+                task_description=task_description,
+                scene_business_plan=scene_business_plan,
+                entities=entities,
+                generated_tables=generated_tables,
+            )
+        return generated_tables, []
+
+    def _reconcile_data_tables(
+        self, *, task_description: dict[str, Any],
+        scene_business_plan: dict[str, Any] | None,
+        entities: list[dict[str, Any]],
+        generated_tables: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[Any]]:
+        """Retry a malformed consistency result without losing valid source rows."""
+        previous_tables: Any = generated_tables
+        validation_error: str | None = None
+        for attempt in range(1, self.retries + 1):
+            result = self._call(
+                "environment_data_consistency" if attempt == 1 else "environment_data_consistency.repair",
+                "检查并修正完整初始业务表数据，校验主键唯一、外键存在、字段类型、必填字段、业务关系和任务覆盖度。"
+                "每张 data_table 必须保留非空且字段完整的 rows；不能把逐表生成的有效业务行清空。"
+                "私有业务表必须提供公开用户材料中没有的必要事实，不得完整复制用户已提供的候选记录来制造查询需求。"
+                "必须跨表复核冗余汇总字段：数量、总额、当前状态、有效对象数等若可由明细表计算，"
+                "必须与明细状态以及日期/季度等时间边界一致；不能一张表声明对象已关闭或失效，"
+                "另一张较晚快照仍把它计入当前总数。"
+                "stateful rows 是每个 episode reset 后、Agent 执行前的基线；任务要求从旧值改为新值时，"
+                "基线必须包含旧值且不得提前包含目标终态。"
+                "任务要求唯一推荐、排序、合规判断或首选结论时，数据必须提供唯一且可追溯的决定性证据；"
+                "不得同时保留多个等价候选却在预期答案中武断指定其中一个。"
+                "所有结论所引用的数值、属性和理由必须与 rows 精确一致。"
+                "如收到 validation_error，仅针对该错误修复 previous_tables，保持其他有效行和表结构。"
+                "返回完整 data_tables 与 records。",
+                {
+                    "task_description": task_description,
+                    "scene_business_plan": scene_business_plan,
+                    "entities": entities,
+                    "tables": generated_tables,
+                    "previous_tables": previous_tables,
+                    "validation_error": validation_error,
+                    "output": {"data_tables": generated_tables, "records": []},
+                },
+            )
+            previous_tables = self._normalize_structural_constraints(
+                result.get("data_tables")
+            )
+            try:
+                self._validate_data_tables(previous_tables)
+                records = result.get("records", [])
+                if not isinstance(records, list):
+                    raise PipelineGenerationError(
+                        "environment_data_consistency.records must be a list"
+                    )
+                return previous_tables, records
+            except PipelineGenerationError as exc:
+                validation_error = str(exc)
+                logger.warning(
+                    "environment data consistency invalid: attempt=%d/%d error=%s",
+                    attempt, self.retries, exc,
+                )
+        raise PipelineGenerationError(
+            f"environment_data_consistency exhausted {self.retries} candidates: {validation_error}"
+        )
+
     def _generate_table_rows(
         self, table: dict[str, Any], *, task_description: dict[str, Any],
         entities: list[dict[str, Any]],
+        parent_tables: list[dict[str, Any]] | None = None,
+        scene_business_plan: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Repair one table's rows without regenerating unrelated tables."""
+        parent_tables = parent_tables or []
         previous_rows: Any = None
         validation_error: str | None = None
         for attempt in range(1, self.retries + 1):
@@ -7116,10 +9253,13 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                 "只返回顶层 {\"rows\": [...]}；rows 必须非空，每行覆盖全部字段，主键唯一，"
                 "每个值必须满足该表的 CHECK 约束。创建、修改、审批、排程等 stateful 任务的 rows "
                 "必须是 Agent 执行之前的基线，不能预先写入目标终态。不要返回 schema 或解释。"
+                "若提供 parent_tables，外键值必须引用其中实际存在的父表行，不能编造父表 ID。"
                 "如果收到 validation_error，针对错误修复 previous_rows，保持其他合法事实。",
                 {
                     "task_description": task_description, "entities": entities,
-                    "table": table, "previous_rows": previous_rows,
+                    "table": table, "parent_tables": parent_tables,
+                    "scene_business_plan": scene_business_plan,
+                    "previous_rows": previous_rows,
                     "validation_error": validation_error,
                     "output": {"rows": []},
                 },
@@ -7127,6 +9267,7 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             previous_rows = result.get("rows")
             try:
                 self._validate_generated_table_rows(table, previous_rows)
+                self._validate_parent_references(table, previous_rows, parent_tables)
                 return table | {"rows": previous_rows}
             except PipelineGenerationError as exc:
                 validation_error = str(exc)
@@ -7305,6 +9446,14 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                         f"table definitions[{index}] contains an invalid CHECK constraint"
                     )
                 for clause in re.split(r"\s+AND\s+", expression.strip(), flags=re.I):
+                    nullable_comparison = re.fullmatch(
+                        r"\s*([A-Za-z_][A-Za-z0-9_]*)\s+IS\s+NULL\s+OR\s+\1\s*"
+                        r"(>=|<=|<>|!=|=|>|<)\s*(.*?)\s*",
+                        clause, flags=re.I,
+                    )
+                    if nullable_comparison:
+                        field, operator, rhs = nullable_comparison.groups()
+                        clause = f"{field} {operator} {rhs}"
                     nullable_in_match = re.fullmatch(
                         r"\s*([A-Za-z_][A-Za-z0-9_]*)\s+IN\s*\((.*?)\)\s+OR\s+\1\s+IS\s+NULL\s*",
                         clause, flags=re.I,
@@ -7324,10 +9473,23 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                         )
                     try:
                         if nullable_in_match or in_match:
-                            import ast
-                            ast.literal_eval(f"({match.group(2)},)")
+                            ManifestDataStore._constraint_in_values(match.group(2))
                         else:
-                            ManifestDataStore._constraint_literal(comparison.group(3))
+                            rhs = comparison.group(3).strip()
+                            product = re.fullmatch(
+                                r"([A-Za-z_][A-Za-z0-9_]*)\s*\*\s*([A-Za-z_][A-Za-z0-9_]*)",
+                                rhs,
+                            )
+                            if product and set(product.groups()) <= column_names:
+                                numeric_columns = {
+                                    item["name"] for item in columns
+                                    if ManifestDataStore._column_json_type(item.get("type"))
+                                    in {"integer", "number"}
+                                }
+                                if set(product.groups()) <= numeric_columns:
+                                    continue
+                            if rhs not in column_names:
+                                ManifestDataStore._constraint_literal(rhs)
                     except (ValueError, SyntaxError, SandboxError) as exc:
                         raise PipelineGenerationError(
                             f"table definitions[{index}] has unsupported CHECK constraint: {expression}"
@@ -7336,7 +9498,7 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
 
     @staticmethod
     def _normalize_structural_constraints(tables: Any) -> Any:
-        """Compile common descriptive UNIQUE/NOT NULL text into schema fields.
+        """Compile equivalent structural forms into the supported schema.
 
         Mid-tier models occasionally put structural constraints such as
         ``name 唯一且非空`` in CHECK constraints.  Those are not executable
@@ -7349,6 +9511,19 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
         for table in normalized:
             if not isinstance(table, dict):
                 continue
+            for foreign in table.get("foreign_keys", []):
+                if not isinstance(foreign, dict):
+                    continue
+                local_columns = foreign.get("columns")
+                if ("column" not in foreign and isinstance(local_columns, list)
+                        and len(local_columns) == 1
+                        and isinstance(local_columns[0], str)):
+                    foreign["column"] = local_columns[0]
+                ref_columns = foreign.get("references_columns") or foreign.get("ref_columns")
+                if ("ref_column" not in foreign and "references_column" not in foreign
+                        and isinstance(ref_columns, list) and len(ref_columns) == 1
+                        and isinstance(ref_columns[0], str)):
+                    foreign["ref_column"] = ref_columns[0]
             columns = {
                 column.get("name"): column for column in table.get("columns", [])
                 if isinstance(column, dict) and isinstance(column.get("name"), str)
@@ -7397,7 +9572,6 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
         *,
         environment_mode: str = "business_data",
         manifest_root: str | None = None,
-        data_governance: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Write table schemas/rows to files and return the compact task manifest."""
         artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -7434,7 +9608,7 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
         return {
             "version": "1.0",
             "environment_mode": environment_mode,
-            "data_governance": data_governance or {
+            "data_governance": {
                 "origin": "model_generated_synthetic",
                 "contains_real_user_data": False,
                 "intended_use": "agentic_rl_training_material",

@@ -1,14 +1,20 @@
 import tempfile
+import random
+import json
+import hashlib
+import sys
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+import examples.generate_task as generator_cli
 
 from examples.generate_task import (
     _existing_task_numbers,
     _generation_failure_class,
     _reserve_task_directories,
+    _retry_seed_blocks,
     _reset_reserved_directory,
     _validate_generated_candidate,
     _write_task_artifact,
@@ -23,6 +29,66 @@ from env_factory.tasks.task_routing import (
 
 
 class IncrementalTaskDirectoryTest(unittest.TestCase):
+    def test_batch_deliverables_are_all_under_task_directory(self):
+        class FakeStore:
+            def __init__(self, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        class FakeTaskGenerator:
+            STYLES = ("plain",)
+            INTENTS = ("query",)
+
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def generate(self, *_args, artifact_dir, **_kwargs):
+                (artifact_dir / "data").mkdir()
+                (artifact_dir / "data" / "rows.jsonl").write_text("{}\n", encoding="utf-8")
+                (artifact_dir / "tools.json").write_text("[]\n", encoding="utf-8")
+                return SimpleNamespace(
+                    desc="查询记录", task_type=SimpleNamespace(value="Chat"),
+                    task_intent="query", complexity="simple", env={}, metrics=[],
+                    artifacts={"training_category": "simple_agentic"},
+                )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            provider = SimpleNamespace(
+                base_url="https://example.invalid", model="test-model",
+                timeout=10, network_retries=0,
+            )
+            argv = ["generate_task.py", "--count", "1", "--route-attempts", "1",
+                    "--training-category", "simple_agentic", "--output", str(root),
+                    "--log-file", str(root / "generation.log")]
+            with patch.object(sys, "argv", argv), \
+                    patch.object(generator_cli, "Neo4jGraphStore", FakeStore), \
+                    patch.object(generator_cli, "TaskGenerator", FakeTaskGenerator), \
+                    patch.object(generator_cli.LLMClient, "from_env", return_value=provider), \
+                    patch.object(generator_cli, "_validate_generated_candidate"):
+                self.assertEqual(generator_cli.main(), 0)
+            sample = root / "task" / "task-1"
+            task_path = sample / "task.json"
+            self.assertTrue(task_path.is_file())
+            self.assertTrue((sample / "tools.json").is_file())
+            self.assertTrue((sample / "data" / "rows.jsonl").is_file())
+            manifest = json.loads((sample / "sample_manifest.json").read_text())
+            self.assertEqual(manifest["task_sha256"], hashlib.sha256(task_path.read_bytes()).hexdigest())
+            self.assertGreaterEqual(manifest["generation_seconds"], 0)
+            self.assertFalse((root / "task_artifacts").exists())
+
+    def test_retry_seed_reservations_do_not_overlap(self):
+        bases = _retry_seed_blocks(random.Random(42), 300, 3)
+        attempted = [base + offset for base in bases for offset in range(3)]
+        self.assertEqual(len(attempted), len(set(attempted)))
+        self.assertEqual(bases, _retry_seed_blocks(random.Random(42), 300, 3))
+        self.assertEqual(len(_retry_seed_blocks(random.Random(42), 3, 1)), 3)
+
     def test_noise_resistance_is_not_an_active_training_category(self):
         with self.assertRaisesRegex(ValueError, "invalid training mix entry"):
             parse_training_mix(
@@ -115,6 +181,12 @@ class IncrementalTaskDirectoryTest(unittest.TestCase):
         self.assertEqual(
             _generation_failure_class(PipelineGenerationError("external capability unavailable")),
             "TASK_BUILDABILITY",
+        )
+        self.assertEqual(
+            _generation_failure_class(PipelineGenerationError(
+                "stage tools failed: LLM returned HTTP 429: rate limit"
+            )),
+            "INFRA",
         )
 
     def test_candidate_gate_rejects_unbuildable_task_before_publication(self):

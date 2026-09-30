@@ -90,6 +90,9 @@ class TaskPortabilityTest(unittest.TestCase):
             task = source / "task.json"
             task.write_text(json.dumps({
                 "artifacts": {"data_manifest": {"root": str(fixture)}},
+                "task_spec": {"environment_contract": {"initial_fixture": {
+                    "manifest": {"root": str(fixture)}, "table_names": [],
+                }}},
                 "environment": [],
             }))
             output = root / "sandbox"
@@ -100,6 +103,10 @@ class TaskPortabilityTest(unittest.TestCase):
             self.assertEqual(
                 runtime["artifacts"]["data_manifest"]["root"],
                 "data/business_data",
+            )
+            self.assertEqual(
+                runtime["task_spec"]["environment_contract"]["initial_fixture"]["manifest"],
+                runtime["artifacts"]["data_manifest"],
             )
 
     def test_noncanonical_relative_root_is_relocated_and_marked(self):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+import re
 from dataclasses import dataclass
 from math import floor
 from typing import Any, Mapping
@@ -13,6 +14,36 @@ TRAINING_CATEGORIES = (
     "simple_agentic",
     "multi_step_agentic",
 )
+
+
+def public_calculation_is_self_contained(task: Mapping[str, Any], intent: str | None) -> bool:
+    """Catch arithmetic tasks whose quoted inputs are already public to the Agent."""
+    if intent not in {"calculate", "estimate"}:
+        return False
+    public_input = task.get("public_input")
+    if not isinstance(public_input, Mapping):
+        return False
+    materials = public_input.get("materials", [])
+    if not isinstance(materials, list):
+        materials = []
+    material_text = " ".join(
+        str(item.get("content", "")) for item in materials if isinstance(item, Mapping)
+    )
+    request = f"{public_input.get('initial_user_message', '')} {task.get('task', '')}"
+    private_need = any(marker in request.lower() for marker in (
+        "系统", "数据库", "库存", "内部", "后台", "账户", "档案",
+        "实时", "最新", "联网", "接口", "专用计算", "求解器",
+        "system", "database", "inventory", "internal", "live api",
+    ))
+    quoted_numbers = bool(material_text.strip()) and re.search(r"\d", material_text) is not None
+    public_ratio_estimate = (
+        intent == "estimate" and "%" in request and len(re.findall(r"\d+(?:\.\d+)?", request)) >= 2
+    )
+    arithmetic_goal = re.search(
+        r"(?:总费用|总价|合计|金额|餐费|费用|成本|数量|份数|估算|total|cost|price|estimate)",
+        request, re.I,
+    ) is not None
+    return (quoted_numbers or public_ratio_estimate) and arithmetic_goal and not private_need
 
 DEFAULT_TRAINING_MIX: dict[str, float] = {
     "direct_response": 0.20,

@@ -7,10 +7,12 @@ from dataclasses import dataclass
 from http.client import IncompleteRead
 import hashlib
 import json
+import math
 import os
 import time
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from dotenv import load_dotenv
@@ -40,6 +42,8 @@ def summarize_llm_trace(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     finishes: dict[str, int] = {}
     usage: dict[str, float | int] = {}
     response_ids = []
+    request_seconds = 0.0
+    network_retries = 0
     for record in records:
         model = str(record.get("model", ""))
         finish = str(record.get("finish_reason", ""))
@@ -55,13 +59,21 @@ def summarize_llm_trace(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             for name, value in values.items():
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
                     usage[str(name)] = usage.get(str(name), 0) + value
+        seconds = record.get("request_seconds")
+        if isinstance(seconds, (int, float)) and not isinstance(seconds, bool) and seconds >= 0:
+            request_seconds += float(seconds)
+        retries = record.get("network_retries")
+        if isinstance(retries, int) and not isinstance(retries, bool) and retries >= 0:
+            network_retries += retries
     return {
-        "version": "1.0",
+        "version": "1.1",
         "responses": len(records),
         "models": dict(sorted(models.items())),
         "finish_reasons": dict(sorted(finishes.items())),
         "usage": dict(sorted(usage.items())),
         "response_id_sha256": sorted(response_ids),
+        "request_seconds": round(request_seconds, 3),
+        "network_retries": network_retries,
     }
 
 
@@ -143,6 +155,19 @@ class LLMClient:
         body["model"] = self.model
         body["messages"] = [dict(message) for message in messages]
         body["stream"] = False
+        # K3 always uses its own reasoning mode and accepts temperature=1 only.
+        # Generic generation callers pass thinking=False and lower temperatures.
+        if (
+            self.model == "kimi-k3"
+            and urlparse(self.base_url).hostname in {"api.moonshot.ai", "api.moonshot.cn"}
+        ):
+            body.pop("thinking", None)
+            body.pop("temperature", None)
+            effort = os.getenv("KIMI_K3_REASONING_EFFORT", "").strip()
+            if effort:
+                if effort not in {"low", "high", "max"}:
+                    raise ValueError("KIMI_K3_REASONING_EFFORT must be low, high, or max")
+                body.setdefault("reasoning_effort", effort)
         if isinstance(body.get("thinking"), bool) and "deepseek" in self.base_url.lower():
             body["thinking"] = {
                 "type": "enabled" if body["thinking"] else "disabled"
@@ -157,6 +182,7 @@ class LLMClient:
             "Content-Type": "application/json",
             **self.headers,
         }
+        request_started = time.monotonic()
         for attempt in range(self.network_retries + 1):
             request = Request(
                 f"{self.base_url}/chat/completions",
@@ -170,6 +196,17 @@ class LLMClient:
                 break
             except HTTPError as exc:
                 detail = self._error_detail(exc)
+                if exc.code in {429, 500, 502, 503, 504} and attempt < self.network_retries:
+                    retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                    try:
+                        parsed_delay = float(retry_after)
+                        if not math.isfinite(parsed_delay):
+                            raise ValueError("Retry-After must be finite")
+                        delay = min(max(parsed_delay, 0.0), 5.0)
+                    except (TypeError, ValueError):
+                        delay = 0.5 * (2**attempt)
+                    time.sleep(delay)
+                    continue
                 raise LLMError(f"LLM returned HTTP {exc.code}: {detail}") from exc
             except (IncompleteRead, URLError, TimeoutError, OSError) as exc:
                 if attempt >= self.network_retries:
@@ -202,6 +239,8 @@ class LLMClient:
                     "response_id": normalized.id,
                     "finish_reason": normalized.finish_reason,
                     "usage": dict(normalized.usage or {}),
+                    "request_seconds": time.monotonic() - request_started,
+                    "network_retries": attempt,
                 })
             return normalized
         except (KeyError, IndexError, TypeError) as exc:

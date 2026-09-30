@@ -94,6 +94,7 @@ def is_transient_llm_error(error: Exception) -> bool:
         "http 429", "http 502", "http 503", "http 504",
         "too many requests", "service is too busy", "temporarily unavailable",
         "timed out", "timeout", "connection reset",
+        "unable to read a complete llm response",
     ))
 
 
@@ -123,21 +124,33 @@ class StageExecutor:
         *,
         jitter: Callable[[float, float], float],
         sleep: Callable[[float], None] = time.sleep,
+        stop_on_structural_error: bool = False,
     ) -> dict[str, Any]:
         started = time.perf_counter()
         cache_key = self.cache.key(stage, system, payload)
         cached = self.cache.read(cache_key)
         if cached is not None:
-            validate_stage_result_shape(cached, payload=payload)
-            self.logger.info("pipeline stage cache hit: stage=%s", stage)
-            return cached
+            try:
+                self._validate_stage_semantics(stage, cached, payload)
+                validate_stage_result_shape(cached, payload=payload)
+            except (TypeError, ValueError) as exc:
+                self.logger.warning("pipeline stage cache rejected: stage=%s error=%s", stage, exc)
+            else:
+                self.logger.info(
+                    "pipeline stage cache hit: stage=%s duration_ms=%.1f",
+                    stage, (time.perf_counter() - started) * 1000,
+                )
+                return cached
         self.logger.info("pipeline stage started: stage=%s", stage)
         last_error: Exception | None = None
+        attempts_used = 0
         for attempt in range(1, self.retries + 1):
+            attempts_used = attempt
+            attempt_started = time.perf_counter()
             try:
                 effective_system = self._system_prompt(stage, system)
                 effective_payload = payload
-                if last_error is not None:
+                if last_error is not None and not is_transient_llm_error(last_error):
                     effective_system += (
                         f"\n上一轮输出未通过本阶段结构校验，具体错误是：{last_error}。"
                         "请修复该错误，严格按照 output 示例返回完整 JSON 对象；不要返回 output/type 包装对象，"
@@ -152,7 +165,7 @@ class StageExecutor:
                     effective_payload = dict(payload)
                     effective_payload["previous_validation_error"] = str(last_error)
                 response = self.llm.complete(
-                    json.dumps(effective_payload, ensure_ascii=False, indent=2),
+                    json.dumps(effective_payload, ensure_ascii=False, separators=(",", ":")),
                     system_prompt=effective_system + "\n只输出合法 JSON 对象，不要解释。",
                     thinking=False,
                     temperature=0.2 if attempt > 1 else 0.5,
@@ -172,8 +185,9 @@ class StageExecutor:
                 self._validate_stage_semantics(stage, value, payload)
                 validate_stage_result_shape(value, payload=payload)
                 self.logger.info(
-                    "pipeline stage completed: stage=%s attempt=%d duration_ms=%.1f result_keys=%s",
+                    "pipeline stage completed: stage=%s attempt=%d duration_ms=%.1f attempt_duration_ms=%.1f result_keys=%s",
                     stage, attempt, (time.perf_counter() - started) * 1000,
+                    (time.perf_counter() - attempt_started) * 1000,
                     sorted(value.keys()),
                 )
                 self.cache.write(cache_key, stage, value)
@@ -181,10 +195,13 @@ class StageExecutor:
             except Exception as exc:
                 last_error = exc
                 self.logger.warning(
-                    "pipeline stage attempt failed: stage=%s attempt=%d/%d duration_ms=%.1f error=%s",
+                    "pipeline stage attempt failed: stage=%s attempt=%d/%d duration_ms=%.1f attempt_duration_ms=%.1f error=%s",
                     stage, attempt, self.retries,
-                    (time.perf_counter() - started) * 1000, exc,
+                    (time.perf_counter() - started) * 1000,
+                    (time.perf_counter() - attempt_started) * 1000, exc,
                 )
+                if stop_on_structural_error and not is_transient_llm_error(exc):
+                    break
                 if attempt < self.retries and is_transient_llm_error(exc):
                     delay = min(8.0, float(2 ** attempt)) + jitter(0.0, 0.5)
                     self.logger.info(
@@ -194,7 +211,7 @@ class StageExecutor:
                     sleep(delay)
         self.logger.error(
             "pipeline stage failed: stage=%s attempts=%d duration_ms=%.1f error=%s",
-            stage, self.retries, (time.perf_counter() - started) * 1000,
+            stage, attempts_used, (time.perf_counter() - started) * 1000,
             last_error,
         )
         raise self.error_type(f"stage {stage} failed: {last_error}") from last_error

@@ -130,6 +130,14 @@ class RuntimeLLMClient:
             "stream": False,
             "response_format": {"type": "json_object"},
         }
+        if self.config.model == "kimi-k3":
+            effort = os.getenv("KIMI_K3_REASONING_EFFORT", "").strip()
+            if effort:
+                if effort not in {"low", "high", "max"}:
+                    raise RuntimeLLMError(
+                        "KIMI_K3_REASONING_EFFORT must be low, high, or max"
+                    )
+                body["reasoning_effort"] = effort
         encoded = json.dumps(body, ensure_ascii=False).encode("utf-8")
         headers = {
             "Accept": "application/json",

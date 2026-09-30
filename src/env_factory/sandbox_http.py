@@ -69,3 +69,8 @@ class HTTPSandboxClient:
             return exc.code, value, dict(exc.headers.items())
         except (URLError, TimeoutError, OSError) as exc:
             raise RuntimeError("sandbox loopback HTTP request failed") from exc
+
+
+def evaluator_http_timeout(timeout_seconds: float, max_retries: int) -> float:
+    """Allow the container to finish a bounded evaluator call and its retries."""
+    return max(30.0, timeout_seconds * (max_retries + 1) + 15.0)

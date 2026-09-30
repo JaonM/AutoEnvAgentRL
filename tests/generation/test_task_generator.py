@@ -78,6 +78,10 @@ class TaskGeneratorTest(unittest.TestCase):
                 TaskType.RESEARCH,
             )
 
+    def test_coding_task_type_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "unsupported task_type"):
+            TaskGenerator._select_task_type("Coding")
+
     def test_zero_hops_uses_one_scene(self):
         store = FakeStore()
         llm = FakeLLM()
@@ -87,12 +91,29 @@ class TaskGeneratorTest(unittest.TestCase):
             return self._pipeline_artifacts()
         with patch("env_factory.generation.task_generator.random.choice", side_effect=lambda items: items[0]):
             with patch.object(TaskGenerationPipeline, "generate", side_effect=generate):
-                task = TaskGenerator(store, llm).generate(0, TaskType.EVENT)
+                task = TaskGenerator(store, llm, generation_backend="legacy").generate(0, TaskType.EVENT)
 
         self.assertEqual(store.hops, 0)
         self.assertEqual(captured["keywords"], ["买衣服"])
         self.assertIsNone(captured["available_environment_modes"])
         self.assertEqual(task.desc, "帮我买一件合适尺码的衣服")
+
+    def test_unsourced_domain_path_is_resampled_before_model_calls(self):
+        class Store:
+            calls = 0
+            def random_scene_event_path(self, hops, *, attempts=8, rng=None):
+                self.calls += 1
+                return ((SceneNode("中华人民共和国宪法", ("宪法",)),)
+                        if self.calls == 1 else
+                        (SceneNode("竹编工坊", ("竹编",)),))
+
+        store = Store()
+        generator = TaskGenerator(store, FakeLLM(), generation_backend="legacy")
+        path, hops, keywords = generator._sample_graph_path(0, __import__("random").Random(1))
+        self.assertEqual(store.calls, 2)
+        self.assertEqual(path[0].name, "竹编工坊")
+        self.assertTrue(keywords)
+        self.assertNotIn("宪法", " ".join(keywords))
 
     def test_available_environment_modes_are_forwarded_to_pipeline(self):
         captured = {}
@@ -101,7 +122,7 @@ class TaskGeneratorTest(unittest.TestCase):
             side_effect=lambda **kwargs: captured.update(kwargs) or self._pipeline_artifacts(),
         ):
             TaskGenerator(
-                FakeStore(), FakeLLM(),
+                FakeStore(), FakeLLM(), generation_backend="legacy",
                 available_environment_modes=("stateless", "reference_data", "stateful"),
             ).generate(0, TaskType.EVENT, seed=7)
         self.assertEqual(
@@ -121,7 +142,7 @@ class TaskGeneratorTest(unittest.TestCase):
             patch("env_factory.generation.task_generator.random.choice", side_effect=lambda items: items[0]),
         ):
             with patch.object(TaskGenerationPipeline, "generate", side_effect=generate):
-                task = TaskGenerator(store, llm).generate(3, TaskType.EVENT)
+                task = TaskGenerator(store, llm, generation_backend="legacy").generate(3, TaskType.EVENT)
 
         self.assertEqual(store.hops, 2)
         self.assertEqual(captured["keywords"], ["买衣服", "尺寸"])
@@ -188,7 +209,7 @@ class TaskGeneratorTest(unittest.TestCase):
                 side_effect=lambda **kwargs: captured.update(kwargs) or self._pipeline_artifacts(),
             ),
         ):
-            TaskGenerator(ResamplingStore(), FakeLLM()).generate(0, TaskType.EVENT)
+            TaskGenerator(ResamplingStore(), FakeLLM(), generation_backend="legacy").generate(0, TaskType.EVENT)
         self.assertEqual(captured["keywords"], ["服装出口"])
 
 

@@ -1,8 +1,8 @@
-"""Generate source-backed tasks from datasets, with an optional legacy graph route."""
+"""Generate tasks through multi-hop Scene paths."""
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import nullcontext
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
 import logging
@@ -12,6 +12,7 @@ import re
 import shutil
 import secrets
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -23,7 +24,6 @@ from env_factory import (
     PipelineGenerationError,
     TaskGenerationError,
     TaskGenerator,
-    TaskType,
 )
 from env_factory.tasks.task_routing import (
     TRAINING_CATEGORIES,
@@ -31,11 +31,11 @@ from env_factory.tasks.task_routing import (
     compatible_training_categories,
     parse_training_mix,
     select_training_intent,
+    training_contract,
 )
 from env_factory.evidence.data_governance import provider_identity
 from env_factory.llm import capture_llm_trace, summarize_llm_trace
-from env_factory.generation.dataset_task_generator import DatasetTaskGenerator
-from env_factory.graph.dataset_planner import GraphDatasetTaskGenerator, sync_reviewed_links
+from env_factory.generation.pipeline_stage import is_transient_llm_error
 
 
 _TASK_DIR_PATTERN = re.compile(r"task-(\d+)")
@@ -47,51 +47,7 @@ def _write_json(path: Path, value: object) -> None:
     temporary.replace(path)
 
 
-def _write_task_artifact(task_dir: Path, task: object, training_category: str) -> Path:
-    """Materialize the candidate before its buildability gate runs."""
-    pipeline_artifacts = task.artifacts or {}
-    artifact_manifest = {
-        key: pipeline_artifacts[key]
-        for key in (
-            "data_manifest", "user_simulation_manifest", "tools_manifest",
-            "media_generation", "generation_pipeline", "dataset_source", "graph_plan",
-        ) if key in pipeline_artifacts
-    }
-    task_path = task_dir / "task.json"
-    task_path.write_text(
-        json.dumps({
-            "task": task.desc,
-            "task_type": task.task_type.value,
-            "task_intent": task.task_intent,
-            "training_category": pipeline_artifacts.get("training_category", training_category),
-            "training_contract": pipeline_artifacts.get("training_contract", {}),
-            "runtime_capabilities": pipeline_artifacts.get("runtime_capabilities", {}),
-            "task_spec": pipeline_artifacts.get("task_spec", {}),
-            "complexity": task.complexity,
-            "requirements": pipeline_artifacts.get("requirements", {}),
-            "public_input": pipeline_artifacts.get("public_input", {
-                "initial_user_message": task.desc, "materials": []
-            }),
-            "environment_plan": pipeline_artifacts.get("environment_plan", {}),
-            "environment": task.env,
-            "actions": pipeline_artifacts.get("actions", []),
-            "capability_plan": pipeline_artifacts.get("capability_plan", []),
-            "tools": pipeline_artifacts.get("tools", []),
-            "tool_bindings": pipeline_artifacts.get("tool_bindings", []),
-            "tool_implementations": pipeline_artifacts.get("tool_implementations", []),
-            "noise_tools": pipeline_artifacts.get("noise_tools", []),
-            "observation_schema": pipeline_artifacts.get("observation_schema", {}),
-            "reward_key_steps": pipeline_artifacts.get("reward_key_steps", []),
-            "metrics": task.metrics,
-            "metric_implementations": pipeline_artifacts.get("metric_implementations", []),
-            "reward_formula": pipeline_artifacts.get("reward_formula", {}),
-            "acceptance_contract": pipeline_artifacts.get("acceptance_contract", {}),
-            "task_readiness": pipeline_artifacts.get("task_readiness", {}),
-            "artifacts": artifact_manifest,
-        }, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    return task_path
+from env_factory.generation.artifacts import write_task_artifact as _write_task_artifact
 
 
 def _reset_reserved_directory(path: Path) -> None:
@@ -103,6 +59,16 @@ def _reset_reserved_directory(path: Path) -> None:
             shutil.rmtree(child)
         else:
             child.unlink()
+
+
+def _retry_seed_blocks(rng: random.Random, count: int, attempts: int) -> list[int]:
+    """Reserve disjoint seed ranges for every candidate and its retries."""
+    if attempts <= 0 or count < 0:
+        raise ValueError("count and route attempts must be valid")
+    slots = (2**63 - 1) // attempts
+    if count > slots:
+        raise ValueError("too many task candidates for disjoint retry seed ranges")
+    return [slot * attempts for slot in rng.sample(range(slots), count)]
 
 
 def _validate_generated_candidate(task_dir: Path) -> None:
@@ -128,6 +94,12 @@ def _generation_failure_class(exc: BaseException) -> str:
     """Observability taxonomy only; it never changes generation behavior."""
     name = type(exc).__name__
     text = str(exc).lower()
+    if "code_agent_timeout" in text:
+        return "GEN_BUDGET"
+    if any(is_transient_llm_error(error) for error in (
+        exc, exc.__cause__, exc.__context__,
+    ) if isinstance(error, Exception)):
+        return "INFRA"
     if name in {"ServiceUnavailable", "SessionExpired", "ConnectionError", "TimeoutError"}:
         return "INFRA"
     if any(marker in text for marker in ("schema", "must be", "requires", "invalid", "non-empty list")):
@@ -172,17 +144,8 @@ def _reserve_task_directories(artifact_root: Path, count: int) -> list[tuple[int
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="从数据集生成 Agentic RL 任务")
-    parser.add_argument("--generation-source", choices=("dataset", "graph", "graph_keywords"), default="graph",
-                        help="默认 graph：有数据支撑的图谱规划；dataset 为原数据集路径；graph_keywords 为旧关键词路径")
-    parser.add_argument("--dataset-ref", help="指定 Kaggle owner/slug；缺省时从已核验清单选取")
-    parser.add_argument("--dataset-file", type=Path, help="指定本地表格或 ZIP/GZIP/TAR 压缩文件")
-    parser.add_argument("--dataset-url", help="本地数据文件的原始数据集来源链接")
-    parser.add_argument("--dataset-platform", choices=("kaggle", "data_gov_hk", "balanced"),
-                        default="kaggle", help="数据集来源；balanced 要求偶数任务并按 1:1 分配")
-    parser.add_argument("--dataset-max-gb", type=float, default=5.0,
-                        help="数据源压缩文件、单个表格及解压内容的大小上限，默认 5 GB")
-    parser.add_argument("--hops", type=int, default=3, help="随机路径最大跳数，实际范围为 0 到该值，默认 3")
+    parser = argparse.ArgumentParser(description="从多跳 Scene 图谱生成 Agentic RL 任务")
+    parser.add_argument("--hops", type=int, default=3, help="Scene 路径最大跳数，实际范围为 0 到该值，默认 3")
     parser.add_argument("--count", type=int, default=1, help="生成任务数量，默认 1")
     parser.add_argument("--max-workers", type=int, default=4, help="任务生成并发数，默认 4")
     parser.add_argument(
@@ -195,7 +158,7 @@ def main() -> int:
         "--output",
         type=Path,
         default=Path("output"),
-        help="任务输出根路径；每次运行在 task_artifacts 下追加新的 task-N，默认 output",
+        help="任务输出根路径；每次运行在 task 下追加新的 task-N，默认 output",
     )
     parser.add_argument(
         "--log-file",
@@ -205,7 +168,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--task-type",
-        help="任务类型；支持逗号分隔多选，例如 QA,Event；默认从全部类型随机选择",
+        help="任务类型；支持逗号分隔多选，例如 QA,Event；默认随机选择",
     )
     parser.add_argument(
         "--task-style",
@@ -215,7 +178,7 @@ def main() -> int:
     parser.add_argument(
         "--task-intent",
         choices=TaskGenerator.INTENTS,
-        help="任务意图；默认随机选择。可选：query、explain、compare、recommend、diagnose、modify、execute、plan、summarize、create、extract、classify、validate、audit、calculate、estimate、schedule、monitor、troubleshoot、transform、decide、simulate",
+        help="任务意图；默认按训练类别选择",
     )
     parser.add_argument(
         "--user-script-count",
@@ -230,6 +193,14 @@ def main() -> int:
         help="每个任务最多生成的噪声工具数量，实际数量随机为 0..N；噪声工具由共享运行时安全执行，默认 3",
     )
     parser.add_argument("--training-category", choices=TRAINING_CATEGORIES, help="固定全部任务的训练路由类别")
+    parser.add_argument("--environment-mode", choices=("stateless", "reference_data", "stateful", "external_capability"),
+                        help="要求实际环境模式；验证写入任务时使用 stateful，不能仅依赖 modify 意图标签")
+    parser.add_argument("--generation-backend", choices=("code_agent", "spec", "legacy"), default="code_agent",
+                        help="生成引擎（默认 code_agent）：code_agent 使用 Luna 编写业务规格；spec 使用原型；legacy 使用模型阶段流水线")
+    parser.add_argument("--code-agent-timeout", type=float, default=600,
+                        help="单样本 Code Agent 防卡死超时（秒），默认 600；5 分钟不是质量淘汰线")
+    parser.add_argument("--task-prototype", choices=("lookup_join_sum", "lookup_update", "constraint_create"),
+                        help="固定规格原型；省略时按多步样本序号轮换三类原型")
     parser.add_argument(
         "--training-mix",
         default="direct_response=0.20,simple_agentic=0.30,multi_step_agentic=0.50",
@@ -249,30 +220,22 @@ def main() -> int:
         parser.error("--noise-tool-max 不能小于 0")
     if args.route_attempts <= 0:
         parser.error("--route-attempts 必须大于 0")
-    if not 0 < args.dataset_max_gb <= 100:
-        parser.error("--dataset-max-gb 必须大于 0 且不超过 100")
-    if args.generation_source == "dataset" and args.dataset_ref and args.dataset_file:
-        parser.error("--dataset-ref 与 --dataset-file 不能同时使用")
-    if args.generation_source in ("dataset", "graph") and args.dataset_platform == "balanced":
-        if args.count % 2 or args.dataset_ref or args.dataset_file:
-            parser.error("balanced 需要偶数任务且不能指定单个数据集")
-    if args.generation_source == "dataset" and args.dataset_platform == "data_gov_hk" and args.dataset_ref:
-        parser.error("DATA.GOV.HK 来源不能使用 Kaggle --dataset-ref")
-    if args.generation_source in ("dataset", "graph") and args.task_type not in (None, "QA"):
-        parser.error("数据集生成目前只支持 --task-type QA")
-    if args.generation_source == "dataset" and args.task_intent not in (None, "query", "compare"):
-        parser.error("数据集生成目前只支持 query 或 compare 意图")
-    if args.generation_source == "graph" and args.task_intent not in (None, "query", "compare", "calculate"):
-        parser.error("图谱数据生成目前只支持 query、compare 或 calculate 意图")
-    if (args.generation_source == "graph" and args.task_intent == "calculate"
-            and args.training_category not in (None, "multi_step_agentic")):
-        parser.error("图谱数据 calculate 意图目前只支持 multi_step_agentic")
-    if args.generation_source != "dataset" and (args.dataset_ref or args.dataset_file or args.dataset_url):
-        parser.error("图谱路径不接受指定单个数据集参数")
+    if not 0 <= args.hops <= 20:
+        parser.error("--hops 必须在 0 到 20 之间")
+    if args.task_type:
+        try:
+            TaskGenerator._select_task_type(args.task_type)
+        except ValueError as exc:
+            parser.error(str(exc))
     try:
         training_mix = parse_training_mix(args.training_mix)
     except ValueError as exc:
         parser.error(str(exc))
+    if args.environment_mode:
+        routes = [args.training_category] if args.training_category else [
+            category for category, weight in training_mix.items() if weight > 0]
+        if any(args.environment_mode not in training_contract(category)["allowed_environment_modes"] for category in routes):
+            parser.error("requested environment mode is incompatible with the training categories")
     if args.training_category and args.task_intent:
         try:
             select_training_intent(args.training_category, args.task_intent)
@@ -288,41 +251,44 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(threadName)s %(name)s - %(message)s",
         handlers=[logging.StreamHandler(), logging.FileHandler(args.log_file, encoding="utf-8")],
     )
-    llm = LLMClient.from_env("LLM", timeout=float(os.getenv("LLM_TIMEOUT", "60")))
+    spec_only = args.generation_backend == "spec" and (
+        args.training_category == "multi_step_agentic" or (
+            args.training_category is None and all(
+                category == "multi_step_agentic" or weight == 0 for category, weight in training_mix.items()
+            )
+        )
+    )
+    llm = None if spec_only or args.generation_backend == "code_agent" else LLMClient.from_env("LLM", timeout=float(os.getenv("LLM_TIMEOUT", "60")))
     external_fixture = os.getenv("SANDBOX_EXTERNAL_FIXTURES", "").strip()
     external_available = bool(os.getenv("SANDBOX_EXTERNAL_CAPABILITY_URL", "").strip()) or bool(
         external_fixture and Path(external_fixture).is_file()
     )
-    available_environment_modes = (("stateless", "reference_data") if args.generation_source in ("dataset", "graph")
-                                   else ("stateless", "reference_data", "stateful") + (
-                                       ("external_capability",) if external_available else ()))
+    available_environment_modes = ("stateless", "reference_data", "stateful") + (
+        ("external_capability",) if external_available else ()
+    )
+    if args.environment_mode:
+        if args.environment_mode not in available_environment_modes:
+            parser.error("requested environment mode is unavailable")
+        available_environment_modes = (args.environment_mode,)
     logging.getLogger(__name__).info(
         "task generation run started: count=%d max_workers=%d output=%s log_file=%s",
         args.count, args.max_workers, args.output, args.log_file,
     )
     task_root = args.output if args.output.suffix == "" else args.output.parent
     task_root.mkdir(parents=True, exist_ok=True)
-    artifact_root = task_root / "task_artifacts"
-    store_context = (Neo4jGraphStore(
+    artifact_root = task_root / "task"
+    store_context = nullcontext(None) if spec_only else Neo4jGraphStore(
         database=os.getenv("NEO4J_DATABASE", "neo4j"),
         path_query_timeout=args.path_query_timeout,
-    ) if args.generation_source in ("graph", "graph_keywords") else nullcontext(None))
+    )
     with store_context as store:
-        if args.generation_source in ("graph", "graph_keywords"):
-            sync_reviewed_links(store)
-        generator = (TaskGenerator(
+        generator = TaskGenerator(
             store, llm, user_script_count=args.user_script_count,
             noise_tool_max=args.noise_tool_max,
             available_environment_modes=available_environment_modes,
-        ) if args.generation_source == "graph_keywords" else GraphDatasetTaskGenerator(
-            store, llm, max_source_bytes=int(args.dataset_max_gb * 1_000_000_000),
-            user_script_count=args.user_script_count, noise_tool_max=args.noise_tool_max,
-        ) if args.generation_source == "graph" else DatasetTaskGenerator(
-            llm, dataset_ref=args.dataset_ref, dataset_file=args.dataset_file,
-            source_url=args.dataset_url, max_source_bytes=int(args.dataset_max_gb * 1_000_000_000),
-            user_script_count=args.user_script_count,
-            noise_tool_max=args.noise_tool_max,
-        ))
+            generation_backend=args.generation_backend,
+            code_agent_timeout=args.code_agent_timeout,
+        )
         run_seed = args.seed if args.seed is not None else secrets.randbits(63)
         run_rng = random.Random(run_seed)
         reserved_tasks = _reserve_task_directories(artifact_root, args.count)
@@ -332,25 +298,19 @@ def main() -> int:
                 args.count,
                 training_mix,
                 allowed_categories=(
-                    (("multi_step_agentic",) if args.generation_source == "graph"
-                     and args.task_intent == "calculate" else
-                     compatible_training_categories(args.task_intent))
+                    compatible_training_categories(args.task_intent)
                     if args.task_intent else None
                 ),
                 rng=run_rng,
             )
         )
-        sample_seeds = [run_rng.randrange(0, 2**63) for _ in reserved_tasks]
-        if args.generation_source in ("dataset", "graph"):
-            from env_factory.generation.dataset_source_registry import balanced_platforms
-            platforms = (balanced_platforms(args.count, rng=run_rng)
-                         if args.dataset_platform == "balanced"
-                         else [args.dataset_platform] * args.count)
-        else:
-            platforms = [None] * args.count
-        generation_provider = provider_identity(llm.base_url, llm.model)
-        for batch_index, ((task_number, task_dir), training_category, sample_seed, platform) in enumerate(
-            zip(reserved_tasks, routes, sample_seeds, platforms), start=1
+        sample_seeds = _retry_seed_blocks(
+            run_rng, len(reserved_tasks), args.route_attempts,
+        )
+        generation_provider = (provider_identity("codex://cli", "gpt-6-luna")
+            if args.generation_backend == "code_agent" else provider_identity(llm.base_url, llm.model) if llm else None)
+        for batch_index, ((task_number, task_dir), training_category, sample_seed) in enumerate(
+            zip(reserved_tasks, routes, sample_seeds), start=1
         ):
             _write_json(task_dir / "sample_manifest.json", {
                 "version": "2.0",
@@ -362,19 +322,18 @@ def main() -> int:
                 "requested_task_intent": args.task_intent,
                 "requested_task_style": args.task_style,
                 "requested_task_type": args.task_type,
-                "generation_source": args.generation_source,
-                "dataset_platform": platform,
-                "dataset_ref": args.dataset_ref,
-                "dataset_file": str(args.dataset_file) if args.dataset_file else None,
-                "hops": args.hops if args.generation_source == "graph_keywords" else None,
+                "generation_source": "executable_spec" if args.generation_backend == "spec" and training_category == "multi_step_agentic" else "graph_scene_path",
+                "generation_backend": args.generation_backend,
+                "hops": args.hops,
                 "available_environment_modes": list(available_environment_modes),
-                "generator_provider": generation_provider,
+                "generator_provider": None if args.generation_backend == "spec" and training_category == "multi_step_agentic" else generation_provider,
                 "generation_settings": {
                     "route_attempt_limit": args.route_attempts,
-                    "timeout_seconds": llm.timeout,
-                    "network_retries": llm.network_retries,
+                    "timeout_seconds": args.code_agent_timeout if args.generation_backend == "code_agent" else getattr(llm, "timeout", 0),
+                    "network_retries": getattr(llm, "network_retries", 0),
                 },
                 "status": "reserved",
+                "reserved_at": datetime.now(timezone.utc).isoformat(),
                 "attempts": [],
             })
         logging.getLogger(__name__).info(
@@ -384,14 +343,16 @@ def main() -> int:
         with ThreadPoolExecutor(max_workers=min(args.max_workers, args.count)) as executor:
             def generate_one(
                 batch_index: int, task_number: int, task_dir: Path,
-                training_category: str, sample_seed: int, platform: str | None,
+                training_category: str, sample_seed: int,
             ):
                 logging.getLogger(__name__).info(
                     "task generation started: batch=%d/%d task_id=task-%d",
                     batch_index, args.count, task_number,
                 )
+                sample_started = time.monotonic()
                 last_error = None
                 for route_attempt in range(1, args.route_attempts + 1):
+                    attempt_started = time.monotonic()
                     manifest_path = task_dir / "sample_manifest.json"
                     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                     attempt_seed = sample_seed + route_attempt - 1
@@ -406,7 +367,10 @@ def main() -> int:
                                 task_intent=args.task_intent,
                                 training_category=training_category,
                                 seed=attempt_seed,
-                                **({"dataset_platform": platform} if platform else {}),
+                                **({"prototype": args.task_prototype or (
+                                    ("lookup_join_sum", "lookup_update", "constraint_create")[(routes[:batch_index].count("multi_step_agentic") - 1) % 3]
+                                    if args.task_intent is None else None
+                                )} if args.generation_backend == "spec" and training_category == "multi_step_agentic" else {}),
                             )
                         _write_task_artifact(task_dir, task, training_category)
                         _validate_generated_candidate(task_dir)
@@ -415,9 +379,11 @@ def main() -> int:
                             "seed": attempt_seed,
                             "status": "completed",
                             "llm_trace": summarize_llm_trace(llm_trace),
+                            "duration_seconds": round(time.monotonic() - attempt_started, 3),
                         })
                         manifest["successful_attempt"] = route_attempt
                         manifest["status"] = "generated"
+                        manifest["generation_seconds"] = round(time.monotonic() - sample_started, 3)
                         _write_json(manifest_path, manifest)
                         return task
                     except (TaskGenerationError, PipelineGenerationError) as exc:
@@ -430,26 +396,39 @@ def main() -> int:
                             "error_type": type(exc).__name__,
                             "message": str(exc)[:2000],
                             "llm_trace": summarize_llm_trace(llm_trace),
+                            "duration_seconds": round(time.monotonic() - attempt_started, 3),
                         })
-                        manifest["status"] = "retrying" if route_attempt < args.route_attempts else "failed"
+                        structural_failure = str(exc).startswith(("SPEC_", "CODE_AGENT_"))
+                        manifest["status"] = "retrying" if route_attempt < args.route_attempts and not structural_failure else "failed"
+                        manifest["generation_seconds"] = round(time.monotonic() - sample_started, 3)
                         _write_json(manifest_path, manifest)
                         logging.getLogger(__name__).warning(
                             "training route candidate rejected: task_id=task-%d category=%s attempt=%d/%d reason=%s",
                             task_number, training_category, route_attempt, args.route_attempts, exc,
                         )
+                        if structural_failure:
+                            raise TaskGenerationError(str(exc)) from exc
                         _reset_reserved_directory(task_dir)
                 raise TaskGenerationError(
                     f"{training_category} route exhausted {args.route_attempts} candidate(s): {last_error}"
                 )
 
+            # Preserve reserved IDs and seeds while giving the scarce model
+            # workers to the Agentic curriculum first. The loop experiment
+            # can still build completed samples as soon as they materialize.
+            generation_order = sorted(
+                enumerate(reserved_tasks, start=1),
+                key=lambda item: ({"multi_step_agentic": 0, "simple_agentic": 1,
+                                   "direct_response": 2}.get(routes[item[0] - 1], 3), item[0]),
+            )
             futures = {
                 executor.submit(
                     generate_one, batch_index, task_number, task_dir,
-                    routes[batch_index - 1], sample_seeds[batch_index - 1], platforms[batch_index - 1]
+                    routes[batch_index - 1], sample_seeds[batch_index - 1]
                 ): (
                     batch_index, task_number, task_dir, routes[batch_index - 1]
                 )
-                for batch_index, (task_number, task_dir) in enumerate(reserved_tasks, start=1)
+                for batch_index, (task_number, task_dir) in generation_order
             }
             failed = 0
             for completed, future in enumerate(as_completed(futures), start=1):
@@ -506,6 +485,16 @@ def main() -> int:
                     "task_sha256": hashlib.sha256(task_path.read_bytes()).hexdigest(),
                     "completed_at": datetime.now(timezone.utc).isoformat(),
                 })
+                pipeline = (task.artifacts or {}).get("generation_pipeline", {})
+                if pipeline.get("backend") == "spec":
+                    manifest["compiler_provenance"] = {key: pipeline[key] for key in (
+                        "prototype", "spec_sha256", "compiler_sha256",
+                    )}
+                elif pipeline.get("backend") == "code_agent":
+                    manifest["code_agent_provenance"] = {key: pipeline[key] for key in (
+                        "model", "agent_invocations", "completed_turns", "events_sha256",
+                        "source_sha256", "request_sha256", "compiler_sha256",
+                    )}
                 _write_json(manifest_path, manifest)
                 logging.getLogger(__name__).info(
                     "task artifact written: batch=%d/%d task_id=task-%d complexity=%s task_file=%s",
@@ -519,7 +508,7 @@ def main() -> int:
         "task generation run completed: success=%d failed=%d output=%s",
         args.count - failed, failed, task_root,
     )
-    print(f"任务生成结束：成功={args.count - failed}，失败={failed}，目录={task_root / 'task_artifacts'}，日志={args.log_file}")
+    print(f"任务生成结束：成功={args.count - failed}，失败={failed}，目录={artifact_root}，日志={args.log_file}")
     return 1 if failed else 0
 
 

@@ -2,7 +2,121 @@
 
 from __future__ import annotations
 
+import re
+from decimal import Decimal
 from typing import Any
+
+
+REFERENCE_FACTUALITY_CRITERION = "逐项核对最终回答中的业务事实与实际工具结果及当前业务记录一致。"
+STATEFUL_GOAL_CRITERION = "逐项核对当前业务状态满足声明的最终状态断言，并确认成功轨迹完成了所需变更；不得仅凭最终回答或工具调用给分。"
+
+
+def ambiguous_metric_captures(task: dict[str, Any], preview: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Find process rewards that choose a positional row from distinct tool results."""
+    issues: list[dict[str, Any]] = []
+    for metric in task.get("metric_implementations", []):
+        if not isinstance(metric, dict):
+            continue
+        expected = metric.get("expected")
+        if not isinstance(expected, dict):
+            continue
+        for capture in expected.get("captures", []):
+            if not isinstance(capture, dict):
+                continue
+            path, source = capture.get("path"), capture.get("tool_name")
+            if not isinstance(path, str) or not isinstance(source, str):
+                continue
+            match = re.fullmatch(r"\$\.([A-Za-z_][A-Za-z_0-9]*)\[(\d+)\]\.([A-Za-z_][A-Za-z_0-9]*)", path)
+            if not match:
+                continue
+            result_field, index, value_field = match.group(1), int(match.group(2)), match.group(3)
+            for call in preview:
+                if call.get("tool_name") != source:
+                    continue
+                result = call.get("result")
+                rows = result.get(result_field) if isinstance(result, dict) else None
+                if not isinstance(rows, list) or len(rows) <= 1 or index >= len(rows):
+                    continue
+                values = [row.get(value_field) for row in rows if isinstance(row, dict)]
+                if len(values) <= 1 or all(value == values[0] for value in values[1:]):
+                    continue
+                issues.append({
+                    "code": "AMBIGUOUS_METRIC_CAPTURE",
+                    "metric_id": metric.get("metric_id"), "tool_name": source,
+                    "path": path, "row_count": len(rows),
+                })
+                break
+    return issues
+
+
+def contradicts_reference_factuality(value: Any) -> bool:
+    """Detect explicit instructions to ignore private evidence in a judge rubric."""
+    if not isinstance(value, str):
+        return False
+    return re.search(
+        r"(?:无需|不必|不用|不需要|忽略|禁止|不得).{0,12}"
+        r"(?:核对|检查|验证|参考).{0,30}"
+        r"(?:工具结果|业务记录|业务数据)",
+        value,
+    ) is not None
+
+
+def numeric_answer_counterfactual(task: dict[str, Any], answer: Any) -> str | None:
+    """Perturb one final numerical conclusion while preserving the evidence."""
+    if task.get("task_intent") not in {"calculate", "estimate"} or not isinstance(answer, str):
+        return None
+    excluded = [
+        item.span() for pattern in (
+            r"(?<!\d)\d{4}[-/]\d{1,2}[-/]\d{1,2}(?!\d)",
+            r"(?<!\d)\d{1,2}:\d{2}(?::\d{2})?(?!\d)",
+        ) for item in re.finditer(pattern, answer)
+    ]
+    matches = [
+        item for item in re.finditer(
+            r"(?<![A-Za-z0-9_.])\d+(?:\.\d+)?(?![A-Za-z0-9_.])", answer,
+        )
+        if not any(start <= item.start() < end for start, end in excluded)
+    ]
+    if not matches:
+        return None
+    # Numeric outcome contracts identify the actual conclusion field. Perturb
+    # that field before considering unrelated trailing numbers (for example a
+    # recap sentence or an excluded-record count).
+    labeled_matches: list[Any] = []
+    section_start = answer.rfind("结论")
+    for spec in task.get("metric_implementations", []):
+        if not isinstance(spec, dict) or spec.get("operator") != "numeric_targets":
+            continue
+        expected = spec.get("expected")
+        targets = expected.get("targets", []) if isinstance(expected, dict) else []
+        for target_spec in targets:
+            label = target_spec.get("label") if isinstance(target_spec, dict) else None
+            if not isinstance(label, str) or not label:
+                continue
+            offset = section_start if section_start >= 0 else 0
+            region = answer[offset:]
+            occurrences = list(re.finditer(re.escape(label), region))
+            if not occurrences and section_start >= 0:
+                region = answer
+                offset = 0
+                occurrences = list(re.finditer(re.escape(label), region))[-1:]
+            for occurrence in occurrences:
+                start = offset + occurrence.end()
+                nearby = next((item for item in matches
+                               if start <= item.start() <= start + 15), None)
+                if nearby is not None:
+                    labeled_matches.append(nearby)
+    if labeled_matches:
+        target = labeled_matches[-1]
+        changed = str(Decimal(target.group()) + 1)
+        return answer[:target.start()] + changed + answer[target.end():]
+    conclusions = list(re.finditer(r"结论|总计|合计|总额|总金额|结果|应付", answer))
+    final_candidates = [
+        item for item in matches if conclusions and item.start() > conclusions[-1].end()
+    ]
+    target = (final_candidates or matches)[-1]
+    changed = str(Decimal(target.group()) + 1)
+    return answer[:target.start()] + changed + answer[target.end():]
 
 
 def declared_terminal_outcome_ids(metrics: list[Any], specs: list[Any]) -> set[Any]:
@@ -50,8 +164,6 @@ def has_literal_payload_argument(spec: Any) -> bool:
 
 def terminal_outcome_weight(task: dict[str, Any]) -> float:
     """Weight explicitly assigned to judging the final user-facing answer."""
-    if task.get("environment_plan", {}).get("mode") == "stateful":
-        return 0.0
     metrics = task.get("metrics")
     specs = task.get("metric_implementations")
     terminal_ids = declared_terminal_outcome_ids(

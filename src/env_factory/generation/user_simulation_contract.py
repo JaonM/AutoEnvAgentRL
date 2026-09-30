@@ -1,6 +1,7 @@
 """User persona and finite-state-machine artifact construction."""
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,61 @@ RECOVERY_DIALOGUE_OUTCOMES = frozenset({
 
 
 class UserSimulationContractMixin:
+    @staticmethod
+    def _deterministic_user_profiles(count: int, *, selection_key: str = "") -> list[dict[str, Any]]:
+        """Use reusable personas without spending a model call per task."""
+        if count < 1:
+            raise ValueError("user profile count must be positive")
+        variants = (
+            ("谨慎的首次使用者", "25–34", "刚开始使用相关服务的上班族", "城市通勤场景",
+             "经验有限", "礼貌、简短", "先确认风险再决定", "较低", "较有耐心", "中等",
+             "会逐步补充信息", "先问关键限制", "先核对证据", "重视费用", "时间适中"),
+            ("熟悉领域的高效使用者", "35–44", "有实际业务经验的从业者", "工作场景",
+             "经验丰富", "直接、精炼", "比较证据后快速决定", "中等", "耐心有限", "较高",
+             "一次说明已知约束", "追问具体依据", "指出不一致之处", "重视效率", "时间紧"),
+            ("需要解释的审慎使用者", "45–59", "兼顾家庭事务的使用者", "家庭场景",
+             "只了解常用概念", "温和、详细", "先理解选项再决定", "较低", "较有耐心", "中等",
+             "遇到追问才补充细节", "请求通俗解释", "会要求重新比较", "重视资源约束", "时间弹性"),
+            ("独立核验的使用者", "18–24", "正在学习新领域的学生", "学习场景",
+             "理论知识多于实践", "好奇、具体", "先核验来源再决定", "中等", "耐心适中", "较低",
+             "明确区分事实和猜测", "追问数据来源", "会挑战未经证实的结论", "预算有限", "时间适中"),
+        )
+        offset = hashlib.sha256(selection_key.encode("utf-8")).digest()[0] % len(variants)
+        profiles: list[dict[str, Any]] = []
+        for index in range(count):
+            (identity, age, occupation, location, expertise, tone, decision,
+             risk, patience, trust, disclosure, questioning, feedback,
+             budget, time) = variants[(offset + index) % len(variants)]
+            profiles.append({
+                "profile_id": f"profile-{index + 1}",
+                "identity_summary": identity,
+                "age_range": age,
+                "occupation_or_life_stage": occupation,
+                "location_context": location,
+                "education_background": "能阅读常见说明，但不会假定自己掌握当前任务的私有事实。",
+                "domain_knowledge": {"level": expertise, "areas": ["日常决策", "信息核对"],
+                                     "evidence": "仅依赖对话中明确提供的公开信息。"},
+                "goals_and_motivations": ["完成当前请求", "获得可核查的理由"],
+                "communication_style": {"tone": tone, "verbosity": "按问题复杂度调整", "directness": "明确表达要求"},
+                "language_habits": ["使用自然口语", "发现歧义时要求澄清"],
+                "decision_style": {"pattern": decision, "needs": ["目标一致", "依据充分"]},
+                "risk_tolerance": risk,
+                "patience_level": patience,
+                "trust_level": trust,
+                "information_disclosure_style": disclosure,
+                "questioning_style": questioning,
+                "feedback_style": feedback,
+                "budget_or_resource_sensitivity": budget,
+                "time_sensitivity": time,
+                "accessibility_needs": ["清楚的结构", "可理解的术语"],
+                "frustration_triggers": ["重复询问已给信息", "无依据地断言"],
+                "misconceptions_or_biases": ["可能高估熟悉方案", "可能忽略例外条件"],
+                "known_facts": ["知道自己公开提出的目标", "知道自己已提供的约束"],
+                "unknown_facts": ["不知道沙箱私有业务记录", "不知道尚未查询的工具结果"],
+                "behavior_tendencies": [questioning, feedback],
+            })
+        return profiles
+
     @staticmethod
     def _validate_user_script_state_machine(script: dict[str, Any], index: int) -> None:
         """Validate a reusable, finite user-behavior state machine."""
@@ -141,7 +197,8 @@ class UserSimulationContractMixin:
             )
 
     @classmethod
-    def _deterministic_user_scripts(cls, *, description: dict[str, Any], count: int) -> list[dict[str, Any]]:
+    def _deterministic_user_scripts(cls, *, description: dict[str, Any], count: int,
+                                    finalize_on_goal: bool = False) -> list[dict[str, Any]]:
         """Build minimal valid FSMs when a model cannot repair script structure.
 
         User scripts are test drivers rather than task semantics. A structurally
@@ -227,6 +284,16 @@ class UserSimulationContractMixin:
                     {"transition_id": "review-to-done", "outcome_category": "user_acceptance", "from_state": "review", "to_state": "done", "condition": "用户接受已完成的结果", "should_end": True, "updates": {}},
                 ],
             }
+            if finalize_on_goal:
+                # Complete fixed-goal tasks end on the user's completion decision.
+                # A second confirmation cycle can repeat a non-idempotent write
+                # or replace a structured final answer with a conversational ack.
+                script["states"] = [state for state in script["states"] if state["state_id"] != "review"]
+                for transition in script["transitions"]:
+                    if transition["outcome_category"] == "goal_satisfied":
+                        transition.update(to_state="done", should_end=True)
+                    if transition["outcome_category"] == "user_acceptance":
+                        transition.update(transition_id="request-to-done", from_state="request")
             cls._validate_user_script_state_machine(script, index - 1)
             scripts.append(script)
         return scripts
