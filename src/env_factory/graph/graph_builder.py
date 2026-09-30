@@ -5,16 +5,12 @@ from dataclasses import dataclass
 import logging
 import os
 import random
-import re
 from typing import Any
 
 from dotenv import load_dotenv
 from neo4j import Driver, GraphDatabase, Query
 
 from env_factory.graph.knowledge_graph import (
-    DatasetNode,
-    FieldNode,
-    ResourceNode,
     SceneNode,
     SceneRelation,
     TaskType,
@@ -35,20 +31,6 @@ class SceneEdge:
     source: str
     target: str
     relation: SceneRelation
-
-
-@dataclass(frozen=True)
-class SceneDatasetLink:
-    """A reviewed scene-to-source relation with an optional observed group value."""
-
-    scene_name: str
-    dataset_key: str
-    source_sha256: str
-    evidence: str
-    group_field: str | None = None
-    group_value: str | None = None
-    business_label: str | None = None
-    review_method: str = "manual"
 
 
 class Neo4jGraphStore:
@@ -111,318 +93,6 @@ class Neo4jGraphStore:
                 "CREATE CONSTRAINT task_type_id IF NOT EXISTS "
                 "FOR (node:TaskType) REQUIRE node.id IS UNIQUE"
             ).consume()
-            session.run(
-                "CREATE CONSTRAINT dataset_key IF NOT EXISTS "
-                "FOR (node:Dataset) REQUIRE node.key IS UNIQUE"
-            ).consume()
-            session.run(
-                "CREATE CONSTRAINT resource_key IF NOT EXISTS "
-                "FOR (node:Resource) REQUIRE node.key IS UNIQUE"
-            ).consume()
-            session.run(
-                "CREATE CONSTRAINT field_key IF NOT EXISTS "
-                "FOR (node:Field) REQUIRE node.key IS UNIQUE"
-            ).consume()
-            session.run(
-                "CREATE CONSTRAINT topic_key IF NOT EXISTS "
-                "FOR (node:Topic) REQUIRE node.key IS UNIQUE"
-            ).consume()
-            session.run(
-                "CREATE CONSTRAINT graph_build_state_key IF NOT EXISTS "
-                "FOR (node:GraphBuildState) REQUIRE node.key IS UNIQUE"
-            ).consume()
-
-    def upsert_catalog_datasets(self, rows: Iterable[dict[str, Any]], *, batch_size: int = 500) -> int:
-        """Index catalog metadata in bounded transactions without approving raw data."""
-        if batch_size <= 0:
-            raise ValueError("batch_size must be positive")
-        query = (
-            "UNWIND $rows AS row "
-            "MERGE (dataset:Dataset {key: row.key}) "
-            "SET dataset.catalog_title = row.title, dataset.source_url = row.url, "
-            "dataset.provider = row.provider, dataset.category = row.category, "
-            "dataset.catalog_approved = row.approved, dataset.catalog_source = row.platform, "
-            "dataset.catalog_license = row.license, "
-            "dataset.resource_count = row.resource_count, dataset.resource_formats = row.resource_formats "
-            "WITH dataset, row WHERE row.topic_key <> '' "
-            "MERGE (topic:Topic {key: row.topic_key}) "
-            "SET topic.name = row.topic_name, topic.platform = row.platform "
-            "MERGE (dataset)-[:IN_TOPIC]->(topic)"
-        )
-        count = 0
-        batch: list[dict[str, Any]] = []
-        with self.driver.session(database=self.database) as session:
-            for row in rows:
-                batch.append(row)
-                if len(batch) == batch_size:
-                    session.run(query, rows=batch).consume()
-                    count += len(batch)
-                    batch = []
-            if batch:
-                session.run(query, rows=batch).consume()
-                count += len(batch)
-        return count
-
-    def catalog_fingerprint(self) -> str | None:
-        """Return the fingerprint of the last completed catalog sync."""
-        with self.driver.session(database=self.database) as session:
-            record = session.run(
-                "MATCH (state:GraphBuildState {key: 'dataset_catalog'}) "
-                "RETURN state.fingerprint AS fingerprint"
-            ).single()
-            return str(record["fingerprint"]) if record and record["fingerprint"] else None
-
-    def set_catalog_fingerprint(self, fingerprint: str) -> None:
-        with self.driver.session(database=self.database) as session:
-            session.run(
-                "MERGE (state:GraphBuildState {key: 'dataset_catalog'}) "
-                "SET state.fingerprint = $fingerprint",
-                fingerprint=fingerprint,
-            ).consume()
-
-    def local_link_fingerprint(self, dataset_key: str) -> str | None:
-        with self.driver.session(database=self.database) as session:
-            record = session.run(
-                "MATCH (state:GraphBuildState {key: $key}) "
-                "RETURN state.fingerprint AS fingerprint",
-                key=f"local_link:{dataset_key}",
-            ).single()
-            return str(record["fingerprint"]) if record and record["fingerprint"] else None
-
-    def save_local_link_candidates(self, dataset_key: str, fingerprint: str,
-                                   source_sha256: str, candidates: tuple[dict[str, str], ...]) -> None:
-        """Replace one source's provisional edges and mark its completed audit."""
-        scene_ids = [normalize_scene_name(row["scene"]) for row in candidates]
-        with self.driver.session(database=self.database) as session:
-            if session.run("MATCH (dataset:Dataset {key: $key}) RETURN dataset.key AS key",
-                           key=dataset_key).single() is None:
-                raise ValueError(f"dataset catalog node is missing: {dataset_key}")
-            session.run(
-                "MATCH (scene:Scene)-[edge:CANDIDATE_SUPPORTED_BY]->"
-                "(dataset:Dataset {key: $dataset_key}) "
-                "WHERE edge.managed_by = 'local_dataset_linker' "
-                "AND NOT scene.id IN $scene_ids DELETE edge",
-                dataset_key=dataset_key, scene_ids=scene_ids,
-            ).consume()
-
-            for row in candidates:
-                session.run(
-                    "MATCH (scene:Scene {id: $scene_id}), "
-                    "(dataset:Dataset {key: $dataset_key}) "
-                    "MERGE (scene)-[edge:CANDIDATE_SUPPORTED_BY]->(dataset) "
-                    "SET edge.source_sha256 = $source_sha256, "
-                    "edge.evidence = $evidence, edge.business_label = $business_label, "
-                    "edge.group_field = $group_field, edge.group_value = $group_value, "
-                    "edge.reviewed = false, edge.managed_by = 'local_dataset_linker'",
-                    scene_id=normalize_scene_name(row["scene"]), dataset_key=dataset_key,
-                    source_sha256=source_sha256, evidence=row["evidence"],
-                    business_label=row["business_label"],
-                    group_field=row.get("group_field"), group_value=row.get("group_value"),
-                ).consume()
-            session.run(
-                "MERGE (state:GraphBuildState {key: $key}) "
-                "SET state.fingerprint = $fingerprint",
-                key=f"local_link:{dataset_key}", fingerprint=fingerprint,
-            ).consume()
-
-    def local_link_candidates(self, dataset_key: str) -> tuple[dict[str, Any], ...]:
-        with self.driver.session(database=self.database) as session:
-            rows = session.run(
-                "MATCH (scene:Scene)-[edge:CANDIDATE_SUPPORTED_BY]->"
-                "(dataset:Dataset {key: $dataset_key}) "
-                "WHERE edge.managed_by = 'local_dataset_linker' "
-                "RETURN scene.name AS scene, edge.source_sha256 AS source_sha256, "
-                "edge.evidence AS evidence, edge.business_label AS business_label, "
-                "edge.group_field AS group_field, edge.group_value AS group_value",
-                dataset_key=dataset_key,
-            )
-            return tuple(dict(row) for row in rows)
-
-    def remove_local_link_candidates(self, dataset_key: str, scenes: tuple[str, ...]) -> None:
-        ids = [normalize_scene_name(scene) for scene in scenes]
-        with self.driver.session(database=self.database) as session:
-            session.run(
-                "MATCH (scene:Scene)-[edge:CANDIDATE_SUPPORTED_BY]->"
-                "(dataset:Dataset {key: $dataset_key}) "
-                "WHERE edge.managed_by = 'local_dataset_linker' AND scene.id IN $scene_ids "
-                "DELETE edge",
-                dataset_key=dataset_key, scene_ids=ids,
-            ).consume()
-
-    def set_scene_discovery_terms(self, scene_name: str, terms: tuple[str, ...]) -> None:
-        with self.driver.session(database=self.database) as session:
-            session.run(
-                "MATCH (scene:Scene {id: $scene_id}) SET scene.discovery_terms = $terms",
-                scene_id=normalize_scene_name(scene_name), terms=list(terms),
-            ).consume()
-
-    def catalog_candidates_for_scene(self, scene_name: str, *, limit: int = 20) -> tuple[dict[str, Any], ...]:
-        """Find metadata candidates sharing a topic with reviewed scene sources."""
-        if limit <= 0:
-            raise ValueError("limit must be positive")
-        scene_id = normalize_scene_name(scene_name)
-        with self.driver.session(database=self.database) as session:
-            seed = session.run(
-                "MATCH (scene:Scene {id: $scene_id})-[:SUPPORTED_BY]->(dataset:Dataset) "
-                "RETURN collect(coalesce(dataset.catalog_title, dataset.title)) AS titles, "
-                "scene.discovery_terms AS discovery_terms",
-                scene_id=scene_id,
-            ).single()
-            terms = (list(seed["discovery_terms"]) if seed and seed["discovery_terms"]
-                     else self._catalog_candidate_terms(scene_name, seed["titles"] if seed else ()))
-            if not terms:
-                return ()
-            records = session.run(
-                "MATCH (scene:Scene {id: $scene_id})-[:SUPPORTED_BY]->(:Dataset)-[:IN_TOPIC]->(topic:Topic) "
-                "MATCH (candidate:Dataset)-[:IN_TOPIC]->(topic) "
-                "WHERE NOT (scene)-[:SUPPORTED_BY]->(candidate) "
-                "AND any(term IN $terms WHERE toLower(candidate.catalog_title) CONTAINS term) "
-                "WITH DISTINCT candidate, topic, "
-                "size([term IN $terms WHERE toLower(candidate.catalog_title) CONTAINS term]) AS relevance "
-                "RETURN candidate.key AS key, candidate.catalog_title AS title, "
-                "candidate.source_url AS url, topic.name AS topic, "
-                "candidate.catalog_approved AS approved "
-                "ORDER BY relevance DESC, candidate.key LIMIT $limit",
-                scene_id=scene_id, terms=terms, limit=limit,
-            )
-            return tuple(dict(record) for record in records)
-
-    @staticmethod
-    def _catalog_candidate_terms(scene_name: str, titles: Iterable[str]) -> list[str]:
-        """Use specific title words; broad catalog categories alone are weak evidence."""
-        ignored = {"dataset", "data", "information", "business", "records",
-                   "数据", "资料", "信息", "业务", "核对", "一览"}
-        terms: set[str] = set()
-        for text in (scene_name, *titles):
-            if not isinstance(text, str):
-                continue
-            terms.update(word.casefold() for word in re.findall(r"[A-Za-z]{4,}", text)
-                         if word.casefold() not in ignored)
-            for block in re.findall(r"[\u4e00-\u9fff]{2,}", text):
-                terms.update(block[index:index + 2] for index in range(len(block) - 1)
-                             if block[index:index + 2] not in ignored)
-        return sorted(terms)
-
-    def catalog_dataset_counts(self) -> dict[str, int]:
-        """Count materialized catalog entries by source, excluding graph-only nodes."""
-        with self.driver.session(database=self.database) as session:
-            records = session.run(
-                "MATCH (dataset:Dataset) WHERE dataset.catalog_source IS NOT NULL "
-                "RETURN dataset.catalog_source AS platform, count(dataset) AS total"
-            )
-            return {str(record["platform"]): int(record["total"]) for record in records}
-
-    def upsert_dataset(self, node: DatasetNode) -> None:
-        with self.driver.session(database=self.database) as session:
-            session.run(
-                "MERGE (dataset:Dataset {key: $key}) "
-                "SET dataset.title = $title, dataset.source_url = $source_url, "
-                "dataset.source_sha256 = $source_sha256",
-                key=node.key, title=node.title, source_url=node.source_url,
-                source_sha256=node.source_sha256,
-            ).consume()
-
-    def upsert_resource(self, node: ResourceNode) -> None:
-        with self.driver.session(database=self.database) as session:
-            session.run(
-                "MATCH (dataset:Dataset {key: $dataset_key}) "
-                "MERGE (resource:Resource {key: $key}) "
-                "SET resource.source_sha256 = $source_sha256, "
-                "resource.source_format = $source_format "
-                "MERGE (dataset)-[:HAS_RESOURCE]->(resource)",
-                dataset_key=node.dataset_key, key=node.key,
-                source_sha256=node.source_sha256, source_format=node.source_format,
-            ).consume()
-
-    def upsert_field(self, node: FieldNode) -> None:
-        with self.driver.session(database=self.database) as session:
-            session.run(
-                "MATCH (resource:Resource {key: $resource_key}) "
-                "MERGE (field:Field {key: $key}) "
-                "SET field.name = $name, field.role = $role "
-                "MERGE (resource)-[:HAS_FIELD]->(field)",
-                resource_key=node.resource_key, key=node.key,
-                name=node.name, role=node.role,
-            ).consume()
-
-    def link_scene_dataset(self, link: SceneDatasetLink) -> None:
-        with self.driver.session(database=self.database) as session:
-            session.run(
-                "MATCH (scene:Scene {id: $scene_id}), (dataset:Dataset {key: $dataset_key}) "
-                "MERGE (scene)-[relation:SUPPORTED_BY]->(dataset) "
-                "SET relation.source_sha256 = $source_sha256, relation.evidence = $evidence, "
-                "relation.group_field = $group_field, relation.group_value = $group_value, "
-                "relation.business_label = $business_label, "
-                "relation.review_method = $review_method, "
-                "relation.reviewed = true, relation.managed_by = 'graph_dataset_links'",
-                scene_id=normalize_scene_name(link.scene_name), dataset_key=link.dataset_key,
-                source_sha256=link.source_sha256, evidence=link.evidence,
-                group_field=link.group_field, group_value=link.group_value,
-                business_label=link.business_label,
-                review_method=link.review_method,
-            ).consume()
-
-    def reconcile_reviewed_links(self, links: tuple[SceneDatasetLink, ...]) -> None:
-        """Remove only registry-managed edges no longer in the reviewed registry."""
-        pairs = [[normalize_scene_name(link.scene_name), link.dataset_key] for link in links]
-        with self.driver.session(database=self.database) as session:
-            session.run(
-                "MATCH (scene:Scene)-[relation:SUPPORTED_BY]->(dataset:Dataset) "
-                "WHERE relation.managed_by = 'graph_dataset_links' "
-                "AND NOT [scene.id, dataset.key] IN $pairs "
-                "DELETE relation",
-                pairs=pairs,
-            ).consume()
-
-    def link_scene_extension(self, parent: str, child: str) -> None:
-        """Create a hierarchy edge managed by the source-backed scene registry."""
-        with self.driver.session(database=self.database) as session:
-            session.run(
-                "MATCH (parent:Scene {id: $parent}) "
-                "MATCH (child:Scene {id: $child}) "
-                "MERGE (parent)-[relation:HIERARCHY]->(child) "
-                "SET relation.managed_by = 'graph_dataset_links'",
-                parent=normalize_scene_name(parent), child=normalize_scene_name(child),
-            ).consume()
-
-    def reconcile_scene_extensions(self, pairs: tuple[tuple[str, str], ...]) -> None:
-        """Remove stale hierarchy edges created by the source-backed registry."""
-        normalized = [[normalize_scene_name(parent), normalize_scene_name(child)]
-                      for parent, child in pairs]
-        with self.driver.session(database=self.database) as session:
-            session.run(
-                "MATCH (parent:Scene)-[relation:HIERARCHY]->(child:Scene) "
-                "WHERE relation.managed_by = 'graph_dataset_links' "
-                "AND NOT [parent.id, child.id] IN $pairs DELETE relation",
-                pairs=normalized,
-            ).consume()
-
-    def supported_dataset_links(self, platform: str) -> tuple[tuple[SceneNode, SceneDatasetLink], ...]:
-        """Return only reviewed links for a requested source platform."""
-        if platform not in {"kaggle", "data_gov_hk"}:
-            raise ValueError(f"unsupported dataset platform: {platform}")
-        with self.driver.session(database=self.database) as session:
-            records = session.run(
-                "MATCH (scene:Scene)-[relation:SUPPORTED_BY]->(dataset:Dataset) "
-                "WHERE dataset.key STARTS WITH $prefix AND relation.reviewed = true "
-                "RETURN scene.name AS scene_name, scene.words AS scene_words, "
-                "dataset.key AS dataset_key, relation.source_sha256 AS source_sha256, "
-                "relation.evidence AS evidence, relation.group_field AS group_field, "
-                "relation.group_value AS group_value, "
-                "relation.business_label AS business_label, "
-                "relation.review_method AS review_method",
-                prefix=platform + ":",
-            )
-            return tuple((
-                SceneNode(str(record["scene_name"]), tuple(record["scene_words"] or ())),
-                SceneDatasetLink(
-                    str(record["scene_name"]), str(record["dataset_key"]),
-                    str(record["source_sha256"]), str(record["evidence"]),
-                    record["group_field"], record["group_value"],
-                    record["business_label"], record["review_method"] or "manual",
-                ),
-            ) for record in records)
-
     def upsert_scene(self, node: SceneNode) -> None:
         with self.driver.session(database=self.database) as session:
             session.run(
@@ -504,46 +174,36 @@ class Neo4jGraphStore:
         logger.debug("下位节点查询完成：关键词=%s，结果数=%d", word, len(children))
         return children
     def random_scene_event_path(
-        self, hops: int, *, attempts: int = 8, rng: random.Random | None = None
+        self, hops: int, *, attempts: int = 8, rng: random.Random | None = None,
     ) -> tuple[SceneNode, ...]:
-        """Return a path whose every Scene has a reviewed dataset relation."""
+        """Sample a unique Scene path over SAME_EVENT_ELEMENT relations."""
 
         if hops < 0 or hops > 20:
             raise ValueError("hops must be between 0 and 20")
         if attempts <= 0:
             raise ValueError("attempts must be greater than zero")
         random_source = rng or random
-        logger.debug("开始随机抽取 Scene 路径：跳数=%d，最大尝试次数=%d", hops, attempts)
         with self.driver.session(database=self.database) as session:
             total = session.run(
-                "MATCH (scene:Scene)-[support:SUPPORTED_BY]->(:Dataset) "
-                "WHERE support.reviewed = true RETURN count(DISTINCT scene) AS total"
+                "MATCH (scene:Scene) RETURN count(scene) AS total"
             ).single()["total"]
             if not total:
-                logger.warning("随机抽取 Scene 路径失败：没有已审核数据集支撑的 Scene")
                 return ()
             for _ in range(attempts):
                 start = session.run(
-                    "MATCH (selected:Scene)-[support:SUPPORTED_BY]->(:Dataset) "
-                    "WHERE support.reviewed = true "
-                    "WITH DISTINCT selected ORDER BY selected.id "
-                    "RETURN selected.id AS id "
-                    "SKIP $offset LIMIT 1",
+                    "MATCH (selected:Scene) WITH selected ORDER BY selected.id "
+                    "RETURN selected.id AS id SKIP $offset LIMIT 1",
                     offset=random_source.randrange(total),
                 ).single()
                 if start is None:
-                    logger.warning("随机抽取 Scene 路径失败：随机节点偏移无结果")
                     return ()
                 if hops == 0:
                     record = session.run(
-                        "MATCH (scene:Scene {id: $start_id})-"
-                        "[support:SUPPORTED_BY]->(:Dataset) "
-                        "WHERE support.reviewed = true "
+                        "MATCH (scene:Scene {id: $start_id}) "
                         "RETURN scene.name AS name, scene.words AS words",
                         start_id=start["id"],
                     ).single()
                     if record is not None:
-                        logger.debug("随机节点抽取完成：节点=%s", record["name"])
                         return (SceneNode(
                             name=str(record["name"]),
                             words=tuple(str(word) for word in (record["words"] or [])),
@@ -552,24 +212,15 @@ class Neo4jGraphStore:
                 records = list(session.run(
                     Query(
                         f"MATCH p=(start:Scene {{id: $start_id}})-[:SAME_EVENT_ELEMENT*1..{hops}]-(end:Scene) "
-                        f"WHERE length(p) = {hops} AND all(node IN nodes(p) "
-                        "WHERE single(other IN nodes(p) WHERE other = node) "
-                        "AND EXISTS { MATCH (node)-[support:SUPPORTED_BY]->(:Dataset) "
-                        "WHERE support.reviewed = true }) "
+                        f"WHERE length(p) = {hops} "
+                        "AND all(node IN nodes(p) WHERE single(other IN nodes(p) WHERE other = node)) "
                         "RETURN [node IN nodes(p) | {name: node.name, words: node.words}] AS path "
                         "LIMIT 100",
                         timeout=self.path_query_timeout,
                     ),
                     start_id=start["id"],
-                    hops=hops,
                 ))
                 if records:
-                    logger.debug(
-                        "随机路径候选抽取完成：跳数=%d，起点=%s，候选数=%d",
-                        hops,
-                        start["id"],
-                        len(records),
-                    )
                     return tuple(
                         SceneNode(
                             name=str(item["name"]),
@@ -577,8 +228,9 @@ class Neo4jGraphStore:
                         )
                         for item in random_source.choice(records)["path"]
                     )
-        logger.info("未找到符合条件的 Scene 路径：跳数=%d，尝试次数=%d", hops, attempts)
+        logger.info("未找到 Scene 路径：跳数=%d，尝试次数=%d", hops, attempts)
         return ()
+
     def upsert_task_type(self, node: TaskTypeNode) -> None:
         with self.driver.session(database=self.database) as session:
             session.run(
@@ -587,6 +239,16 @@ class Neo4jGraphStore:
                 id=node.task_type.value,
                 name=node.task_type.value,
                 value=node.task_type.value,
+            ).consume()
+
+    def reconcile_task_types(self, active_types: Iterable[TaskType]) -> None:
+        """Remove task-type nodes retired from the authoritative enum."""
+        active_ids = [task_type.value for task_type in active_types]
+        with self.driver.session(database=self.database) as session:
+            session.run(
+                "MATCH (task_type:TaskType) WHERE NOT task_type.id IN $active_ids "
+                "DETACH DELETE task_type",
+                active_ids=active_ids,
             ).consume()
 
     def add_scene_edge(self, edge: SceneEdge) -> None:
@@ -705,7 +367,9 @@ class KnowledgeGraphBuilder:
         store.ensure_schema()
         for scene in self.scenes():
             store.upsert_scene(scene)
-        for task_type in task_types:
+        selected_types = tuple(task_types)
+        for task_type in selected_types:
             store.upsert_task_type(TaskTypeNode(task_type))
+        store.reconcile_task_types(tuple(TaskType))
         for edge in self.edges():
             store.add_scene_edge(edge)

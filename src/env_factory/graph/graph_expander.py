@@ -508,9 +508,32 @@ class SeedGraphExpander:
                 extracted[seed] = self._term_cache[cache_key]
             elif material:
                 pending.append((seed, material, cache_key))
-        for start in range(0, len(pending), self.config.term_batch_size):
-            batch = pending[start : start + self.config.term_batch_size]
-            logger.debug("调用 LLM 抽取关键词：批次=%d，种子数=%d", start // self.config.term_batch_size + 1, len(batch))
+        def fallback_one(seed: str, material: tuple[tuple[str, str], ...],
+                         cache_key: str) -> None:
+            try:
+                terms = self._extract_terms(
+                    seed,
+                    WikipediaResponse(
+                        query=seed,
+                        results=tuple(
+                            WikipediaResult(title=title, content=content, url="")
+                            for title, content in material
+                        ),
+                    ),
+                )
+            except LLMError as exc:
+                if "HTTP 400" not in str(exc) or "Content Exists Risk" not in str(exc):
+                    raise
+                logger.warning("术语抽取被内容审核拒绝，跳过种子词：%s", seed)
+                terms = ()
+            except (json.JSONDecodeError, KeyError, TypeError, GraphExpansionError):
+                logger.warning("术语抽取失败，跳过种子词：%s", seed)
+                terms = ()
+            extracted[seed] = terms[: self.config.max_terms_per_seed]
+            self._term_cache[cache_key] = extracted[seed]
+
+        def process_batch(batch: list[tuple[str, tuple[tuple[str, str], ...], str]]) -> None:
+            logger.debug("调用 LLM 抽取关键词：种子数=%d", len(batch))
             payload = {
                 "items": [
                     {
@@ -523,17 +546,32 @@ class SeedGraphExpander:
                     for seed, material, _ in batch
                 ]
             }
-            response = self.llm.complete(
-                json.dumps(payload, ensure_ascii=False),
-                system_prompt=self.TERM_PROMPT +
-                '\n请批量处理所有输入项，输出：{"items":[{"seed":"种子词","terms":["词语"]}]}',
-                thinking=False,
-                temperature=0.0,
-                # A batch response contains one item per seed. 2k tokens is
-                # easily exhausted by 16 seeds and leaves invalid JSON.
-                max_tokens=max(2_000, min(8_000, 500 * len(batch))),
-                response_format="json_object",
-            )
+            try:
+                response = self.llm.complete(
+                    json.dumps(payload, ensure_ascii=False),
+                    system_prompt=self.TERM_PROMPT +
+                    '\n请批量处理所有输入项，输出：{"items":[{"seed":"种子词","terms":["词语"]}]}',
+                    thinking=False,
+                    temperature=0.0,
+                    # A batch response contains one item per seed. 2k tokens is
+                    # easily exhausted by 16 seeds and leaves invalid JSON.
+                    max_tokens=max(2_000, min(8_000, 500 * len(batch))),
+                    response_format="json_object",
+                )
+            except LLMError as exc:
+                if "HTTP 400" not in str(exc) or "Content Exists Risk" not in str(exc):
+                    raise
+                if len(batch) == 1:
+                    seed, _, cache_key = batch[0]
+                    logger.warning("术语抽取被内容审核拒绝，跳过种子词：%s", seed)
+                    extracted[seed] = ()
+                    self._term_cache[cache_key] = ()
+                    return
+                midpoint = len(batch) // 2
+                logger.warning("批量术语抽取被内容审核拒绝，拆分种子批次：种子数=%d", len(batch))
+                process_batch(batch[:midpoint])
+                process_batch(batch[midpoint:])
+                return
             try:
                 raw_items = self._parse_json(response.content)["items"]
                 if not isinstance(raw_items, list):
@@ -560,22 +598,10 @@ class SeedGraphExpander:
                     len(batch), getattr(response, "finish_reason", None),
                 )
                 for seed, material, cache_key in batch:
-                    try:
-                        terms = self._extract_terms(
-                            seed,
-                            WikipediaResponse(
-                                query=seed,
-                                results=tuple(
-                                    WikipediaResult(title=title, content=content, url="")
-                                    for title, content in material
-                                ),
-                            ),
-                        )
-                    except (json.JSONDecodeError, KeyError, TypeError, GraphExpansionError):
-                        logger.warning("术语抽取失败，跳过种子词：%s", seed)
-                        terms = ()
-                    extracted[seed] = terms[: self.config.max_terms_per_seed]
-                    self._term_cache[cache_key] = terms
+                    fallback_one(seed, material, cache_key)
+
+        for start in range(0, len(pending), self.config.term_batch_size):
+            process_batch(pending[start : start + self.config.term_batch_size])
         return extracted
 
     def _merge_terms(

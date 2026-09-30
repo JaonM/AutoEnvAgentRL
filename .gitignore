@@ -12,16 +12,8 @@ wheels/
 # Local project secrets
 .env
 
-# Keep dataset catalog metadata in Git; downloaded data and crawl checkpoints stay local.
-data/*
-!data/sources/
-data/sources/*
-!data/sources/kaggle/
-!data/sources/data_gov_hk/
-data/sources/kaggle/*
-!data/sources/kaggle/task_dataset_index.json
-data/sources/data_gov_hk/*
-!data/sources/data_gov_hk/dataset_index.json
+# Local source files and generated data stay outside Git.
+data/
 
 # Generated tasks
 output/

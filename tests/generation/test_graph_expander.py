@@ -8,6 +8,7 @@ from env_factory import (
     WikipediaResult,
     SeedGraphExpander,
 )
+from env_factory.llm import LLMError
 
 
 class FakeSearch:
@@ -59,6 +60,40 @@ class FakeExpansionLLM:
 
 
 class SeedGraphExpanderTest(unittest.TestCase):
+    def test_content_rejection_isolates_one_seed_and_keeps_other_results(self) -> None:
+        class RejectingLLM:
+            calls = 0
+
+            def complete(self, prompt, **kwargs):
+                self.calls += 1
+                seeds = [item["seed"] for item in json.loads(prompt)["items"]]
+                if "角色扮演 (心理学)" in seeds:
+                    raise LLMError("LLM returned HTTP 400: Content Exists Risk")
+                return type("Response", (), {"content": json.dumps({
+                    "items": [{"seed": seed, "terms": [seed + "场景"]} for seed in seeds]
+                })})()
+
+        llm = RejectingLLM()
+        expander = SeedGraphExpander(FakeSearch(), llm)
+        items = tuple((seed, FakeSearch().search(seed).results) for seed in
+                      ("买衣服", "角色扮演 (心理学)", "点外卖"))
+        result = expander._extract_terms_batch(items)
+        self.assertEqual(result["买衣服"], ("买衣服场景",))
+        self.assertEqual(result["角色扮演 (心理学)"], ())
+        self.assertEqual(result["点外卖"], ("点外卖场景",))
+        calls = llm.calls
+        self.assertEqual(expander._extract_terms_batch(items), result)
+        self.assertEqual(llm.calls, calls)
+
+    def test_transient_batch_llm_failure_remains_visible(self) -> None:
+        class UnavailableLLM:
+            def complete(self, prompt, **kwargs):
+                raise LLMError("LLM returned HTTP 503: unavailable")
+
+        expander = SeedGraphExpander(FakeSearch(), UnavailableLLM())
+        with self.assertRaisesRegex(LLMError, "503"):
+            expander._extract_terms_batch((("买衣服", FakeSearch().search("买衣服").results),))
+
     def test_expand_initializes_seeds_and_merges_search_terms(self) -> None:
         expander = SeedGraphExpander(FakeSearch(), FakeExpansionLLM(), max_workers=2)
         builder, groups = expander.expand(["衣", "男装", "点外卖"])

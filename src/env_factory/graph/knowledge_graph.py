@@ -11,10 +11,6 @@ class NodeType(str, Enum):
 
     SCENE = "scene"
     TASK_TYPE = "task_type"
-    DATASET = "dataset"
-    RESOURCE = "resource"
-    FIELD = "field"
-    TOPIC = "topic"
 
 
 class SceneRelation(str, Enum):
@@ -29,7 +25,6 @@ class TaskType(str, Enum):
 
     QA = "QA"
     EVENT = "Event"
-    CODING = "Coding"
     CHAT = "Chat"
     RESEARCH = "Research"
 
@@ -59,44 +54,6 @@ class TaskTypeNode:
         return NodeType.TASK_TYPE
 
 
-@dataclass(frozen=True)
-class DatasetNode:
-    """A catalog reference; source files remain outside the graph."""
-
-    key: str
-    title: str
-    source_url: str
-    source_sha256: str
-
-    @property
-    def node_type(self) -> NodeType:
-        return NodeType.DATASET
-
-
-@dataclass(frozen=True)
-class ResourceNode:
-    key: str
-    dataset_key: str
-    source_sha256: str
-    source_format: str
-
-    @property
-    def node_type(self) -> NodeType:
-        return NodeType.RESOURCE
-
-
-@dataclass(frozen=True)
-class FieldNode:
-    key: str
-    resource_key: str
-    name: str
-    role: str
-
-    @property
-    def node_type(self) -> NodeType:
-        return NodeType.FIELD
-
-
 def normalize_scene_name(name: str) -> str:
     """Return a stable key used to merge equivalent scene names."""
 
@@ -109,9 +66,7 @@ class KnowledgeGraphSchema:
     """The node and relation vocabulary of the task knowledge graph."""
 
     node_types: tuple[NodeType, ...] = (
-        NodeType.SCENE, NodeType.TASK_TYPE, NodeType.DATASET,
-        NodeType.RESOURCE, NodeType.FIELD,
-        NodeType.TOPIC,
+        NodeType.SCENE, NodeType.TASK_TYPE,
     )
     scene_relations: tuple[SceneRelation, ...] = (
         SceneRelation.HIERARCHY,
