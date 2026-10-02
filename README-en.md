@@ -6,6 +6,8 @@
 
 AutoEnvAgentRL helps agents learn within environments with concrete business constraints: clarify requirements with users, call tools, use earlier results in subsequent actions, and deliver verifiable outcomes. Tasks, business data, user scripts, tools, and rewards share a contract. A common runtime and multiple validation stages keep task generation and sandbox execution consistent.
 
+**Everything is done on your macbook/studio**
+
 ## Purpose
 
 - **Generate tasks:** A Code Agent designs tasks, business data, tools, reference trajectories, and rewards from Scene graph paths. Routes include direct response, single-step, and multi-step agentic tasks.
