@@ -118,6 +118,12 @@ def validate_capture_paths(scenarios: list[dict], tool_contracts: list[dict]) ->
                     if field:
                         properties = schema.get("properties", {})
                         if field not in properties:
+                            if (schema.get("additionalProperties") is False
+                                    and not schema.get("patternProperties")
+                                    and not any(key in schema for key in ("allOf", "anyOf", "oneOf", "$ref"))):
+                                raise ValueError(
+                                    f"CAPTURE_PATH_INVALID: tool={step.get('tool_name')} capture={alias} path={path}; "
+                                    f"field {field} is absent from closed output schema; available fields={sorted(properties)}")
                             break
                         schema = properties[field]
                     else:
@@ -224,9 +230,12 @@ def expand_source(source: dict, request: dict) -> dict:
     return source
 
 
-def compile_source(source: dict, *, root: Path, request: dict, script_count: int = 3) -> dict:
+def compile_source(source: dict, *, root: Path, request: dict, script_count: int = 3,
+                   structural_preview: bool = False) -> dict:
     """Compile a complete business design against runner-owned graph/route input."""
     source = expand_source(source, request)
+    if request.get('require_interaction_contract') and not source.get('interaction_contract'):
+        raise ValueError('multi-step authoring requires task-specific interaction_contract')
     for scenario in source["scenarios"]:
         expand_capture_fields([step for step in scenario["steps"] if step.get("operation") == "tool_call"])
     # Return envelope names are platform plumbing, not business decisions.
@@ -257,7 +266,7 @@ def compile_source(source: dict, *, root: Path, request: dict, script_count: int
     for rule in source["metric_implementations"]:
         if rule.get("operator") == "state_predicates":
             validate_goal_contract({"row_predicates": rule["expected"]}, source["tables"], require_change=False)
-    reject_private_identifier_constants(source)
+    identifier_public_input = copy.deepcopy(source["description"]["public_input"])
     bind_answer_contract(source)
     category = request["training_category"]
     contract = training_contract(category)
@@ -299,6 +308,8 @@ def compile_source(source: dict, *, root: Path, request: dict, script_count: int
     actions, bindings = source["actions"], source["tool_bindings"]
     capabilities, key_steps = source["capability_plan"], source["reward_key_steps"]
     metrics, scenarios = source["metrics"], source["scenarios"]
+    from .semantic_reward import validate_explanation_rewards
+    validate_explanation_rewards(source)
     outcome_ids = {metric["id"] for metric in metrics if metric["category"] == "outcome"}
     for rule in source["metric_implementations"]:
         if (rule["metric_id"] in outcome_ids and rule.get("source") == "final_agent_response"
@@ -355,12 +366,19 @@ def compile_source(source: dict, *, root: Path, request: dict, script_count: int
     P._normalize_compiled_process_metrics(metrics, metric_impl)
     P._validate_metric_implementations(metric_impl, metrics, require_process=True)
     validate_numeric_dependency_coverage(source, metric_impl)
+    from .interaction_contract import compile_interactions, interleave_scenarios
+    interaction_scripts = (compile_interactions(source['interaction_contract'], description, tools, script_count, implementations=implementations, scenarios=scenarios)
+                           if source.get('interaction_contract') else None)
+    reject_private_identifier_constants(source, validated_scripts=interaction_scripts or (),
+                                        public_input=identifier_public_input)
     root.mkdir(parents=True, exist_ok=True)
     manifest = P._materialize_business_data(tables, P._render_data_document(tables),
         root / "data/business_data", environment_mode=plan["mode"], manifest_root="data/business_data")
     manifest["data_governance"]["origin"] = "programmatically_generated_synthetic"
-    users = P._materialize_user_simulation(P._deterministic_user_profiles(script_count),
-        P._deterministic_user_scripts(description=description, count=script_count, finalize_on_goal=True),
+    scripts = interaction_scripts or P._deterministic_user_scripts(description=description, count=script_count, finalize_on_goal=True)
+    for index, script in enumerate(scripts):
+        P._validate_user_script_state_machine(script, index)
+    users = P._materialize_user_simulation(P._deterministic_user_profiles(script_count), scripts,
         root / "data/user_simulation", manifest_root="data/user_simulation")
     formula = {"type": "separate_sign_weighted_sum", "formula": "R = clip(" +
         " + ".join(f"{m['weight']}*score({m['id']})" for m in metrics) + ", -1, 1)",
@@ -378,6 +396,14 @@ def compile_source(source: dict, *, root: Path, request: dict, script_count: int
         noise_tools=[], tool_bindings=bindings, tool_implementations=implementations,
         actions=actions, key_steps=key_steps, metrics=metrics, executable_scenarios=scenarios,
         semantic_goal=source.get("semantic_goal"), capability_plan=capabilities)
+    if interaction_scripts:
+        spec['requires_user_interaction'] = True
+        spec['interaction_complexity'] = {
+            'variants':len(interaction_scripts),
+            'required_user_turns':[len(script['interaction_protocol']['stages']) for script in interaction_scripts],
+            'kinds':sorted({stage['kind'] for script in interaction_scripts for stage in script['interaction_protocol']['stages']}),
+            'runtime':'deterministic_task_protocol'}
+        acceptance['executable_scenarios'] = interleave_scenarios(acceptance['executable_scenarios'], interaction_scripts)
     requirements = {**description["requirements"], "media_truth_mode": "programmatic",
                     "runtime_interface": P._build_runtime_interface(tools, formula)}
     for endpoint in requirements["runtime_interface"]["endpoints"]:
@@ -388,7 +414,7 @@ def compile_source(source: dict, *, root: Path, request: dict, script_count: int
         "task_intent": description["task_intent"], "complexity": description["complexity"],
         "training_category": category, "training_contract": contract,
         "runtime_capabilities": {"environment_modes": [plan["mode"]]},
-        "user_simulation_policy": {"mode": "fixed_goal", "required_outcomes": ["goal_satisfied"]},
+        "user_simulation_policy": {"mode": "interactive_goal" if interaction_scripts else "fixed_goal", "required_outcomes": ["goal_satisfied"]},
         "task_spec": spec, "requirements": requirements, "public_input": description["public_input"],
         "environment_plan": plan, "environment": P._environment_records({}, actions),
         "data_manifest": manifest, "user_simulation_manifest": users,
@@ -400,6 +426,17 @@ def compile_source(source: dict, *, root: Path, request: dict, script_count: int
         "metric_implementations": metric_impl, "reward_formula": formula, "acceptance_contract": acceptance,
         "graph_context": copy.deepcopy(request["graph_context"])}
     validate_capture_paths(scenarios, spec["tool_contracts"])
+    if structural_preview:
+        # Author-side sandbox previews cannot rely on evaluator network access.
+        # These artifacts must never masquerade as an accepted training task.
+        result["task_readiness"] = {"ready": False, "errors": ["EXECUTION_VALIDATION_PENDING"], "warnings": []}
+        result["generation_pipeline"] = {"backend": "code_agent", "structural_preview": True,
+            "live_rollout_verified": False, "verification": {
+                "passed": False, "structural_checks_passed": True,
+                "scope": "structural_preview_only", "pending": [
+                    "reference_execution", "policy_ablations", "semantic_calibration",
+                    "delivery_preflight", "independent_semantic_review"]}}
+        return result
     checks = verify_execution(result, root, calibration=source.get("semantic_calibration", {}))
     result["task_readiness"] = {"ready": True, "errors": [], "warnings": [],
         "training_profile": P._derive_training_profile(business_tool_count=len(bindings),
@@ -501,6 +538,7 @@ def verify_execution(artifacts: dict, root: Path, *, calibration: dict | None = 
         from env_factory.sandbox_runtime import ContractModelMetricEvaluator
         from env_factory.generation.semantic_reward import calibrate_semantic_outcomes, SemanticCalibrationUnavailable
         model_evaluator = ContractModelMetricEvaluator(artifacts, store)
+        last_evaluated_scores = {}
         def evaluate_scores(context):
             scores = evaluator.evaluate_all(artifacts["metric_implementations"], context)
             before = len(store.replay()["events"])
@@ -510,15 +548,28 @@ def verify_execution(artifacts: dict, root: Path, *, calibration: dict | None = 
                     event.get("payload", {}).get("mode") == "offline_fixture")
                    for event in store.replay()["events"][before:]):
                 raise SemanticCalibrationUnavailable("SEMANTIC_CALIBRATION_UNAVAILABLE: reference judge unavailable or mocked")
+            last_evaluated_scores.clear()
+            last_evaluated_scores.update(scores)
             return scores
         aggregator = ContractRewardAggregator(artifacts["metrics"])
-        def call(method, path, body, headers):
+        from env_factory.sandbox_runtime import ContractUserSimulator
+        manifest_users = artifacts['user_simulation_manifest']
+        user_root = root / manifest_users['root']
+        user = ContractUserSimulator(store,
+            profiles=json.loads((user_root / manifest_users['profiles_file']).read_text()),
+            scripts=json.loads((user_root / manifest_users['scripts_file']).read_text()))
+        def dispatch_call(method, path, body, headers):
             if path == "/v1/reset":
-                store.reset(episode_id="authoring-check", seed=17)
+                store.reset(episode_id="authoring-check", seed=(body or {}).get("seed", 17))
                 data.reset()
+                user.reset()
+                last_evaluated_scores.clear()
                 result = {}
             elif path.startswith("/v1/tools/"):
+                user.guard_tool(path.removeprefix("/v1/tools/"))
                 result = registry.execute(path.removeprefix("/v1/tools/"), body)
+            elif path == "/v1/user_simulator":
+                result = user.turn(body["messages"])
             elif path == "/v1/agent_response":
                 store.set_state("final_agent_response", body.get("content", ""))
                 result = {}
@@ -530,6 +581,14 @@ def verify_execution(artifacts: dict, root: Path, *, calibration: dict | None = 
             else:
                 raise ValueError(f"unsupported preflight operation: {path}")
             return 200, result, {}
+        def call(method, path, body, headers):
+            # Match the service boundary: business errors are HTTP responses,
+            # while interpreter/harness exceptions remain actual failures.
+            try:
+                return dispatch_call(method, path, body, headers)
+            except SandboxError as exc:
+                return exc.status, exc.body("authoring-check"), {}
+        user.completion_check = lambda: call("GET", "/v1/reward", None, {})[1]["reward"] >= 1 - 1e-9
         runner = AcceptanceScenarioRunner(call)
         def diagnostic():
             from env_factory.sandbox_runtime import ExpressionBusinessState
@@ -539,7 +598,10 @@ def verify_execution(artifacts: dict, root: Path, *, calibration: dict | None = 
                        "trajectory": store.replay(), "final_agent_response": response}
             scores = evaluator.evaluate_all(artifacts["metric_implementations"], context)
             result = {"ungated_components": scores, "gated_components": gate.apply(scores, context),
-                      "answer_targets": [], "state_predicates": []}
+                      "answer_targets": [], "state_predicates": [],
+                      "last_evaluated_components": dict(last_evaluated_scores),
+                      "model_evidence": [event for event in store.replay()["events"]
+                          if event.get("event") in {"evaluator_call", "evaluator_fact_mismatch"}]}
             try:
                 parsed = json.loads(response)
             except (ValueError, TypeError):
@@ -566,21 +628,30 @@ def verify_execution(artifacts: dict, root: Path, *, calibration: dict | None = 
             return result
 
         def reward(steps, *, negative=False):
-            call("POST", "/v1/reset", {}, {})
+            call("POST", "/v1/reset", next((step.get("body", {}) for step in steps if step.get("operation") == "reset"), {}), {})
             # Reset/reward are runner-owned so scenarios cannot select an earlier reward.
-            body = [s for s in steps if s.get("operation") not in {"reset", "reward"}]
+            body = copy.deepcopy([s for s in steps if s.get("operation") not in {"reset", "reward"}])
+            if negative:
+                # Removing a prerequisite legitimately leaves the user FSM in
+                # an earlier stage. A positive-path stage assertion is not a
+                # negative execution result.
+                for step in body:
+                    if step.get("operation") == "dialogue_turn":
+                        step.pop("expected_stage", None)
             try:
                 runner.run({"steps": body, "assertions": []})
-            except (SandboxError, AssertionError, KeyError, ValueError):
-                if negative:
+            except SandboxError as exc:
+                status = (exc.details or {}).get("actual_status") if isinstance(exc.details, dict) else None
+                if negative and isinstance(status, int) and 400 <= status < 500:
                     return 0.0
                 raise
             return call("GET", "/v1/reward", {}, {})[1]["reward"]
         checks = {}
+        validated_runs = {}
         for scenario in successes + failures:
             call("POST", "/v1/reset", {}, {})
             try:
-                runner.run(scenario)
+                validated_runs[id(scenario)] = runner.run(scenario)
             except SandboxError as exc:
                 detail = {
                     "scenario_id": scenario.get("scenario_id"), "message": str(exc),
@@ -600,7 +671,9 @@ def verify_execution(artifacts: dict, root: Path, *, calibration: dict | None = 
                 (root / "preflight_failure.json").write_text(encoded + "\n")
                 raise ValueError("AGENT_SCENARIO_FAILED: " + encoded) from exc
         if calibration:
-            call("POST", "/v1/reset", {}, {})
+            reference_reset = next((step.get("body", {}) for step in successes[0]["steps"]
+                                    if step.get("operation") == "reset"), {})
+            call("POST", "/v1/reset", reference_reset, {})
             runner.run({"steps": [step for step in successes[0]["steps"]
                 if step.get("operation") not in {"reset", "reward"}], "assertions": []})
             context = {"business_state": {name: data.table(name) for name in data.baseline},
@@ -615,13 +688,21 @@ def verify_execution(artifacts: dict, root: Path, *, calibration: dict | None = 
         for i, scenario in enumerate(successes):
             steps = scenario["steps"]
             checks[f"reference_{i}"] = reward(steps) >= 1 - 1e-9
-            empty = [s for s in steps if s.get("operation") not in {"tool_call", "agent_response"}]
+            bound_steps = copy.deepcopy(steps)
+            variables = validated_runs[id(scenario)]["variables"]
+            for step in bound_steps:
+                if step.get("operation") == "tool_call":
+                    step["arguments"] = runner._resolve(step.get("arguments", {}), variables)
+            empty = [s for s in steps if s.get("operation") not in {"tool_call", "agent_response", "dialogue_turn"}]
             checks[f"empty_{i}"] = reward(empty) <= .2
+            for j, step in enumerate(steps):
+                if step.get('operation') == 'dialogue_turn':
+                    checks[f'skip_interaction_{i}_{j}'] = reward(bound_steps[:j] + bound_steps[j+1:], negative=True) < 1 - 1e-9
             if artifacts["training_category"] != "direct_response":
-                checks[f"no_tools_{i}"] = reward([s for s in steps if s.get("operation") != "tool_call"], negative=True) <= .2
+                checks[f"no_tools_{i}"] = reward([s for s in bound_steps if s.get("operation") != "tool_call"], negative=True) <= .2
                 for j, step in enumerate(steps):
                     if step.get("operation") == "tool_call":
-                        checks[f"skip_{i}_{j}"] = reward(steps[:j] + steps[j+1:], negative=True) <= .2
+                        checks[f"skip_{i}_{j}"] = reward(bound_steps[:j] + bound_steps[j+1:], negative=True) <= .2
             from env_factory.contracts.reward_contract import terminal_outcome_weight
             answer_weight = terminal_outcome_weight(artifacts)
             if answer_weight > 0:
@@ -643,9 +724,19 @@ def main() -> None:
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--request", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--structural-preview", action="store_true",
+                        help="Check structure without online judges; does not certify or export a training task")
     args = parser.parse_args()
+    if args.structural_preview and any((args.output / name).exists()
+            for name in ("task.json", "compiled_artifacts.json", "status.json")):
+        parser.error("structural preview requires an output directory without delivery artifacts; choose a separate directory")
     result = compile_source(json.loads(args.source.read_text()), root=args.output,
-                            request=json.loads(args.request.read_text()))
+                            request=json.loads(args.request.read_text()), structural_preview=args.structural_preview)
+    if args.structural_preview:
+        report = result["generation_pipeline"]["verification"]
+        (args.output / "structural_preview.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
+        print(json.dumps(report, ensure_ascii=False))
+        return
     from env_factory.generation.delivery_preflight import verify_delivery
     verify_delivery(result, args.output)
     from env_factory.generation.artifacts import write_task_artifact

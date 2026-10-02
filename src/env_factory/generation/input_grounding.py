@@ -88,12 +88,16 @@ def validate_query_inputs(source: dict) -> list[dict]:
                     visible = public_text + " " + tool.get("description", "") + " " + json.dumps(parameter, ensure_ascii=False)
                     # Match whole ASCII tokens: ID 'A1' is not disclosed by A10.
                     pattern = r"(?<!\w)" + re.escape(value) + r"(?!\w)" if value.isascii() else re.escape(value)
-                    if not re.search(pattern, visible):
+                    variants = source.get('interaction_contract', {}).get('variants', [])
+                    disclosed = bool(variants) and all(any(
+                        stage.get('private_fact') == value and stage.get('before_tool') == name
+                        for stage in variant.get('stages', [])) for variant in variants)
+                    if not re.search(pattern, visible) and not disclosed:
                         raise ValueError(f"QUERY_INPUT_UNDISCOVERABLE: {name}.{argument} requires exact value {value!r}, "
                             "which is absent from public input and its tool parameter contract. "
                             "Publish a meaningful domain enum, obtain the value via a preceding tool capture, "
                             "or use a broader query with observable selection. Do not publish private answer IDs.")
-                    origin = "public_input_or_tool_contract"
+                    origin = "required_user_disclosure" if disclosed else "public_input_or_tool_contract"
                 else:
                     # Numeric bounds may be calculated or written as words; this
                     # check does not pretend to prove arbitrary arithmetic inputs.

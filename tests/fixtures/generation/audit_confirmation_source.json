@@ -1,0 +1,580 @@
+{
+  "version": "1.0",
+  "description": {
+    "task": "审查使馆区围困事件的档案记录，核对相关往来文书，并在取得批准后登记审计结论。",
+    "task_intent": "audit",
+    "goal": "依据档案中的事件摘要和关联文书，确定该事件的审计处置，并保存核查记录。",
+    "expected_result": "完成事件与文书的关联核查，且审计登记包含正确的事件、处置和证据文书。",
+    "complexity": "standard",
+    "requirements": {
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
+    "public_input": {
+      "initial_user_message": "请审计义和团围攻使馆区期间的档案事件及其文书链。先定位相关事件，再核查其关联文书。审计处置按关联文书的核查状态决定：若所有文书均已核验，采用齐备处置；否则采用补证处置。不得在获得我明确批准前写入审计登记。",
+      "materials": []
+    }
+  },
+  "environment_plan": {
+    "mode": "stateful",
+    "requires_business_data": true,
+    "requires_persistence": true,
+    "reason": "任务需先查询事件档案，再用捕获的事件键检索关联文书，最后经用户批准后写入可审计的处置记录。"
+  },
+  "tables": [
+    {
+      "table_name": "archive_events",
+      "description": "档案事件索引",
+      "primary_key": [
+        "event_id"
+      ],
+      "columns": [
+        {
+          "name": "event_id",
+          "type": "integer",
+          "nullable": false
+        },
+        {
+          "name": "event_name",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "archive_scope",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "event_summary",
+          "type": "text",
+          "nullable": false
+        }
+      ],
+      "foreign_keys": [],
+      "indexes": [],
+      "constraints": [],
+      "rows": [
+        {
+          "event_id": 731,
+          "event_name": "北京使馆区围困",
+          "archive_scope": "1900年第一类 diplomatic档案",
+          "event_summary": "义和团围攻使馆区期间的事件记录"
+        },
+        {
+          "event_id": 732,
+          "event_name": "天津城防交接",
+          "archive_scope": "1900年天津城防档案",
+          "event_summary": "城防交接与驻防记录"
+        },
+        {
+          "event_id": 733,
+          "event_name": "北京使馆区围困",
+          "archive_scope": "1900年第二类 diplomatic档案",
+          "event_summary": "围困期间的外交往来记录"
+        }
+      ]
+    },
+    {
+      "table_name": "archive_dispatches",
+      "description": "与事件关联的档案文书",
+      "primary_key": [
+        "dispatch_id"
+      ],
+      "columns": [
+        {
+          "name": "dispatch_id",
+          "type": "integer",
+          "nullable": false
+        },
+        {
+          "name": "event_id",
+          "type": "integer",
+          "nullable": false
+        },
+        {
+          "name": "document_title",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "verification_status",
+          "type": "text",
+          "nullable": false
+        }
+      ],
+      "foreign_keys": [
+        {
+          "column": "event_id",
+          "ref_table": "archive_events",
+          "ref_column": "event_id"
+        }
+      ],
+      "indexes": [],
+      "constraints": [],
+      "rows": [
+        {
+          "dispatch_id": 9101,
+          "event_id": 731,
+          "document_title": "使馆区围困情况汇报",
+          "verification_status": "已核验"
+        },
+        {
+          "dispatch_id": 9102,
+          "event_id": 731,
+          "document_title": "围困期间联络记录",
+          "verification_status": "待核验"
+        },
+        {
+          "dispatch_id": 9103,
+          "event_id": 732,
+          "document_title": "天津城防交接清册",
+          "verification_status": "已核验"
+        },
+        {
+          "dispatch_id": 9104,
+          "event_id": 733,
+          "document_title": "北京外交往来函件目录",
+          "verification_status": "已核验"
+        }
+      ]
+    },
+    {
+      "table_name": "audit_register",
+      "description": "档案审计处置登记",
+      "primary_key": [
+        "event_id"
+      ],
+      "columns": [
+        {
+          "name": "event_id",
+          "type": "integer",
+          "nullable": false
+        },
+        {
+          "name": "disposition",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "follow_up",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "evidence_titles",
+          "type": "text",
+          "nullable": false
+        }
+      ],
+      "foreign_keys": [
+        {
+          "column": "event_id",
+          "ref_table": "archive_events",
+          "ref_column": "event_id"
+        }
+      ],
+      "indexes": [],
+      "constraints": [],
+      "rows": [
+        {
+          "event_id": 733,
+          "disposition": "齐备处置",
+          "follow_up": "已归档",
+          "evidence_titles": "北京外交往来函件目录"
+        }
+      ]
+    }
+  ],
+  "business_tools": [
+    {
+      "name": "find_archive_event",
+      "description": "按用户给出的档案集合名称查找档案事件索引；返回候选事件及摘要供核对。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "archive_scope": {
+            "type": "string",
+            "description": "用户披露的档案集合名称"
+          }
+        },
+        "required": [
+          "archive_scope"
+        ],
+        "additionalProperties": false
+      },
+      "implementation": {
+        "operation": "select",
+        "table": "archive_events",
+        "filters": [
+          {
+            "argument": "archive_scope",
+            "column": "archive_scope",
+            "operator": "eq"
+          }
+        ],
+        "projection": [
+          "event_id",
+          "event_name",
+          "event_summary"
+        ]
+      }
+    },
+    {
+      "name": "review_event_dispatches",
+      "description": "列出指定事件键关联的文书及其核查状态。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "event_id": {
+            "type": "integer",
+            "description": "由事件检索结果取得的档案事件键"
+          }
+        },
+        "required": [
+          "event_id"
+        ],
+        "additionalProperties": false
+      },
+      "implementation": {
+        "operation": "select",
+        "table": "archive_dispatches",
+        "filters": [
+          {
+            "argument": "event_id",
+            "column": "event_id",
+            "operator": "eq"
+          }
+        ],
+        "projection": [
+          "dispatch_id",
+          "document_title",
+          "verification_status"
+        ]
+      }
+    },
+    {
+      "name": "record_audit_disposition",
+      "description": "在用户明确批准后登记事件的审计处置、后续安排及证据文书标题。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "event_id": {
+            "type": "integer",
+            "description": "已核查事件键"
+          },
+          "disposition": {
+            "type": "string",
+            "description": "按文书核查结果填写齐备处置或补证处置"
+          },
+          "follow_up": {
+            "type": "string",
+            "description": "按用户选择填写后续安排"
+          },
+          "evidence_titles": {
+            "type": "string",
+            "description": "关联文书标题，以分号分隔"
+          }
+        },
+        "required": [
+          "event_id",
+          "disposition",
+          "follow_up",
+          "evidence_titles"
+        ],
+        "additionalProperties": false
+      },
+      "implementation": {
+        "operation": "insert",
+        "table": "audit_register",
+        "values": {
+          "event_id": "event_id",
+          "disposition": "disposition",
+          "follow_up": "follow_up",
+          "evidence_titles": "evidence_titles"
+        },
+        "result_field": "record",
+        "preconditions": [
+          "用户已明确批准登记"
+        ],
+        "effects": [
+          "新增该事件的审计处置登记"
+        ]
+      }
+    }
+  ],
+  "outcomes": [
+    {
+      "id": "persisted_disposition",
+      "rubric": "登记正确事件、按核查状态生成的处置、用户选择的后续安排及文书标题。",
+      "rule": {
+        "source": "business_state",
+        "path": "$",
+        "operator": "state_predicates",
+        "expected": [
+          {
+            "table": "audit_register",
+            "where": {
+              "event_id": 731
+            },
+            "values": {
+              "disposition": "补证处置",
+              "follow_up": "生成补证清单",
+              "evidence_titles": "使馆区围困情况汇报；围困期间联络记录"
+            },
+            "count": 1
+          }
+        ]
+      }
+    }
+  ],
+  "semantic_goal": {
+    "row_predicates": [
+      {
+        "table": "audit_register",
+        "where": {
+          "event_id": 731
+        },
+        "values": {
+          "disposition": "补证处置",
+          "follow_up": "生成补证清单",
+          "evidence_titles": "使馆区围困情况汇报；围困期间联络记录"
+        },
+        "count": 1
+      }
+    ]
+  },
+  "reference": {
+    "calls": [
+      {
+        "tool_name": "find_archive_event",
+        "arguments": {
+          "archive_scope": "1900年第一类 diplomatic档案"
+        },
+        "capture": {
+          "event": "$.records[0]"
+        }
+      },
+      {
+        "tool_name": "review_event_dispatches",
+        "arguments": {
+          "event_id": {
+            "$ref": "event.event_id"
+          }
+        },
+        "capture": {
+          "dispatches": "$.records"
+        }
+      },
+      {
+        "tool_name": "record_audit_disposition",
+        "arguments": {
+          "event_id": {
+            "$ref": "event.event_id"
+          },
+          "disposition": "补证处置",
+          "follow_up": "生成补证清单",
+          "evidence_titles": "使馆区围困情况汇报；围困期间联络记录"
+        }
+      }
+    ],
+    "answer": "已完成审计登记。"
+  },
+  "interaction_contract": {
+    "version": "1.0",
+    "variants": [
+      {
+        "stages": [
+          {
+            "id": "scope_disclosure",
+            "kind": "information_required",
+            "purpose": "取得需用于档案查询的具体档案范围。",
+            "assistant_contains_all": [
+              "档案范围"
+            ],
+            "reference_response": "请提供此次审计对应的档案范围。",
+            "user_reply": "档案范围是1900年第一类 diplomatic档案。",
+            "retry_reply": "请告诉我档案范围名称，我再查找事件。",
+            "private_fact": "1900年第一类 diplomatic档案",
+            "bind_to": {
+              "tool": "find_archive_event",
+              "argument": "archive_scope"
+            },
+            "before_tool": "find_archive_event"
+          },
+          {
+            "id": "disposition_choice",
+            "kind": "option_selection",
+            "purpose": "让用户决定发现待核验文书后的补证执行方式。",
+            "assistant_contains_all": [
+              "待核验",
+              "补证清单",
+              "暂缓归档"
+            ],
+            "reference_response": "如有待核验文书，可生成补证清单或暂缓归档；您选择哪种后续处置？",
+            "user_reply": "请生成补证清单。",
+            "retry_reply": "请明确告知希望采用哪种后续安排。",
+            "private_fact": "生成补证清单",
+            "options": [
+              "生成补证清单",
+              "暂缓归档"
+            ],
+            "bind_to": {
+              "tool": "record_audit_disposition",
+              "argument": "follow_up"
+            },
+            "before_tool": "record_audit_disposition",
+            "requires_tools": [
+              "review_event_dispatches"
+            ]
+          },
+          {
+            "id": "write_approval",
+            "kind": "execution_confirmation",
+            "purpose": "在创建持久审计登记前取得用户授权。",
+            "assistant_contains_all": [
+              "审计登记",
+              "批准"
+            ],
+            "reference_response": "核查显示有待核验文书，拟将关联文书标题和“待补证”写入审计登记，请批准后我再登记。",
+            "user_reply": "我批准写入这条审计登记。",
+            "retry_reply": "请先明确批准或拒绝写入审计登记。",
+            "before_tool": "record_audit_disposition",
+            "requires_tools": [
+              "review_event_dispatches"
+            ]
+          }
+        ]
+      },
+      {
+        "stages": [
+          {
+            "id": "scope_disclosure",
+            "kind": "information_required",
+            "purpose": "取得需用于档案查询的具体档案范围。",
+            "assistant_contains_all": [
+              "档案范围"
+            ],
+            "reference_response": "要定位档案事件，请提供档案范围。",
+            "user_reply": "请查1900年第一类 diplomatic档案。",
+            "retry_reply": "请提供完整档案范围名称。",
+            "private_fact": "1900年第一类 diplomatic档案",
+            "bind_to": {
+              "tool": "find_archive_event",
+              "argument": "archive_scope"
+            },
+            "before_tool": "find_archive_event"
+          },
+          {
+            "id": "disposition_choice",
+            "kind": "option_selection",
+            "purpose": "让用户选择出现待核验文书时的执行安排。",
+            "assistant_contains_all": [
+              "待核验",
+              "补证清单",
+              "暂缓归档"
+            ],
+            "reference_response": "若有待核验文书，可生成补证清单或暂缓归档；您选择哪种？",
+            "user_reply": "生成补证清单。",
+            "retry_reply": "请明确告知您偏好的后续安排。",
+            "private_fact": "生成补证清单",
+            "options": [
+              "生成补证清单",
+              "暂缓归档"
+            ],
+            "bind_to": {
+              "tool": "record_audit_disposition",
+              "argument": "follow_up"
+            },
+            "before_tool": "record_audit_disposition",
+            "requires_tools": [
+              "review_event_dispatches"
+            ]
+          },
+          {
+            "id": "write_approval",
+            "kind": "execution_confirmation",
+            "purpose": "确认是否授权新增档案审计记录。",
+            "assistant_contains_all": [
+              "审计登记",
+              "批准"
+            ],
+            "reference_response": "我将把待补证处置和关联文书标题写入审计登记。请批准这项登记。",
+            "user_reply": "批准登记。",
+            "retry_reply": "请明确说明是否批准新增登记。",
+            "before_tool": "record_audit_disposition",
+            "requires_tools": [
+              "review_event_dispatches"
+            ]
+          }
+        ]
+      },
+      {
+        "stages": [
+          {
+            "id": "scope_disclosure",
+            "kind": "information_required",
+            "purpose": "取得此次审计适用的档案范围。",
+            "assistant_contains_all": [
+              "档案范围"
+            ],
+            "reference_response": "请告知要查询的档案范围。",
+            "user_reply": "档案范围为1900年第一类 diplomatic档案。",
+            "retry_reply": "我还需要档案范围才能定位事件。",
+            "private_fact": "1900年第一类 diplomatic档案",
+            "bind_to": {
+              "tool": "find_archive_event",
+              "argument": "archive_scope"
+            },
+            "before_tool": "find_archive_event"
+          },
+          {
+            "id": "disposition_choice",
+            "kind": "option_selection",
+            "purpose": "确认待核验文书的后续处理方式。",
+            "assistant_contains_all": [
+              "待核验",
+              "补证清单",
+              "暂缓归档"
+            ],
+            "reference_response": "对于待核验文书，可生成补证清单或暂缓归档；您要哪一种？",
+            "user_reply": "请生成补证清单。",
+            "retry_reply": "请补充说明希望采取的处理安排。",
+            "private_fact": "生成补证清单",
+            "options": [
+              "生成补证清单",
+              "暂缓归档"
+            ],
+            "bind_to": {
+              "tool": "record_audit_disposition",
+              "argument": "follow_up"
+            },
+            "before_tool": "record_audit_disposition",
+            "requires_tools": [
+              "review_event_dispatches"
+            ]
+          },
+          {
+            "id": "write_approval",
+            "kind": "execution_confirmation",
+            "purpose": "取得持久写入的最终批准。",
+            "assistant_contains_all": [
+              "审计登记",
+              "批准"
+            ],
+            "reference_response": "事件存在待核验文书；我拟登记为待补证并列出关联文书。请批准写入审计登记。",
+            "user_reply": "批准写入。",
+            "retry_reply": "请先给出是否批准写入的明确答复。",
+            "before_tool": "record_audit_disposition",
+            "requires_tools": [
+              "review_event_dispatches"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

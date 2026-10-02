@@ -16,6 +16,27 @@ def passing_report():
 
 
 class SemanticReviewTest(unittest.TestCase):
+    def test_privacy_review_is_required_even_when_other_checks_pass(self):
+        report = passing_report()
+        report["checks"].pop("interaction_information_privacy")
+        with self.assertRaisesRegex(SemanticReviewUnavailable, "incomplete checks"):
+            validate_report(report)
+
+    def test_privacy_failure_cannot_be_overridden_by_other_passing_checks(self):
+        report = passing_report()
+        report["checks"]["interaction_information_privacy"] = {
+            "passed": False,
+            "evidence": "compiled_public_input.initial_user_message already states the final choice."}
+        report["findings"] = [{
+            "code": "selected_option_disclosed",
+            "source_paths": ["compiled_public_input.initial_user_message"],
+            "reason": "The initial message explicitly selects the private option before stage 0.",
+            "repair": "Keep the candidate options public and disclose the selection at stage 0."}]
+        with self.assertRaisesRegex(SemanticReviewUnavailable, "contradicts"):
+            validate_report(report)
+        report["status"] = "fail"
+        self.assertEqual(validate_report(report)["status"], "fail")
+
     def test_missing_checks_and_unsupported_verdicts_fail_closed(self):
         for mutate in (lambda r: r["checks"].pop("answerability"),
                        lambda r: r.update(status="fail"),
@@ -46,6 +67,10 @@ class SemanticReviewTest(unittest.TestCase):
                 self.assertEqual(set(schema["properties"]["checks"]["required"]), set(CHECKS))
                 self.assertEqual(schema["properties"]["status"]["enum"], ["pass", "fail"])
                 def finish(prompt, timeout):
+                    self.assertIn("finite scripted environment", prompt)
+                    self.assertIn("not an imagined unimplemented reply", prompt)
+                    self.assertIn("interaction_information_privacy", prompt)
+                    self.assertIn("A substring match alone is not semantic evidence", prompt)
                     self.assertIn("<candidate_json>", prompt)
                     self.assertIn('"compiled_reward_rules"', prompt)
                     (root / "response.json").write_text(json.dumps(passing_report()))

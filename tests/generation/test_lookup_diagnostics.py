@@ -38,3 +38,20 @@ def test_capture_shape_error_identifies_array_property_mismatch():
         validate_capture_paths([{"steps": [step]}], tools)
     step["capture"]["value"] = "$.records[0].aperture"
     validate_capture_paths([{"steps": [step]}], tools)
+
+
+def test_capture_missing_closed_field_fails_before_execution_but_open_schema_remains_valid():
+    import pytest
+    from env_factory.generation.agent_authoring import validate_capture_paths
+    schema = {"type": "object", "properties": {"records": {"type": "array"}},
+              "additionalProperties": False}
+    tools = [{"name": "get_level_guidance", "output_contract": {"schema": schema}}]
+    step = {"operation": "tool_call", "tool_name": "get_level_guidance",
+            "capture": {"name": "level"}}
+    with pytest.raises(ValueError, match="CAPTURE_PATH_INVALID.*field level.*records"):
+        validate_capture_paths([{"steps": [step]}], tools)
+    schema["additionalProperties"] = True
+    validate_capture_paths([{"steps": [step]}], tools)
+    schema["additionalProperties"] = False
+    schema["patternProperties"] = {"^level$": {"type": "string"}}
+    validate_capture_paths([{"steps": [step]}], tools)

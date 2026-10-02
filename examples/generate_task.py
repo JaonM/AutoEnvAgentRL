@@ -96,6 +96,13 @@ def _generation_failure_class(exc: BaseException) -> str:
     text = str(exc).lower()
     if "code_agent_timeout" in text:
         return "GEN_BUDGET"
+    if "source_semantic_review_failed" in text or "open_explanation_exact_match" in text:
+        return "GEN_SEMANTIC"
+    # These prefixes describe a missing/unusable independent judgment, not a
+    # defect established in the candidate. Check before generic "invalid" or
+    # "schema" matching: reviewer output can itself violate its report schema.
+    if "source_review_" in text or "semantic_calibration_unavailable" in text:
+        return "INFRA"
     if any(is_transient_llm_error(error) for error in (
         exc, exc.__cause__, exc.__context__,
     ) if isinstance(error, Exception)):
@@ -197,6 +204,9 @@ def main() -> int:
                         help="要求实际环境模式；验证写入任务时使用 stateful，不能仅依赖 modify 意图标签")
     parser.add_argument("--generation-backend", choices=("code_agent", "spec", "legacy"), default="code_agent",
                         help="生成引擎（默认 code_agent）：code_agent 使用 Luna 编写业务规格；spec 使用原型；legacy 使用模型阶段流水线")
+    parser.add_argument("--code-agent", choices=("codex", "claude", "opencode"), default="codex")
+    parser.add_argument("--code-agent-model", default=None)
+    parser.add_argument("--language", default="zh-CN")
     parser.add_argument("--code-agent-timeout", type=float, default=600,
                         help="单样本 Code Agent 防卡死超时（秒），默认 600；5 分钟不是质量淘汰线")
     parser.add_argument("--task-prototype", choices=("lookup_join_sum", "lookup_update", "constraint_create"),
@@ -210,6 +220,10 @@ def main() -> int:
     parser.add_argument("--seed", type=int, help="实验随机种子；省略时生成并记录一个随机种子")
     parser.add_argument("--stage-cache-dir", type=Path, help="可选的阶段检查点目录；相同模型、代码、提示和输入复用结果，并重新执行语义校验")
     args = parser.parse_args()
+    if not args.code_agent_model:
+        if args.code_agent != "codex":
+            parser.error("--code-agent-model is required for claude/opencode")
+        args.code_agent_model = "gpt-6-luna"
     if args.count <= 0:
         parser.error("--count 必须大于 0")
     if args.max_workers <= 0:
@@ -288,6 +302,7 @@ def main() -> int:
             available_environment_modes=available_environment_modes,
             generation_backend=args.generation_backend,
             code_agent_timeout=args.code_agent_timeout,
+            code_agent_model=args.code_agent_model, language=args.language, code_agent=args.code_agent,
         )
         run_seed = args.seed if args.seed is not None else secrets.randbits(63)
         run_rng = random.Random(run_seed)
@@ -307,7 +322,7 @@ def main() -> int:
         sample_seeds = _retry_seed_blocks(
             run_rng, len(reserved_tasks), args.route_attempts,
         )
-        generation_provider = (provider_identity("codex://cli", "gpt-6-luna")
+        generation_provider = (provider_identity(f"{args.code_agent}://cli", args.code_agent_model)
             if args.generation_backend == "code_agent" else provider_identity(llm.base_url, llm.model) if llm else None)
         for batch_index, ((task_number, task_dir), training_category, sample_seed) in enumerate(
             zip(reserved_tasks, routes, sample_seeds), start=1

@@ -87,6 +87,9 @@ class TaskGenerator:
         available_environment_modes: tuple[str, ...] | None = None,
         generation_backend: str = "code_agent",
         code_agent_timeout: float = 600,
+        code_agent: str = "codex",
+        code_agent_model: str = "gpt-6-luna",
+        language: str = "zh-CN",
     ) -> None:
         self.store = store
         self.llm = llm
@@ -96,6 +99,13 @@ class TaskGenerator:
         self.generation_backend = generation_backend
         if code_agent_timeout <= 0:
             raise ValueError("code_agent_timeout must be positive")
+        if not code_agent_model.strip() or not language.strip():
+            raise ValueError("code_agent_model and language must not be empty")
+        if code_agent not in {"codex", "claude", "opencode"}:
+            raise ValueError("Unsupported code agent")
+        self.code_agent = code_agent
+        self.code_agent_model = code_agent_model
+        self.language = language
         self.code_agent_timeout = code_agent_timeout
         self.script_count = user_script_count
         self.pipeline = TaskGenerationPipeline(
@@ -133,7 +143,7 @@ class TaskGenerator:
             if len(path) != hops + 1 or not keywords:
                 raise TaskGenerationError("CODE_AGENT_GRAPH: no usable full multi-hop path; refusing single-node fallback")
             selected_type = self._select_task_type(task_type, rng=rng)
-            request = {"version": "1.0", "training_category": training_category,
+            request = {"version": "1.0", "language": self.language, "code_agent_model": self.code_agent_model, "code_agent": self.code_agent, "training_category": training_category,
                 "training_contract": training_contract(training_category),
                 "task_type": selected_type.value, "task_style": task_style,
                 "task_intent": task_intent, "seed": seed,

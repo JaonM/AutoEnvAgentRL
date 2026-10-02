@@ -74,6 +74,27 @@ def bind_reward_queries(source: dict) -> dict:
     implementations = {item["tool_name"]: item for item in source["tool_implementations"]}
     successes = [item for item in source["scenarios"] if item.get("kind") == "goal_success"]
     bindings, captures = {}, {}
+
+    def lower_argument_expression(expression, depth=0):
+        # Match the reference interpreter grammar; retain live data lookups.
+        if depth > 12:
+            raise ValueError("REWARD_QUERY_BINDING: capture expression is too deep")
+        if not isinstance(expression, dict):
+            return {"literal": copy.deepcopy(expression)}
+        if set(expression) == {"$ref"}:
+            reference = str(expression["$ref"])
+            if reference not in captures:
+                raise ValueError("REWARD_QUERY_BINDING: unavailable capture in expression: " + reference)
+            return copy.deepcopy(captures[reference])
+        if set(expression) == {"literal"}:
+            return copy.deepcopy(expression)
+        if set(expression) == {"op", "args"} and isinstance(expression["args"], list):
+            return {"op": expression["op"], "args": [lower_argument_expression(arg, depth + 1)
+                for arg in expression["args"]]}
+        if set(expression) == {"if"} and isinstance(expression["if"], dict):
+            return {"if": {key: lower_argument_expression(arg, depth + 1)
+                for key, arg in expression["if"].items()}}
+        raise ValueError("REWARD_QUERY_BINDING: capture expressions require captures, literals and finite operators")
     if len(successes) == 1:
         for step in successes[0]["steps"]:
             if step.get("operation") != "tool_call":
@@ -100,6 +121,8 @@ def bind_reward_queries(source: dict) -> dict:
                         unbound = True
                         break
                     value = copy.deepcopy(captures[value["$ref"]])
+                elif isinstance(value, dict) and set(value) == {"$expr"}:
+                    value = lower_argument_expression(value["$expr"])
                 if rule.get("resolve"):
                     resolver = rule["resolve"]
                     value = {"lookup": {"table": resolver["table"], "field": resolver["value_column"],
@@ -173,11 +196,11 @@ def bind_reward_queries(source: dict) -> dict:
     return {name: binding for name, binding in bindings.items() if binding is not None}
 
 
-def reject_private_identifier_constants(source: dict) -> None:
+def reject_private_identifier_constants(source: dict, *, validated_scripts=(), public_input=None) -> None:
     """Private relational identifiers must come from a live goal-linked lookup."""
     if source["environment_plan"]["mode"] != "reference_data":
         return
-    public = source["description"]["public_input"]
+    public = source["description"]["public_input"] if public_input is None else public_input
     prose = source["description"]["task"] + " " + public["initial_user_message"] + " " + json.dumps(
         public.get("materials", []), ensure_ascii=False)
     identifiers = {
@@ -185,7 +208,27 @@ def reject_private_identifier_constants(source: dict) -> None:
             fk["column"] for fk in table.get("foreign_keys", [])}
         for table in source["tables"]
     }
-    def disclosed(value, field):
+    # Only compiler-validated, mandatory disclosures can establish this origin.
+    # Scope it to the exact queried table/column/value, across every variant.
+    implementations = {item["tool_name"]: item for item in source.get("tool_implementations", [])}
+    per_script = []
+    for script in validated_scripts:
+        origins = set()
+        for stage in script["interaction_protocol"]["stages"]:
+            binding = stage.get("bind_to", {})
+            impl = implementations.get(binding.get("tool"), {})
+            if impl.get("operation") != "select" or "private_fact" not in stage:
+                continue
+            for rule in impl.get("filters", []):
+                if (rule.get("argument") == binding.get("argument")
+                        and rule.get("operator") == "eq" and not rule.get("resolve")):
+                    origins.add((impl["table"], rule["column"], json.dumps(stage["private_fact"], ensure_ascii=False)))
+        per_script.append(origins)
+    user_origins = set.intersection(*per_script) if per_script else set()
+
+    def disclosed(value, field, table):
+        if (table, field, json.dumps(value, ensure_ascii=False)) in user_origins:
+            return True
         def material_contains(item):
             if isinstance(item, dict):
                 return (field in item and type(item[field]) is type(value) and item[field] == value
@@ -221,7 +264,7 @@ def reject_private_identifier_constants(source: dict) -> None:
                             value = value["literal"]
                         candidates = value if isinstance(value, list) else [value]
                         for candidate in candidates:
-                            if not isinstance(candidate, dict) and not disclosed(candidate, key):
+                            if not isinstance(candidate, dict) and not disclosed(candidate, key, query.get("table")):
                                 raise ValueError(f"PRIVATE_REWARD_IDENTIFIER: {query['table']}.{key} pins a private "
                                     "identifier; use from_tool or a nested lookup from the public named target")
         for child in expression.values():

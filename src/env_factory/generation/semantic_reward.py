@@ -98,3 +98,32 @@ def calibrate_semantic_outcomes(contract: dict, calibration: dict, *, context: d
                 "judgment_context_hashes": [call["payload"]["context_hash"] for call in calls]})
             report["passed"] &= actual == wanted
     return report
+
+
+def validate_explanation_rewards(source: dict) -> None:
+    """Reject exact matching only for clearly declared open explanation fields.
+
+    Enums, explicit quotation/extraction contracts and ordinary entity names remain
+    valid deterministic targets. Ambiguous prose is left to semantic review.
+    """
+    import re
+    properties = source.get('answer_contract', {}).get('schema', {}).get('properties', {})
+    for rule in source.get('metric_implementations', []):
+        if rule.get('source') != 'final_agent_response' or rule.get('operator') != 'value_targets':
+            continue
+        for target in rule.get('expected', {}).get('targets', []):
+            key = target.get('key', '')
+            field = properties.get(key, {})
+            description = field.get('description', '')
+            if field.get('type') != 'string' or 'enum' in field or 'const' in field:
+                continue
+            if re.search(r'原样|原文|逐字|直接摘录|verbatim|exact quote|copy exactly', description, re.I):
+                continue
+            if (re.search(r'(?:reason|explanation|rationale|justification)(?:$|_)', key, re.I)
+                    and re.search(r'理由|依据|解释|说明|reason|explain|justify|rationale', description, re.I)):
+                raise ValueError(
+                    f'OPEN_EXPLANATION_EXACT_MATCH: answer field {key!r} asks for an explanation '
+                    'but value_targets requires exact equality to one string. Use a semantic outcome '
+                    'with paraphrase-positive/incorrect-negative calibration cases, or structured '
+                    'evidence fields that preserve the original business reasoning requirement. '
+                    'Do not replace the goal with a copy-only task merely to pass validation.')

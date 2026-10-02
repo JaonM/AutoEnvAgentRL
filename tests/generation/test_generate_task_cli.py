@@ -189,6 +189,20 @@ class IncrementalTaskDirectoryTest(unittest.TestCase):
             "INFRA",
         )
 
+    def test_unavailable_review_is_not_a_candidate_defect(self):
+        for reason in (
+            "SOURCE_REVIEW_INVALID: incomplete checks",
+            "SOURCE_REVIEW_TIMEOUT: reviewer deadline exceeded",
+            "SOURCE_REVIEW_EXEC_FAILED: exit 1",
+            "SOURCE_REVIEW_UNAVAILABLE: invalid schema",
+            "SEMANTIC_CALIBRATION_UNAVAILABLE: no real judgment",
+        ):
+            with self.subTest(reason=reason):
+                error = PipelineGenerationError("CODE_AGENT_GENERATION_FAILED: " + reason)
+                self.assertEqual(_generation_failure_class(error), "INFRA")
+        self.assertEqual(_generation_failure_class(PipelineGenerationError(
+            "SOURCE_SEMANTIC_REVIEW_FAILED: invalid business schema")), "GEN_SEMANTIC")
+
     def test_candidate_gate_rejects_unbuildable_task_before_publication(self):
         with patch("scripts.sandbox.assess_task_buildability.assess", return_value={
             "buildable": False,

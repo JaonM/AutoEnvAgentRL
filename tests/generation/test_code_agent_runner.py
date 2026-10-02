@@ -11,6 +11,30 @@ from env_factory.generation.semantic_review import SemanticReviewUnavailable
 
 
 class CodeAgentRunnerTest(unittest.TestCase):
+    def test_original_goal_is_retained_before_structural_repair(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            descriptions = [
+                {"task": "Plan a performance and explain the choice", "goal": "A justified plan"},
+                {"task": "Return a configuration identifier", "goal": "An identifier"},
+            ]
+            launches = []
+            def launch(command, **kwargs):
+                def finish(prompt, timeout):
+                    description = descriptions[len(launches)]
+                    launches.append(prompt)
+                    (root / "authoring/source.json").write_text(json.dumps({"description": description}))
+                    kwargs["stdout"].write('{"type":"turn.completed"}\n')
+                return Mock(returncode=0, communicate=Mock(side_effect=finish))
+            with patch("env_factory.generation.code_agent.subprocess.Popen", side_effect=launch), patch(
+                    "env_factory.generation.code_agent.compile_source",
+                    side_effect=[ValueError("invalid negative scenario"), {"generation_pipeline": {}}]), patch(
+                    "env_factory.generation.code_agent.verify_delivery"):
+                generate(request={}, artifact_dir=root)
+            self.assertEqual(self.review.call_args.kwargs["goal_anchor"], descriptions[0])
+            defect = json.loads((root / "authoring/parent_validation.json").read_text())
+            self.assertEqual(defect["original_goal"], descriptions[0])
+
     def setUp(self):
         self.review_patch = patch("env_factory.generation.code_agent.review_source", return_value={
             "status": "pass", "findings": [], "provenance": {
@@ -24,6 +48,7 @@ class CodeAgentRunnerTest(unittest.TestCase):
             prompts, budgets = [], []
             def launch(command, **kwargs):
                 def finish(prompt, timeout):
+                    self.assertEqual(command[command.index("--model") + 1], "test-model")
                     prompts.append(prompt)
                     budgets.append(timeout)
                     workspace = root / "authoring"
@@ -35,11 +60,15 @@ class CodeAgentRunnerTest(unittest.TestCase):
                     "env_factory.generation.code_agent.time.monotonic", side_effect=lambda: clock[0]), patch(
                     "env_factory.generation.code_agent.compile_source", return_value={"generation_pipeline": {}}) as compiler, patch(
                     "env_factory.generation.code_agent.verify_delivery"):
-                result = generate(request={"training_category": "multi_step_agentic"}, artifact_dir=root)
+                result = generate(request={"training_category": "multi_step_agentic", "code_agent_model": "test-model", "language": "en"}, artifact_dir=root)
             self.assertEqual(budgets, [600, 400])
             self.assertIn("parent_validation.json", prompts[1])
             compiler.assert_called_once()
+            self.assertEqual(self.review.call_args.kwargs["model"], "test-model")
+            self.assertEqual(compiler.call_args.kwargs["request"]["language"], "en")
+            self.assertIn("request.language", prompts[0])
             evidence = json.loads((root / "code_agent_generation.json").read_text())
+            self.assertEqual(evidence["model"], "test-model")
             self.assertEqual(evidence["agent_invocations"], 3)
             self.assertEqual(evidence["completed_turns"], 3)
             self.assertEqual(evidence["usage"]["output_tokens"], 100)

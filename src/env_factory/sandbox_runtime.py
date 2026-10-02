@@ -901,6 +901,14 @@ def validate_json_schema(schema: Mapping[str, Any], value: Any, path: str = "arg
     """
 
     kind = schema.get("type")
+    if isinstance(kind, list):
+        for candidate in kind:
+            try:
+                validate_json_schema({**schema, 'type':candidate}, value, path)
+                return
+            except SandboxError:
+                pass
+        raise SandboxError('INVALID_ARGUMENT', f'{path} does not match any declared type', 400)
     expected = {
         "object": dict,
         "array": list,
@@ -908,6 +916,7 @@ def validate_json_schema(schema: Mapping[str, Any], value: Any, path: str = "arg
         "integer": int,
         "number": (int, float),
         "boolean": bool,
+        "null": type(None),
     }.get(kind)
     if expected is not None:
         valid = isinstance(value, expected)
@@ -1309,6 +1318,15 @@ class ContractRewardGate:
                 if metric.get("category") in {"process", "outcome"} and metric.get("id") in result:
                     low = metric.get("score_range", [0, 1])[0]
                     result[str(metric["id"])] = float(low)
+        if self.task_spec.get('requires_user_interaction'):
+            protocols = [event for event in events if event.get('event') == 'user_protocol']
+            required_stages = protocols[-1]['payload']['required_stages'] if protocols else None
+            completed = {event.get('result', {}).get('interaction_stage') for event in events
+                         if event.get('event') == 'user_turn' and event.get('result', {}).get('fsm_transition_applied')}
+            if not required_stages or not set(required_stages) <= completed:
+                for metric in self.metrics:
+                    if metric.get('category') == 'outcome':
+                        result[metric['id']] = float(metric.get('score_range', [0, 1])[0])
         return result
 
 
@@ -2357,6 +2375,70 @@ class ContractUserSimulator:
             "conversation_prefix": [],
         })
 
+        if script.get('interaction_protocol'):
+            self.episode_store.event('user_protocol', {'script_id':script_id,
+                'required_stages':[stage['id'] for stage in script['interaction_protocol']['stages']]}, {})
+
+    def guard_tool(self, name):
+        state = self.episode_store.get_state(self.STATE_KEY, {})
+        script = self.scripts.get(str(state.get('script_id')), {})
+        stages = script.get('interaction_protocol', {}).get('stages', [])
+        completed = int(state.get('protocol_index', 0))
+        if any(stage.get('before_tool') == name for stage in stages[completed:]):
+            raise SandboxError('USER_INTERACTION_REQUIRED', 'complete required user interaction before this tool', 409)
+
+    def _protocol_turn(self, script, state, messages):
+        stages = script['interaction_protocol']['stages']
+        index = int(state.get('protocol_index', 0))
+        text = messages[-1]['content']
+        evidence = {event.get('payload', {}).get('tool_name') for event in self.episode_store.replay()['events']
+                    if event.get('event') == 'tool_call'}
+        applied, finished = False, False
+        if index < len(stages):
+            stage = stages[index]
+            applied = (all(term in text for term in stage['assistant_contains_all'])
+                       and set(stage.get('requires_tools', [])) <= evidence)
+            reply = stage['user_reply'] if applied else stage['retry_reply']
+            outcome = ('user_correction' if stage['kind'] in {'correction','constraint_update'} else 'information_required') if applied else 'agent_premature_completion'
+            stage_id = stage['id'] if applied else None
+            if applied:
+                state['protocol_index'] = index + 1
+                state['recovery_count'] = 0
+            else:
+                state['recovery_count'] = int(state.get('recovery_count', 0)) + 1
+        else:
+            submitted = self.episode_store.get_state('reward_mode') == 'episode_end'
+            finished = submitted or bool(self.completion_check and self.completion_check())
+            applied, stage_id = finished, None
+            reply = '任务已完成。' if finished else '结果尚未满足业务目标，请根据已提供的信息继续完成任务。'
+            outcome = 'goal_satisfied' if finished else 'agent_premature_completion'
+            if submitted:
+                reply, outcome = '已收到最终提交。', 'agent_submitted'
+            if not finished:
+                state['recovery_count'] = int(state.get('recovery_count', 0)) + 1
+        exhausted = state.get('recovery_count', 0) > script.get('recovery_policy', {}).get('max_recoveries', 2)
+        result = {'user_query':reply, 'attachments':[], 'should_end':finished or exhausted,
+            'match_status':'matched' if applied else 'unmatched', 'outcome_category':outcome,
+            'reason_code':'interaction_contract' if applied else 'interaction_requirement_unmet',
+            'interaction_stage':stage_id, 'fsm_script_id':state['script_id'],
+            'fsm_transition_id':stage_id or ('complete' if finished else None),
+            'fsm_transition_applied':applied, 'fsm_state_before':state.get('state_id'),
+            'fsm_state_after':('done' if finished else 'review' if state.get('protocol_index', 0) == len(stages) else f"stage-{state.get('protocol_index', 0)}"),
+            'fsm_recovery_count':state.get('recovery_count', 0)}
+        if finished or exhausted:
+            state['termination_reason'] = 'completed' if finished else 'unresolved_dialogue'
+            if finished and self.episode_store.get_state('reward_mode') == 'episode_end':
+                state['termination_reason'] = 'submitted'
+            result['termination_reason'] = state['termination_reason']
+        state['state_id'] = result['fsm_state_after']
+        state['turn_index'] += 1
+        state['conversation_prefix'] = [*messages, {'role':'user', 'content':reply}]
+        state['memory'] = [*state.get('memory', []), {'messages':messages, 'result':result}]
+        self.episode_store.set_state(self.STATE_KEY, state)
+        self.episode_store.event('user_turn', {'messages':messages, 'used_fallback':False,
+                                'decision_source':'interaction_contract'}, result)
+        return result
+
     @staticmethod
     def _llm_render(payload: Mapping[str, Any]) -> Mapping[str, Any]:
         transitions = {
@@ -2474,6 +2556,8 @@ class ContractUserSimulator:
                 "attachments": [],
                 "termination_reason": state["termination_reason"],
             }
+        if script.get('interaction_protocol'):
+            return self._protocol_turn(script, state, normalized_messages)
         index = int(state["turn_index"])
         state_before = str(state.get("state_id", ""))
         transitions = [
@@ -2504,7 +2588,8 @@ class ContractUserSimulator:
         decision_source = "llm"
         try:
             completed = next((t for t in transitions if t.get("outcome_category") == "goal_satisfied" and t.get("should_end") is True), None)
-            if (self.completion_check is not None and completed is not None
+            if (self.episode_store.get_state('reward_mode') != 'episode_end'
+                    and self.completion_check is not None and completed is not None
                     and self.episode_store.get_state("final_agent_response", "") == normalized_messages[-1]["content"]
                     and self.completion_check()):
                 decision_source = "executable_goal"
@@ -2700,9 +2785,12 @@ class SandboxApplication:
                 body = {}
             if not isinstance(body, Mapping):
                 raise SandboxError("INVALID_ARGUMENT", "reset body must be an object", 400)
-            unknown = sorted(set(body) - {"episode_id", "seed"})
+            unknown = sorted(set(body) - {"episode_id", "seed", "reward_mode"})
             if unknown:
                 raise SandboxError("INVALID_ARGUMENT", "reset has unexpected properties", 400, unknown)
+            reward_mode = body.get('reward_mode', 'continuous')
+            if reward_mode not in ('continuous', 'episode_end'):
+                raise SandboxError('INVALID_ARGUMENT', 'invalid reward_mode', 400)
             selected = self._header(headers, "X-Episode-ID")
             if selected and body.get("episode_id", selected) != selected:
                 raise SandboxError("EPISODE_CONFLICT", "reset episode differs from X-Episode-ID", 409)
@@ -2711,11 +2799,13 @@ class SandboxApplication:
             )
             if self.reset_hook:
                 self.reset_hook(episode)
+            self.episode_store.set_state('reward_mode', reward_mode)
             return {
                 "episode_id": episode.episode_id,
                 "seed": episode.seed,
                 "data_hash": episode.data_hash,
                 "schema_version": episode.schema_version,
+                "reward_mode": reward_mode,
             }
         if method == "GET" and path == "/v1/observation":
             return dict(self.observation_callback())
@@ -2755,6 +2845,12 @@ class SandboxApplication:
                 body = {}
             if not isinstance(body, Mapping):
                 raise SandboxError("INVALID_ARGUMENT", "tool body must be an object", 400)
+            simulator = getattr(self.user_turn_callback, '__self__', None)
+            if isinstance(simulator, ContractUserSimulator):
+                name = path[len(prefix):]
+                if name in self.tool_registry.schemas and mutation != 'ignore_tool_arguments':
+                    validate_json_schema(self.tool_registry.schemas[name], body)
+                simulator.guard_tool(name)
             result = self.tool_registry.execute(
                 path[len(prefix):], body, idem_key=self._header(headers, "Idempotency-Key")
             )
@@ -2827,6 +2923,7 @@ class AcceptanceScenarioRunner:
         variables: dict[str, Any] = {}
         step_results: dict[str, Any] = {}
         history: list[dict[str, Any]] = []
+        conversation = []
         last_body: Any = None
         for index, step in enumerate(scenario.get("steps", [])):
             if not isinstance(step, Mapping):
@@ -2837,6 +2934,13 @@ class AcceptanceScenarioRunner:
             elif operation == "tool_call":
                 method, path, auth = "POST", f"/v1/tools/{step.get('tool_name', '')}", False
                 body = self._resolve(step.get("arguments", {}), variables)
+            elif operation == "dialogue_turn":
+                content = str(self._resolve(step.get('content', ''), variables))
+                status, _, _ = self.call('POST', '/v1/agent_response', {'content':content}, self.trainer_headers)
+                if status != 200:
+                    raise SandboxError('SCENARIO_ASSERTION_FAILED', 'dialogue response failed', 500)
+                conversation.append({'role':'assistant', 'content':content})
+                method, path, auth, body = 'POST', '/v1/user_simulator', True, {'messages':conversation}
             elif operation == "agent_response":
                 method, path, auth = "POST", "/v1/agent_response", True
                 body = {"content": str(self._resolve(step.get("content", ""), variables))}
@@ -2857,6 +2961,10 @@ class AcceptanceScenarioRunner:
                 raise SandboxError("SCENARIO_INVALID", f"unsupported operation: {operation}", 500)
             if method != "INTERNAL":
                 status, last_body, _ = self.call(method, path, body, self.trainer_headers if auth else {})
+            if operation == 'dialogue_turn' and status == 200:
+                if 'expected_stage' in step and step['expected_stage'] != last_body.get('interaction_stage'):
+                    raise SandboxError('SCENARIO_ASSERTION_FAILED', 'interaction branch did not execute', 500)
+                conversation.append({'role':'user', 'content':last_body['user_query']})
             expected_status = step.get("expected_status", 200)
             if status != expected_status:
                 raise SandboxError("SCENARIO_ASSERTION_FAILED", f"step {index} expected HTTP {expected_status}, got {status}", 500, {"body": last_body, "actual_status": status})

@@ -3369,7 +3369,7 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
             tool["function"]["name"]: tool["function"]["parameters"] for tool in tools
         }
         noise_names = {item.get("name") for item in noise_tools if isinstance(item, dict)}
-        allowed_operations = {
+        allowed_operations = {"dialogue_turn",
             "reset", "tool_call", "agent_response", "observation", "reward", "replay",
             "business_snapshot", "mutate_business_state",
         }
@@ -5573,6 +5573,7 @@ class TaskGenerationPipeline(UserSimulationContractMixin):
                             "match_status": {"type": "string", "description": "实时对话为 matched、unmatched 或 ambiguous。"},
                             "outcome_category": {"type": "string", "description": "固定的八类对话结果之一。"},
                             "reason_code": {"type": "string", "description": "分支匹配或恢复原因。"},
+                            "interaction_stage": {"type": ["string", "null"], "description": "Trainer-only：本轮完成的任务专属交互阶段。"},
                             "fsm_script_id": {"type": "string", "description": "Trainer-only：本轮使用的 FSM 脚本身份。"},
                             "fsm_transition_id": {"type": ["string", "null"], "description": "Trainer-only：matched 时实际应用的迁移；恢复结果为空。"},
                             "fsm_state_before": {"type": "string", "description": "Trainer-only：迁移前状态。"},

@@ -191,7 +191,7 @@ class UserSimulationContractMixin:
         if reachable - can_terminate:
             raise PipelineGenerationError(f"user_scripts[{index}] has states without a terminal path")
         missing_outcomes = NORMAL_DIALOGUE_OUTCOMES - covered_outcomes
-        if missing_outcomes:
+        if missing_outcomes and not script.get("interaction_protocol"):
             raise PipelineGenerationError(
                 f"user_scripts[{index}] misses dialogue outcomes: {sorted(missing_outcomes)}"
             )

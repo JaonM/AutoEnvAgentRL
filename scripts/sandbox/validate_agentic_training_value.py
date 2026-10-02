@@ -629,7 +629,12 @@ def validate(
             if not isinstance(status, int) or not 400 <= status < 500:
                 failures.append({
                     "gate": "counterfactual_execution",
-                    "message": f"{name}: execution did not produce a client rejection",
+                    "message": f"{name}: counterfactual runner failed before producing usable rejection or reward evidence",
+                    "scenario": name,
+                    "error_code": getattr(exc, "code", None),
+                    "error_message": str(exc),
+                    "error_details": details,
+                    "passing_condition": "An actual HTTP 4xx rejection OR completed execution with reward <= 0.2. HTTP 200 with low reward is valid; do not add API rejection merely to satisfy this probe.",
                     "error_type": type(exc).__name__,
                 })
             return None, type(exc).__name__
@@ -803,6 +808,13 @@ def validate(
     # Otherwise changing an upstream argument can make a later $ref unresolved
     # inside the test runner, without exercising the environment or reward.
     bound_success = copy.deepcopy(success_scenario)
+    # A deliberately broken tool chain may correctly keep the user FSM in its
+    # prior stage. Do not carry positive-path stage assertions into negative
+    # probes: exercise the remaining calls and judge actual rejection/reward.
+    # The original success scenario retains all stage assertions.
+    for step in bound_success["steps"]:
+        if step.get("operation") == "dialogue_turn":
+            step.pop("expected_stage", None)
     if success_run:
         for step in bound_success["steps"]:
             if step.get("operation") == "tool_call":
