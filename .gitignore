@@ -19,3 +19,9 @@ data/
 output/
 
 .idea/
+
+# Downloaded local training model weights
+models/
+
+# macOS metadata
+.DS_Store
