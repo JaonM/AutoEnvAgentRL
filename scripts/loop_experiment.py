@@ -661,14 +661,14 @@ def _build_one_unfinalized(project, task_path, output, config, seed=None):
     image_tag = sandbox_image_tag(output)
     common["container_image_tag"] = image_tag
     command = ["bash", str(project / "scripts/develop_sandbox_with_agent.sh"),
-               "--input", str(task_path), "--output", str(output), "--agent", "codex",
-               "--review-agent", "codex", "--model", MODEL, "--review-model", MODEL,
+               "--input", str(task_path), "--output", str(output), "--agent", config.get("code_agent", "codex"),
+               "--review-agent", config.get("code_agent", "codex"), "--model", config.get("code_agent_model", MODEL), "--review-model", config.get("code_agent_model", MODEL),
                "--runtime", config.get("sandbox_runtime", "none"),
                "--tag", image_tag,
                "--max-attempts", str(config["max_attempts"]),
                "--max-total-repairs", str(config.get("max_total_repairs", 4)),
                "--foreground", "--skip-auto-score"]
-    if seed:
+    if seed or (config.get("resume_existing") and (output / "task_impl.py").is_file()):
         command.append("--resume")
     build_attempts = []
     built = None
@@ -766,7 +766,7 @@ def _build_one_unfinalized(project, task_path, output, config, seed=None):
     )
     passed = (scored["exit_code"] == 0 and report.get("passed") is True
               and report.get("score", 0) >= config["threshold"]
-              and report.get("model") == MODEL and report.get("review_model") == MODEL
+              and report.get("model") == config.get("code_agent_model", MODEL) and report.get("review_model") == config.get("code_agent_model", MODEL)
               and score_structure_valid)
     result = {**common, "passed": passed, "score": report.get("score", 0),
             "offline_score": report.get("score", 0), "sandbox_score": report,
@@ -1183,6 +1183,9 @@ def run_round(project, root, config, report):
                 "--seed", str(config.get("experiment_seed", 0) + report["round"] - 1),
                 "--hops", str(config.get("generation_hops", 3)),
                 "--generation-backend", str(config.get("generation_backend", "code_agent")),
+                "--code-agent", config.get("code_agent", "codex"),
+                "--code-agent-model", config.get("code_agent_model", MODEL),
+                "--language", config.get("language", "zh-CN"),
                 "--code-agent-timeout", str(config.get("code_agent_timeout", 600)),
                 "--route-attempts", str(config.get("route_attempts", 3)),
                 "--training-mix", str(config.get(
@@ -1281,9 +1284,109 @@ def run_round(project, root, config, report):
     return report
 
 
+def run_daily(project, root, config):
+    """Generate tasks and build directly in sandbox/task-N, without rounds."""
+    root.mkdir(parents=True, exist_ok=True)
+    with (root / ".pipeline.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError("daily pipeline already running for this output")
+        started = time.monotonic()
+        run_id = f"{time.time_ns()}-{os.getpid()}"
+        def event(stage, **fields):
+            record = {"timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                      "run_id": run_id, "stage": stage,
+                      "elapsed_seconds": round(time.monotonic() - started, 3), **fields}
+            with (root / "pipeline_events.jsonl").open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+            print(json.dumps(record, ensure_ascii=False), flush=True)
+        event("pipeline_started", count=config["generate_count"] or len(config["task_paths"]),
+              agent=config.get("code_agent", "codex"), model=config.get("code_agent_model", MODEL))
+        paths = [Path(path) for path in config["task_paths"]]
+        exit_code = 0
+        if config["generate_count"]:
+            task_root = root / "task"
+            previous = set(task_root.glob("task-*"))
+            command = [sys.executable, str(project / "examples/generate_task.py"),
+                       "--count", str(config["generate_count"]), "--max-workers", "1", "--output", str(root),
+                       "--log-file", str(root / "generation.log"),
+                       "--generation-backend", config["generation_backend"],
+                       "--hops", str(config["generation_hops"]),
+                       "--code-agent", config.get("code_agent", "codex"),
+                       "--code-agent-model", config.get("code_agent_model", MODEL),
+                       "--language", config.get("language", "zh-CN"),
+                       "--code-agent-timeout", str(config["code_agent_timeout"]),
+                       "--route-attempts", str(config["route_attempts"]),
+                       "--training-mix", config["training_mix"],
+                       "--seed", str(config["experiment_seed"])]
+            for key, flag in (("generation_intent", "--task-intent"),
+                              ("generation_environment_mode", "--environment-mode")):
+                if config.get(key):
+                    command.extend([flag, config[key]])
+            event("generation_started", count=config["generate_count"], log=str(root / "generation.log"))
+            generated = run_process(command, project, root / "generation_process.log", config["generation_timeout"])
+            event("generation_finished", exit_code=generated["exit_code"])
+            created = sorted(set(task_root.glob("task-*")) - previous)
+            if len(created) != config["generate_count"]:
+                print(json.dumps({"passed": False, "training_ready": False,
+                                  "detail": "generation directory count mismatch",
+                                  "expected": config["generate_count"], "actual": len(created)}))
+                exit_code = 2
+            paths = []
+            for index, directory in enumerate(created, 1):
+                manifest_path = directory / "sample_manifest.json"
+                try:
+                    manifest = json.loads(manifest_path.read_text())
+                except (OSError, ValueError):
+                    manifest = {}
+                job = resolve_generated_job(index, (manifest_path, manifest), generation_done=True)
+                if job is not None and job["state"] == "pending":
+                    paths.append(Path(job["task_path"]))
+                    event("task_generated", task=directory.name)
+                    continue
+                result = (job or {}).get("result") or failure("generation", "generation process failed", failure_code="INFRA")
+                result["training_ready"] = False
+                event("task_generation_failed", task=directory.name, result=result)
+                write_json(directory / "pipeline_result.json", result)
+                print(json.dumps(result, ensure_ascii=False))
+                exit_code = max(exit_code, 2 if result.get("failure_code") == "INFRA" else 1)
+            if generated["exit_code"] != 0 and exit_code == 0:
+                exit_code = 2
+        elif not paths:
+            raise ValueError("daily mode requires task-N/task.json inputs")
+        for task_index, task_path in enumerate(paths, 1):
+            if not task_path.parent.name.startswith("task-"):
+                raise ValueError("daily mode requires task-N/task.json inputs")
+            output = root / "sandbox" / task_path.parent.name
+            event("sandbox_started", task=task_path.parent.name, index=task_index, total=len(paths),
+                  log=str(output / "build.log"))
+            task_started = time.monotonic()
+            try:
+                result = build_one(project, task_path, output, {**config, "resume_existing": True})
+            except Exception as exc:
+                event("sandbox_error", task=task_path.parent.name, error_type=type(exc).__name__)
+                raise
+            event("sandbox_finished", task=task_path.parent.name,
+                  duration_seconds=round(time.monotonic() - task_started, 3),
+                  passed=result.get("passed", False), training_ready=result.get("training_ready", False),
+                  failure_class=result.get("failure_class"), failure_code=result.get("failure_code"),
+                  detail=result.get("detail"), result_path=str(output / "pipeline_result.json"))
+            write_json(output / "pipeline_result.json", result)
+            print(json.dumps({"task": str(task_path), "sandbox": str(output),
+                              "passed": result.get("passed", False),
+                              "training_ready": result.get("training_ready", False)}, ensure_ascii=False))
+            status = 0 if result.get("passed") is True else 2 if result.get("failure_code") == "INFRA" else 1
+            exit_code = max(exit_code, status)
+        event("pipeline_finished", exit_code=exit_code, built=len(paths))
+        return exit_code
+
+
 def main():
     global PROCESS_DEADLINE, BUDGET_STATE_PATH, ACTIVE_RUN_STARTED
     parser = argparse.ArgumentParser(description="可恢复的端到端/固定集实验：离线验收后执行真实模型 rollout")
+    parser.add_argument("--layout", choices=("daily", "experiment"), default="experiment",
+                        help="daily：单任务直接输出；experiment：多轮实验")
     parser.add_argument("--project", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--output", type=Path, default=Path("output/loop_experiment"))
     source = parser.add_mutually_exclusive_group()
@@ -1295,6 +1398,9 @@ def main():
     parser.add_argument("--generation-intent", help="固定生成意图（例如 modify），用于独立验证业务写入任务")
     parser.add_argument("--generation-environment-mode", choices=("stateless", "reference_data", "stateful", "external_capability"),
                         help="强制实际环境模式；写入覆盖使用 stateful")
+    parser.add_argument("--code-agent", choices=("codex", "claude", "opencode"), default="codex")
+    parser.add_argument("--code-agent-model", default=None, help="任务作者、沙箱构建与独立审查模型")
+    parser.add_argument("--language", default="zh-CN", help="生成内容语种，如 zh-CN、en、ja")
     parser.add_argument("--code-agent-timeout", type=float, default=600,
                         help="单样本 Code Agent 生成防卡死超时（秒），默认 600")
     parser.add_argument("--sample-build-budget", type=int, default=0,
@@ -1362,13 +1468,21 @@ def main():
         help="留出集相对开发轮 seed 的固定偏移，保证独立抽样",
     )
     parser.add_argument("--hypothesis", default="baseline", help="本实验要验证的改进假设")
-    parser.add_argument("--experiment-seed", type=int, default=20260925, help="跨版本配对实验种子")
+    parser.add_argument("--experiment-seed", type=int, default=None, help="显式固定随机种子；日常默认随机，实验默认 20260925")
     parser.add_argument("--target-task-yield", type=float, default=0.85)
     parser.add_argument("--target-build-yield", type=float, default=0.80)
     parser.add_argument("--target-end-to-end-rate", type=float, default=0.70)
     parser.add_argument("--target-qualified-mean", type=float, default=8.5)
     parser.add_argument("--target-category-rate", type=float, default=0.60)
     args = parser.parse_args()
+    if not args.code_agent_model:
+        if args.code_agent != "codex":
+            parser.error("--code-agent-model is required for claude/opencode")
+        args.code_agent_model = "gpt-6-luna"
+    if args.experiment_seed is None:
+        args.experiment_seed = int.from_bytes(os.urandom(8), "big") if args.layout == "daily" else 20260925
+    if args.layout == "daily" and (args.max_rounds != 1 or args.certification_profile != "pilot"):
+        parser.error("daily mode requires --max-rounds 1 and --certification-profile pilot")
     if (args.max_rounds < 0 or not 0 <= args.threshold < 10
             or args.generate_count < 0 or not 0 <= args.generation_hops <= 20):
         parser.error("invalid rounds, threshold or generation count")
@@ -1438,7 +1552,8 @@ def main():
         )
     root = args.output if args.output.is_absolute() else project / args.output
     root = root.resolve()
-    task_root = args.task_root if args.task_root.is_absolute() else project / args.task_root
+    task_root = (root / "task" if args.layout == "daily" and args.task_root == Path("output/task")
+                 else args.task_root if args.task_root.is_absolute() else project / args.task_root)
     try:
         ids = list(dict.fromkeys(int(value) for value in (args.task_ids or "45,78,92,175").split(",")))
         if not ids or any(value <= 0 for value in ids):
@@ -1456,6 +1571,8 @@ def main():
             paths.append(candidate.resolve())
     if any(not path.is_file() for path in paths):
         parser.error("task input is missing")
+    if args.layout == "daily" and not args.generate_count and not paths:
+        parser.error("daily mode requires --task-ids values")
     production_preflight = None
     if args.certification_profile == "production":
         try:
@@ -1480,8 +1597,8 @@ def main():
         "bundle_signing_private_key", "bundle_trusted_public_key",
     }}
     from env_factory.evidence.data_governance import provider_identity
-    generation_role = ({"base_url": "codex://cli", "model": MODEL,
-                        "allowed_response_models": [MODEL]}
+    generation_role = ({"base_url": f"{args.code_agent}://cli", "model": args.code_agent_model,
+                        "allowed_response_models": [args.code_agent_model]}
                        if args.generation_backend == "code_agent" else model_roles["generation"])
     generation_provider = provider_identity(generation_role["base_url"], generation_role["model"])
     rollout_provider = provider_identity(
@@ -1492,7 +1609,7 @@ def main():
         model_roles["runtime"]["base_url"],
         model_roles["runtime"]["model"],
     )
-    config.update(project=str(project), task_paths=list(map(str, paths)), model=MODEL,
+    config.update(project=str(project), task_paths=list(map(str, paths)), model=args.code_agent_model,
                   source_digest=source_digest(project), input_digests=[input_digest(path) for path in paths],
                   execution_provenance=collect_execution_provenance(project),
                   bundle_attestation_key_identity_sha256=bundle_key_identity,
@@ -1517,6 +1634,12 @@ def main():
                   }))
     signal.signal(signal.SIGINT, interrupt)
     signal.signal(signal.SIGTERM, interrupt)
+    if args.layout == "daily":
+        PROCESS_DEADLINE = time.time() + args.max_total_seconds
+        try:
+            return run_daily(project, root, config)
+        except ValueError as exc:
+            parser.error(str(exc))
     root.mkdir(parents=True, exist_ok=True)
     with (root / ".experiment.lock").open("a") as lock:
         try:

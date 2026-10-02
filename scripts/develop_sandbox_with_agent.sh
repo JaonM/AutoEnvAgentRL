@@ -49,8 +49,8 @@ usage() {
   --output DIR       单任务工作目录；输入为 list 时作为输出根目录，默认沿用 task-N 编号
   --agent NAME       开发 Agent：codex、claude 或 opencode，默认：codex
   --review-agent NAME 独立语义审查 Agent：codex、claude 或 opencode，默认：codex
-  --model NAME       Codex 开发模型，默认 gpt-6-luna
-  --review-model NAME Codex 审查模型；默认沿用 --model，均未指定时使用 Codex 配置
+  --model NAME       开发模型；Codex 默认 gpt-6-luna
+  --review-model NAME 审查模型；主链路沿用 --code-agent-model
   --runtime NAME     none 或 docker，默认：none
   --tag NAME         镜像名称，默认：env-factory-agent-sandbox
   --max-concurrency N 并发任务数，默认：2
@@ -120,14 +120,10 @@ case "$agent" in codex|claude|opencode) ;; *) echo "不支持的开发 Agent：$
 case "$review_agent" in codex|claude|opencode) ;; *) echo "不支持的审查 Agent：$review_agent" >&2; exit 2 ;; esac
 if [[ -z "$model" && "$agent" == "codex" ]]; then model="gpt-6-luna"; fi
 if [[ -z "$review_model" && "$review_agent" == "codex" ]]; then review_model="${model:-gpt-6-luna}"; fi
-if [[ -n "$model" && "$agent" != "codex" ]]; then
-  echo "--model 当前仅适用于 --agent codex" >&2
-  exit 2
-fi
-if [[ -n "$review_model" && "$review_agent" != "codex" ]]; then
-  echo "--review-model 当前仅适用于 --review-agent codex" >&2
-  exit 2
-fi
+model_args=()
+review_model_args=()
+if [[ -n "$model" ]]; then model_args=(--model "$model"); fi
+if [[ -n "$review_model" ]]; then review_model_args=(--model "$review_model"); fi
 case "$runtime" in none|docker) ;; *) echo "不支持的 runtime：$runtime" >&2; exit 2 ;; esac
 if [[ -z "$output" && "$output_auto" == "false" ]]; then
   echo "--output 不能为空" >&2
@@ -421,10 +417,10 @@ run_code_agent() {
       return "$code"
       ;;
     claude)
-      (cd "$output_path" && claude --dangerously-skip-permissions --print "$phase_prompt") </dev/null
+      (cd "$output_path" && claude ${model_args[@]+"${model_args[@]}"} --permission-mode acceptEdits --allowedTools "Read,Edit,Write,Bash" --print "$phase_prompt") </dev/null
       ;;
     opencode)
-      (cd "$output_path" && opencode run "$phase_prompt") </dev/null
+      (cd "$output_path" && opencode run ${model_args[@]+"${model_args[@]}"} "$phase_prompt") </dev/null
       ;;
     *)
       echo "不支持的 agent：${agent}；可选值为 codex、claude、opencode"
@@ -765,11 +761,11 @@ EOF
       python3 "$project_dir/scripts/sandbox/run_readonly_review.py" "${review_args[@]}"
       ;;
     claude)
-      (cd "$output_path" && claude --print "$review_prompt") \
+      (cd "$output_path" && claude ${review_model_args[@]+"${review_model_args[@]}"} --tools Read --allowedTools Read --print "$review_prompt") \
           >"$review_tmp" 2>"$review_stderr_tmp"
       ;;
     opencode)
-      (cd "$output_path" && opencode run "$review_prompt") \
+      (cd "$output_path" && OPENCODE_PERMISSION='{"*":"deny","read":"allow","glob":"allow","grep":"allow"}' opencode run ${review_model_args[@]+"${review_model_args[@]}"} "$review_prompt") \
           >"$review_tmp" 2>"$review_stderr_tmp"
       ;;
   esac
@@ -905,11 +901,11 @@ EOF
       python3 "$project_dir/scripts/sandbox/run_readonly_review.py" "${defect_review_args[@]}"
       ;;
     claude)
-      (cd "$output_path" && claude --print "$prompt_text") \
+      (cd "$output_path" && claude ${review_model_args[@]+"${review_model_args[@]}"} --tools Read --allowedTools Read --print "$prompt_text") \
           >"$review_tmp" 2>"$output_path/defect_${defect_id}_review.stderr"
       ;;
     opencode)
-      (cd "$output_path" && opencode run "$prompt_text") \
+      (cd "$output_path" && OPENCODE_PERMISSION='{"*":"deny","read":"allow","glob":"allow","grep":"allow"}' opencode run ${review_model_args[@]+"${review_model_args[@]}"} "$prompt_text") \
           >"$review_tmp" 2>"$output_path/defect_${defect_id}_review.stderr"
       ;;
   esac

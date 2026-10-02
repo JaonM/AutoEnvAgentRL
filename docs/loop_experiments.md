@@ -1,6 +1,6 @@
 # 循环工程实验
 
-主入口 `scripts/run_pipeline.sh` 默认执行单轮 5 个 Code Agent 样本。`scripts/loop_experiment.py` 负责可恢复调度，`scripts/run_sandbox_build_loop.py` 保留为兼容 CLI。默认不复用历史高分，构建与独立审查模型固定为 `gpt-6-luna`。
+日常入口 `scripts/run_pipeline.sh` 默认每次生成并构建一个 Code Agent 任务，直接输出到 `output/task/task-N/` 和 `output/sandbox/task-N/`。同一输出根目录重复运行自动新增编号；恢复构建用 `--task-ids N`。日常模式没有批次目录、连续轮次目标或自动留出验证。`scripts/loop_experiment.py` 负责可恢复调度，`scripts/run_sandbox_build_loop.py` 保留为兼容 CLI。默认不复用历史高分，构建与独立审查模型固定为 `gpt-6-luna`。
 新任务沿多跳 Scene 图谱路径生成；实验以独立 seed 采样任务，并检查留出集任务与开发集是否重复。
 
 较大规模的生产认证实验可显式选择每轮生成 10 个新任务，固定使用
