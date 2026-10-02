@@ -16,9 +16,19 @@ Do not use a fixed task prototype. Do not modify compiler/runtime/graders.
 
 ## Preferred compact format
 
+Author-side environments may not have online evaluator access. Use the compiler's
+`--structural-preview` option with a separate output directory to check schemas,
+reward expressions, bindings, data and interaction contracts without model calls.
+`structural_preview.json` explicitly leaves execution and semantic calibration
+pending; it does not export a task or establish training readiness. For deterministic
+rewards, also run the normal compiler to exercise the reference and counterfactuals.
+For semantic rewards, preserve explanations and calibration examples; the parent
+always runs full execution and online calibration before accepting the task.
+
 Write only `version`, `description`, `environment_plan`, `tables`,
 `business_tools`, `outcomes`, `reference`, `answer_contract` for JSON answers,
-and `semantic_goal` for stateful tasks.
+and `semantic_goal` for stateful tasks. Add `interaction_contract` when
+`request.require_interaction_contract` is true (see the user interaction section).
 The detailed types for descriptions, tables, rules and goals appear below.
 
 - `business_tools`: each item is `{name, description, parameters, implementation}`.
@@ -85,6 +95,9 @@ authoring time without choosing the business scenario, tables, tools or answer.
   the returned columns. Update uses `selector` and `changes` mappings of
   argument name to column name; insert uses `values` with the same direction.
   These are real implementations compiled against data, not canned responses.
+  Filter comparisons read `row[column] operator argument`: capacity covering a
+  requested party size uses `gte`; price within a budget uses `lte`. Check the
+  returned rows against the reference before writing its reward.
 - `actions`: `{name, description, atomicity_rationale, inputs: [], outputs: [],
   preconditions: [...], effects: [...]}` for meaningful atomic actions.
 - `tool_bindings`: `{tool_name, action_name}`. Do not create tools for reasoning.
@@ -276,9 +289,22 @@ This check runs before the answer schema is published, so schema metadata cannot
 launder a hidden answer into public evidence. It is a necessary origin check;
 it does not prove that a publicly mentioned number is the right business target.
 Reference `$expr` arguments permit captures, literals, operators and conditions;
-they cannot privately query business tables. Computed write arguments are covered
-by reference execution and the dependency gate. Computed select-filter bindings
-are not yet supported by `from_tool` reward lowering.
+they cannot privately query business tables. Use one outer `$expr`; nested
+arithmetic uses `op`/`args` directly, without another `$expr` wrapper. Computed
+select-filter arguments are lowered through their upstream captured data by
+`from_tool`, so query-derived reward facts remain sensitive to changed data.
+Computed write arguments are covered by reference execution and the dependency gate.
+
+Before submitting or repairing a task, check every public business requirement
+against an observable fact and an executable outcome or state-goal condition.
+Calling a requirements tool does not prove eligibility. Stock sufficiency,
+capacity, deadlines, handling compatibility and approvals must affect success
+when the public task requires them. Test a violating data value as well as the
+reference value. Preserve these requirements, explanation fields, user decisions
+and distractor records when repairing syntax or execution errors.
+If a query returns multiple rows, encode the public selection rule in the query
+or `from_tool.where`; selecting `records[0]` alone does not establish a unique
+business answer. Never remove alternatives merely to make a lookup unique.
 
 On a failed executable reference, inspect `preview/preflight_failure.json` for
 ungated/gated reward components, expected answer values, actual matching rows and
@@ -438,3 +464,86 @@ A computation/validation tool may consume captured upstream values without
 reading a private table again. The complete trajectory must still access private
 business data, every business tool must have a runtime event, and argument,
 skipped-step, dependency and meaningful-output probes remain mandatory.
+
+## Task-specific user interactions (required for new multi-step authoring)
+
+When `request.require_interaction_contract` is true, add `interaction_contract`
+(version `"1.0"`) with exactly `request.user_script_count` variants. Legacy sources
+remain readable, but new multi-step designs cannot silently fall back to generic scripts.
+Each variant contains `stages`, 2..5 necessary user turns in execution order.
+The compiler builds the FSM, stages acceptance conversations before the named tools,
+and verifies every variant plus skipped-stage failures. Do not author redundant
+confirmation turns merely to satisfy the count. Choose a business task that needs
+private user input, a real decision, a constraint revision or approval.
+
+Each stage has:
+
+- `id`: unique within the variant.
+- `kind`: `information_required`, `option_selection`, `constraint_update`,
+  `execution_confirmation`, or `correction`.
+- `purpose`: the concrete business reason this exchange is necessary.
+- `assistant_contains_all`: natural business labels that must appear in the Agent's
+  question/proposal. These are substring checks, not an LLM intent classifier.
+  Keep them small and naturally discoverable; never use passwords or exact full sentences.
+- `reference_response`: a valid Agent question/proposal containing those labels.
+- `user_reply`: the actual user disclosure/choice/approval.
+- `retry_reply`: help the Agent ask the right question without disclosing the private fact.
+- `before_tool`: actual tool name whose execution must wait for this stage. An
+  execution confirmation must protect an insert/update/delete tool.
+- `requires_tools`: optional preceding tool names whose results are needed to make
+  this decision; never include the blocked tool itself.
+- For disclosure/selection/update/correction: `private_fact` is a string, number or
+  boolean explicitly supplied by the user, absent from initial public inputs;
+  `bind_to:{tool,argument}` ties it to the protected reference call's actual argument.
+  Do not disclose internal IDs that should instead come from tools. Two stages in
+  one variant may not repeatedly ask for the same tool argument.
+- Selection additionally has `options` (at least two plausible alternatives),
+  containing the chosen private_fact; the reference proposal presents all options.
+- Update/correction additionally has `previous_fact`, a different constraint actually
+  present in the initial message or an earlier user reply.
+
+Example stage (within a complete variant):
+
+```json
+{
+  "id": "choose_region",
+  "kind": "constraint_update",
+  "purpose": "用户修改配送区域，必须按新区域重新筛选",
+  "assistant_contains_all": ["配送区域"],
+  "reference_response": "请确认最终配送区域，是否仍按此前的西区？",
+  "user_reply": "配送区域改为东区，请按新区域筛选。",
+  "retry_reply": "请先向我确认最终配送区域。",
+  "previous_fact": "西区",
+  "private_fact": "东区",
+  "bind_to": {"tool": "search_delivery_options", "argument": "region"},
+  "before_tool": "search_delivery_options",
+  "requires_tools": []
+}
+```
+
+Keep the business reference answer and reward rules consistent with the final
+constraints. Variants currently share the same business goal/reference; vary the
+information path, alternatives, revision history and approval requirements, not
+an unimplemented per-variant reward target. At least two interaction kinds must
+be represented. ID-only copies, missing disclosures, inconsistent bindings,
+unreachable stages and confirmation of read-only tools are rejected.
+
+User turns in this protocol use task-authored replies and executable guards;
+they do not spend an external LLM call to decide a fixed contract transition.
+Outcome reward is withheld until every required interaction occurs. The normal
+business evaluator still decides whether the final result is correct. Profiles
+and the legacy LLM-driven FSM remain available for existing fixed-goal tasks.
+Review semantic necessity independently: passing a dialogue gate alone is not
+proof that a question is useful. Plan rollout max_steps for user turns + business
+tool calls + final response, with space for recovery.
+
+
+### Validation evidence for the interaction upgrade
+
+Full local regression: 1,023 tests and 150 subtests passed, including local Metal
+RL integration. New interaction tests cover all five stage kinds, numeric constraint
+updates, private-information leakage, duplicate scripts, argument bindings, read-only
+confirmation rejection, skipped stages, generated-app response schemas, and the final
+agentic-training-value gate. The final gate was exercised with deterministic local
+fixtures (`offline_mock`); this is not evidence of a new model-authored production
+batch or an improvement in live rollout success rate.

@@ -1,190 +1,187 @@
-# env-factory
+# AutoEnvAgentRL
 
-代码入口和模块边界见 [代码结构](docs/code_structure.md)。
+[中文](README.md) | [English](README-en.md)
 
-任务生成与沙箱构建的可恢复循环、真实模型 rollout 和模型默认配置见 [循环工程实验](docs/loop_experiments.md)。
+**从知识图谱生成可交互任务，构建可执行沙箱，并用于 Agentic RL 训练。**
 
-项目当前以“生产级 Agentic RL 训练素材准备”为认证边界；指标、证据和结果语义见
-[训练素材生产准备认证](docs/production_readiness.md)。EnvFactory 不执行 RL 训练；该认证只覆盖下游接入前
-的任务、环境、轨迹与奖励素材，不宣称能够直接开训、RL 已完成或训练后模型已经提升。
+项目目标是让 Agent 在有真实业务约束的环境中学习：向用户澄清需求、调用工具、使用前一步的结果完成后续操作，最终交付可验证的业务结果。项目将任务、业务数据、用户剧本、工具和奖励组织为统一契约，通过共享运行时和多层验收减少生成与构建的不一致。
 
-生成契约、工具实现、持久化及验收的最新边界见 [一致性改造说明](docs/runtime_integrity.md)，其中区分静态评分、离线回归与真实训练 rollout 证据。
+## 项目主旨
 
-## 主链路：Code Agent 生成任务并构建沙箱
+- **生成任务**：Code Agent 根据 Scene 图谱路径设计任务、业务数据、工具、参考轨迹与奖励，覆盖直接回答、单步和多步 Agentic 任务。
+- **构建环境**：将任务契约编译为沙箱，提供状态持久化、工具接口、用户模拟器与奖励接口；Code Agent 补充业务实现。
+- **验证质量**：前置结构检查、独立语义审核、成功与失败轨迹、反事实测试以及 live 验收，筛选可用于训练的环境。
+- **训练 Agent**：在 Apple Silicon 上使用 MLX 运行异步 PPO / GRPO，支持并行 rollout、批量解码、有限旧策略数据复用及量化感知微调（QAT）。
 
-默认作者、沙箱构建与独立审查均使用 `GPT-6-luna`。任务从真实 Scene 图谱路径生成，
-经过前置验证后进入沙箱构建、离线评分和 live 训练门禁。准备好下文 `.env`、Neo4j、
-已认证的 `codex` CLI 与 Docker，并执行 `uv sync` 后运行：
-
-```bash
-./scripts/run_pipeline.sh --help
-./scripts/run_pipeline.sh --dry-run
-./scripts/run_pipeline.sh --output output/my_batch
+```text
+Scene 知识图谱
+    ↓
+Code Agent 生成任务 → 前置检查与语义审核
+    ↓
+沙箱构建 → 契约、奖励与真实 rollout 验收
+    ↓
+Docker 沙箱服务 ← HTTP → 并行 rollout workers
+                              ↓
+                     完整轨迹与终局奖励
+                              ↓
+                     Actor：PPO / GRPO 更新
 ```
 
-默认单轮 **5 个样本**、并发上限 **4**、`pilot` 候选验证、Docker 与 live 验收；
-不启用 5 分钟硬截止。默认类别比例 20/30/50，生成阶段防卡死超时 600 秒。
-参数、产物位置、恢复方式和退出码见脚本 `--help`；完整调度参数用 `--engine-help`。
-最终消费 `status.json.training_ready == true`，构建 `success` 不能替代训练验收。
-`pilot` 环境通过门禁不等同于 production 批次认证或已验证学习收益。
+通过门禁表示满足当前训练接入条件，不代表已经证明训练后的模型能力提升。
 
-## 构建知识图谱
+## 1. 安装与配置
 
-先确认 Neo4j 可访问，并在项目根目录配置 `.env`：
+### 环境要求
+
+| 用途 | 要求 |
+| --- | --- |
+| 项目基础环境 | Python ≥ 3.14、uv |
+| 图谱与任务生成 | 可访问的 Neo4j、模型服务、已安装并认证的 Code Agent CLI |
+| 沙箱构建与默认训练服务 | Docker Engine；macOS 可使用 Docker Desktop |
+| 本地 RL 训练 | Apple Silicon、Metal，以及 `rl` 可选依赖 |
+
+在项目根目录执行：
 
 ```bash
+uv sync
 cp .env.example .env
 ```
 
-至少配置以下变量：
+编辑 `.env`，填写 Neo4j 连接信息和模型服务配置。不要提交实际凭据。主要配置角色如下：
 
-```dotenv
-NEO4J_URI=bolt://localhost:7687
-NEO4J_USER=neo4j
-NEO4J_PASSWORD=your-password
-LLM_API_KEY=your-api-key
-LLM_BASE_URL=https://api.openai.com/v1
-LLM_MODEL=your-model
-# 可选：不设置时逐字段回退到 LLM_*
-ROLLOUT_LLM_MODEL=your-policy-model
-SANDBOX_LLM_MODEL=your-user-and-judge-model
-LLM_TIMEOUT=60
-WIKIPEDIA_API_URL=https://zh.wikipedia.org/w/api.php
-WIKIPEDIA_TIMEOUT=10
-# WIKIPEDIA_DUMP_DB=data/wikipedia.sqlite3
-NEO4J_DATABASE=neo4j
-GRAPH_SEEDS_FILE=data/scene_seeds.txt
-LOG_LEVEL=INFO
-```
+| 配置 | 用途 |
+| --- | --- |
+| `NEO4J_URI`、`NEO4J_USER`、`NEO4J_PASSWORD`、`NEO4J_DATABASE` | Scene 图谱数据库 |
+| `LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL` | 通用模型服务及角色配置的回退值 |
+| `ROLLOUT_LLM_*` | live 验收中的 Agent 模型 |
+| `SANDBOX_LLM_*` | 沙箱用户模拟器与模型评分器 |
+| `GRAPH_SEEDS_FILE` | 图谱种子词文件，每行一个词语 |
+| `WIKIPEDIA_DUMP_DB` | 可选的本地 Wikipedia 索引；未配置时使用在线来源 |
 
-`GRAPH_SEEDS_FILE` 指向种子词文本文件，每行一个词语；空行和以 `#` 开头的行会被忽略。
-构建成功后，本轮发现的 scene 词语会自动追加到该文件；Neo4j 中已标记为扩展完成的词语下次会跳过。
-`LOG_LEVEL` 支持 `DEBUG`、`INFO`、`WARNING` 等级别，默认使用 `INFO`。
+任务作者、沙箱构建和独立审查使用所选 **Code Agent CLI 的认证与模型配置**。`--code-agent-model` 不改变 live 验收或用户模拟器模型；RL 训练的策略模型另外通过 `train_rl.sh --model` 指定。
 
-统一入口构建 Scene 图谱。配置 `WIKIPEDIA_DUMP_DB` 时使用本地 Wikipedia 索引；否则搜索在线 Wikipedia。LLM 抽取与关系判断使用 `.env` 中的端点。
+### 准备知识图谱
+
+已有 Scene 图谱时可跳过此步。否则先配置种子词和 Neo4j，再运行：
 
 ```bash
+./scripts/build_graph.sh --help
 ./scripts/build_graph.sh
-./scripts/build_graph.sh --offline
-./scripts/build_graph.sh --online-wikipedia
 ```
 
-运行 `./scripts/build_graph.sh --help` 查看参数。
+本地 Wikipedia 数据索引的准备方法见脚本 `scripts/download_wikipedia_dump.sh`、`scripts/index_wikipedia_dump.sh`。图谱构建会增量写入 Neo4j。
 
-指定扩展参数：
+## 2. 生成任务并构建沙箱
 
 ```bash
-./scripts/build_graph.sh \
-  --rounds 2 \
-  --max-scene-nodes 500 \
-  --max-search-requests 100 \
-  --max-workers 2
+# 查看参数；预览命令，不调用模型、图谱或 Docker
+./scripts/run_pipeline.sh --help
+./scripts/run_pipeline.sh --dry-run
+
+# 默认生成并构建 1 个任务
+./scripts/run_pipeline.sh
+
+# 生成并构建 5 个任务，指定输出目录
+./scripts/run_pipeline.sh --count 5 --output output/my_tasks
+
+# 指定生成语种与 Code Agent 模型
+./scripts/run_pipeline.sh --code-agent-model gpt-6-luna --language en
 ```
 
-脚本根据 `.env` 选择本地或在线 Wikipedia，批量调用 LLM 抽取词语，增量合并 Scene 节点和关系，最后写入 Neo4j。`task_type` 节点默认写入全部枚举值。
+### 常用参数
 
-### 大规模构建
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `--count` | `1` | 新生成的任务数量；不保证全部通过验收 |
+| `--output` | `output` | 任务、沙箱与日志的输出根目录 |
+| `--task-ids` | 未设置 | 重建已有任务，例如 `1` 或 `1,2`；不能与 `--count` 同用 |
+| `--code-agent` | `codex` | 支持 `codex`、`claude`、`opencode` |
+| `--code-agent-model` | `gpt-6-luna` | 作者、构建与独立审查模型；非 codex 必须显式设置 |
+| `--language` | `zh-CN` | 生成内容语种，例如 `en`、`ja`；不翻译平台日志 |
+| `--validation` | `live` | `live` 执行真实模型验收；`offline` 不能替代训练资格验证 |
+| `--code-agent-timeout` | `600` | 任务生成与修复共享的超时秒数 |
 
-大规模任务建议先下载并建立本地索引：
+默认目标类别比例为直接回答 20%、单步 Agentic 30%、多步 Agentic 50%；小样本实际数量以分配结果为准。主链路没有单样本 5 分钟硬截止。
+
+切换 CLI 时，先完成对应工具安装与认证，再传入账号可用的模型标识：
 
 ```bash
-./scripts/download_wikipedia_dump.sh
-./scripts/index_wikipedia_dump.sh data/zhwiki-latest-pages-articles-multistream.xml.bz2
+./scripts/run_pipeline.sh --code-agent claude --code-agent-model YOUR_MODEL
+./scripts/run_pipeline.sh --code-agent opencode --code-agent-model PROVIDER/MODEL
+
+# 使用同一输出根目录，跳过生成并重建 task-1
+./scripts/run_pipeline.sh --output output/my_tasks --task-ids 1
 ```
 
-然后在 `.env` 中配置：
-
-```dotenv
-WIKIPEDIA_DUMP_DB=data/wikipedia.sqlite3
-```
-
-配置本地索引后，构建流程不再请求在线 Wikipedia API，直接使用 SQLite FTS5 检索页面正文。数据 dump 体积较大，下载和索引耗时取决于网络与磁盘性能。
-
-## 生成长程任务
-
-任务生成默认使用 Code Agent，从 Scene 图谱路径设计业务数据、工具、奖励与参考轨迹，
-由共享编译器执行前置验证，再物化交付物。仅生成任务可运行：
+只生成任务，或专门生成多步任务：
 
 ```bash
 ./scripts/generate_task.sh --count 5
 ./scripts/generate_task.sh --training-category multi_step_agentic --count 5
 ```
 
-`spec` 与 `legacy` 保留为显式选择的兼容/对照后端：
+### 产物与日志
+
+```text
+output/
+├── task/task-N/           # 任务契约、业务数据、用户剧本与生成证据
+├── sandbox/task-N/        # 沙箱代码、构建日志、验收报告与 status.json
+├── logs/pipeline-*        # 每次主链路运行的独立终端日志
+├── generation.log        # 主链路任务生成日志
+└── pipeline_events.jsonl  # 阶段、耗时、结果与运行 ID
+```
+
+新任务编号自动递增。失败任务保留诊断信息，其他合格任务继续构建。
+
+训练接入检查 `status.json` 和 `pipeline_result.json` 的 **`training_ready == true`**，并校验产物哈希；仅有构建 `success` 或高质量分不够。主链路退出码：`0` 通过当前验收，`1` 不合格，`2` 配置或基础设施失败。
+
+## 3. 运行 RL 训练
+
+当前本地训练实现位于 `src/rl/`，使用 Apple Silicon 的 MLX/Metal。准备合格沙箱与兼容的 MLX 策略模型：
 
 ```bash
-./scripts/generate_task.sh --generation-backend spec --training-category multi_step_agentic --count 5
-./scripts/generate_task.sh --generation-backend legacy --hops 3 --training-category multi_step_agentic
+uv sync --extra rl
+./scripts/train_rl.sh --help
+
+./scripts/train_rl.sh \
+  --sandbox output/sandbox/task-1 \
+  --model /absolute/path/to/mlx-model \
+  --output output/rl_runs/grpo-new \
+  --algorithm grpo --tuning qat \
+  --epochs 2 --batch-size 1 --mini-batch-size 1 --rollout-group 4
 ```
 
-完整生成契约见[任务生成流水线](docs/task_generation_pipeline.md)与
-[Code Agent 编写规范](docs/code_agent_authoring.md)。`spec` 多步原型不调用生成模型，
-不代表默认 Code Agent 主链路的模型调用量或质量。
+`--algorithm ppo` 启用 PPO 和 critic 训练；GRPO 不使用 critic。`--tuning lora` 可切换为 LoRA。多沙箱数据集通过 `--tasks PATH` 传入，格式见[训练文档](docs/agent_rl.md)。新运行使用新的输出目录，续训使用 `--resume` 并保持运行配置兼容。
 
-规格流水线从目标和依赖编译 `rule-based` 指标，模型阶段流水线根据任务描述与环境生成 `rule-based/model-based` 指标，统一写入 `Task.metrics`。模型阶段还支持噪声工具，覆盖相关无关与完全无关两类；噪声工具由共享运行时提供无任务关键副作用的通用实现，不占用业务 handler 实现成本，也不产生任务进度奖励。工具生成前会把动作分类为环境操作、Agent 推理和 Agent 回答，只有环境操作可以暴露为工具。任务规模不再绑定具体构建模型，结构有效性由 schema、契约、任务级 readiness、外层验收和训练素材准备就绪门禁统一判断。
+| 参数 | 含义 |
+| --- | --- |
+| `--epochs` | 遍历训练沙箱数据集的次数 |
+| `--batch-size` | 每批按完成顺序收集的合格沙箱组数 |
+| `--mini-batch-size` | 每个梯度更新 step 使用的沙箱数，保留各自完整 rollout group |
+| `--rollout-group` | 每次访问一个沙箱时采样的轨迹数 |
+| `--rollout-workers` | 独立采样进程数 |
+| `--rollout-concurrency` | 每个采样进程同时推进的轨迹数 |
 
-沙箱通过普通 acceptance、outer conformance 和 mutation testing 后，还必须通过 `scripts/sandbox/validate_training_readiness.py` 的 RL 环境硬门禁。该门禁执行结构化成功、失败、噪声及反事实轨迹，检查奖励可分离性、确定性和公开 observation 泄漏，并输出 `training_readiness.json`。
-默认在 `output/task/task-N/task.json` 写入每个任务的最终文件；可通过 `--output` 指定输出根目录。每次运行会扫描已有 `task-N`，从当前最大编号的下一号开始追加，绝不覆盖已有任务；并发进程通过原子目录预留避免编号冲突。Pipeline 运行日志默认追加写入 `output/task_generation.log`，也会输出到终端，可通过 `--log-file` 指定其他文件。日志记录任务级和阶段级开始、重试、成功、失败、耗时、产物路径和进度，不记录 Prompt 或凭据。任务默认并发生成 4 个，可通过 `--max-workers` 调整并发数。图谱路径的 Neo4j 查询默认 10 秒超时，可通过 `--path-query-timeout` 调整。
-使用 `--count N` 可批量新增 N 个独立的 `task-N` 目录；失败任务保留采样身份和失败归因证据，不会修改任何历史任务。
+**奖励时机**：episode 结束后，由 RL 框架调用 `/v1/reward`，统一获取过程与结果综合分；中间 action 不取分。PPO 将终局奖励放在最后一个 action，GRPO 使用终局分做组内比较。旧沙箱需要重建运行时以支持终局评分协议。
 
-### 任务质量评分与过滤
+默认使用 **Docker Engine + 管理器**异步预热沙箱，通过 HTTP 执行 rollout，并管理容器复用与回收。无需单机部署 Kubernetes。独立预热与远程服务接入见[沙箱服务说明](docs/agent_rl.md#单机-docker-engine--沙箱管理器默认)；本地开发可显式选择 `--sandbox-backend local`。
 
-生成后可使用确定性离线评分器筛选训练样本。评分范围为 0–10，覆盖任务契约、Agentic 难度、环境与工具对齐、奖励可评测性、验收与训练就绪度；不调用 LLM，同一产物会得到相同结果。
+## 4. 质量检查与进一步阅读
+
+任务和沙箱质量评分均为 0–10 分制；硬门禁失败时有效分为 0，原始分和失败证据用于诊断。
 
 ```bash
-uv run python examples/score_tasks.py output/task \
-  --min-score 8 \
-  --report output/task_quality_report.json \
-  --csv output/task_quality_report.csv
+uv run python examples/score_tasks.py output/task --min-score 8 \
+  --report output/task_quality_report.json
+uv run python scripts/sandbox/score_sandbox_offline.py output/sandbox/task-1
 ```
 
-复制合格样本到独立目录：
-
-```bash
-uv run python examples/score_tasks.py output/task \
-  --min-score 8 \
-  --accepted-dir output/accepted_tasks
-```
-
-只提取高价值 Agentic 样本：
-
-```bash
-uv run python examples/score_tasks.py output/task \
-  --min-score 8 \
-  --high-value-dir output/high_value_tasks
-```
-
-评分器拒绝覆盖目标目录中的同名任务。CI 中可增加 `--fail-on-low-score`，只要存在低于阈值或未通过训练资格门禁的任务便返回非零退出码。任务评分采用 0–10 分制；`task_quality_report.json` 的 `score` 是包含资格门禁的有效分数：任一硬门禁失败即为 0 分，`eligible=false`。`raw_score` 保留门禁前的质量分，维度得分和失败原因供诊断；只有资格通过的任务才按质量分排序。
-
-### 沙箱离线评分与过滤
-
-`scripts/sandbox/score_sandbox_offline.py` 不调用模型或网络，重新执行业务验收、pytest、契约一致性、运行时通用性、outer conformance、五类 mutation 和 training-readiness，并结合已有独立语义审查与可执行成功/失败轨迹。沙箱评分采用 0–10 分制；通过全部关键门禁后，再按独立语义审查分和成功轨迹相对已完成负例轨迹的奖励差距计算连续分数。任一关键检查失败即为 0 分、`eligible=false`；`raw_score` 保留门禁前的通过项权重和，`quality_factors` 记录连续分的依据。离线通过仍需 live 验证。交付、契约或语义审查预检失败时，评分器跳过后续昂贵检查，并在检查证据中标明原因。
-
-评分单个沙箱：
-
-```bash
-uv run python scripts/sandbox/score_sandbox_offline.py output/sandbox_loop/round-10/task-92
-```
-
-批量扫描目录并生成过滤报告：
-
-```bash
-uv run python scripts/sandbox/score_sandbox_offline.py output/sandbox_loop/round-10 \
-  --threshold 8 \
-  --output output/offline_sandbox_scores.json
-```
-
-全部沙箱达到阈值时退出码为 `0`，存在低分沙箱时为 `1`，可直接用于 CI 或数据集过滤。默认还会在每个沙箱目录写入 `offline_sandbox_score.json`；传入 `--no-individual` 可只保留汇总报告。
-
-沙箱构建成功后会默认自动执行该离线评分，并写入 `offline_sandbox_score.json` 和 `offline_score.log`。如果上层流程已经安排了独立评分，可向 `develop_sandbox_with_agent.sh` 传入 `--skip-auto-score` 避免重复执行。
-
-任务环境由完整业务数据、数据说明文档、用户 FSM、原子 Agent 动作、工具契约和观测奖励设计组成。任务生成器把这些语义编译为版本化 `task_spec`，显式声明环境 archetype、初始/成功谓词、状态增量、工具输入输出/effect、能力 DAG 和奖励真值来源。episode、持久化、工具注册、User Simulator、奖励聚合与因果门禁由 EnvFactory 共享运行时实现；Code Agent 只补充无法声明化编译的少量业务 handler 或 metric extension。
-任务生成结果不再包含 `constraints` 字段。沙箱构建脚本从 `task.json` 生成只读 `BUILD_CONTRACT.json`；`development_plan.json` 由 EnvFactory 根据 TaskSpec 和 archetype 确定性生成，不由 Code Agent 重新设计平台架构。
-其中 `user_profile` 不再直接从任务描述臆造，而是从任务关键词随机选择 1 到全部关键词，并发查询其直接 `HIERARCHY` 下位节点，再由 LLM 润色生成；任务描述仅用于生成 `task_info`、状态和执行规则。
-观测指标只保留与任务目标强相关的少量关键过程指标和目标结果指标。关键过程指标使用 `hybrid`：外部 LLM 生成当前上下文下的期望工具名和参数，规则引擎再对实际工具调用进行规范化比对；工具或参数错误不作为 penalty。结果指标用于判断目标是否完成，惩罚指标仅保留直接影响任务目标的偏离或无效循环。指标包含 `id`、`category`、`type`、`scope`、`condition/criteria`、`weight` 和 `score_range`，分别用于 step/state/terminal/trajectory 级别的奖励计算。
-
-输出示例：
-
-```json
-{"task":"帮我挑选一套合适尺码的衣服并完成购买","task_type":"Event","complexity":"standard" ,"environment":[{"type":"user_profile","field":"interest","description":"用户兴趣","value":"服装","visibility":"observable"},{"type":"task_info","field":"goal","description":"任务目标","value":"提交订单"},{"type":"state","field":"order_status","description":"当前订单状态","value":"pending","visibility":"hidden"},{"type":"action","field":"submit_order","description":"提交订单","value":"submit_order","visibility":"hidden"},{"type":"transition_rule","field":"submit_order_rule","description":"提交订单后的状态变化","value":{"when":"submit_order is called","effect":"order_status becomes submitted"},"visibility":"hidden"},{"type":"termination","field":"success","description":"任务成功条件","value":["order_status == submitted"],"visibility":"hidden"}],"metrics":[{"id":"task_success","type":"rule-based","scope":"terminal","condition":"order_status == submitted","reward":1.0,"penalty":0.0,"once":true,"rubric":"订单提交成功","weight":1.0}]}
-```
+| 文档 | 内容 |
+| --- | --- |
+| [Code Agent 编写规范](docs/code_agent_authoring.md) | 业务设计、工具、交互与奖励契约 |
+| [任务生成流水线](docs/task_generation_pipeline.md) | 生成阶段与产物结构 |
+| [运行时一致性](docs/runtime_integrity.md) | 共享运行时、验收与证据边界 |
+| [Agent RL](docs/agent_rl.md) | 训练参数、异步调度、QAT、Docker 与恢复 |
+| [代码结构](docs/code_structure.md) | 代码入口与模块边界 |
+| [循环实验](docs/loop_experiments.md) | 多轮实验与诊断工具 |
+| [训练素材准备认证](docs/production_readiness.md) | production 素材认证；与本地 RL 训练是不同范围 |

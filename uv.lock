@@ -52,7 +52,7 @@ wheels = [
 ]
 
 [[package]]
-name = "env-factory"
+name = "autoenvagentrl"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

@@ -84,7 +84,7 @@ Scene 路径
   7. reward_key_steps
   8. observations_rewards（基于关键步骤生成）
   8b. metric_implementation_specs（为规则指标生成可由共享运行时执行的 DSL）
-  9. acceptance_contract（EnvFactory 独立业务验收基线）
+  9. acceptance_contract（AutoEnvAgentRL 独立业务验收基线）
   9b. acceptance_executable_scenarios（确定性基线 + 可选语义增强）
   10. training_contract_consistency（题面、数据、动作、工具、指标、fixture 跨阶段一致性）
   11. task_readiness（生成阶段硬门禁与复杂度重算）
@@ -135,11 +135,11 @@ TaskSpec、User Simulator FSM，并由沙箱 observation 和真实 rollout 暴�
 
 生成结果的 `artifacts` 只包含 `data_manifest`、可选的 `media_generation`、用户模拟 manifest、`tools_manifest` 和 Pipeline 版本信息。`tools_manifest.file` 指向独立的 `tools.json`。用户交互通过 Trainer-only 的 `POST /v1/user_simulator` 进入 User Simulator；待训练 Agent 的最终自然语言输出由 Trainer 通过 `POST /v1/agent_response` 提交并持久化为 `final_agent_response`，它不是 LLM Tool。业务工具使用 `POST /v1/tools/{tool_name}`，奖励使用 `GET /v1/reward`。这样最终回答无需伪装成工具，同时成功、失败和噪声验收轨迹可以真实覆盖最终结果奖励。
 
-运行时接口同时声明 Trainer Bearer 鉴权、Agent/Trainer 访问边界、episode 隔离、seed 重置、幂等键、`/v1/replay` 回放、外部 LLM 适配器和 evaluator mock 配置。沙箱构建完成后，EnvFactory 会重新生成独立的外层 conformance；构建流程不会自动连接外部已运行服务，也不会默认启动沙箱。
+运行时接口同时声明 Trainer Bearer 鉴权、Agent/Trainer 访问边界、episode 隔离、seed 重置、幂等键、`/v1/replay` 回放、外部 LLM 适配器和 evaluator mock 配置。沙箱构建完成后，AutoEnvAgentRL 会重新生成独立的外层 conformance；构建流程不会自动连接外部已运行服务，也不会默认启动沙箱。
 
-`acceptance_contract` 由 EnvFactory 根据业务数据、原子动作、工具、关键奖励步骤和指标确定性生成，包含业务场景、数据不变量、工具非法输入、成功/失败奖励样例、数据变异策略和 mutation test 清单。工具与指标均有可执行实现且基线通过结构校验时，直接使用该契约；存在自定义扩展或基线校验失败时，才调用模型补充并重新校验。Code Agent 不能修改该契约；外层验收使用它执行黑盒轨迹、前后数据快照、反事实奖励和实现缺陷注入测试。
+`acceptance_contract` 由 AutoEnvAgentRL 根据业务数据、原子动作、工具、关键奖励步骤和指标确定性生成，包含业务场景、数据不变量、工具非法输入、成功/失败奖励样例、数据变异策略和 mutation test 清单。工具与指标均有可执行实现且基线通过结构校验时，直接使用该契约；存在自定义扩展或基线校验失败时，才调用模型补充并重新校验。Code Agent 不能修改该契约；外层验收使用它执行黑盒轨迹、前后数据快照、反事实奖励和实现缺陷注入测试。
 
-用户画像由 EnvFactory 从固定、多样化脚手架生成，结构化描述身份、知识、沟通和决策特征；画像只影响表达与行为，不提供任务业务真值，也不再消耗逐任务模型调用。用户剧本由 EnvFactory 确定性构造为有限状态机：`initial_state` 指向初始状态，`states` 定义用户行为和终止状态，`transitions` 通过 `from_state`、`to_state`、`condition`、`outcome_category`、`should_end` 和 `updates` 描述转移。生成器检查状态引用、可达性、终止路径和变量更新。任务生成阶段不再生成或落盘模拟对话；真实对话只在 rollout 时由外部 User LLM 根据画像、FSM 与实时上下文产生。任务生成 CLI 每次从已有最大 `task-N` 的下一号开始追加，并用原子目录创建支持并发进程。
+用户画像由 AutoEnvAgentRL 从固定、多样化脚手架生成，结构化描述身份、知识、沟通和决策特征；画像只影响表达与行为，不提供任务业务真值，也不再消耗逐任务模型调用。用户剧本由 AutoEnvAgentRL 确定性构造为有限状态机：`initial_state` 指向初始状态，`states` 定义用户行为和终止状态，`transitions` 通过 `from_state`、`to_state`、`condition`、`outcome_category`、`should_end` 和 `updates` 描述转移。生成器检查状态引用、可达性、终止路径和变量更新。任务生成阶段不再生成或落盘模拟对话；真实对话只在 rollout 时由外部 User LLM 根据画像、FSM 与实时上下文产生。任务生成 CLI 每次从已有最大 `task-N` 的下一号开始追加，并用原子目录创建支持并发进程。
 
 启用噪声工具时，工具生成阶段至少生成一个噪声工具；默认上限为 3 时至少同时覆盖 `related_irrelevant` 和 `unrelated` 两类。候选工具还要经过独立的反事实有用性审查：凡是能提供原因分析证据、关键事实、比较依据、验证手段或排查资料的工具都不能作为噪声，会从候选集合中自动剔除；若候选集合被全部剔除，则注入一个不读取或修改业务状态的通用无关工具，避免正确的审计结论导致整项任务生成失败。噪声调用惩罚由共享运行时使用 `trajectory.events` 和 `none_tool_calls` 运算符确定性执行，不交给外部 LLM 判断。
 

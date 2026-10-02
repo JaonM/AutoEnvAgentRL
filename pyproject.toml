@@ -1,5 +1,5 @@
 [project]
-name = "env-factory"
+name = "AutoEnvAgentRL"
 version = "0.1.0"
 description = "Generate contract-driven Agentic RL tasks and executable sandboxes"
 readme = "README.md"

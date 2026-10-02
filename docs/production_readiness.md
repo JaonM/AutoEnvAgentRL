@@ -1,7 +1,7 @@
 # Agentic RL 训练素材生产准备认证
 
-EnvFactory 的当前认证边界是 `production_prepared_for_agentic_rl`：证明任务、沙箱、工具、业务状态、
-奖励和 rollout 轨迹满足下游 RL 系统接入前的素材契约。EnvFactory 本身不执行 RL 训练，因此该状态
+AutoEnvAgentRL 的当前认证边界是 `production_prepared_for_agentic_rl`：证明任务、沙箱、工具、业务状态、
+奖励和 rollout 轨迹满足下游 RL 系统接入前的素材契约。AutoEnvAgentRL 本身不执行 RL 训练，因此该状态
 不是“可直接开训”或训练平台上线认证；训练框架适配、算法兼容性、资源容量、RL 算法收敛、训练后
 策略提升和跨模型泛化都必须在下游系统另行验证。
 
@@ -220,7 +220,7 @@ Dockerfile 基础镜像和 provenance 三者一致；验证后删除本地临时
 - `offline_target_met`：只证明离线契约可执行，不能证明真实模型轨迹可采集。
 
 认证报告会显式保存 `does_not_certify`，防止将训练前环境质量误表述为训练效果。
-其中“生产级”修饰的是素材生成、验证和交付流程，不表示 EnvFactory 是 RL 训练框架，也不表示这些
+其中“生产级”修饰的是素材生成、验证和交付流程，不表示 AutoEnvAgentRL 是 RL 训练框架，也不表示这些
 素材已经在目标算法、目标基础模型和目标算力配置上完成训练验证。
 
 认证结果发布采用原子文件替换：先完整写入 `training_materials_manifest.json`，再把
@@ -312,7 +312,7 @@ split 的最小单位是近重复任务家族而不是 transition：认证器使
 
 数据集卡记录任务类别、模型组合、同模型评估数量、episode 成败和 transition 数量，并明确只适合重建
 沙箱、验证数据适配器、收集新鲜 on-policy rollout 和准备 policy-visible 输入。它显式禁止把本认证解释为
-RL 收敛、训练后提升、跨模型泛化或任意离线 RL 算法兼容性证明。EnvFactory 不替组织声明数据分发权利；
+RL 收敛、训练后提升、跨模型泛化或任意离线 RL 算法兼容性证明。AutoEnvAgentRL 不替组织声明数据分发权利；
 便携包默认为 `internal_only_until_legal_and_security_review`。验证器从实际文件重新计算数据集卡统计，单纯
 重写卡片并更新哈希不能改变这些边界。
 
