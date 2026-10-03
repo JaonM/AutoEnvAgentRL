@@ -3,6 +3,249 @@
 实现位于 `src/rl/`。独立 rollout worker 在真实沙箱采样，Actor（策略训练侧）在本机 MLX/Metal 更新策略。每个 rollout worker 默认同时推进两条 rollout。
 算法只有 **PPO / GRPO**（默认 GRPO），两者共用行为概率比、裁剪目标与有限轨迹复用。
 
+## 使用指南：从准备到导出
+
+本节按实际操作顺序说明使用方法。所有命令在项目根目录执行；沙箱路径和输出目录需替换为实际值。
+训练后端为 Apple Silicon 上的 MLX/Metal；HF/CUDA 转换用于部署产物，不会把训练后端切换为 CUDA。
+
+### 1. 准备环境与模型
+
+```bash
+uv sync --extra rl
+./scripts/train_rl.sh --help
+```
+
+需要 Python ≥ 3.14、Apple Silicon/Metal，以及运行中的 Docker Engine（脚本默认使用 Docker 沙箱）。
+用户模拟器与模型评分器仍使用外部模型服务，按项目 `.env.example` 配置 `SANDBOX_LLM_*` 等变量；
+训练 policy 本身由 `--model` 指向本地模型。仅运行 RL 不要求重新执行图谱生成流程。
+本地开发可显式传 `--sandbox-backend local`，已有独立 HTTP 服务使用 `--sandbox-services`，
+详见[沙箱服务管理](#单机-docker-engine--沙箱管理器默认)。
+
+本项目已验证的 0.6B 路径是 `models/Qwen3-0.6B`（官方浮点底座）与
+`models/Qwen3-0.6B-4bit`（由它转换的 MLX affine 量化底座）。尚未下载时可执行：
+
+```bash
+uv run --extra rl hf download Qwen/Qwen3-0.6B \
+  --revision c1899de289a04d12100db370d81485cdf75e47ca \
+  --local-dir models/Qwen3-0.6B
+
+.venv/bin/python -m mlx_lm.convert \
+  --hf-path models/Qwen3-0.6B --mlx-path models/Qwen3-0.6B-4bit \
+  -q --q-bits 4 --q-group-size 64 --dtype float32
+```
+
+已有模型不必重复下载/转换。普通全参训练使用浮点底座；QLoRA 和 QAT 可使用 MLX 量化底座。
+GGUF 不是此训练框架的输入格式。
+
+### 2. 准备一个或多个合格沙箱
+
+沙箱须通过项目生成与验收流程：`status.json` 和 `pipeline_result.json` 均为
+`training_ready=true`，且产物哈希匹配。不要通过手动修改状态文件跳过验收。
+
+- 单沙箱：`--sandbox output/sandbox/task-1`。
+- 多沙箱：`--tasks tasks.json`；与 `--sandbox` 二选一。
+
+例如在项目根目录保存 `tasks.json`：
+
+```json
+{
+  "tasks": [
+    {"id": "train-a", "sandbox": "output/sandbox/a", "split": "train"},
+    {"id": "train-b", "sandbox": "output/sandbox/b", "split": "train"},
+    {"id": "held-out", "sandbox": "output/sandbox/c", "split": "eval"}
+  ]
+}
+```
+
+相对路径基于清单所在目录，任务 ID 和沙箱内容身份必须唯一，至少需要一个 train 任务。
+`eval` 沙箱不参与训练采样和 replay；用于独立评估。每轮遍历每个训练沙箱一次，
+`weight` 不改变此覆盖语义。没有 eval 沙箱也能运行，但不能将训练集奖励视为独立评估结果。
+
+### 3. 启动 Qwen3-0.6B thinking GRPO
+
+以下起步配置使用全 28 层 QLoRA、低并发和较小物理批量。它定义运行预算，不保证每个沙箱都有有效更新。
+
+```bash
+./scripts/train_rl.sh \
+  --tasks tasks.json \
+  --output output/rl_runs/qwen06-qlora-thinking \
+  --model models/Qwen3-0.6B-4bit \
+  --algorithm grpo --tuning lora \
+  --layers 28 --lora-targets all-linear --rank 8 \
+  --thinking-mode thinking --temperature 0.6 \
+  --epochs 2 --batch-size 1 --mini-batch-size 1 \
+  --rollout-workers 1 --rollout-concurrency 1 --rollout-group 4 \
+  --max-steps 6 --max-tokens 1024 --max-context 4096 \
+  --micro-batch-size 1 --max-tokens-per-micro-batch 4096 \
+  --gradient-checkpointing --logits-chunk-size 32 \
+  --prefill-chunk-size 256 --profile-memory
+```
+
+`--output` 使用新的运行目录；不要指向模型目录。只训练一个沙箱时替换 `--tasks` 参数即可。
+首次运行会做模型/沙箱检查及相应评估，开始写 optimizer 曲线前可能需要等待环境调用。
+
+| 要切换的行为 | 修改方式 |
+| --- | --- |
+| 不生成思考过程 | `--thinking-mode no-thinking`，使用新的输出目录 |
+| PPO + critic | `--algorithm ppo` |
+| 只训练最后一层 q/v LoRA | `--layers 1 --lora-targets self_attn.q_proj,self_attn.v_proj` |
+| 导出合并模型 | 增加 `--lora-merge-export` |
+| 导出再量化合并模型 | 同时增加 `--lora-merge-export --lora-requantize-export` |
+
+thinking 将 `enable_thinking=True` 传入 tokenizer 模板；no-thinking 传入 False；auto 沿用模板默认。
+原版 Qwen3-0.6B/4B 支持两种模式，不应把只支持非思考的 Instruct 模型当成等价替代。
+默认训练全部新生成的 assistant token，包括思考、工具调用和最终回答；工具结果与 prompt 不参与 loss。
+当前使用任务终局奖励，没有额外的思考步骤奖励，也没有独立的 `reasoning_effort` 参数。
+
+`--max-tokens` 是每次 assistant 生成的总预算，思考与回答/工具调用共用；不是单独的 thinking 预算。
+要求当前 prompt 长度 + 此预算 ≤ `--max-context`。若思考经常截断，可增大生成预算并同步检查上下文、
+物理 batch 和内存预算。0.6B 对工具协议提示敏感；不闭合的思考/工具标签会记录协议错误，不自动补齐。
+
+### 4. 全参 GRPO 与全参 QAT
+
+普通全参 GRPO 使用浮点底座，更新全部语言模型参数：
+
+```bash
+./scripts/train_rl.sh \
+  --tasks tasks.json --output output/rl_runs/qwen06-full-grpo \
+  --model models/Qwen3-0.6B --algorithm grpo --tuning full \
+  --thinking-mode thinking --temperature 0.6 \
+  --rollout-workers 1 --rollout-concurrency 1 --rollout-group 4 \
+  --micro-batch-size 1 --max-tokens-per-micro-batch 4096 \
+  --max-tokens 1024 --max-context 4096 \
+  --gradient-checkpointing --logits-chunk-size 32 --profile-memory
+```
+
+全参 QAT 则使用以下完整命令：
+
+```bash
+./scripts/train_rl.sh \
+  --tasks tasks.json --output output/rl_runs/qwen06-full-qat-grpo \
+  --model models/Qwen3-0.6B-4bit --algorithm grpo \
+  --tuning qat --qat-scope full --packed-inference \
+  --thinking-mode thinking --temperature 0.6 \
+  --rollout-workers 1 --rollout-concurrency 1 --rollout-group 4 \
+  --micro-batch-size 1 --max-tokens-per-micro-batch 4096 \
+  --max-tokens 1024 --max-context 4096 \
+  --gradient-checkpointing --logits-chunk-size 32 --profile-memory
+```
+
+| 训练模式 | Actor 更新内容 | 部署产物 |
+| --- | --- | --- |
+| `lora` | 选定模块的 adapter；底座冻结 | `lora_adapter/`，可选合并模型 |
+| `full` | 全部浮点参数 | `full_model/` |
+| `qat --qat-scope full` | 全部参数；Linear/Embedding 做权重量化感知训练 | `qat_model/` |
+| `qat --qat-scope projections`（默认 scope） | 指定末尾层 q/v 的 master 权重 | `qat_quantized.safetensors` 等 overlay，依赖原底座 |
+
+`--packed-inference` 在 QAT 模式中让 reference/rollout worker 使用 packed 量化副本，
+Actor 仍保留 FP32 master、梯度和 Adam 状态。它不量化 KV cache，也不会让普通 full 模式自动使用量化推理副本。
+
+本机 48 GiB，0.6B 普通全参在一个 worker 下持久张量下界约 **14.31 GB**；
+全参 QAT + packed inference 约 **10.28 GB**，均未包含 activation、KV 和临时缓冲。
+真实 0.6B 全参 QAT GRPO 已验证更新与续训；普通全参的集成验证使用小型 Qwen3 架构，
+尚未实测真实 0.6B 普通全参 GRPO。长上下文、多 worker 会增加内存，不能把下界当作实际峰值。
+
+### 5. 理解采样与训练批量
+
+| 参数 | 计量单位 | 使用含义 |
+| --- | --- | --- |
+| `--epochs` | 数据集轮次 | 每轮重新访问全部 train 沙箱 |
+| `--rollout-group` | 每次沙箱访问的轨迹数 | GRPO 至少 2；同组比较奖励 |
+| `--rollout-workers` | 进程数 | 每个 worker 有模型副本，增加会占用更多内存 |
+| `--rollout-concurrency` | 每 worker 的同时活跃轨迹数 | 不等于 rollout-group，不大于它 |
+| `--batch-size` | 沙箱组数 | 收集多少组作为训练 batch |
+| `--mini-batch-size` | 沙箱组数 | 每个优化 mini-batch 包含多少完整组，不大于 batch-size |
+| `--micro-batch-size` | assistant 片段数 | 物理前向/反传的最大序列条数 |
+| `--max-tokens-per-micro-batch` | padding 后的输入 token 数 | 约束物理批量；单条过长时需要显式增大 |
+
+GRPO 同组奖励全相同时没有可用的相对优势。默认有限重采样后跳过，日志会区分全成功、全失败和相同奖励。
+因此“完成 epochs”不等于“执行同样数量的 optimizer step”；需同时查看 visited、skipped、updated 和评估结果。
+
+### 6. 实时看板与日志
+
+训练默认自动写 TensorBoard。在另一个终端运行：
+
+```bash
+./scripts/train_dashboard.sh \
+  --logdir output/rl_runs/qwen06-qlora-thinking/tensorboard
+```
+
+浏览器打开 `http://127.0.0.1:6006`。
+
+- Scalars：reward、policy entropy、loss、KL、梯度和资源曲线。
+- Text：worker 的 `rollout/trajectory`，查看用户消息、工具调用、工具结果和最终奖励。
+- 轨迹按动作更新，不是逐 token 流式展示；默认每组展示 1 条，`--rollout-trace-samples 4` 可展示 4 条。
+- entropy 为当前策略在 assistant 训练位置的完整词表熵，仅用于监控，不额外增加 entropy bonus。
+- JSONL 指标在训练中追加；对应 JSON 通常在退出时汇总。详细路径见[实时 TensorBoard 看板](#实时-tensorboard-看板)。
+
+### 7. 中断恢复与产物
+
+重跑原训练命令，保持原参数和原 `--output`，追加 `--resume` 即可恢复。
+脚本不会仅凭 `--output` 自动补回所有训练参数；不要把省略参数后的默认值当作原配置。
+允许增加 `--epochs` 延长训练；模型、沙箱、思考模式、训练范围及其他受保护配置必须一致。
+源码和依赖身份也会校验，修改代码后不能直接续训旧运行。
+
+| 路径（相对于运行目录） | 用途 |
+| --- | --- |
+| `config.json` | 本次参数记录 |
+| `checkpoints/latest.json` | 指向最近完整训练检查点，包括模型、optimizer、RNG 等 |
+| `snapshots/` | 向 worker 发布的策略版本；QAT packed companion 在 `inference/` |
+| `training_report.json` | 完成情况、实际更新、评估、耗时和内存汇总 |
+| `evaluation_*.json` | 训练前后及相应部署评估 |
+| `metrics.jsonl` / `optimizer_metrics.jsonl` | 增量采样与优化指标 |
+| `tensorboard/` / `logs/` | 看板事件与进程事件日志 |
+| `group-*.json` | 保留窗口内的完整轨迹组 |
+| `lora_adapter/` / `full_model/` / `qat_model/` | 按训练模式生成的部署模型，不替代训练检查点 |
+
+默认 checkpoint 与策略发布间隔都是 1。可分别设置 `--checkpoint-interval-steps`、
+`--policy-publish-interval-steps`；降低保存频率能减少 I/O，但崩溃后需要重放更多未提交工作。
+检查点在安全边界提交，最后强制保存；未提交的未来版本恢复时隔离到 recovery。
+训练正常完成后才生成最终部署导出；只恢复模型权重不能恢复完整训练状态。
+
+### 8. 导出 Hugging Face / CUDA 可加载模型
+
+```bash
+uv sync --extra rl --extra cuda-export
+
+# 全参 QAT；普通全参训练将模型路径改为对应运行的 full_model/
+./scripts/convert_to_hf.sh \
+  --model output/rl_runs/qwen06-full-qat-grpo/qat_model \
+  --output output/hf-qwen06-qat --dtype bfloat16
+
+# QLoRA：输出匹配的浮点 base_model/ 和 PEFT adapter/
+./scripts/convert_to_hf.sh \
+  --model models/Qwen3-0.6B-4bit \
+  --adapter output/rl_runs/qwen06-qlora-thinking/lora_adapter \
+  --format peft --output output/hf-qwen06-peft
+
+# 在 NVIDIA 机器上验证加载与前向；使用具备相应 CUDA 支持的 PyTorch
+python -m rl.verify_cuda --model output/hf-qwen06-peft --device cuda
+```
+
+转换输出必须为新目录。默认 BF16；数值对比可用 `--dtype float32`。
+转换器输出标准浮点 HF/PEFT 文件，不输出 NF4/AWQ/GPTQ，也不迁移 MLX optimizer 状态。
+本地已完成 PyTorch CPU 数值校验，尚未实测 NVIDIA GPU。更多格式、局部 QAT 和 PEFT 加载方式见
+[转换到 CUDA 生态](#转换到-cuda-生态)。
+
+### 9. 常见问题排查
+
+| 现象 | 优先检查 |
+| --- | --- |
+| 沙箱资格或哈希校验失败 | 重新运行沙箱验收；确认未修改已验收产物 |
+| 一直没有 optimizer step | 查看 worker 心跳、环境调用、零方差组和 KL 拒绝原因 |
+| thinking 被截断或工具协议错误 | 查看原始轨迹、生成预算和模型工具协议提示 |
+| 上下文超限 | 累计历史加上每次生成预算是否超过 max-context；默认 finish 会结束并评分 |
+| 一条片段超过物理 token 预算 | 调整 max-tokens-per-micro-batch 或降低轨迹长度；不会静默截断训练数据 |
+| 内存不足或 swap 增长 | 先降低 worker/concurrency、物理 batch 和长度；QAT 使用 packed inference |
+| 批量提速没有体现 | 检查 batch_numeric_fallbacks；数值不一致会回退到 cached 路径 |
+| resume configuration / identity changed | 使用原代码、依赖、模型和参数；新实验使用新输出目录 |
+| reward 上升但实际能力未改善 | 检查 held-out 评估、奖励定义和完整轨迹，避免只看训练奖励 |
+
+需要测量具体配置时运行 `python -m rl.profile_memory --help`；测量范围和实测结果见
+[实测内存探针](#实测内存探针)。完整参数以 `./scripts/train_rl.sh --help` 和以下参考章节为准。
+
+---
+
 ## 安装与启动
 
 要求 Apple Silicon、Metal、Docker Engine、项目 Python 环境和合格沙箱；用户模拟器使用沙箱配置的外部模型服务。
@@ -22,6 +265,22 @@ uv run --extra rl hf download mlx-community/Qwen3-4B-Instruct-2507-4bit \
 只接受 `status.json` 和 `pipeline_result.json` 均为 `training_ready=true` 且产物哈希匹配的沙箱。
 输出目录必须新建；继续已有运行使用 `--resume`。旧版本配置和代码无法通过新版本的严格续训身份检查。
 
+## Rollout 消息与工具调用
+
+沙箱 reset 后通过 `GET /v1/tools` 获取工具定义，随每次采样传给 tokenizer 的
+`apply_chat_template(..., tools=tools)`。system 消息只包含任务执行规则；工具格式由模型自带的模板生成。
+策略 tokenizer 必须具有 MLX-LM 可识别的原生工具调用格式和解析器。
+
+模型生成的工具调用解析为 `assistant.tool_calls`，工具执行结果使用 `role="tool"`，
+并用 `tool_call_id` 对应调用。默认 Qwen 模板将其编码成 `<tool_call>` / `<tool_response>`。
+同一轮的多个工具调用按输出顺序执行，每个调用返回独立的 tool 消息。
+普通 assistant 文本直接提交给用户模拟器，不再使用 `kind=tool/respond` JSON 外层协议。
+初始 observation 和用户模拟器回复仍为 user 消息；无效调用格式返回协议错误，未知工具返回对应的 tool 错误。
+
+单条采样、批量解码、并行环境 RPC、HTTP 环境与快照恢复共用这一协议。
+轨迹保留原始采样 token 和行为概率，结构化消息只用于执行动作和构造后续上下文；工具结果不作为训练目标。
+新运行的策略身份包含 `chat_protocol=native_tools_v1`，不导入旧 JSON 协议运行的 replay。
+
 ## 统一概率比与损失
 
 每条轨迹保存生成时的策略版本、真实逐 token `old_logp`、终局奖励、终止标记；PPO 另外保存行为价值。本次 episode 评分后 bootstrap 为 0。
@@ -32,8 +291,8 @@ policy_loss = -mean(min(ratio * advantage,
                         clip(ratio, 1-epsilon, 1+epsilon) * advantage))
 ```
 
-- 奖励时机：reset 和中间 action 不读取奖励。episode 自然结束或到达步数上限后，由 RL rollout 框架调用 `finish()`，通过 `GET /v1/reward` 获取一次过程与结果综合评分；重复 finish 复用该分数。
-- PPO：中间 action 奖励为 0，最后一个 action 的末 token 接收终局评分，利用保存的行为价值计算 GAE/returns；加 clipped value loss。步数上限也作为本次评分终点，bootstrap 为 0。
+- 奖励时机：reset 和中间 action 不读取奖励。episode 自然结束、到达步数上限或上下文预算上限后，由 RL rollout 框架调用 `finish()`，通过 `GET /v1/reward` 获取一次过程与结果综合评分；重复 finish 复用该分数。
+- PPO：中间 action 奖励为 0，最后一个 action 的末 token 接收终局评分，利用保存的行为价值计算 GAE/returns；加 clipped value loss。步数和上下文上限均作为本次有限 episode 的评分终点，bootstrap 为 0。
 - 训练 reset 使用 `reward_mode=episode_end`：用户模拟器不调用奖励判断结束；必要交互完成后的最终提交结束协议轨迹，正确性由终局奖励判定。旧沙箱运行时必须重建以支持该协议，不能静默退回逐步评分。生成验收仍可单独调用奖励接口。
 - GRPO：同组轨迹共享任务和环境 seed，以最终奖励组内标准化得到优势；不训练 Critic。零奖励方差组跳过。
 - 两种算法均加固定初始参考策略的 KL 正则。只有 assistant token 参与损失。
@@ -70,7 +329,54 @@ Rollout worker 在组边界加载最新快照，组内行为版本一致。有�
 
 裁剪目标配合 KL、ESS、年龄和复用次数限制使用；不保证任意陈旧数据都适合训练。
 `--max-groups` 和 `--updates` 是可选提前停止预算，默认 0 表示不额外限制；若预算不足以完成 dataset epochs，运行不会声称完成。
-拒绝或零方差组记录为跳过，仍计入本轮已访问沙箱，不用下一轮沙箱补位；只有实际非零优化才发布策略版本。
+拒绝组按配置重采样；零方差默认有限重试后跳过并计入已访问沙箱，不计入有效更新。只有实际优化才发布策略版本。
+
+### 长训练稳定性、性能与周期评估
+
+| 参数 | 默认值 | 行为 |
+| --- | --- | --- |
+| `--train-progress-timeout` | 3600 秒 | 等待 rollout 时无新增可用结果的 deadline，错误包含等待任务与 worker 心跳；不计 actor 更新/评估时间 |
+| `--group-timeout` | 3600 秒 | 单组处理 deadline，持续 token 心跳也不能无限延长；超时消耗 worker 重启预算 |
+| `--model-load-timeout` | 600 秒 | 模型/快照加载阶段的心跳超时 |
+| `--rollout-timeout` | 1200 秒 | 其他 worker 阶段心跳及单次环境 RPC 超时 |
+| `--heartbeat-interval` | 1 秒 | 同阶段心跳写盘间隔，阶段变化立即写入；必须小于 rollout-timeout |
+| `--zero-variance-policy` | `retry_skip` | `retry_skip` / `retry_fail` 有限重试后跳过/失败；`skip` / `fail` 立即跳过/失败 |
+| `--context-limit-policy` | `finish` | `finish` 结束并真实评分；`fail` 保留超限报错 |
+| `--numerical-check-mode` | `periodic` | `periodic` 首次物理形状全检并定期复检；`strict` 每次检查 |
+| `--numerical-check-interval` | 20 | 同一已验证形状隔多少次 actor step 再检查；发现偏差后本运行及续训切回严格检查 |
+| `--reference-cache-tokens` | 1000000 | 固定 reference 的 LRU 缓存预算，按 prompt + response token 数计；0 关闭 |
+| `--group-artifacts-keep` | 256 | 保留最近完整 group / 周期评估结果；checkpoint、replay 和最佳评估引用额外受保护 |
+| `--metrics-export-interval` | 0 | 0 仅退出导出完整 JSON；实时读取使用 JSONL 或 TensorBoard |
+| `--eval-interval-steps` | 100 | 周期评估步数间隔，0 关闭；只选 manifest 中 split=eval 的任务，无 held-out 集时不启动 |
+
+上下文超限不裁剪历史、不补造 token，`finish_reason=context_limit`。PPO 将最后已执行 action 作为有限 horizon 的评分终点，bootstrap=0。
+如果初始 prompt 已超限，没有任何可训练 action，仍记录真实 reward；包含这种 episode 的组整组跳过，避免破坏 GRPO 组内比较。
+零方差日志区分 `all_success`、`all_failure`、`equal_reward`；成功定义沿用 reward>=1 且自然终止。
+TensorBoard 增加 `rollout/zero_reward_variance`、`rollout/context_limit_rate` 及 visited/skipped/updated 计数。
+
+reference 缓存属于当前 trainer 的固定 reference 实例，键为精确 prompt/response token；策略更新不会使其失效。
+缓存不进入 checkpoint，恢复后重新预热。数值校验模式不改写采样得到的行为 logprobs，不改变 PPO/GRPO loss。
+`train/reference_cache_hits`、`train/reference_cache_misses` 可用于观察复用；阶段 timings 用于验证实际收益。
+
+checkpoint 对两份指标 JSONL 保存记录数、字节位置与 SHA-256，提交前 fsync。
+续训验证已提交前缀，未提交尾部移入 recovery 后从 checkpoint 位置继续；不会重复计算已提交的更新。
+TensorBoard 继续使用 restart 事件隐藏未提交步。代码身份校验仍严格，不自动允许旧代码运行跨版本续训。
+完整轨迹默认会被回收；需要保留全部训练轨迹时将 `--group-artifacts-keep` 设置为足够大的值。
+
+周期评估在完整 batch 边界触发，因此实际间隔可大于配置值。它使用固定任务和 seed、greedy 解码，并恢复评估前 MLX RNG 状态。
+曲线包括 `eval/periodic/reward_mean`、按 split/task 的 reward 和 success rate。
+`best_policy.json` 指向已提交评估中的最佳策略权重，带校验和；分数相同不替换。
+该文件用于加载最佳策略，不含 optimizer；继续训练使用 `checkpoints/latest.json`。
+评估失败会明确使运行失败，可从最近训练 checkpoint 恢复，不伪造评估分数。
+
+例如每 20 个 optimizer step 评估，并采用严格数值校验：
+
+```bash
+./scripts/train_rl.sh --tasks output/rl_multitask_manifest.json \
+  --output output/rl_runs/grpo-monitored --tuning lora \
+  --eval-interval-steps 20 --numerical-check-mode strict \
+  --zero-variance-policy retry_skip --context-limit-policy finish
+```
 
 ### 跨运行导入
 
@@ -101,27 +407,177 @@ PPO 另外要求真实行为价值与 bootstrap。来源文件需保留，读取
 Rollout worker 在组边界切换任务，并关闭旧环境进程。每个并行 rollout 的模块、数据库和历史在独立进程中隔离。
 评估按任务及 train/eval 分别汇总，默认 `--eval-episodes 3`；没有 eval 任务时标记 `independent_eval=false`。
 
-## QAT 与数值一致性
+## 训练参数范围与思考模式
+
+| `--tuning` | 更新范围 | 底座要求 |
+| --- | --- | --- |
+| `qat` + `--qat-scope projections`（默认） | 指定层 q/v projection 的 FP32 master 权重 | 支持 MLX 量化底座 |
+| `qat` + `--qat-scope full` | 全部语言模型参数；Linear/Embedding 使用 fake quantization，norm/bias 保持浮点 | 浮点或 MLX affine 4/8-bit 底座 |
+| `lora` | 指定层的 LoRA adapter | 支持 MLX 量化底座 |
+| `full` | 全部语言模型参数，包括 embedding、attention、MLP、norm | 完整浮点 safetensors 底座，不接受 GGUF 或 packed 量化权重 |
+
+三种模式均支持 PPO / GRPO、策略同步、checkpoint 和断点续训。PPO 另外训练 critic。
+`full` 不受 `--layers` / `--rank` / `--bits` 限制。运行结束后，`full_model/` 保存完整 FP32
+`model*.safetensors`、模型配置和 tokenizer；其中不包含 PPO critic 或 optimizer。
+继续训练使用运行目录的 checkpoint。`rl_generation.json` 记录思考模式和温度，外部推理程序需显式应用这些设置。
+
+当前计算使用 FP32，未实现混合精度、optimizer 分片或 offload。启动前根据 safetensors header
+检查内存：持久张量下界为 `参数数 × 4 × (5 + rollout_workers)` 字节，包含 actor、reference、
+rollout worker、梯度和两个 Adam moments，尚不包含 activation、KV cache、critic 和临时缓冲。
+Qwen3-4B 在一个 worker 下约需 96 GB 起，因此本机 48 GB 不适合该模型的全参训练。
+全参 QAT 同样使用 FP32 master、梯度和 Adam 状态，未开启 packed inference 时内存下界也约为 96.5 GB，另有 fake quantization 临时缓冲。开启后的估算见下文优化配置。
+检查通过也不代表所有上下文长度都能放入内存；本机 48 GB 可对 4B 使用 LoRA / 局部 QAT。
+量化底座 + LoRA 会冻结底座；它与更新全部 master 权重的全参 QAT 是不同的训练配置。
+
+原版 **Qwen/Qwen3-4B** 支持以下 `--thinking-mode`：
+
+- `auto`（默认）：保留 tokenizer 默认行为。
+- `thinking`：向 chat template 传入 `enable_thinking=True`。
+- `no-thinking`：传入 `enable_thinking=False`，Qwen3 模板预填空的 think 段。
+
+该设置统一用于训练侧、rollout worker 和评估，并进入续训及 replay 身份检查。
+显式模式要求 tokenizer 模板支持 `enable_thinking`；不支持的模板会报错。
+这是模板控制，不是 `reasoning_effort` 档位。思考 token 属于 assistant 生成，参与 logprob、entropy 和 loss，
+也消耗 `--max-tokens` / `--max-context` 预算。Instruct-2507 与原版 Qwen3-4B 是不同模型，不能用前者替代思考模式验证。
+
+```bash
+# 原版 Qwen3-4B 的 MLX 4-bit 版本：可分别用 thinking / no-thinking
+./scripts/train_rl.sh --sandbox output/sandbox/task-1 \
+  --model models/Qwen3-4B-4bit --tuning lora --thinking-mode thinking \
+  --max-tokens 2048 --max-context 4096 \
+  --output output/rl_runs/qwen3-thinking
+
+# 全参训练：需要完整浮点底座和足够内存
+./scripts/train_rl.sh --sandbox output/sandbox/task-1 \
+  --model /path/to/floating-model --tuning full \
+  --output output/rl_runs/full-new
+```
+
+模型适配测试可单独运行（需要本机 Metal）：
+
+```bash
+.venv/bin/python -m pytest tests/rl/test_full_training.py -q
+RL_TEST_QWEN3_MODEL=models/Qwen3-4B-4bit \
+  RL_VALIDATION_OUTPUT=output/validation/qwen3-modes \
+  .venv/bin/python -m pytest tests/rl/test_qwen3_modes_integration.py -q
+```
+
+第一组使用小型 Qwen3 架构检查全参更新、checkpoint 续训、导出回载及内存检查。
+第二组用真实原版 4B 权重检查两种模式的工具调用、单条/批量解码、LoRA PPO/GRPO 更新及 QAT 导出。
+训练测试使用受控奖励，不用于证明任务成功率提升；真实环境的学习效果需要独立评估集验证。
+
+2026-10-02 本机验证：原版 `mlx-community/Qwen3-4B-4bit`（权重 revision
+`4dcb3d101c2a062e5c1d4bb173588c54ea6c4d25`，使用官方 Qwen3-4B tokenizer 配置）
+通过 17 项模型级用例。两种模式的单条/批量工具调用均完成，最大独立 cached logprob 误差约 `1.91e-5`；
+四种 LoRA 模式/算法组合各完成 6 步更新与续训。QAT packed 回载最大 logprob 误差为 thinking `0.00187`、
+no-thinking `0.00875`（测试门限 `0.01`）。全参更新仅在小型浮点 Qwen3 架构验证，未运行 4B 全参训练。
+本地轨迹、指标和汇总位于 `output/validation/qwen3-4b-20261002/`。
+
+### QAT 与数值一致性
 
 默认 `--tuning qat`：最后 1 层 attention q/v projection 使用 FP32 master、4-bit affine fake quantization 和 STE。
 其余基座量化权重冻结；可用 `--layers`、`--bits 8` 调整。实现为权重 QAT，不含 activation QAT。
 另支持 `--tuning lora`。
 
+`--tuning qat --qat-scope full` 将所有层的 Linear 和 Embedding 转成 FP32 master + affine fake quantization + STE，
+包括 attention q/k/v/o、MLP gate/up/down、embedding 及独立 lm_head；共享输出头通过同一个 embedding master 计算。
+norm 和普通 bias 保持浮点并参与训练，量化 scales/biases 从 master 重算。PPO critic 保持浮点。
+`--layers` / `--rank` 不限制全参 QAT，`--bits 4` / `8` 设置全部 QAT 权重的目标位宽。
+当前为 weight-only QAT，不含 activation QAT，不支持与 `--tuning lora` 同时选择。
+
+```bash
+# 需要足够内存；本机 48 GB 会在 Qwen3-4B 全参 QAT 加载前被检查拦截
+./scripts/train_rl.sh --sandbox output/sandbox/task-1 \
+  --model models/Qwen3-4B-4bit --tuning qat --qat-scope full --bits 4 \
+  --thinking-mode thinking --max-tokens 2048 --max-context 4096 \
+  --output output/rl_runs/qwen3-full-qat
+```
+
+全参 QAT 完成后导出 `qat_model/`：包含全部 packed 权重、训练后的浮点 norm/bias、配置与 tokenizer，
+可直接由 `mlx_lm.load` 加载，不依赖原始底座。它不包含 critic/optimizer；续训使用运行目录 checkpoint，
+其中保存全部 FP32 master。思考模式和温度记录在 `rl_generation.json`，外部推理需显式应用。
+`qat_scope` 进入 rollout、评估、策略身份和严格续训检查，不能在同一运行中切换训练范围。
+
+`tests/rl/test_full_qat.py` 使用小型 Qwen3 架构验证浮点/量化底座、共享/独立输出头、4/8-bit 导出回载、
+全部参数解冻、真实参数更新和 PPO/GRPO 续训。48 GB 本机没有进行 4B 全参 QAT 实际训练。
+
 采样使用逐 token KV cache，Actor 评分／训练采用右侧 padding 的完整序列张量批次，浮点参数使用 FP32。
 真实采样 log-prob 与独立 cached 重算的误差门限仍为 0.001；行为概率始终保留。
 批量路径的 kernel 数值差异单独测量，超过 `--batch-logp-tolerance`（默认 0.01）的形状自动拆小，单条仍超标时显式回退 cached 路径；回退次数和原始最大误差进入报告。
-QAT 导出仅含训练层，需要同一基座和 tokenizer；部署身份清单保存文件哈希。
+局部 QAT 导出仅含训练层，需要同一基座和 tokenizer；全参 QAT 导出完整 `qat_model/`。部署身份清单保存文件哈希。
 验收使用全新模型实例加载 packed 层，核对概率误差并执行真实评估。
 
 ## 恢复、产物与性能
 
+### 实时 TensorBoard 看板
+
+`uv sync --extra rl` 会安装 TensorBoard 和进程监控依赖，训练默认写入事件文件。
+启动训练后，在另一个终端运行：
+
+```bash
+./scripts/train_dashboard.sh --logdir output/rl_runs/grpo-new/tensorboard
+# 浏览器打开 http://127.0.0.1:6006
+```
+
+不指定 `--logdir` 时展示 `output/rl_runs` 下所有带事件文件的运行；可用 `--port 6007` 换端口。
+事件默认每 5 秒刷新到磁盘，看板每 5 秒重新读取，因此页面可能落后数秒。
+事件写入使用 TensorBoard 自带的异步 writer，不依赖 PyTorch 或 TensorFlow 训练运行时。
+
+| TensorBoard run | 面板与内容 | 横轴 |
+| --- | --- | --- |
+| `train` | loss、policy/value loss、policy entropy、KL、clip fraction、梯度范数、学习率、优化耗时和训练目标 token/s | optimizer step |
+| `rollout_groups` | reward 均值/标准差/范围及直方图、成功/终止/截断率、长度、工具 HTTP 错误率、策略滞后和队列等待 | 主进程已消费的采样组数，含拒绝组 |
+| `workers/worker-N-会话ID` | 实时轨迹文本、每轮生成量、工具/协议错误、动作延迟、最终奖励、worker 阶段和进程资源 | 当前进程会话事件序号 |
+| `runtime/actor-会话ID` | 配置、checkpoint 进度、累计阶段耗时、接受/拒绝原因、错误栈、运行报告和资源 | 当前主进程会话事件序号 |
+
+在 **Text** 面板选择 worker 下的 `rollout/trajectory`，可以看到 task、policy version、
+rollout index、action step、用户消息、原生工具调用与工具结果。
+轨迹在 reset、动作生成、环境返回、finish 时逐步写入；工具尚未返回时也可先查看已生成的调用。
+工具返回后的反馈与最终 reward 分开记录，中间步骤不会触发额外奖励计算。
+这是按动作更新的文本轨迹，不提供逐 token 流式聊天。
+
+| 参数 | 默认值 | 用途 |
+| --- | --- | --- |
+| `--tensorboard` / `--no-tensorboard` | 开启 | 控制 TensorBoard 事件；关闭后仍写 JSONL |
+| `--log-flush-seconds` | 5 | 事件刷新及进程资源采样的最小间隔 |
+| `--rollout-trace-samples` | 1 | 每个采样组展示前 N 条轨迹；0 关闭轨迹正文 |
+| `--rollout-trace-max-chars` | 16000 | 每条轨迹展示的消息正文长度上限，超长时保留首尾 |
+
+例如展示组内所有 4 条轨迹：
+
+```bash
+./scripts/train_rl.sh --sandbox output/sandbox/task-1 --output output/rl_runs/grpo-new \
+  --rollout-group 4 --rollout-trace-samples 4 --log-flush-seconds 2
+```
+
+`train/policy_entropy` 是更新前当前策略在训练轨迹生成位置的全词表熵（nats），
+使用与采样和训练打分一致的 temperature。先按 assistant loss mask 对每个片段取平均，
+再按训练样本权重聚合；排除 prompt、padding 和被 mask 的 token。PPO、GRPO 及 cached fallback 均记录。
+该指标只用于观测，不增加 entropy bonus 或改变优化目标；复用训练前向结果，但会增加全词表归约计算和临时内存。
+
+训练曲线使用 `optimizer_step`，rollout 曲线使用采样组计数，二者不混用。
+`--resume` 从 checkpoint 恢复这两类横轴，并用 TensorBoard restart 事件隐藏未提交步的旧曲线；
+JSONL 保留这些历史事件用于排查。每次 worker 重启创建独立会话目录，避免把重试轨迹误认为新的训练进度。
+日志选项可在续训时调整。原有代码、模型与任务身份校验仍生效。
+
+`logs/**/events.jsonl` 逐条追加时间、进程、事件、指标和选中的轨迹正文，便于训练中查询。
+`metrics.jsonl`、`optimizer_metrics.jsonl` 是实时增量指标源；对应 `.json` 在退出时导出，
+也可用 `--metrics-export-interval N` 每 N 个 optimizer step 导出。看板轨迹可能截断或抽样，完整轨迹以尚在保留窗口内的 `group-*.json` 为准。
+TensorBoard 启动器为 Text 面板保留最多 200 个采样点，可通过 `--samples_per_plugin text=1000` 调整。
+
+成功率沿用评估定义：episode 已终止且 reward >= 1；自定义奖励范围时应主要看 reward 曲线。
+采样 `tokens_per_wall_second` 计入整个组的环境等待；`tokens_per_compute_second` 使用累计解码计算耗时。
+Metal 指标是各进程自身的 active/cache/peak，不代表整机总 GPU 内存；进程 RSS 也不应简单相加当作物理占用。
+`eval/periodic` 是固定 held-out 集的周期评估，默认间隔 100 个 optimizer step，在 batch 边界执行；有 held-out 集时也在初始和最终状态评估。
+`eval/before`、`eval/after` 与 QAT 的 `eval/deployed` 保留原有全任务最终对照评估。
+
 - `checkpoints/latest.json` 指向原子提交的完整模型、Adam、RNG、计数器、rollout worker 位置及 replay 状态。已提交 mini-batch 不重复更新，未提交组重新采样。
 - 续训要求代码、依赖、模型/tokenizer、任务及训练配置身份一致；可增加 epochs 继续遍历，也可调整可选 updates/max-groups 预算。
 - `--max-rollout-restarts 2` 有限恢复可重试故障；持久恢复日志防止 resume 清零未提交的重启次数。
-- `--checkpoint-keep 3` 保留完整检查点；Rollout worker 停止后清理旧策略快照，保留初始参考和最近版本。
+- `--checkpoint-keep 3` 保留完整检查点；训练中清理旧快照与已提交消费的 continuation/result，保护所有保留 checkpoint、replay、未完成任务及 worker 权重租约。
 - `run_status.json` 记录 running/completed/failed/interrupted；训练异常不伪造零奖励。
-- `optimizer_metrics.json` 记录每个 optimizer step 的加权损失；`metrics.json` 记录更新、replay、拒绝和阶段耗时。
-- `training_report.json` 检查策略独立变化、有效量化权重变化、实际更新、独立回载和异步重叠。Critic 单独变化不能代表策略训练成功。
+- `optimizer_metrics.jsonl` 记录每个 optimizer step 的加权损失；`metrics.jsonl` 记录更新、rollout 时间区间、replay、拒绝和阶段耗时。对应 JSON 文件是导出视图。
+- `training_report.json` 分别报告 visited/accepted/skipped/updated jobs、实际 optimizer steps、策略变化、独立回载和异步重叠。`completed` 表示计划遍历完成；全部跳过时 `training_updates_observed=false`，不表示学到了能力。执行更新却只有 Critic 变化仍报错。
 - `peak_metal_gb` 只计 Actor trainer 进程，不能当作整机内存峰值。原始轨迹/诊断日志保留，长训练需自行归档。
 
 ```bash
@@ -244,8 +700,8 @@ Rollout worker 从共享任务队列领取当前 epoch 的沙箱任务，空闲 
 已完成并保存的环境动作不会因丢失回复被再次执行；若外部请求已发生但环境快照尚未保存，
 恢复仍可能重新请求外部服务，外部副作用的恰好一次语义需要服务端幂等支持。
 
-`optimizer_metrics.json` 分别记录 epoch、dataset_batch、optimization_pass、mini_batch、
-mini_batch_sandboxes 和 mini_batch_rollouts。`metrics.json` 记录每个 batch 的沙箱身份与 replay 来源，
+`optimizer_metrics.jsonl` 及其 JSON 导出分别记录 epoch、dataset_batch、optimization_pass、mini_batch、
+mini_batch_sandboxes 和 mini_batch_rollouts。`metrics.jsonl` 记录每个 batch 的沙箱身份与 replay 来源，
 以及 dataset_batch_completed 事件；training_report.json 汇总 epochs_completed、fresh_groups 等指标。
 
 PPO 使用共享语言模型骨干加可训练 critic head，优化 clipped value loss；参考策略不创建 critic。
@@ -351,11 +807,11 @@ mini-batch 提交后故障恢复，以及未提交新权重发布后的快照保
   --rollout-max-attempts 3
 ```
 
-仅通过 prepare 门禁的完整组占据 batch/mini-batch 配额。组内奖励零方差（GRPO）、
+仅通过 prepare 门禁的完整组进入优化；显式跳过仍占本轮访问配额。组内奖励零方差（GRPO）、
 策略版本过旧或概率漂移不合格会触发原沙箱补采；新尝试使用新 seed、独立续跑目录，并在开始时加载已发布策略。
 基础任务 ID 不变，`rollout_attempt` 从 0 递增。旧尝试的迟到通知不参与新尝试消费。
-保留每轮数据集完整覆盖：不会永久用容易通过的沙箱替代难沙箱；某沙箱耗尽尝试上限，运行明确失败。
-`max_groups` 非零时也限制总候选消费量；不会无限补采或将不足额的训练 batch 声明为完成。
+保留每轮任务访问覆盖，不用其他任务冒充原任务。零方差默认重试耗尽后明确跳过，可用 `--zero-variance-policy retry_fail` 保留严格失败行为；版本过旧或概率漂移重试耗尽仍失败。
+跳过减少本批有效组数，按实际样本权重归一化；不会补造样本或把跳过计作梯度更新。`max_groups` 非零时限制总候选消费量。
 
 worker 持续补充候选池。多余结果留给后续 batch，再按当时策略检查资格；不会为结束当前 batch 取消其他组。
 只有合格组进入 replay。合格但尚未凑够 mini-batch 的记录，以及补采次数，会随检查点保存，恢复后补齐再更新。
@@ -500,3 +956,157 @@ Pod 重建后可恢复已提交的 SQLite 状态和对话。传输失败不伪�
 
 停止只删除记录在该输出目录的资源；不删除 namespace 或共享 Secret。
 Kubernetes 是可选远程后端；日常单机默认使用上面的 Docker 管理器。
+
+## 第一、第二阶段优化配置
+
+以下选项适用于 MLX PPO/GRPO；默认保持原有训练范围和提交频率。量化底座配合
+`--tuning lora` 即本项目的 QLoRA 路径，使用 MLX affine 量化，并非 bitsandbytes NF4。
+
+| 参数 | 默认值 | 作用 |
+| --- | --- | --- |
+| `--lora-targets` | `self_attn.q_proj,self_attn.v_proj` | 支持逗号分隔模块名、`attention`、`all-linear`（attention + MLP） |
+| `--layers` / `--rank` / `--lora-scale` | `1` / `8` / `16` | LoRA 最后 N 层、秩和缩放；MLX scale 对应 PEFT `alpha/r` |
+| `--lora-dropout` | `0` | RL 要求为零；非零会破坏采样和重评分的一致性，启动时拒绝 |
+| `--gradient-checkpointing` | 关闭 | 训练时重算 transformer block，降低 activation 占用；增加计算量 |
+| `--logits-chunk-size` | `128` | 分块投影 response logits、logprob 和完整词表 entropy，并在反传重算投影 |
+| `--prefill-chunk-size` | `512` | rollout 每个调度 tick 推进一个 prefill chunk，让其他请求继续推进 |
+| `--prefix-cache-tokens` | `0` | reference/worker 的精确前缀 LRU token 预算；策略加载时清空 |
+| `--packed-inference` | 关闭 | QAT reference/worker 使用 packed 权重，不保留全量 master |
+| `--profile-memory` | 关闭 | 按阶段同步并记录 Metal peak/active bytes，有测量开销 |
+| `--checkpoint-interval-steps` | `1` | durable checkpoint 的最小 optimizer step 间隔 |
+| `--policy-publish-interval-steps` | `1` | worker 新策略版本的最小 optimizer step 间隔 |
+| `--eval-interval-steps` | `100` | 已有独立评估间隔，与上述两种间隔分别控制 |
+
+前缀缓存仅用于推理，每个请求使用独立 KV 容器。预算按缓存条目持有的 token 数计算，
+不是按独立文本 token 去重；仍需给 KV cache 留出内存。训练 actor 不复用缓存，确保梯度正确。
+chunking 保持完整 softmax 分布，不增加 top-k/top-p 截断。
+
+```bash
+# 全 28 层 QLoRA；替换 sandbox 路径为已通过验收的沙箱
+./scripts/train_rl.sh --sandbox output/sandbox/task-1 --output output/rl-qwen06 \
+  --model models/Qwen3-0.6B-4bit --tuning lora --layers 28 \
+  --lora-targets all-linear --thinking-mode no-thinking \
+  --gradient-checkpointing --logits-chunk-size 32 \
+  --prefill-chunk-size 256 --prefix-cache-tokens 4096 \
+  --checkpoint-interval-steps 10 --policy-publish-interval-steps 2 \
+  --profile-memory --lora-merge-export
+
+# 全参 QAT 可改用以下训练选项：
+# --tuning qat --qat-scope full --packed-inference --gradient-checkpointing
+```
+
+提交和发布在安全的 batch 边界检查间隔，最后强制执行；实际间隔可能超过配置步数。
+增大 checkpoint 间隔会增加崩溃后的重放工作量。恢复时回到最后完整 checkpoint，
+恢复当时发布版本，不把未发布 actor 权重冒充旧版本；未来版本的结果、continuation、
+master/packed snapshot 移入 recovery 隔离目录。未跨过 durable commit 的更新不保证保留。
+packed companion 位于 `snapshots/inference/`，与 master 使用相同版本和保留生命周期。
+
+### 导出与部署验证
+
+LoRA 训练完成自动导出 `lora_adapter/`，可通过
+`mlx_lm.load(base, adapter_path=... )` 回载；底座身份、实际 targets、rank/scale 均写入配置。
+`--lora-merge-export` 额外产生 `lora_merged/`；再加 `--lora-requantize-export` 时改为
+`lora_requantized/`。后者重新量化会引入误差，不能假定奖励保持不变。
+`lora_export_validation.json` 记录独立回载的固定 token logits 误差和 KL，native adapter
+误差超过阈值会失败；合并/再量化误差用于审查，不替代独立任务评估。
+原生 adapter 保留底座量化语义；合并为 dense 后可能因计算内核不同出现小幅数值偏差。
+
+全参 QAT 的 actor 仍保留 FP32 master、梯度和 Adam moments；`--packed-inference`
+只节省 reference/worker 常驻权重。0.6B、一个 worker、4-bit/group64 的持久张量下界
+约 10.28 GB（不含 activation、KV 和临时缓冲）；4B 即使开启该优化也超过 48 GB。
+
+### 实测内存探针
+
+```bash
+.venv/bin/python -m rl.profile_memory --model models/Qwen3-0.6B-4bit \
+  --output output/profile-qwen06.json --tuning lora --layers 28 \
+  --lora-targets all-linear --gradient-checkpointing --logits-chunk-size 8 \
+  --prompt-tokens 128 --response-tokens 32 --sequences 1
+```
+
+该命令执行真实 prefill、decode、reference scoring、反传及一次 Adam 更新，记录各阶段
+耗时与 Metal 内存；使用合成 token，不证明任务学习效果，也不包含独立 rollout worker 进程。
+比较配置时应固定长度、序列数、训练范围，并分别运行新进程。训练日志也记录 swap 用量，
+防止把交换内存误认为物理内存容量。启用阶段测量会同步 GPU，不能用其吞吐直接代表无测量运行。
+
+## 转换到 CUDA 生态
+
+入口是 `scripts/convert_to_hf.sh`（或 `python -m rl.convert_cuda`）。
+转换器只依赖 CPU PyTorch/Transformers/safetensors/PEFT，不依赖 MLX，支持 Qwen3 架构。
+它将 MLX affine 4/8-bit 权重解包成标准浮点 HF safetensors，并可合并 LoRA 或输出 PEFT。
+目标不是 GGUF、AWQ、GPTQ 或 NF4；需要这些格式时应对导出的 HF 模型另行量化。
+
+```bash
+# 在当前 Mac 保留两组依赖；Linux 转换环境只需 --extra cuda-export
+uv sync --extra rl --extra cuda-export
+
+# 全参 QAT；全参浮点训练改为 --model output/run/full_model
+./scripts/convert_to_hf.sh --model output/run/qat_model \
+  --output output/hf-qwen --dtype bfloat16
+
+# 局部 QAT：需要与训练一致的底座以及本框架新导出的身份文件
+./scripts/convert_to_hf.sh --model models/Qwen3-0.6B-4bit \
+  --qat-export output/run --output output/hf-qat
+
+# QLoRA 合并为标准 HF 模型
+./scripts/convert_to_hf.sh --model models/Qwen3-0.6B-4bit \
+  --adapter output/run/lora_adapter --output output/hf-merged
+
+# 保留 PEFT adapter；同时导出解量化的匹配底座 base_model/
+./scripts/convert_to_hf.sh --model models/Qwen3-0.6B-4bit \
+  --adapter output/run/lora_adapter --format peft --output output/hf-peft
+
+# NVIDIA 机器上的实际验收；安装适合该机器 CUDA 的 PyTorch
+python -m rl.verify_cuda --model output/hf-peft --device cuda \
+  --output output/cuda-check.json
+# 若有 MLX 侧 input_ids/logits NPZ，追加 --reference PATH 可做数值对比。
+```
+
+输出目录必须是新目录。默认 BF16 会有舍入误差；跨框架精确对比使用 `--dtype float32`。
+`--max-shard-size-mb` 控制分片目标大小（单个 tensor 不拆分）；manifest 记录来源、输出哈希。
+底座身份不匹配会拒绝转换。训练的 optimizer/critic 不转入 HF；MLX 续训仍使用原 checkpoint。
+
+PEFT 文件布局遵循 [PEFT checkpoint 格式](https://huggingface.co/docs/peft/main/developer_guides/checkpoint)，
+LoRA 缩放对应 [LoraConfig](https://huggingface.co/docs/peft/main/package_reference/lora)。
+将整个目录复制到 NVIDIA 机器后，显式加载实际路径，避免沿用 adapter 配置中的原机器绝对路径：
+
+```python
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from peft import PeftModel
+root = "/path/to/hf-peft"
+base = AutoModelForCausalLM.from_pretrained(root + "/base_model", dtype=torch.bfloat16).to("cuda")
+model = PeftModel.from_pretrained(base, root + "/adapter").eval()
+tokenizer = AutoTokenizer.from_pretrained(root + "/base_model")
+# 原版 Qwen3 通过 apply_chat_template(..., enable_thinking=False/True) 控制思考模式。
+```
+
+`rl_generation.json` 是本项目元数据，Transformers 不会自动应用它；部署方需设置思考模式和采样温度。
+CUDA verifier 明确报告设备，未检测到 NVIDIA GPU 时不会把 CPU 验证称作 CUDA 验证。
+
+### Qwen3-0.6B 验证范围
+
+本地底座由官方 `Qwen/Qwen3-0.6B` revision
+`c1899de289a04d12100db370d81485cdf75e47ca` 转为 MLX 4-bit/group64，下载文件 SHA256 已核验。
+测试入口 `tests/rl/test_qwen06_integration.py` 覆盖 thinking/no-thinking、单条/批量原生工具调用、
+全层 QLoRA PPO/GRPO、全参 QAT PPO/GRPO、故障续训和跨 PyTorch CPU 数值校验。
+训练用受控奖励与评估桩，验证真实更新及恢复，不代表真实沙箱任务奖励提升。
+
+0.6B 对提示词敏感：初始中文任务发生直接回答、思考标签不闭合；普通英文任务在 no-thinking
+下会输出缺少 `<tool_call>` 标签的 JSON。明确提示原生工具标签后简单工具任务可以完成，
+不因此放宽协议解析或宣称所有任务可靠。greedy 用于可重复诊断，不作为 thinking 的采样建议。
+本机为 Apple Silicon，独立部署数值验证运行在 PyTorch CPU；NVIDIA CUDA 硬件仍需用上述命令验收。
+验证证据保存在 `output/validation/qwen3-06-optimizations/`。
+
+本轮验证（2026-10-03，Apple M5 Max / 48 GiB）：RL 回归 **183 passed / 33 skipped**，
+真实 0.6B 集成 **10 passed**，两个独立 packed rollout worker 的集成 **1 passed**。
+六组训练各完成 6 次 optimizer step（含续训）；短受控轨迹的训练进程 Metal 峰值为
+QLoRA 约 2.75 GB、全参 QAT 约 19.21 GB，不包含独立 worker 或长上下文容量结论。
+六种产物在 float32 PyTorch CPU 上的最大 logits 误差为 `4.53e-5` 至 `1.73e-4`。
+
+固定 prompt=16、response=4、单序列的全参 QAT 探针：只将 reference 从 master 改为 packed，
+峰值从 **16.29 GB 降至 14.28 GB**，reference 加载后常驻从 4.77 GB 降至 2.76 GB。
+该路径没有触发数值回退。prompt=128、response=32 的重复 token QLoRA 探针触发 cached fallback，
+优化前后峰值均约 3.46 GB；这组结果不支持重算带来内存收益的结论。梯度等价性由小模型独立测试覆盖。
+测量时系统已有约 6.7–6.8 GB swap；这些数值是当前进程的 Metal 张量内存，不是整机总内存，
+也不证明运行完全不使用 swap。完整阶段记录及回退计数见验证目录中的 `measured-*.json`。

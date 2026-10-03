@@ -153,12 +153,24 @@ uv sync --extra rl
   --epochs 2 --batch-size 1 --mini-batch-size 1 --rollout-group 4
 ```
 
-`--algorithm ppo` 启用 PPO 和 critic 训练；GRPO 不使用 critic。`--tuning lora` 可切换为 LoRA。多沙箱数据集通过 `--tasks PATH` 传入，格式见[训练文档](docs/agent_rl.md)。新运行使用新的输出目录，续训使用 `--resume` 并保持运行配置兼容。
+`--algorithm ppo` 启用 PPO 和 critic 训练；GRPO 不使用 critic。`--tuning lora` 可切换为 LoRA；`--tuning full` 对浮点底座进行全参训练（需足够内存）。`--tuning qat --qat-scope full` 启用全参 QAT，并导出完整量化模型；它仍需全量 FP32 master/Adam 内存。原版 Qwen3 可用 `--thinking-mode thinking` / `no-thinking` 控制思考模式。多沙箱数据集通过 `--tasks PATH` 传入，格式见[训练文档](docs/agent_rl.md)。新运行使用新的输出目录，续训使用 `--resume` 并保持运行配置兼容。
+
+按步骤操作见 [RL 训练使用指南](docs/agent_rl.md#使用指南从准备到导出)：环境与模型准备、多沙箱、thinking、全参/QLoRA/QAT、TensorBoard、续训和 HF 导出。
+
+新增全层 QLoRA targets、activation 重算、logits/prefill 分块、packed QAT 推理副本、独立提交/发布频率和实测内存探针。`scripts/convert_to_hf.sh` 可导出标准 HF / PEFT 模型；详见[优化配置](docs/agent_rl.md#第一第二阶段优化配置)和[CUDA 转换](docs/agent_rl.md#转换到-cuda-生态)。
+
+训练默认记录 TensorBoard 曲线及每组一条实时 rollout 文本轨迹。在另一个终端运行
+`./scripts/train_dashboard.sh --logdir output/rl_runs/grpo-new/tensorboard`，
+浏览器打开 `http://127.0.0.1:6006`。用 `--rollout-trace-samples N` 调整轨迹数量，
+`--no-tensorboard` 关闭看板事件；追加式 JSONL 日志仍保留。详见[看板说明](docs/agent_rl.md#实时-tensorboard-看板)。
+默认每 100 个 optimizer step 在 batch 边界评估 held-out 任务；零方差组有限重试后跳过。
+运行中清理受保护引用之外的旧产物，实时指标使用 JSONL，完整 JSON 在退出时导出。
+参数与恢复语义见[长训练说明](docs/agent_rl.md#长训练稳定性性能与周期评估)。
 
 | 参数 | 含义 |
 | --- | --- |
 | `--epochs` | 遍历训练沙箱数据集的次数 |
-| `--batch-size` | 每批按完成顺序收集的合格沙箱组数 |
+| `--batch-size` | 每批按完成顺序处理的沙箱访问数，跳过不计有效更新 |
 | `--mini-batch-size` | 每个梯度更新 step 使用的沙箱数，保留各自完整 rollout group |
 | `--rollout-group` | 每次访问一个沙箱时采样的轨迹数 |
 | `--rollout-workers` | 独立采样进程数 |

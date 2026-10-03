@@ -153,12 +153,24 @@ uv sync --extra rl
   --epochs 2 --batch-size 1 --mini-batch-size 1 --rollout-group 4
 ```
 
-Use `--algorithm ppo` for PPO with critic training; GRPO does not use a critic. Use `--tuning lora` for LoRA. Supply a multi-sandbox dataset through `--tasks PATH`; see the [training guide](docs/agent_rl.md) for its format. Use a new output directory for a new run, or `--resume` with a compatible configuration to continue an existing run.
+Use `--algorithm ppo` for PPO with critic training; GRPO does not use a critic. Use `--tuning lora` for LoRA or `--tuning full` for full parameter training on floating-point weights with sufficient memory. Use `--tuning qat --qat-scope full` for full parameter QAT and standalone quantized export; this still requires memory for all FP32 masters and Adam states. Original Qwen3 supports `--thinking-mode thinking` / `no-thinking`. Supply a multi-sandbox dataset through `--tasks PATH`; see the [training guide](docs/agent_rl.md) for its format. Use a new output directory for a new run, or `--resume` with a compatible configuration to continue an existing run.
+
+See the [step-by-step RL training guide (Chinese)](docs/agent_rl.md#使用指南从准备到导出) for setup, multiple sandboxes, thinking modes, full/QLoRA/QAT training, TensorBoard, recovery, and HF export.
+
+Optimization options include configurable QLoRA targets, activation recomputation, chunked logits/prefill, packed QAT inference copies, independent checkpoint/publication intervals, and memory profiling. `scripts/convert_to_hf.sh` exports HF / PEFT models; see the [optimization and CUDA guide](docs/agent_rl.md#第一第二阶段优化配置).
+
+Training writes TensorBoard metrics and one live rollout text trace per group by default.
+Run `./scripts/train_dashboard.sh --logdir output/rl_runs/grpo-new/tensorboard` in another terminal
+and open `http://127.0.0.1:6006`. Use `--rollout-trace-samples N` to change trace sampling,
+or `--no-tensorboard` to disable event files while retaining append-only JSONL logs.
+Held-out evaluation runs every 100 optimizer steps at batch boundaries. Zero-variance groups
+are retried then explicitly skipped by default. Old artifacts are pruned while protecting
+checkpoint, replay and worker references. Live metrics use JSONL; JSON exports are written on exit.
 
 | Option | Meaning |
 | --- | --- |
 | `--epochs` | Full passes through the training sandbox dataset |
-| `--batch-size` | Qualified sandbox groups collected per batch in completion order |
+| `--batch-size` | Sandbox visits processed per batch; skipped visits do not count as updates |
 | `--mini-batch-size` | Sandboxes per gradient update, retaining each complete rollout group |
 | `--rollout-group` | Trajectories sampled per sandbox visit |
 | `--rollout-workers` | Independent sampling processes |
