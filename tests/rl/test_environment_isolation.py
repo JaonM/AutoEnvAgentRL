@@ -37,4 +37,5 @@ def test_application_value_error_is_not_policy_protocol_error():
         raise ValueError('sandbox implementation failed')
     episode.request=broken
     with pytest.raises(ValueError,match='sandbox implementation'):
-        episode.step('{"kind":"tool","name":"tool","arguments":{}}')
+        episode.step({'role': 'assistant', 'content': '', 'tool_calls': [
+            {'type': 'function', 'function': {'name': 'tool', 'arguments': '{}'}}]})

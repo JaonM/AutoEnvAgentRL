@@ -9,6 +9,21 @@ import json
 from pathlib import Path
 
 
+def load_metric_rows(root, name):
+    """Read complete live JSONL records, falling back to historical JSON exports."""
+    journal = root / f'{name}.jsonl'
+    if journal.exists():
+        rows = []
+        with journal.open('rb') as stream:
+            for line in stream:
+                if not line.endswith(b'\n'):
+                    break
+                rows.append(json.loads(line))
+        return rows
+    path = root / f'{name}.json'
+    return json.loads(path.read_text()) if path.exists() else []
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--runs', nargs='+', type=Path, default=[
@@ -24,9 +39,8 @@ def main():
                          'axes.spines.right': False, 'figure.facecolor': '#f8fafc'})
     fig, axes = plt.subplots(1, len(args.runs), figsize=(6 * len(args.runs), 4.4), squeeze=False)
     for index, (ax, root) in enumerate(zip(axes[0], args.runs)):
-        metrics = json.loads((root / 'metrics.json').read_text())
-        optimizer_path = root / 'optimizer_metrics.json'
-        optimizer_rows = json.loads(optimizer_path.read_text()) if optimizer_path.exists() else []
+        metrics = load_metric_rows(root, 'metrics')
+        optimizer_rows = load_metric_rows(root, 'optimizer_metrics')
         rows = optimizer_rows or [m for m in metrics if 'update' in m and 'loss' in m]
         step_key = 'optimizer_step' if optimizer_rows else 'update'
         if not rows:

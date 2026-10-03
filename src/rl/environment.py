@@ -62,7 +62,8 @@ class SandboxEpisode:
         status, value, _ = self.app.handle(method, path, body, self.headers)
         self.trace.append({'path': path, 'request': copy.deepcopy(body), 'status': status,
                            'response': copy.deepcopy(value), 'seconds': time.monotonic() - started})
-        if status >= 500:
+        from .tool_transport import is_authored_tool_fault
+        if status >= 500 and not is_authored_tool_fault(self.task, path, status, value):
             raise InfrastructureError(f'environment endpoint failed: {path} ({status})')
         if status >= 400 and not path.startswith('/v1/tools/'):
             raise RuntimeError(f'environment endpoint failed: {path} ({status})')
@@ -74,24 +75,17 @@ class SandboxEpisode:
                                                    'reward_mode': 'episode_end'})[1]
         if reset.get('reward_mode') != 'episode_end':
             raise RuntimeError('sandbox does not support episode_end rewards; rebuild its runtime')
-        tools = self.request('GET', '/v1/tools')[1]['tools']
-        self.names = {tool['function']['name'] for tool in tools}
+        self.tools = self.request('GET', '/v1/tools')[1]['tools']
+        self.names = {tool['function']['name'] for tool in self.tools}
         public = self.task.get('public_input', {})
         user = public.get('initial_user_message') or self.task['task']
         if public.get('materials'):
             user += '\nPublic materials: ' + json.dumps(public['materials'], ensure_ascii=False)
         self.conversation = [{'role': 'user', 'content': user}]
         self.messages = [{'role': 'system', 'content': (
-            '你是通过工具完成任务的 agent。每轮必须输出且只输出一个合法 JSON 对象。'
-            '禁止在 JSON 外输出文字、算式或 Markdown。用户要求的答案格式只约束 content 字段，'
-            '不能省略外层 JSON。调用工具的格式：'
-            '{"kind":"tool","name":"工具名称","arguments":{}}。'
-            '给用户回复的格式：{"kind":"respond","content":"最终答案或澄清问题"}。'
-            '需要计算时，在同一个 JSON 中增加 calculation 字段，按步骤计算，再把答案写入 content。'
-            '例如求 12 与 7 的和：'
-            '{"calculation":"12+7=19","kind":"respond","content":"总数：19"}。'
-            '计算必须使用本次工具返回的实际数据，不得编造。'
-            '工具定义：' + json.dumps(tools, ensure_ascii=False))},
+            '你是通过工具完成任务的 agent。使用原生工具调用格式调用提供的工具。'
+            '需要给用户回复或澄清时，直接输出回复内容，遵循用户要求的答案格式。'
+            '计算必须使用本次工具返回的实际数据，不得编造。')},
             *self.conversation]
         # Observation endpoint is policy-visible by the sandbox contract.
         self.messages.append({'role': 'user', 'content': json.dumps(
@@ -100,35 +94,71 @@ class SandboxEpisode:
         self.terminated = False
         return self.messages
 
-    def step(self, text):
+    def step(self, action):
         if self.reward is not None:
             raise RuntimeError('episode already scored')
-        self.messages.append({'role': 'assistant', 'content': text})
+        message = {'role': 'assistant', 'content': action} if isinstance(action, str) else copy.deepcopy(action)
         try:
-            action = json.loads(text)
-            if not isinstance(action, dict):
-                raise ValueError('action must be JSON object')
-            if action.get('kind') == 'tool':
-                if action.get('name') not in self.names or not isinstance(action.get('arguments'), dict):
-                    raise ValueError('unknown tool or invalid arguments')
-            elif action.get('kind') != 'respond' or not isinstance(action.get('content'), str) or not action['content'].strip():
-                raise ValueError('expected tool or respond')
+            if not isinstance(message, dict) or message.get('role') != 'assistant':
+                raise ValueError('expected an assistant message')
+            if error := message.pop('protocol_error', None):
+                raise ValueError(error)
+            message['content'] = message.get('content') or ''
+            if not isinstance(message['content'], str):
+                raise ValueError('assistant content must be text')
+            calls = message.get('tool_calls', [])
+            if not isinstance(calls, list):
+                raise ValueError('tool_calls must be a list')
+            arguments = []
+            ids = {m['tool_call_id'] for m in self.messages if m.get('role') == 'tool'}
+            for index, call in enumerate(calls):
+                if not isinstance(call, dict) or call.get('type') != 'function':
+                    raise ValueError('expected a function tool call')
+                function = call.get('function')
+                if not isinstance(function, dict) or not isinstance(function.get('name'), str) or not function['name']:
+                    raise ValueError('tool call requires a function name')
+                params = function.get('arguments')
+                params = json.loads(params) if isinstance(params, str) else params
+                if not isinstance(params, dict):
+                    raise ValueError('tool arguments must be an object')
+                arguments.append(params)
+                function['arguments'] = json.dumps(params, ensure_ascii=False)
+                call.setdefault('id', f'call_{len(self.messages)}_{index}')
+                if not isinstance(call['id'], str) or not call['id'] or call['id'] in ids:
+                    raise ValueError('tool call IDs must be nonempty and unique')
+                ids.add(call['id'])
+            if not calls and not message['content'].strip():
+                raise ValueError('empty assistant response')
         except (ValueError, TypeError) as error:
+            content = message.get('content', '') if isinstance(message, dict) else str(message)
+            self.messages.append({'role': 'assistant', 'content': content})
             visible = {'protocol_error': str(error), 'instruction':
-                       '只输出一个 JSON 对象。回复必须包装为 {"kind":"respond","content":"你的回答"}。'}
+                       '使用完整的原生工具调用格式，或直接回复用户。'}
+            self.messages.append({'role': 'user', 'content': json.dumps(visible, ensure_ascii=False)})
         else:
+            self.messages.append(message)
             # Application failures must escape; they are not policy JSON errors.
-            if action['kind'] == 'tool':
-                status, value = self.request('POST', '/v1/tools/' + action['name'], action['arguments'])
-                visible = {'status': status, 'tool_result': value}
+            if calls:
+                for call, params in zip(calls, arguments):
+                    name = call['function']['name']
+                    if name in self.names:
+                        previous_headers = getattr(self, 'headers', {})
+                        self.headers = {**previous_headers, 'Idempotency-Key': call['id']}
+                        try:
+                            status, value = self.request('POST', '/v1/tools/' + name, params)
+                        finally:
+                            self.headers = previous_headers
+                    else:
+                        status, value = 400, {'error': 'unknown tool', 'name': name}
+                    self.messages.append({'role': 'tool', 'name': name, 'tool_call_id': call['id'],
+                        'content': json.dumps({'status': status, 'tool_result': value}, ensure_ascii=False)})
             else:
-                self.request('POST', '/v1/agent_response', {'content': action['content']})
-                self.conversation.append({'role': 'assistant', 'content': action['content']})
+                self.request('POST', '/v1/agent_response', {'content': message['content']})
+                self.conversation.append({'role': 'assistant', 'content': message['content']})
                 user = self.request('POST', '/v1/user_simulator', {'messages': self.conversation})[1]
                 self.conversation.append({'role': 'user', 'content': user['user_query']})
-                visible = {'user_query': user['user_query']}
+                self.messages.append({'role': 'user', 'content': user['user_query']})
                 self.terminated = bool(user.get('should_end'))
-        self.messages.append({'role': 'user', 'content': json.dumps(visible, ensure_ascii=False)})
         return 0.0, self.terminated
 
     def finish(self):
@@ -153,7 +183,7 @@ class SandboxEpisode:
             memory.close()
             database.close()
         return {'database': payload, **{name: copy.deepcopy(getattr(self, name)) for name in
-            ('messages', 'conversation', 'reward', 'terminated', 'trace')}, 'names': sorted(self.names)}
+            ('messages', 'conversation', 'reward', 'terminated', 'trace', 'tools')}, 'names': sorted(self.names)}
 
     def restore(self, state):
         memory = sqlite3.connect(':memory:')
@@ -164,7 +194,7 @@ class SandboxEpisode:
         finally:
             memory.close()
             database.close()
-        for name in ('messages', 'conversation', 'reward', 'terminated', 'trace'):
+        for name in ('messages', 'conversation', 'reward', 'terminated', 'trace', 'tools'):
             setattr(self, name, copy.deepcopy(state[name]))
         self.names = set(state['names'])
 

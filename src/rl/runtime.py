@@ -95,7 +95,14 @@ class RolloutPool:
             path=Path(self.config['output'])/'rollout_workers'/f'worker-{index}.json'
             if path.exists():
                 heartbeat=json.loads(path.read_text())
-                if time.time()-heartbeat['at'] > self.config['rollout_timeout']:
+                limit = (self.config.get('model_load_timeout', self.config['rollout_timeout'])
+                         if heartbeat.get('stage') in ('starting', 'loading_model', 'loading_snapshot')
+                         else self.config['rollout_timeout'])
+                if (heartbeat.get('group_started_at') and
+                        time.time() - heartbeat['group_started_at'] > self.config.get('group_timeout', 3600)):
+                    self.restart(index, 'group_deadline_exceeded')
+                    continue
+                if time.time()-heartbeat['at'] > limit:
                     self.restart(index,'progress_deadline_exceeded:'+heartbeat.get('stage','unknown'))
 
     def _watch(self):
@@ -105,6 +112,10 @@ class RolloutPool:
             except Exception as error:
                 self.failure = error
                 return
+
+    def diagnostics(self):
+        return {path.stem: json.loads(path.read_text())
+                for path in (Path(self.config['output']) / 'rollout_workers').glob('worker-*.json')}
 
     def raise_if_failed(self):
         if self.failure is not None:

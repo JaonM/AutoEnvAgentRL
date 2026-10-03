@@ -14,7 +14,7 @@ import threading
 import time
 import traceback
 
-from .errors import InfrastructureError
+from .errors import InfrastructureError, ContextBudgetExceeded
 from .trajectory import assign_episode_reward
 
 
@@ -68,6 +68,7 @@ def environment_worker(connection, sandbox, parent_pid, factory="rl.environment:
                 else:
                     raise ValueError(f'unknown environment RPC: {command}')
                 reply = {'value':value, 'messages':environment.messages,
+                         **({'tools': environment.tools} if hasattr(environment, 'tools') else {}),
                          'terminated':environment.terminated,
                          'started_at':started, 'finished_at':time.time()}
                 if durable is not None:
@@ -118,8 +119,9 @@ class EnvironmentPool:
         self.workers = []
 
 
-def parallel_rollouts(policy, pool, config, seed, *, stop=None, notify=None, continuation=None):
+def parallel_rollouts(policy, pool, config, seed, *, stop=None, notify=None, continuation=None, observe=None):
     notify = notify or (lambda stage: None)
+    observe = observe or (lambda event, **fields: None)
     count = config['rollout_group']
     completed = [None] * count
     active = {}
@@ -146,6 +148,14 @@ def parallel_rollouts(policy, pool, config, seed, *, stop=None, notify=None, con
         else:
             pool.workers[slot][0].send(('durable', {'operation':operation, 'argument':argument,
                 'sequence':state['sequence'], 'path':str(Path(continuation) / f"episode-{state['index']}.json")}))
+
+    def finish_context(slot):
+        state = active[slot]
+        state.pop('generator', None)
+        state['finish_reason'] = 'context_limit'
+        state['bootstrap_prompt'] = policy.encode(state['messages'], **state.get('tool_options', {}))
+        state['bootstrap'] = 0.
+        send(slot, 'finish', None)
 
     def start(slot):
         nonlocal next_episode
@@ -184,11 +194,16 @@ def parallel_rollouts(policy, pool, config, seed, *, stop=None, notify=None, con
                     state['generated_steps'] += 1
                     if state['generated_steps'] % 16 == 0:
                         notify(f'rollout-{state["index"]}-policy')
+                except ContextBudgetExceeded:
+                    if config.get('context_limit_policy', 'finish') == 'fail':
+                        raise
+                    finish_context(slot)
                 except StopIteration as result:
                     sample = result.value
                     state['actions'].append(sample)
                     del state['generator']
-                    send(slot,'step',sample['text'])
+                    observe('action', rollout_index=state['index'], step=len(state['actions']), sample=sample)
+                    send(slot,'step',sample.get('action', sample['text']))
                 continue
             if time.monotonic()-state['sent_at'] > config['rollout_timeout']:
                 raise TimeoutError(f'rollout {state["index"]} environment {state["operation"]} timed out')
@@ -210,13 +225,16 @@ def parallel_rollouts(policy, pool, config, seed, *, stop=None, notify=None, con
             notify(f'rollout-{state["index"]}-{operation}')
             if operation == 'finish':
                 result = reply['value']
-                assign_episode_reward(state['actions'], result)
+                if state['actions']:
+                    assign_episode_reward(state['actions'], result)
                 result.update(actions=state['actions'],bootstrap=state['bootstrap'],
                               bootstrap_prompt=state['bootstrap_prompt'],seed=seed,
                               truncated=not reply['terminated'],
-                              finish_reason='terminated' if reply['terminated'] else 'step_limit',
+                              finish_reason=state.get('finish_reason') or ('terminated' if reply['terminated'] else 'step_limit'),
                               started_at=state['started_at'],finished_at=time.time(),
                               environment_intervals=state['rpc_intervals'])
+                observe('finish', rollout_index=state['index'], step=len(state['actions']),
+                        messages=reply['messages'], result=result)
                 completed[state['index']] = result
                 del active[slot]
                 if next_episode < count:
@@ -226,8 +244,12 @@ def parallel_rollouts(policy, pool, config, seed, *, stop=None, notify=None, con
             if operation == 'step':
                 delta, terminal = reply['value']
                 state['actions'][-1].update(reward=delta,terminated=terminal)
+            observe(operation, rollout_index=state['index'], step=len(state['actions']),
+                    messages=reply['messages'], seconds=reply['finished_at'] - reply['started_at'])
+            tool_options = {'tools': reply['tools']} if 'tools' in reply else {}
+            state['messages'], state['tool_options'] = reply['messages'], tool_options
             if reply['terminated'] or len(state['actions']) >= config['max_steps']:
-                prompt = [] if reply['terminated'] else policy.encode(reply['messages'])
+                prompt = [] if reply['terminated'] else policy.encode(reply['messages'], **tool_options)
                 state['bootstrap_prompt'] = prompt
                 state['bootstrap'] = 0.0
                 send(slot,'finish',None)
@@ -236,15 +258,21 @@ def parallel_rollouts(policy, pool, config, seed, *, stop=None, notify=None, con
             state['operation'] = 'policy'
             state['generated_steps'] = 0
             if decoder is not None:
-                decoder.add(slot, reply['messages'], config['max_tokens'], config['max_context'])
+                try:
+                    decoder.add(slot, reply['messages'], config['max_tokens'], config['max_context'], **tool_options)
+                except ContextBudgetExceeded:
+                    if config.get('context_limit_policy', 'finish') == 'fail':
+                        raise
+                    finish_context(slot)
             else:
-                state['generator'] = policy.iter_sample(reply['messages'],config['max_tokens'],config['max_context'])
+                state['generator'] = policy.iter_sample(reply['messages'],config['max_tokens'],config['max_context'], **tool_options)
         if decoder is not None and decoder.requests:
             progressed = True
             notify('batched-policy-decode')
             for slot, sample in decoder.tick().items():
                 active[slot]['actions'].append(sample)
-                send(slot, 'step', sample['text'])
+                observe('action', rollout_index=active[slot]['index'], step=len(active[slot]['actions']), sample=sample)
+                send(slot, 'step', sample.get('action', sample['text']))
         if not progressed:
             time.sleep(.01)
     return completed

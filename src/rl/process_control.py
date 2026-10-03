@@ -36,3 +36,23 @@ class PolicyVersion:
     @value.setter
     def value(self,version):
         atomic_json(self.path,{'version':int(version)})
+
+
+from contextlib import contextmanager
+import fcntl
+
+
+@contextmanager
+def pin_policy(root, choose_version):
+    """Acquire a reader lease atomically with choosing/persisting a rollout version."""
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    with (root / '.retention.lock').open('a') as guard:
+        fcntl.flock(guard, fcntl.LOCK_SH)
+        version = choose_version()
+        lease = (root / f'policy-{version:06d}.lock').open('a')
+        fcntl.flock(lease, fcntl.LOCK_SH)
+    try:
+        yield version
+    finally:
+        lease.close()

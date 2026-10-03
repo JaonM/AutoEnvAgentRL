@@ -45,6 +45,7 @@ def test_qat_export_reload_roundtrip(tmp_path):
     # Exercise the real exporter/loader without downloading a language model.
     policy = Policy.__new__(Policy)
     nn.Module.__init__(policy)
+    policy._tuning, policy._qat_scope = 'qat', 'projections'
     policy.lm = nn.Sequential(QATLinear(nn.Linear(64, 16)))
     x = mx.random.normal((2, 64))
     before = policy.lm(x)
@@ -60,6 +61,7 @@ def test_policy_digest_excludes_critic_and_detects_packed_change():
     from rl.model import Policy
     policy = Policy.__new__(Policy)
     nn.Module.__init__(policy)
+    policy._tuning, policy._qat_scope = 'qat', 'projections'
     policy.lm = nn.Sequential(QATLinear(nn.Linear(64,16)))
     policy.critic = nn.Linear(16,1)
     original = policy.digest(policy_only=True)

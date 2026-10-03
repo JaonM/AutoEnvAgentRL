@@ -34,6 +34,7 @@ def test_protocol_final_submission_does_not_evaluate_reward(tmp_path):
     def forbidden(): raise AssertionError('reward evaluated before episode ended')
     user = ContractUserSimulator.__new__(ContractUserSimulator)
     user.episode_store, user.completion_check = store, forbidden
+    user.execution_routes, user.route_context = None, None
     script = {'interaction_protocol': {'stages': []}}
     state = {'protocol_index': 0, 'turn_index': 0, 'script_id': 'test', 'state_id': 'review'}
     reply = user._protocol_turn(script, state, [{'role': 'assistant', 'content': 'submitted answer'}])
@@ -63,10 +64,41 @@ def test_rl_calls_real_reward_endpoint_once_after_episode_end(tmp_path, monkeypa
     episode.reset(7)
     assert store.get_state('reward_mode') == 'episode_end'
     assert evaluations == []
-    assert episode.step('{"kind":"respond","content":"answer"}') == (0., True)
+    assert episode.step({'role': 'assistant', 'content': 'answer'}) == (0., True)
     assert evaluations == []
     assert episode.finish()['final_reward'] == .8
     assert episode.finish()['final_reward'] == .8
     assert evaluations == ['answer']
     with pytest.raises(RuntimeError, match='already scored'):
-        episode.step('{"kind":"respond","content":"another"}')
+        episode.step({'role': 'assistant', 'content': 'another'})
+
+
+@pytest.mark.parametrize('allowed_actions', [0, 1])
+def test_context_limit_scores_actual_state_without_bootstrap(allowed_actions):
+    from rl.errors import ContextBudgetExceeded
+    class Policy:
+        def sample(self, messages, *args, **kwargs):
+            if len(messages) > allowed_actions:
+                raise ContextBudgetExceeded('full')
+            return {'text': 'answer', 'tokens': [1], 'old_logp': [0.]}
+        def encode(self, messages): return [1] * len(messages)
+        def value(self, *args): pytest.fail('finite horizon must not bootstrap')
+    class Environment:
+        def reset(self, seed):
+            self.messages, self.terminated, self.scored = [{'role': 'user', 'content': 'hello'}], False, 0
+        def step(self, text):
+            self.messages.append({'role': 'assistant', 'content': text})
+            return 0., False
+        def finish(self):
+            self.scored += 1
+            return {'final_reward': .37, 'terminated': False}
+    env = Environment()
+    config = {'max_steps': 3, 'max_tokens': 2, 'max_context': 3, 'algorithm': 'ppo'}
+    result = rollout(Policy(), env, config, 1)
+    assert len(result['actions']) == allowed_actions
+    assert result['finish_reason'] == 'context_limit' and result['truncated']
+    assert result['bootstrap'] == 0. and result['final_reward'] == .37 and env.scored == 1
+    if result['actions']:
+        assert result['actions'][-1]['reward'] == .37
+    with pytest.raises(ContextBudgetExceeded):
+        rollout(Policy(), Environment(), {**config, 'context_limit_policy': 'fail'}, 1)

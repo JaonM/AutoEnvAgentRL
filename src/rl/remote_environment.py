@@ -98,7 +98,9 @@ class RemoteSandboxEpisode(SandboxEpisode):
         status, value = self._call(method, path, body)
         self.trace.append({'path': path, 'request': copy.deepcopy(body), 'status': status,
                            'response': copy.deepcopy(value), 'seconds': time.monotonic()-started})
-        if status >= 500 or status == 409:
+        from .tool_transport import is_authored_tool_fault, is_business_conflict
+        if ((status >= 500 and not is_authored_tool_fault(self.task, path, status, value))
+                or (status == 409 and not is_business_conflict(path, status, value))):
             raise InfrastructureError(f'sandbox service unavailable: {path} ({status})')
         if status >= 400 and not path.startswith('/v1/tools/'):
             raise RuntimeError(f'sandbox service rejected request: {path} ({status})')
@@ -110,7 +112,7 @@ class RemoteSandboxEpisode(SandboxEpisode):
             raise InfrastructureError('remote snapshot failed')
         return {'database': payload['database'], 'artifact_identity': self.identity,
                 **{name: copy.deepcopy(getattr(self, name)) for name in
-                   ('messages', 'conversation', 'reward', 'terminated', 'trace')}, 'names': sorted(self.names)}
+                   ('messages', 'conversation', 'reward', 'terminated', 'trace', 'tools')}, 'names': sorted(self.names)}
 
     def restore(self, state):
         if state['artifact_identity'] != self.identity:
@@ -118,7 +120,7 @@ class RemoteSandboxEpisode(SandboxEpisode):
         status, _ = self._call('POST', '/_rl/restore', {'database': state['database']})
         if status != 200:
             raise InfrastructureError('remote restore failed')
-        for name in ('messages', 'conversation', 'reward', 'terminated', 'trace'):
+        for name in ('messages', 'conversation', 'reward', 'terminated', 'trace', 'tools'):
             setattr(self, name, copy.deepcopy(state[name]))
         self.names = set(state['names'])
 

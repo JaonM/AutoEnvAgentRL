@@ -43,8 +43,8 @@ def test_rejected_attempt_requeues_same_sandbox_with_new_seed_and_ignores_stale_
     assert loader.completed == {0}
 
 
-@pytest.mark.parametrize('exhaust', [False, True])
-def test_real_training_refill_recovery_and_exhaustion(tmp_path, monkeypatch, exhaust):
+@pytest.mark.parametrize('exhaust,handling', [(False, 'retry_skip'), (True, 'retry_fail'), (True, 'retry_skip'), ('all', 'skip')])
+def test_real_training_refill_recovery_and_exhaustion(tmp_path, monkeypatch, exhaust, handling):
     import importlib
     import os
     from pathlib import Path
@@ -84,7 +84,7 @@ def test_real_training_refill_recovery_and_exhaustion(tmp_path, monkeypatch, exh
                 sampled = {}
                 while decoder.requests:
                     sampled.update(decoder.tick())
-                rewards = [0., 0.] if index == 1 and (attempt == 0 or exhaust) else [0., 1.]
+                rewards = [0., 0.] if exhaust == 'all' or (index == 1 and (attempt == 0 or exhaust)) else [0., 1.]
                 episodes = []
                 for row, reward in enumerate(rewards):
                     action = sampled[row]
@@ -105,7 +105,16 @@ def test_real_training_refill_recovery_and_exhaustion(tmp_path, monkeypatch, exh
         'independent_eval':False, 'by_task':{}, 'by_split':{}, 'mean_reward':0., 'episodes':[]})
     config = Config(tasks='test-only', output=str(tmp_path / 'run'), model=model, tuning='lora',
                     epochs=1, batch_size=2, mini_batch_size=2, rollout_group=2,
-                    rollout_max_attempts=2, target_kl=0., max_policy_lag=10, queue_size=8)
+                    rollout_max_attempts=2, zero_variance_policy=handling, target_kl=0., max_policy_lag=10, queue_size=8)
+    if exhaust == 'all':
+        report = training.train(config)
+        assert report['completed'] and not report['training_updates_observed']
+        assert report['visited_jobs'] == report['skipped_jobs'] == 2
+        assert report['accepted_groups'] == report['updated_jobs'] == report['optimizer_steps'] == 0
+        assert not report['policy_weights_changed']
+        config.resume = True
+        assert training.train(config)['optimizer_steps'] == 0
+        return
     original = training.save_checkpoint
     def interrupt_after_refill_commit(root, policy, optimizer, state):
         original(root, policy, optimizer, state)
@@ -119,12 +128,15 @@ def test_real_training_refill_recovery_and_exhaustion(tmp_path, monkeypatch, exh
     assert not state['inflight_batch']['records'][0]['trained']
     monkeypatch.setattr(training, 'save_checkpoint', original)
     config.resume = True
-    if exhaust:
+    if exhaust and handling == 'retry_fail':
         with pytest.raises(RuntimeError, match='oversampling exhausted 2 attempts'):
             training.train(config)
     else:
         report = training.train(config)
-        assert report['completed'] and report['accepted_groups'] == 2
+        assert report['completed'] and report['accepted_groups'] == (1 if exhaust else 2)
+        assert report['skipped_jobs'] == int(exhaust)
+        assert report['updated_jobs'] == (1 if exhaust else 2)
+        assert report['visited_jobs'] == 2
         assert report['sampling_attempts'] == 3 and report['optimizer_steps'] == 1
         _, state = read_checkpoint(Path(config.output) / 'checkpoints')
         assert state['consumed_jobs'] == [0, 1]

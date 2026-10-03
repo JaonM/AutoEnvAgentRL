@@ -3,7 +3,7 @@ import math
 
 
 class WeightedMetrics:
-    names = ('loss', 'policy_loss', 'kl', 'value_loss', 'clip_fraction', 'behavior_kl')
+    names = ('loss', 'policy_loss', 'kl', 'value_loss', 'clip_fraction', 'behavior_kl', 'policy_entropy')
 
     def __init__(self):
         self.weight = 0.

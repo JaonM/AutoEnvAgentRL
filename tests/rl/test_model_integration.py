@@ -12,17 +12,67 @@ def test_sampling_and_scoring_agree_on_tool_context():
     mx.random.seed(42)
     policy = Policy(MODEL, temperature=1.5, critic=True)
     messages = [
-        {'role': 'system', 'content': 'Output only JSON: {"kind":"respond","content":"answer"}.'},
+        {'role': 'system', 'content': '使用工具返回的数据回答用户。'},
         {'role': 'user', 'content': '采购项目的记录如下，请求和 quantity，输出采购总数量：数字件。'},
-        {'role': 'assistant', 'content': '{"kind":"tool","name":"query_entries","arguments":{"account_id":573827}}'},
-        {'role': 'user', 'content': '{"tool_result":{"records":[{"quantity":27},{"quantity":80},{"quantity":162},{"quantity":169}]}}'},
+        {'role': 'assistant', 'content': '', 'tool_calls': [{'id': 'call_1', 'type': 'function',
+            'function': {'name': 'query_entries', 'arguments': '{"account_id":573827}'}}]},
+        {'role': 'tool', 'tool_call_id': 'call_1', 'name': 'query_entries',
+         'content': '{"tool_result":{"records":[{"quantity":27},{"quantity":80},{"quantity":162},{"quantity":169}]}}'},
     ]
-    sample = policy.sample(messages, max_tokens=128)
+    tools = [{'type': 'function', 'function': {'name': 'query_entries', 'description': '查询采购记录',
+        'parameters': {'type': 'object', 'properties': {'account_id': {'type': 'integer'}}, 'required': ['account_id']}}}]
+    prompt = policy.tokenizer.decode(policy.encode(messages, tools=tools), skip_special_tokens=False)
+    assert '<tools>' in prompt and '<tool_call>' in prompt and '<tool_response>' in prompt
+    sample = policy.sample(messages, max_tokens=128, tools=tools)
+    assert sample['action']['role'] == 'assistant'
     assert sample['behavior_scoring_max_logp_error'] < .001
     assert len(sample['old_values']) == len(sample['old_logp']) == len(sample['tokens'])
     assert all(value == 0 for value in sample['old_values'])
     assert sample['tokens']
     assert bool(mx.all(mx.isfinite(mx.array(sample['old_logp']))))
+
+
+def test_native_tool_generation_preserves_tokens_in_single_and_batch(monkeypatch):
+    import json
+    import mlx.core as mx
+    import rl.model as model_module
+    from rl.model import Policy
+    policy = Policy(MODEL)
+    tools = [{'type': 'function', 'function': {'name': 'lookup', 'description': '读取数量',
+        'parameters': {'type': 'object', 'properties': {'key': {'type': 'string'}}}}}]
+    messages = [{'role': 'user', 'content': '查询甲的数量'}]
+    call = '<tool_call>\n{"name": "lookup", "arguments": {"key": "甲"}}\n</tool_call>'
+    tokens = policy.tokenizer.encode(call, add_special_tokens=False) + [next(iter(policy.tokenizer.eos_token_ids))]
+
+    def sampler():
+        sequence = iter(tokens)
+        return lambda logp: mx.array([next(sequence)])
+
+    monkeypatch.setattr(model_module, 'make_sampler', lambda **kwargs: sampler())
+    single = policy.sample(messages, max_tokens=len(tokens), tools=tools)
+    decoder = policy.batch_decoder()
+    decoder.sampler = sampler()
+    decoder.add('native', messages, len(tokens), 4096, tools=tools)
+    result = {}
+    while not result:
+        result = decoder.tick()
+    for sample in (single, result['native']):
+        assert sample['tokens'] == tokens
+        assert len(sample['old_logp']) == len(tokens)
+        assert sample['text'] == call
+        assert 'protocol_error' not in sample['action']
+        function = sample['action']['tool_calls'][0]['function']
+        assert function['name'] == 'lookup'
+        assert json.loads(function['arguments']) == {'key': '甲'}
+        # The next model turn receives the native tool result, while this action's
+        # stored training sequence remains exactly the sampled prompt + tokens.
+        assistant = {**sample['action'], 'tool_calls': [
+            {**sample['action']['tool_calls'][0], 'id': 'call_1'}]}
+        history = messages + [assistant, {'role': 'tool', 'tool_call_id': 'call_1',
+            'name': 'lookup', 'content': '{"quantity":7}'}]
+        rendered = policy.tokenizer.decode(policy.encode(history, tools=tools), skip_special_tokens=False)
+        assert '<tool_response>\n{"quantity":7}\n</tool_response>' in rendered
+        assert '<tools>' in rendered
 
 
 def test_interleaved_generation_keeps_separate_caches_and_behavior_probabilities():

@@ -69,10 +69,14 @@ def test_http_episode_isolation_and_snapshot_recovery(remote):
     try:
         first.reset(1)
         second.reset(2)
-        action = '{"kind":"tool","name":"increment","arguments":{}}'
+        action = {'role': 'assistant', 'content': '', 'tool_calls': [
+            {'type': 'function', 'function': {'name': 'increment', 'arguments': '{}'}}]}
         assert first.step(action) == (0.0, False)
         assert not any(item['path'] == '/v1/reward' for item in first.trace)
         saved = first.snapshot()
+        assert saved['tools'] == first.tools
+        assert saved['messages'][-1]['role'] == 'tool'
+        assert saved['messages'][-1]['tool_call_id'] == saved['messages'][-2]['tool_calls'][0]['id']
         first.step(action)
         assert first.finish()['final_reward'] == 1
         assert first.finish()['final_reward'] == 1
@@ -86,6 +90,8 @@ def test_http_episode_isolation_and_snapshot_recovery(remote):
         try:
             restored.restore(saved)
             assert restored.reward is None
+            assert restored.tools == first.tools
+            assert restored.messages == saved['messages']
             restored.step(action)
             assert restored.finish()['final_reward'] == 1
         finally:

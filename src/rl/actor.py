@@ -1,4 +1,5 @@
 """Policy (actor) training: physical tensor batches with weighted accumulation."""
+from collections import OrderedDict
 import math
 import time
 import mlx.core as mx
@@ -54,17 +55,20 @@ def collate(samples, *, normalize=1.):
 
 def actor_loss(model, batch, *, algorithm, clip, beta, value_coefficient):
     if batch.get('cached_fallback'):
-        probabilities, predictions = [], []
+        probabilities, predictions, entropies = [], [], []
         width = batch['old_logp'].shape[1]
         for index, (prompt, response) in enumerate(zip(batch['prompt_lengths'], batch['response_lengths'])):
-            p, v = model.cached_token_stats(batch['ids'][index:index+1, :prompt+response], prompt)
+            p, v, entropy = model.cached_token_stats(batch['ids'][index:index+1, :prompt+response], prompt, return_entropy=True)
+            entropies.append(mx.pad(entropy, (0, width-response)))
             probabilities.append(mx.pad(p, (0, width-response)))
             if v is not None:
                 predictions.append(mx.pad(v, (0, width-response)))
+        entropy = mx.stack(entropies)
         logp = mx.stack(probabilities)
         values = mx.stack(predictions) if predictions else None
     else:
-        logp, values = model.batch_token_stats(batch['ids'], batch['prompt_lengths'], batch['response_lengths'])
+        logp, values, entropy = model.batch_token_stats(
+            batch['ids'], batch['prompt_lengths'], batch['response_lengths'], return_entropy=True)
     weight = batch['weights']
     active = weight > 0
     logp = mx.where(active, logp, 0.)
@@ -77,7 +81,8 @@ def actor_loss(model, batch, *, algorithm, clip, beta, value_coefficient):
     total = pg + beta * kl + value_coefficient * vf
     delta = logp - old_logp
     return total, (pg, kl, vf, mx.sum((mx.abs(mx.exp(delta) - 1) > clip) * weight),
-                   mx.sum((mx.exp(delta) - 1 - delta) * weight))
+                   mx.sum((mx.exp(delta) - 1 - delta) * weight),
+                   mx.sum(mx.where(active, mx.stop_gradient(entropy), 0.) * weight))
 
 
 class ActorTrainer:
@@ -91,17 +96,28 @@ class ActorTrainer:
         self.batched_gradient_microbatches = 0
         self.cached_gradient_microbatches = 0
         self.cached_policy_scores = {}
+        self.reference_cache = OrderedDict()
+        self.reference_cache_size = 0
+        self.reference_cache_hits = 0
+        self.reference_cache_misses = 0
+        self.check_step = 0
+        self.checked_shapes = {}
+        self.strict_checks = False
         self.value_grad = nn.value_and_grad(policy, lambda model, batch: actor_loss(
             model, batch, algorithm=config.algorithm, clip=config.clip, beta=config.beta,
             value_coefficient=config.value_coefficient))
 
     def state(self):
-        return {'fallback_shapes': list(self.fallback_shapes), 'numeric_fallbacks': self.numeric_fallbacks,
+        return {'check_step': self.check_step, 'checked_shapes': [(list(k), v) for k, v in self.checked_shapes.items()],
+                'strict_checks': self.strict_checks, 'fallback_shapes': list(self.fallback_shapes), 'numeric_fallbacks': self.numeric_fallbacks,
                 'max_numerical_error': self.max_numerical_error, 'max_physical_batch': self.max_physical_batch,
                 'batched_gradient_microbatches': self.batched_gradient_microbatches,
                 'cached_gradient_microbatches': self.cached_gradient_microbatches}
 
     def restore_state(self, state):
+        self.check_step = state.get('check_step', 0)
+        self.checked_shapes = {tuple(k): v for k, v in state.get('checked_shapes', [])}
+        self.strict_checks = state.get('strict_checks', False)
         self.fallback_shapes = {tuple(x) for x in state.get('fallback_shapes', [])}
         self.numeric_fallbacks = state.get('numeric_fallbacks', 0)
         self.max_numerical_error = state.get('max_numerical_error', 0.)
@@ -127,6 +143,20 @@ class ActorTrainer:
     def score(self, samples, *, reference=False, verify=False):
         model = self.reference if reference else self.policy
         output = {}
+        budget = getattr(self.config, 'reference_cache_tokens', 1000000)
+        original_samples = samples
+        if reference and budget:
+            samples = []
+            for row in original_samples:
+                key = (tuple(row['prompt']), tuple(row['tokens']))
+                if key in self.reference_cache:
+                    self.reference_cache_hits += 1
+                    self.reference_cache.move_to_end(key)
+                    output[id(row)] = list(self.reference_cache[key])
+                    row['_ref_logp'] = output[id(row)]
+                else:
+                    self.reference_cache_misses += 1
+                    samples.append(row)
         def cached_score(row):
             key = (tuple(row['prompt']), tuple(row['tokens']))
             if not reference and key in self.cached_policy_scores:
@@ -154,7 +184,10 @@ class ActorTrainer:
                 mx.eval(logp, values)
                 measured = logp.tolist()
             key = self.shape_key(rows)
-            if verify and key not in self.fallback_shapes:
+            due = (getattr(self.config, 'numerical_check_mode', 'strict') == 'strict'
+                   or self.strict_checks or key not in self.checked_shapes
+                   or self.check_step - self.checked_shapes[key] >= getattr(self.config, 'numerical_check_interval', 20))
+            if verify and due and key not in self.fallback_shapes:
                 # Check every row against the independent cached path; never overwrite behavior probabilities.
                 with self.times.measure('actor_batch_numerical_check'):
                     errors = []
@@ -167,7 +200,9 @@ class ActorTrainer:
                 self.max_numerical_error = max(self.max_numerical_error, error)
                 if not math.isfinite(error):
                     raise FloatingPointError('non-finite batch scoring discrepancy')
+                self.checked_shapes[key] = self.check_step
                 if error > self.config.batch_logp_tolerance:
+                    self.strict_checks = True
                     self.fallback_shapes.add(key)
                     self.numeric_fallbacks += 1
             if key in self.fallback_shapes and len(rows) > 1:
@@ -181,9 +216,21 @@ class ActorTrainer:
                 output[id(row)] = probabilities[:len(row['tokens'])]
                 if reference:
                     row['_ref_logp'] = output[id(row)]
+        if reference and budget:
+            for row in samples:
+                key = (tuple(row['prompt']), tuple(row['tokens']))
+                size = sum(map(len, key))
+                if size > budget or key in self.reference_cache:
+                    continue
+                while self.reference_cache_size + size > budget:
+                    old, _ = self.reference_cache.popitem(last=False)
+                    self.reference_cache_size -= sum(map(len, old))
+                self.reference_cache[key] = tuple(output[id(row)])
+                self.reference_cache_size += size
         return output
 
     def step(self, samples, *, notify=lambda: None):
+        self.check_step += 1
         self.score(samples, verify=True)
         self.score(samples, reference=True)
         accumulated, aggregate = None, WeightedMetrics()
@@ -226,5 +273,8 @@ class ActorTrainer:
                 / sum(s.get('loss_mask', [1]*len(s['tokens']))) for s in samples)
         if not math.isfinite(post_kl):
             raise FloatingPointError('non-finite post-update KL')
-        return {**measured, 'gradient_norm': float(norm), 'post_behavior_kl': max(0., post_kl),
+        return {**measured, 'reference_cache_hits': self.reference_cache_hits,
+                'reference_cache_misses': self.reference_cache_misses,
+                'numerical_strict_mode': int(self.strict_checks or self.config.numerical_check_mode == 'strict'),
+                'gradient_norm': float(norm), 'post_behavior_kl': max(0., post_kl),
                 'post_kl_exceeded': bool(self.config.target_kl and post_kl > self.config.target_kl)}

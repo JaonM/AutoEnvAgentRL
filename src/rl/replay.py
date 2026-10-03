@@ -23,7 +23,7 @@ def validate_group(group, tasks):
     if not episodes or len({e['seed'] for e in episodes}) != 1:
         raise ValueError('replay group must share initial task/seed')
     for episode in episodes:
-        if episode.get('task_id') != task.id or not episode.get('actions'):
+        if episode.get('task_id') != task.id or (not episode.get('actions') and episode.get('finish_reason') != 'context_limit'):
             raise ValueError('mixed-task or empty replay episode')
         if not math.isfinite(episode['final_reward']):
             raise ValueError('non-finite replay reward')

@@ -17,12 +17,12 @@ def test_worker_claims_remaining_shared_jobs_and_keeps_group_seed(tmp_path, monk
     tasks = [TaskSpec(str(i), '/' + str(i)) for i in range(3)]
     plan = DatasetSchedule(tasks, epochs=2, batch_size=2, seed=42)
     stop = threading.Event()
-    received, restored, environments = [], [], []
+    received, restored, environments, policy_options = [], [], [], []
     limit = tmp_path / 'limit.json'
     atomic_json(limit, {'version': len(plan.jobs)})
 
     class Policy:
-        def __init__(self, *args, **kwargs): pass
+        def __init__(self, *args, **kwargs): policy_options.append(kwargs)
         def restore(self, path): restored.append(path.name)
 
     class Environment:
@@ -44,14 +44,28 @@ def test_worker_claims_remaining_shared_jobs_and_keeps_group_seed(tmp_path, monk
 
     monkeypatch.setattr(model, 'Policy', Policy)
     monkeypatch.setattr(actor, 'EnvironmentPool', Environment)
-    monkeypatch.setattr(actor, 'parallel_rollouts', lambda policy, env, config, seed, **kwargs:
-                        [{'seed': seed, 'actions': [{'prompt': [1], 'tokens': [2], 'old_logp': [-.5]}]} for _ in range(config['rollout_group'])])
-    config = {**asdict(Config(sandbox='unused', output=str(tmp_path), rollout_workers=2, rollout_group=3)),
+    heartbeats = []
+    def write_heartbeat(path, value):
+        if path.name == 'worker-1.json':
+            heartbeats.append(value)
+        atomic_json(path, value)
+    monkeypatch.setattr(actor, 'atomic_json', write_heartbeat)
+    def parallel(policy, env, config, seed, **kwargs):
+        for _ in range(100):
+            kwargs['notify']('batched-policy-decode')
+        return [{'seed': seed, 'actions': [{'prompt': [1], 'tokens': [2], 'old_logp': [-.5]}]}
+                for _ in range(config['rollout_group'])]
+    monkeypatch.setattr(actor, 'parallel_rollouts', parallel)
+    config = {**asdict(Config(sandbox='unused', output=str(tmp_path), rollout_workers=2, rollout_group=3,
+                            thinking_mode='no-thinking', qat_scope='full')),
               '_tasks': [asdict(task) for task in tasks], '_dataset_jobs': plan.jobs,
               '_task_queue': str(task_queue.root), '_queue_capacity': 4}
     actor.rollout_worker_main(1, config, SimpleNamespace(value=7), Results(), stop)
     assert [g['dataset_index'] for g in received] == [3, 4, 5]
     assert restored == ['policy-000007.safetensors']
+    assert policy_options[0]['thinking_mode'] == 'no-thinking'
+    assert policy_options[0]['qat_scope'] == 'full'
+    assert sum(h['stage'] == 'batched-policy-decode' for h in heartbeats) == 3
     assert all(len(g['episodes']) == 3 and all(e['seed'] == plan.jobs[g['dataset_index']]['seed']
                                                for e in g['episodes']) for g in received)
     assert all(env.closed for env in environments)
