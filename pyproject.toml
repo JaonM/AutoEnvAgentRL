@@ -19,6 +19,15 @@ dependencies = [
 rl = [
     "mlx-lm>=0.31,<0.33",
     "numpy>=2.0",
+    "tensorboard>=2.20,<3",
+    "psutil>=7,<8",
+]
+
+cuda-export = [
+    "torch>=2.9,<3",
+    "transformers>=4.51,<6",
+    "peft>=0.17,<1",
+    "safetensors>=0.6,<1",
 ]
 
 [dependency-groups]
