@@ -14,6 +14,8 @@ wheels/
 
 # Local source files and generated data stay outside Git.
 data/
+# RL data contracts and scheduling are source code, not generated datasets.
+!src/rl/data/
 
 # Generated tasks
 output/

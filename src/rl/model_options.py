@@ -1,15 +1,9 @@
-"""One policy-option mapping for actor, reference, evaluation and rollout."""
-from dataclasses import asdict
+"""Compatibility entry point for :mod:`rl.backends.mlx.model_options`."""
+import importlib as _importlib
+import sys as _sys
 
-
-def policy_options(config, *, inference=False):
-    values = config if isinstance(config, dict) else asdict(config)
-    names = ('thinking_mode', 'qat_scope', 'lora_targets', 'lora_scale', 'lora_dropout',
-             'gradient_checkpointing', 'logits_chunk_size', 'prefill_chunk_size',
-             'prefix_cache_tokens', 'packed_inference')
-    result = {name: values[name] for name in names if name in values}
-    if inference:
-        result['gradient_checkpointing'] = False
-        result['cache_inference'] = True
-        result['inference_only'] = bool(values.get('packed_inference') and values.get('tuning') == 'qat')
-    return result
+_impl = _importlib.import_module('rl.backends.mlx.model_options')
+if __name__ == "__main__":
+    _impl.main()
+else:
+    _sys.modules[__name__] = _impl
