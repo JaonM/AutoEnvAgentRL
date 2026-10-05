@@ -15,6 +15,7 @@ import time
 import uuid
 
 from .errors import InfrastructureError
+from .system_prompt import render_system_prompt
 
 
 def verify_training_sandbox(root):
@@ -69,6 +70,14 @@ class SandboxEpisode:
             raise RuntimeError(f'environment endpoint failed: {path} ({status})')
         return status, value
 
+    def get_current_time(self) -> str | None:
+        """Reserved sandbox time API hook, shared by local and HTTP episodes.
+
+        TODO: call the sandbox time endpoint once its contract exists, returning
+        Asia/Shanghai time as YYYY-MM-DD HH:mm:ss. Never use the host clock.
+        """
+        return None
+
     def reset(self, seed):
         self.trace = []
         reset = self.request('POST', '/v1/reset', {'episode_id': uuid.uuid4().hex, 'seed': seed,
@@ -82,10 +91,7 @@ class SandboxEpisode:
         if public.get('materials'):
             user += '\nPublic materials: ' + json.dumps(public['materials'], ensure_ascii=False)
         self.conversation = [{'role': 'user', 'content': user}]
-        self.messages = [{'role': 'system', 'content': (
-            '你是通过工具完成任务的 agent。使用原生工具调用格式调用提供的工具。'
-            '需要给用户回复或澄清时，直接输出回复内容，遵循用户要求的答案格式。'
-            '计算必须使用本次工具返回的实际数据，不得编造。')},
+        self.messages = [{'role': 'system', 'content': render_system_prompt(self.get_current_time())},
             *self.conversation]
         # Observation endpoint is policy-visible by the sandbox contract.
         self.messages.append({'role': 'user', 'content': json.dumps(

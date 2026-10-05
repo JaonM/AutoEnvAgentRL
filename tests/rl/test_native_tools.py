@@ -52,6 +52,23 @@ class NativeRuntime(SandboxEpisode):
         pass
 
 
+@pytest.mark.parametrize('sandbox_time', [None, '2026-10-03 09:30:00'])
+def test_system_prompt_uses_reserved_sandbox_clock(sandbox_time):
+    from rl.system_prompt import SYSTEM_PROMPT
+    env = NativeRuntime(None)
+    assert env.get_current_time() is None
+    calls = []
+    def clock():
+        calls.append('sandbox clock')
+        return sandbox_time
+    env.get_current_time = clock
+    env.reset(42)
+    expected = SYSTEM_PROMPT if sandbox_time is None else SYSTEM_PROMPT.replace('{{current_time}}', sandbox_time)
+    assert env.messages[0] == {'role': 'system', 'content': expected}
+    assert calls == ['sandbox clock']
+    assert env.tools == TOOLS
+
+
 def test_native_call_result_and_plain_user_response():
     env = NativeRuntime(None)
     env.reset(42)
