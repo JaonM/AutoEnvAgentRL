@@ -268,7 +268,11 @@ uv run --extra rl hf download mlx-community/Qwen3-4B-Instruct-2507-4bit \
 ## Rollout 消息与工具调用
 
 沙箱 reset 后通过 `GET /v1/tools` 获取工具定义，随每次采样传给 tokenizer 的
-`apply_chat_template(..., tools=tools)`。system 消息只包含任务执行规则；工具格式由模型自带的模板生成。
+`apply_chat_template(..., tools=tools)`。system 消息使用 `src/rl/environments/system_prompt.py` 中的个人智能分身提示词，
+包含身份、时间日期、工具使用及隐私安全规则；工具格式由模型自带的模板生成。
+当前时间通过 `SandboxEpisode.get_current_time()` 预留接口注入，本地和 HTTP 沙箱共用该入口。
+目前沙箱尚无对应时间接口，默认保留 `{{current_time}}` 占位符，不读取宿主机时间或让模型猜测。
+接入后应返回沙箱的 `Asia/Shanghai` 时间，格式为 `YYYY-MM-DD HH:mm:ss`，在 episode reset 时渲染。
 策略 tokenizer 必须具有 MLX-LM 可识别的原生工具调用格式和解析器。
 
 模型生成的工具调用解析为 `assistant.tool_calls`，工具执行结果使用 `role="tool"`，
@@ -1110,3 +1114,45 @@ QLoRA 约 2.75 GB、全参 QAT 约 19.21 GB，不包含独立 worker 或长上�
 优化前后峰值均约 3.46 GB；这组结果不支持重算带来内存收益的结论。梯度等价性由小模型独立测试覆盖。
 测量时系统已有约 6.7–6.8 GB swap；这些数值是当前进程的 Metal 张量内存，不是整机总内存，
 也不证明运行完全不使用 swap。完整阶段记录及回退计数见验证目录中的 `measured-*.json`。
+
+## RL 模块组织与训练编排
+
+第一、第二阶段重构将实现按职责归类，保留原有训练入口与参数。
+`python -m rl.train`、`scripts/train_rl.sh`、`scripts/convert_to_hf.sh` 继续使用；
+旧 `rl.model`、`rl.runtime`、`rl.environment` 等路径是兼容入口，新代码使用下表中的模块。
+
+| 目录 / 入口 | 职责 |
+| --- | --- |
+| `rl.config`、`rl.trainer.cli` | 配置、CLI 解析与校验；不加载 MLX 模型 |
+| `rl.trainer.runner` | 沙箱服务所有权、run 状态、异常与日志关闭 |
+| `rl.trainer.initialization` | 身份校验、模型/optimizer、恢复状态及队列初始化 |
+| `rl.trainer.loop` | `TrainingSession` 协调数据遍历、更新、评估、发布与提交 |
+| `rl.trainer.state` | `TrainingState` 显式保存进度与可恢复业务状态 |
+| `rl.trainer.optimization` | 轨迹准入、概率漂移检查、mini-batch 更新 |
+| `rl.trainer.publication`、`rl.trainer.persistence` | 独立管理策略发布与 durable checkpoint |
+| `rl.trainer.evaluation`、`periodic`、`finalization` | 周期评估、最终导出验证和报告 |
+| `rl.backends.mlx` | Policy、ActorTrainer、QAT、解码、重算与内存测量 |
+| `rl.algorithms` | 优势计算、PPO/GRPO 目标函数 |
+| `rl.rollout` | worker 管理、健康检查、并行环境调度与版本租约 |
+| `rl.data` | 轨迹契约、任务数据集、batch、replay 与任务队列 |
+| `rl.environments` | 本地/HTTP episode、原生消息、system prompt 和工具传输 |
+| `rl.environments.services` | Docker、Kubernetes 和可独立挂载的 HTTP 服务 |
+| `rl.checkpointing` | 原子检查点、身份校验、恢复隔离与产物保留 |
+| `rl.observability` | TensorBoard、JSONL、指标汇总与阶段耗时 |
+| `rl.export` | LoRA 导出、HF/PEFT 转换与部署验证 |
+
+训练顺序保持原有语义：获取合格轨迹 → 更新 Actor → 按间隔发布策略 →
+推进数据游标 → 周期评估 → 按间隔提交完整检查点。初始和最终保存仍强制执行，
+mini-batch 安全边界也会检查 checkpoint 间隔。
+
+`TrainingState.optimizer_step`、`updates`（发布版本）、`published_step`、`checkpoint_step`、
+`committed_version`、`dataset_cursor` 各自保留原义；更新成功、worker 可见和持久提交不是同一事件。
+训练循环和检查点共用同一状态实例，不使用复制的局部计数器更新进度。
+
+源码身份改为递归扫描 `src/rl/**/*.py`，以相对路径记录 SHA256，避免子目录实现遗漏或同名文件覆盖。
+检查点张量/JSON 格式和字段保持不变，但旧源码身份不会被自动接受。
+**重构前的运行仍需使用其记录的完整原源码与依赖恢复**（包括当时未提交的源码改动）；
+兼容 import 路径不等于跨源码版本续训兼容，不能修改 provenance 文件绕过检查。
+
+既有 `tests/rl/` 测试路径保留，新增 `tests/rl/architecture/` 检查兼容导入、模块依赖、
+独立 HTTP 服务文件与递归源码身份。单独运行模块或添加第二种后端时，优先使用规范子包路径。

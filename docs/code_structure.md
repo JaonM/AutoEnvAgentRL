@@ -31,3 +31,23 @@
 
 共享契约放在 `contracts/`，由生成末端和构建前预检同时使用；生产认证继续独立复核
 冻结产物和运行证据。开发报告只比较实验，不参与认证判定。
+
+## RL 训练代码
+
+`src/rl/` 按训练编排、算法、MLX 后端、采样、数据、环境、检查点、监控和导出组织：
+
+```text
+rl/train.py → trainer/runner.py → trainer/loop.py（TrainingSession）
+                                    ├── trainer/state.py（TrainingState）
+                                    ├── trainer/optimization.py → backends/mlx/actor.py
+                                    ├── rollout/manager.py → worker.py → scheduler.py
+                                    │                                      └── environments/
+                                    ├── trainer/publication.py / persistence.py
+                                    └── trainer/periodic.py / finalization.py
+```
+
+`config.py` 管参数；`data/` 管契约和队列；`checkpointing/` 管恢复与保留；
+`observability/` 管日志看板；`export/` 管 HF/PEFT 产物。
+旧 `rl.<模块名>` 文件保留为兼容入口，内部实现通过规范子包相互引用。
+
+模块职责、执行顺序及恢复兼容范围见 [RL 模块组织与训练编排](agent_rl.md#rl-模块组织与训练编排)。
