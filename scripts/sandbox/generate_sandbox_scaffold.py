@@ -26,7 +26,7 @@ def create_app(*, db_path=None, reuse_validation_judgments=False):
     handlers.update(extensions)
     lifecycle = BusinessLifecycle(contract.get("business_lifecycle"), data, store, handlers)
     snapshots = RewardStateSnapshots(data, contract.get("tool_implementations", []), [contract.get("metric_implementations", []), contract.get("task_spec", {}).get("goal_contract", {}), contract.get("task_spec", {}).get("execution_routes", [])])
-    registry = ContractToolRegistry(contract.get("tools", []), handlers, noise_tools=contract.get("noise_tools", []), event_recorder=store.event, tool_contracts=contract.get("task_spec", {}).get("tool_contracts", []), lifecycle=lifecycle, reward_snapshots=snapshots)
+    registry = ContractToolRegistry(contract.get("tools", []), handlers, noise_tools=contract.get("noise_tools", []), event_recorder=store.event, tool_contracts=contract.get("task_spec", {}).get("tool_contracts", []), lifecycle=lifecycle, reward_snapshots=snapshots, transaction_contract=contract.get("task_spec", {}).get("transaction_contract"))
     user_manifest = artifacts.get("user_simulation_manifest", {}); user_root = ROOT / user_manifest.get("root", "data/user_simulation")
     profiles = _json(user_root / user_manifest["profiles_file"]) if user_manifest.get("profiles_file") else []
     scripts = _json(user_root / user_manifest["scripts_file"]) if user_manifest.get("scripts_file") else []

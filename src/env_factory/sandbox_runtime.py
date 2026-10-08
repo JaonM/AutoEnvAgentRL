@@ -1708,6 +1708,118 @@ class RewardStateSnapshots:
                          {"state_sha256": hashlib.sha256(canonical_json(state).encode()).hexdigest()})
 
 
+class TransactionWitness:
+    """Trainer evidence of committed writes, rollback and actual compensation.
+
+    Only runner-assigned complex tasks enable this audit. Snapshots bypass tool
+    read instrumentation; neither snapshots nor audit records are tool results.
+    """
+
+    @staticmethod
+    def changes(before, after, primary_keys):
+        changes = []
+        for table in sorted(set(before) | set(after)):
+            keys = primary_keys.get(table)
+            if not keys:
+                raise SandboxError('TRANSACTION_AUDIT_INVALID', 'every table needs a primary key', 500)
+            def indexed(rows):
+                result = {}
+                for row in rows:
+                    key = canonical_json([row[column] for column in keys])
+                    if key in result:
+                        raise SandboxError('TRANSACTION_AUDIT_INVALID', 'duplicate primary key', 500)
+                    result[key] = row
+                return result
+            old, new = indexed(before.get(table, [])), indexed(after.get(table, []))
+            for key in sorted(old.keys() | new.keys()):
+                if old.get(key) != new.get(key):
+                    changes.append({'table': table, 'key': key,
+                                    'before': old.get(key), 'after': new.get(key)})
+        return changes
+
+    @staticmethod
+    def observe(contract, events, baseline, state, goal):
+        writes = set(contract.get('write_tools', []))
+        compensation = set(contract.get('compensation_tools', []))
+        touched, compensated, replayed, rollback = set(), set(), set(), set()
+        dirty, fault_cells, committed_keys = {}, {}, set()
+        audited, attempted = [], []
+        valid = True
+        for event in events:
+            kind, payload, result = event.get('event'), event.get('payload', {}), event.get('result', {})
+            name = payload.get('tool_name')
+            if kind == 'external_business_change':
+                # An external update must not be credited as an Agent write or
+                # as undoing one. Invalidate only the externally changed cells.
+                table, selector = payload.get('table'), payload.get('selector', {})
+                keys = contract['table_primary_keys'].get(table, [])
+                for row in result.get('before', []):
+                    if all(row.get(k) == v for k, v in selector.items()):
+                        identity = (table, canonical_json([row[k] for k in keys]))
+                        for cell in list(dirty):
+                            if cell[:2] == identity and cell[2] in payload.get('values', {}):
+                                dirty.pop(cell)
+                                for cells in fault_cells.values():
+                                    cells.discard(cell)
+            if kind == 'injected_fault':
+                fault_cells[payload['id']] = set(dirty)
+            if kind == 'tool_attempt' and name in writes:
+                attempted.append(payload.get('tool_call_id'))
+            if kind != 'business_write_audit':
+                continue
+            audited.append(payload.get('tool_call_id'))
+            changes = result['changes']
+            key = (name, payload.get('idempotency_key_sha256'))
+            if result['replayed']:
+                valid &= not changes and key in committed_keys and key[1] is not None
+                if not changes and key in committed_keys and key[1] is not None:
+                    replayed.add(name)
+            elif result['committed']:
+                valid &= result.get('bound_authorization') is True
+                committed_keys.add(key)
+            else:
+                valid &= not changes
+                if result['status'] >= 400 and not changes:
+                    rollback.add(name)
+            if not result['committed']:
+                continue
+            for change in changes:
+                identity = (change['table'], change['key'])
+                touched.add(identity)
+                old, new = change['before'], change['after']
+                fields = set(old or {}) | set(new or {})
+                for field in fields:
+                    before = (old is not None and field in old, (old or {}).get(field))
+                    after = (new is not None and field in new, (new or {}).get(field))
+                    if before == after:
+                        continue
+                    cell = (*identity, field)
+                    prior = dirty.get(cell)
+                    # An intervening, unaccounted mutation invalidates the proof.
+                    if prior is not None and prior[1] != before:
+                        valid = False
+                    origin = prior[0] if prior is not None else before
+                    if prior is not None and after == origin:
+                        if name in compensation:
+                            compensated.update(fault for fault, cells in fault_cells.items() if cell in cells)
+                        dirty.pop(cell)
+                        for cells in fault_cells.values():
+                            cells.discard(cell)
+                    else:
+                        dirty[cell] = (origin, after)
+                        # Response loss happens after this write committed, but
+                        # before its audit was recorded at the service boundary.
+                        for fault in result.get('committed_fault_ids', []):
+                            fault_cells.setdefault(fault, set()).add(cell)
+        valid &= bool(audited) and attempted == audited and None not in audited
+        adjusted = BusinessGoalEvaluator.external_baseline(baseline, events)
+        preserved = BusinessGoalEvaluator.preserves_unrelated(goal, adjusted, state)
+        return {'audit_valid': bool(valid), 'changed_tables': sorted({table for table, _ in touched}),
+                'changed_objects': len(touched), 'compensated_fault_ids': sorted(compensated),
+                'idempotent_replay_tools': sorted(replayed), 'failed_without_write_tools': sorted(rollback),
+                'unrelated_state_preserved': preserved}
+
+
 class ContractToolRegistry:
     """Generic Function Tool validation, dispatch, tracing and mutation seam."""
 
@@ -1721,9 +1833,13 @@ class ContractToolRegistry:
         tool_contracts: Sequence[Mapping[str, Any]] = (),
         lifecycle: BusinessLifecycle | None = None,
         reward_snapshots: RewardStateSnapshots | None = None,
+        transaction_contract: Mapping[str, Any] | None = None,
     ) -> None:
         self.lifecycle = lifecycle
         self.reward_snapshots = reward_snapshots
+        self.transaction_contract = transaction_contract
+        if transaction_contract and (not lifecycle or not isinstance(getattr(event_recorder, '__self__', None), EpisodeStore)):
+            raise SandboxError('TRANSACTION_AUDIT_INVALID', 'transaction audit requires an episode store and lifecycle', 500)
         if lifecycle and reward_snapshots:
             reward_snapshots.names.update(RewardStateSnapshots.validate_tools(
                 reward_snapshots.implementations, lifecycle.config))
@@ -1750,6 +1866,14 @@ class ContractToolRegistry:
             raise SandboxError("TOOL_CONTRACT_INVALID", "declared tools have no handlers", 500, missing)
 
     def execute(self, name: str, arguments: Mapping[str, Any], *, idem_key: str | None = None) -> Any:
+        if self.transaction_contract and name in self.transaction_contract['write_tools']:
+            # Include both snapshots and the audit in the same serialization
+            # boundary, while allowing the inner failed write to roll back.
+            with self.lifecycle.store._lock:
+                return self._execute(name, arguments, idem_key=idem_key)
+        return self._execute(name, arguments, idem_key=idem_key)
+
+    def _execute(self, name: str, arguments: Mapping[str, Any], *, idem_key: str | None = None) -> Any:
         if name not in self.schemas:
             raise SandboxError("NOT_FOUND", f"unknown tool: {name}", 404)
         if not isinstance(arguments, Mapping):
@@ -1763,8 +1887,10 @@ class ContractToolRegistry:
             "tool_name": name, "arguments": args, "noise": name in self.noise_tools,
             "tool_call_id": f"call-{uuid.uuid4().hex}", "timestamp": time.time(),
         }
+        bound_authorization = False
 
         def invoke() -> Any:
+            nonlocal bound_authorization
             try:
                 if mutation == "constant_tool_result":
                     return {"mutation": "constant_tool_result", "value": None}
@@ -1778,6 +1904,12 @@ class ContractToolRegistry:
                             rows = [row for row in rows if row.get(column) == args[argument]]
                     return {"records": rows, "count": len(rows)}
                 transition = self.lifecycle.before(name, args, idem_key) if self.lifecycle else None
+                if self.transaction_contract and name in self.transaction_contract['write_tools']:
+                    grants = self.lifecycle.rules.get(name, {}).get('requires_grants', [])
+                    terms = self.lifecycle.store.get_state(ApprovalTerms.KEY, {})
+                    bound_authorization = bool(grants) and all(
+                        terms.get(grant, {}).get('tool') == name and terms[grant].get('scope') == 'terms'
+                        for grant in grants)
                 approval_before = (self.lifecycle.data._all() if self.lifecycle
                                    and self.lifecycle.store.get_state(ApprovalTerms.KEY, {}) else None)
                 reads: list[str] = []
@@ -1808,6 +1940,27 @@ class ContractToolRegistry:
             # without publishing transport values to semantic evaluators.
             attempt_payload = {'tool_name': name, 'arguments': copy.deepcopy(args),
                 'idempotency_key_sha256': hashlib.sha256(idem_key.encode()).hexdigest() if idem_key else None}
+            audit = self.transaction_contract and name in self.transaction_contract['write_tools']
+            if audit:
+                attempt_payload['tool_call_id'] = event_payload['tool_call_id']
+            audit_before = copy.deepcopy(self.lifecycle.data._all()) if audit else None
+            audit_start = len(recorder_owner.replay()['events']) if audit else 0
+            def record_audit(status):
+                if not audit:
+                    return
+                events = recorder_owner.replay()['events'][audit_start:]
+                changes = TransactionWitness.changes(
+                    BusinessGoalEvaluator.external_baseline(audit_before, events),
+                    self.lifecycle.data._all(), self.transaction_contract['table_primary_keys'])
+                recorder_owner.event('business_write_audit', {
+                    'tool_name': name, 'tool_call_id': event_payload['tool_call_id'],
+                    'idempotency_key_sha256': attempt_payload['idempotency_key_sha256']}, {
+                    'status': status, 'changes': changes,
+                    'bound_authorization': bound_authorization,
+                    'committed': any(e['event'] in {'tool_call', 'tool_call_replay'} for e in events),
+                    'replayed': any(e['event'] == 'tool_call_replay' for e in events),
+                    'committed_fault_ids': [e['payload']['id'] for e in events
+                        if e['event'] == 'injected_fault' and e.get('result', {}).get('committed')]})
             def operation():
                 if idem_key:
                     return recorder_owner.execute_idempotent(idem_key, "tool_call", event_payload, invoke)
@@ -1826,8 +1979,10 @@ class ContractToolRegistry:
                     raise pending
             except SandboxError as exc:
                 recorder_owner.event('tool_attempt', attempt_payload, {'status': exc.status})
+                record_audit(exc.status)
                 raise
             recorder_owner.event('tool_attempt', attempt_payload, {'status': 200})
+            record_audit(200)
             return result
         result = invoke()
         if self.event_recorder is not None:

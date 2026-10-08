@@ -27,6 +27,7 @@ def preview_lifecycle_task(task, root, *, return_context=False, baseline_overrid
                                       [t['function']['name'] for t in task['tools']])
         registry = ContractToolRegistry(task['tools'], DeclarativeToolCompiler(data).compile_all(implementations),
             event_recorder=store.event, lifecycle=lifecycle,
+            transaction_contract=task['task_spec'].get('transaction_contract'),
             tool_contracts=task['task_spec']['tool_contracts'],
             reward_snapshots=RewardStateSnapshots(data, implementations,
                 [task['metric_implementations'], task['task_spec']]))

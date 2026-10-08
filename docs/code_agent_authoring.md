@@ -1823,10 +1823,22 @@ incompatible category or environment-mode allocations fail rather than downgrade
   with sufficient declared premises. Use reproducible `row_recipe` data, relevant
   distractors, cross-table predicates and complete aggregates; never truncate a
   requested answer to fit the existing 64-entry answer-expression bound.
-- `complex_write_transactions` reserves stateful tasks with at least two changed
-  tables and three changed objects, bound authorization, idempotency and recovery.
-  Its dedicated executed transaction witness is still being integrated; allocation
-  does not grant coverage, and missing coverage prevents acceptance.
+- `complex_write_transactions` requires a passing stateful reference with committed
+  changes to at least two tables and three distinct primary-key objects. Restored
+  objects count as genuinely touched; external changes and no-op writes do not.
+  Every write needs `require_idempotency`, `requires_grants`, and tool-bound
+  `approval_terms` with `scope: terms`. Declare `realism_requirements.mechanisms`
+  including `compensation` and name its actual writes in `compensation_tools`.
+  A declared compensation tool must restore an outstanding changed field after
+  an actual fault, and an executed idempotent replay must leave state unchanged.
+  A successful compensation response alone is insufficient. Failed uncommitted
+  calls must leave no write behind; response loss after commit is audited as a
+  committed write and must not be confused with rollback. Final goals and unrelated
+  state preservation still apply. The independent delivered-sandbox gate recomputes
+  this witness from its own execution, rather than trusting the authoring report.
+  This is a compensating workflow across atomic single-tool transactions, not a
+  single globally atomic multi-tool transaction. Describe its business semantics
+  accurately; recovery steps must be necessary for the original user goal.
 
 For ordinary tasks that explicitly require full retrieval, declare
 `complete_retrieval_tools: ["search_items"]` in source. Entries must uniquely name
@@ -1848,8 +1860,8 @@ whether full traversal is part of the original goal, whether every page contribu
 necessary evidence and whether filters exclude the right distractors.
 
 Profile coverage is execution evidence, not a proof of business-rule semantics.
-Rollout-budget compatibility and complete transaction witnesses remain prerequisites
-before running the mixed high-difficulty yield cohort.
+Rollout-budget compatibility remains a prerequisite before running the mixed
+high-difficulty yield cohort.
 
 ### Generation timing evidence
 

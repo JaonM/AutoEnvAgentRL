@@ -934,6 +934,7 @@ def _verify_execution(artifacts: dict, root: Path, *, calibration: dict | None =
         registry = ContractToolRegistry(artifacts["tools"],
             DeclarativeToolCompiler(data).compile_all(artifacts["tool_implementations"]),
             event_recorder=store.event, tool_contracts=artifacts["task_spec"]["tool_contracts"], lifecycle=lifecycle,
+            transaction_contract=artifacts['task_spec'].get('transaction_contract'),
             reward_snapshots=RewardStateSnapshots(data, artifacts["tool_implementations"],
                 [artifacts["metric_implementations"], artifacts["task_spec"].get("goal_contract", {}),
                  artifacts["task_spec"].get("execution_routes", [])]))
@@ -1305,10 +1306,19 @@ def _verify_execution(artifacts: dict, root: Path, *, calibration: dict | None =
                 realism_observations.append(execution_outcome['realism'])
                 from .report_values import report_value
                 observed = diagnostic()
+                transaction_witness = {}
+                if artifacts['task_spec'].get('transaction_contract'):
+                    from env_factory.sandbox_runtime import TransactionWitness, ExpressionBusinessState
+                    transaction_witness = TransactionWitness.observe(
+                        artifacts['task_spec']['transaction_contract'], store.replay()['events'],
+                        data.baseline, ExpressionBusinessState(data._all(), data.baseline,
+                            store.get_state(RewardStateSnapshots.KEY, {})), artifacts['task_spec']['goal_contract'])
                 from .difficulty_profiles import observed_dependency_depth
                 difficulty_observations.append({**{key: value for key, value in observed['gate_diagnostics'].items()
                     if key in {'retrieval_complete', 'retrieval_chains'}},
                     'dependency_depth': observed_dependency_depth(observed['gate_diagnostics']),
+                    'transaction_witness': transaction_witness,
+                    'authorization_completed': execution_outcome['realism']['authorization_completed'],
                     'recovered_fault_ids': execution_outcome['realism']['recovered_fault_ids'],
                     'read_tables': sorted({name for event in store.replay()['events']
                         if event.get('event') == 'tool_call'

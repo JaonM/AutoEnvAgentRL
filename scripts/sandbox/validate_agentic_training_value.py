@@ -859,8 +859,24 @@ def validate(
             return None, type(exc).__name__
 
     environment_mode = task.get("environment_plan", {}).get("mode")
+    difficulty = task.get('task_spec', {}).get('difficulty_requirements', {})
+    complex_transaction = difficulty.get('profile') == 'complex_write_transactions'
+    def transaction_observation(baseline):
+        from env_factory.sandbox_runtime import TransactionWitness, ExpressionBusinessState
+        transaction = task['task_spec'].get('transaction_contract')
+        try:
+            state_status, state_body, _ = app.handle('GET', '/v1/state', None, trainer_headers)
+            after = ExpressionBusinessState(state_body['business_state'], baseline,
+                state_body.get('reward_state_snapshots', {})) if state_status == 200 else None
+            status, replay, _ = app.handle('GET', '/v1/replay', None, trainer_headers)
+            if status == 200 and transaction and baseline is not None and after is not None:
+                return TransactionWitness.observe(transaction, replay['events'], baseline, after,
+                    task['task_spec']['goal_contract'])
+        except (KeyError, TypeError, ValueError, AttributeError):
+            pass
+        return {}
     reference_baseline = None
-    if environment_mode == "reference_data":
+    if environment_mode == "reference_data" or complex_transaction:
         try:
             reset_step = next(
                 step for step in success_scenario.get("steps", [])
@@ -875,6 +891,13 @@ def validate(
     if success_run:
         resolved_success_steps = bind_success_steps(success_scenario['steps'], success_run['history'])
         evidence['success_history'] = success_run['history']
+    if complex_transaction:
+        from env_factory.generation.difficulty_profiles import transaction_covered
+        witness = transaction_observation(reference_baseline)
+        evidence['transaction_witness'] = witness
+        transaction_complete = (reward_of(success_run or {}) or 0) >= 1 - 1e-9 and transaction_covered(difficulty, witness)
+        evidence['transaction_coverage_runs'] = [{'scenario_id': selected_success.get('scenario_id'),
+            'reward': reward_of(success_run or {}), 'witness': witness}]
     if environment_mode == "reference_data":
         try:
             reference_after = remote_business_snapshot() if base_url else app.business_snapshot()
@@ -1144,6 +1167,33 @@ def validate(
         noise_reward = reward_of(noise_run or {})
         if noise_reward is None or noise_reward > 0:
             failures.append({"gate": "noise_selection", "message": "noise tool trajectory must produce reward <= 0", "reward": noise_reward})
+
+    if complex_transaction:
+        # Coverage is existential across passing references, just as in author
+        # validation. A valid path without a transport retry must not invalidate
+        # another independently executable path which proves recovery coverage.
+        for scenario in scenarios:
+            if transaction_complete:
+                break
+            if scenario.get('kind') != 'goal_success' or scenario is selected_success:
+                continue
+            trial = {'scenario_id': scenario.get('scenario_id')}
+            try:
+                reset = next(step for step in scenario['steps'] if step.get('operation') == 'reset')
+                runner.run({'steps': [reset], 'assertions': []})
+                baseline = remote_business_snapshot() if base_url else app.business_snapshot()
+                run = runner.run(scenario_without_assertions(scenario))
+                proof = transaction_observation(baseline)
+                trial.update(reward=reward_of(run), witness=proof)
+                transaction_complete = (reward_of(run) or 0) >= 1 - 1e-9 and transaction_covered(difficulty, proof)
+                if transaction_complete:
+                    evidence['transaction_witness'] = proof
+            except Exception as exc:
+                trial.update(error_type=type(exc).__name__, error_message=str(exc))
+            evidence['transaction_coverage_runs'].append(trial)
+        if not transaction_complete:
+            failures.append({'gate': 'complex_transaction_coverage',
+                'message': 'passing references lack executed multi-object writes, bound consent, stable replay and actual fault compensation'})
 
     judgment_report = getattr(app, 'validation_judgment_report', None)
     if not base_url and callable(judgment_report):

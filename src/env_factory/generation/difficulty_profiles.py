@@ -109,6 +109,31 @@ def compile_requirements(source, request, spec, metric_implementations):
     if profile != 'standard' and mode not in ({'stateful'} if profile == 'complex_write_transactions' else {'reference_data', 'stateful'}):
         raise ValueError('DIFFICULTY_PROFILE_MISSING: incompatible actual environment mode')
     tools = source['tool_implementations']
+    if profile == 'complex_write_transactions':
+        writes = [tool for tool in tools if tool['operation'] in {'insert', 'update', 'delete'}]
+        compensation = sorted(set(source.get('realism_requirements', {}).get('compensation_tools', []))
+                              | set(request.get('realism_requirements', {}).get('compensation_tools', [])))
+        rules = source.get('business_lifecycle', {}).get('tools', {})
+        if len({tool['table'] for tool in writes}) < required['min_changed_tables']:
+            raise ValueError('DIFFICULTY_PROFILE_MISSING: complex transactions need writes across at least two tables')
+        if not compensation or set(compensation) - {tool['tool_name'] for tool in writes}:
+            raise ValueError('DIFFICULTY_PROFILE_MISSING: declare actual compensation write tools in realism_requirements')
+        if any(not rules.get(tool['tool_name'], {}).get('requires_grants')
+               or not rules.get(tool['tool_name'], {}).get('require_idempotency') for tool in writes):
+            raise ValueError('DIFFICULTY_PROFILE_MISSING: all transaction writes require bound authorization and idempotency')
+        terms = {(stage.get('before_tool'), grant)
+                 for variant in source.get('interaction_contract', {}).get('variants', [])
+                 for original in variant.get('stages', [])
+                 for stage in [original, *[{**original, **branch} for branch in original.get('branches', [])]]
+                 for grant, term in stage.get('approval_terms', {}).items() if term.get('scope') == 'terms'}
+        if any((tool['tool_name'], grant) not in terms for tool in writes
+               for grant in rules[tool['tool_name']]['requires_grants']):
+            raise ValueError('DIFFICULTY_PROFILE_MISSING: each transaction grant needs tool-bound approval terms')
+        primary_keys = {table['table_name']: table.get('primary_key', []) for table in source['tables']}
+        if any(not keys for keys in primary_keys.values()):
+            raise ValueError('DIFFICULTY_PROFILE_MISSING: transaction audit requires primary keys on all tables')
+        spec['transaction_contract'] = {'write_tools': sorted(tool['tool_name'] for tool in writes),
+            'compensation_tools': sorted(compensation), 'table_primary_keys': primary_keys}
     paging = [tool for tool in tools if tool.get('pagination')]
     if profile == 'large_scale_retrieval':
         if sum(len(table['rows']) for table in source['tables']) < required['min_dataset_rows']:
@@ -154,13 +179,21 @@ def require_coverage(artifacts, observations):
     elif profile == 'long_horizon_planning':
         valid = [row for row in observations if row.get('dependency_depth', 0) >= required['min_dependency_depth']
                  and row.get('recovered_fault_ids')]
+    elif profile == 'complex_write_transactions':
+        valid = [row for row in observations if transaction_covered(required, row.get('transaction_witness', {}))
+                 and row.get('authorization_completed')]
     else:
-        # These profiles may be allocated/frozen now, but must not obtain delivery
-        # credit until their dedicated executed transaction/depth witnesses exist.
         valid = []
     if not valid:
         raise ValueError('DIFFICULTY_EXECUTION_UNCOVERED: ' + profile + ' lacks verified executed coverage')
     return {'passed': True, 'profile': profile, 'observations': len(valid)}
+
+
+def transaction_covered(required, witness):
+    return (witness.get('audit_valid') is True and witness.get('unrelated_state_preserved') is True
+            and len(witness.get('changed_tables', [])) >= required['min_changed_tables']
+            and witness.get('changed_objects', 0) >= required['min_changed_objects']
+            and bool(witness.get('compensated_fault_ids')) and bool(witness.get('idempotent_replay_tools')))
 
 
 def observed_dependency_depth(diagnostics):
