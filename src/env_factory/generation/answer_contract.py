@@ -65,6 +65,55 @@ def _finite_labels(expression: object, depth: int = 0) -> set[str] | None:
     return None
 
 
+def validate_conditional_text_fallbacks(target, field, public):
+    """Do not hide an exact stop/empty-result code in an otherwise open field.
+
+    This checks public disclosure, not the semantic truth of a condition. It
+    never publishes literals inferred from private reward expressions.
+    """
+    if field.get('type') != 'string':
+        return
+    literals, dynamic = set(), False
+
+    def visit(expression):
+        nonlocal dynamic
+        if not isinstance(expression, dict):
+            dynamic = True
+        elif set(expression) == {'if'}:
+            visit(expression['if']['then'])
+            visit(expression['if']['else'])
+        elif set(expression) == {'literal'} and isinstance(expression['literal'], str):
+            literals.add(expression['literal'])
+        else:
+            dynamic = True
+
+    visit(target['expression'])
+    if not dynamic or not literals:
+        return  # Pure categorical vocabularies are handled by enum publication.
+
+    def text_values(value):
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, list):
+            for child in value:
+                yield from text_values(child)
+        elif isinstance(value, dict):
+            for child in value.values():
+                yield from text_values(child)
+
+    evidence = list(text_values([field.get('description', ''),
+        public.get('initial_user_message', ''), public.get('materials', [])]))
+    missing = sorted(value for value in literals if value and value not in field.get('enum', [])
+                     and not any(value in text for text in evidence))
+    if missing:
+        raise ValueError('ANSWER_FALLBACK_UNDISCLOSED: ' + json.dumps({
+            'field': target['key'], 'unpublished_exact_values': missing,
+            'repair': 'Describe the applicable stop/empty/unobserved normalization and its exact '
+                      'value in this public field description or public instructions. Preserve '
+                      'observed values on normal routes. Private identifiers/preferences must '
+                      'come from observed tool/user evidence, never from a published gold literal.'}, ensure_ascii=False))
+
+
 def _schema(schema: object, depth: int = 0) -> None:
     if not isinstance(schema, dict) or depth > 8:
         raise ValueError("ANSWER_CONTRACT_INVALID: schema must be a bounded object")
@@ -206,6 +255,7 @@ def bind_answer_contract(source: dict) -> dict | None:
                 # Explicit author enums still undergo ordinary privacy review.
                 if not labels & private_values:
                     field.setdefault("enum", sorted(labels))
+            validate_conditional_text_fallbacks(target, field, source['description']['public_input'])
     _schema(schema)
     if semantic:
         for rule in structured:

@@ -219,19 +219,34 @@ def _key_step_edges(
     return edges
 
 
-def _declarative_output_schema(implementation: Mapping[str, Any]) -> dict[str, Any] | None:
+def _declarative_output_schema(implementation: Mapping[str, Any], table: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
     operation = implementation.get("operation")
     result_field = implementation.get("result_field")
     if operation == "select" and isinstance(result_field, str) and result_field:
         projection = implementation.get("projection", [])
         aliases = implementation.get("projection_aliases", {})
+        columns = {column['name']: column for column in (table or {}).get('columns', [])}
+        # Runtime returns the entire record only when neither an explicit
+        # projection nor aliases are present. Alias-only selects stay narrow.
+        if not projection and not aliases:
+            projection = list(columns)
         fields = [field for field in projection if isinstance(field, str) and field] if isinstance(projection, list) else []
         if isinstance(aliases, Mapping):
             fields.extend(alias for alias in aliases if isinstance(alias, str) and alias)
         fields = list(dict.fromkeys(fields))
         item_schema: dict[str, Any] = {"type": "object"}
         if fields:
-            item_schema["properties"] = {field: {} for field in fields}
+            from ..sandbox_runtime import ManifestDataStore
+            properties = {}
+            for field in fields:
+                column_name = aliases.get(field, field)
+                column = columns.get(column_name, {})
+                kind = ManifestDataStore._column_json_type(column.get('type'))
+                shape = {'type': kind} if kind else {}
+                if kind and column.get('nullable') is True and column_name not in (table or {}).get('primary_key', []):
+                    shape = {'anyOf': [shape, {'type': 'null'}]}
+                properties[field] = shape
+            item_schema["properties"] = properties
             item_schema["required"] = fields
             item_schema["additionalProperties"] = False
         return {
@@ -290,6 +305,7 @@ def compile_task_spec(
     implementation_by_tool = {
         str(item.get("tool_name")): item for item in _objects(tool_implementations)
     }
+    tables_by_name = {table.get('table_name'): table for table in _objects(data_tables)}
     action_by_name = {str(item.get("name")): item for item in _objects(actions)}
     binding_by_tool = {str(item.get("tool_name")): item for item in bindings}
     tool_contracts: list[dict[str, Any]] = []
@@ -301,7 +317,7 @@ def compile_task_spec(
         action = action_by_name.get(str(binding.get("action_name", "")), {})
         output_schema = implementation.get("output_schema")
         if not isinstance(output_schema, Mapping):
-            output_schema = _declarative_output_schema(implementation)
+            output_schema = _declarative_output_schema(implementation, tables_by_name.get(implementation.get('table')))
         tool_contracts.append({
             "name": name,
             "role": "noise" if name in noise_names else "business",

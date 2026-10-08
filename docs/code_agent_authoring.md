@@ -1911,6 +1911,26 @@ certification requirements for rollout/evaluator separation remain in force.
 
 ## Feedback and validation scheduling
 
+Select tools with no `projection` and no `projection_aliases` return every declared
+table column. Their output schema derives those columns and types from the table;
+an alias-only select returns only its declared aliases. Capture paths and downstream
+types undergo the same qualification during preview as during final delivery.
+
+After a user value is actually disclosed, all calls using its `bind_to` or
+`reuse_bindings` argument must preserve that value. The runtime returns
+`409 USER_INPUT_MISMATCH` before the business handler for a different typed value.
+A correct retry is allowed. Do not classify an unrelated successful read with a
+different bound user argument as a positive recovery probe; no such records are
+exposed. This rule does not constrain unrelated tools or unbound arguments.
+
+For an open string answer mixing observed values with literal stop/empty-result
+markers, publish the exact marker and its condition in the field description or
+public instructions. For example, distinguish an unqueried field from an observed
+empty result. Unpublished literal markers fail with `ANSWER_FALLBACK_UNDISCLOSED`.
+The compiler never publishes a private reward literal automatically. Preserve
+observed facts on normal routes and keep qualification facts separate from unique
+identity or overall eligibility decisions.
+
 Compilation first checks executable parameter consumption, then runs a model-free
 pass over reference and isolated stop-route scenarios. Disclosed parameters count
 as used only when the compiled process binding enforces the actual user value;

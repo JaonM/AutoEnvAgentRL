@@ -57,7 +57,7 @@ def preview_lifecycle_task(task, root, *, return_context=False, baseline_overrid
                 elif path.startswith('/v1/tools/'):
                     name = path.removeprefix('/v1/tools/')
                     if user is not None:
-                        user.guard_tool(name)
+                        user.guard_tool(name, body)
                     result = registry.execute(name, body, idem_key=headers.get('Idempotency-Key'))
                     observed.append({'tool_name': name, 'arguments': body, 'result': result})
                 elif path == '/v1/user_simulator':

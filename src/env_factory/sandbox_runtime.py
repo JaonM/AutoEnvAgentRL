@@ -3894,7 +3894,7 @@ class ContractUserSimulator:
             self.episode_store.event('user_protocol', {'script_id':script_id,
                 'required_stages':[stage['id'] for stage in script['interaction_protocol']['stages']]}, {})
 
-    def guard_tool(self, name):
+    def guard_tool(self, name, arguments=None):
         state = self.episode_store.get_state(self.STATE_KEY, {})
         script = self.scripts.get(str(state.get('script_id')), {})
         stages = script.get('interaction_protocol', {}).get('stages', [])
@@ -3911,6 +3911,22 @@ class ContractUserSimulator:
                and (route is None or stage['id'] in route['required_stages'])
                for stage in stages[completed:]):
             raise SandboxError('USER_INTERACTION_REQUIRED', 'complete required user interaction before this tool', 409)
+        if arguments is not None:
+            disclosed = self.episode_store.get_state(RewardStateSnapshots.KEY, {}).get('$user_values', {})
+            for stage in stages[:completed]:
+                observed = disclosed.get(stage['id'], {})
+                if observed.get('disclosed') is not True:
+                    continue  # Inactive stages and refusals disclose no value.
+                bindings = ([stage['bind_to']] if stage.get('bind_to') else []) + stage.get('reuse_bindings', [])
+                for binding in bindings:
+                    argument = binding.get('argument')
+                    if (binding.get('tool') == name and argument in arguments
+                            and not DeclarativeMetricEvaluator._json_value_equal(arguments[argument], observed['value'])):
+                        # Reject before the handler exposes unrelated records.
+                        # No persistent penalty: a valid retry can recover.
+                        raise SandboxError('USER_INPUT_MISMATCH',
+                            'tool argument must match the value disclosed by the user', 409,
+                            {'stage_id': stage['id'], 'tool': name, 'argument': argument})
 
     def _execution_route(self):
         return self.execution_routes.select(self.route_context()) if self.execution_routes and self.route_context else None
@@ -4580,7 +4596,7 @@ class SandboxApplication:
                 name = path[len(prefix):]
                 if name in self.tool_registry.schemas and mutation != 'ignore_tool_arguments':
                     validate_json_schema(self.tool_registry.schemas[name], body)
-                simulator.guard_tool(name)
+                simulator.guard_tool(name, body)
             result = self.tool_registry.execute(
                 path[len(prefix):], body, idem_key=self._header(headers, "Idempotency-Key")
             )

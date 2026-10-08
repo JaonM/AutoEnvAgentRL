@@ -511,6 +511,18 @@ def compile_source(source: dict, *, root: Path, request: dict, script_count: int
             description['public_input']['materials'].append({
                 'name': 'user_interaction_context', 'mime_type': 'application/json',
                 'content': json.dumps(contexts, ensure_ascii=False)})
+    if interaction_scripts:
+        from .interaction_contract import stage_bindings
+        scopes = sorted({(binding['tool'], binding['argument']) for script in interaction_scripts
+                         for stage in script['interaction_protocol']['stages'] for binding in stage_bindings(stage)})
+        description['public_input'].setdefault('materials', []).append({
+            'name': 'disclosed_user_input_scope', 'mime_type': 'application/json',
+            'content': json.dumps({'rule': 'After the user discloses a value, every call using its '
+                'bound argument must preserve that value. A mismatched call is rejected with '
+                'HTTP 409 USER_INPUT_MISMATCH before reading or writing business data. '
+                'Retrying with the correct value is allowed. Undisclosed/inactive branches '
+                'do not authorize guessing, and a terminal refusal still stops execution.',
+                'bindings': [{'tool': tool, 'argument': argument} for tool, argument in scopes]}, ensure_ascii=False)})
         for script in interaction_scripts:
             script['user_input'] = copy.deepcopy(description['public_input'])
     scripts = interaction_scripts or P._deterministic_user_scripts(description=description, count=script_count, finalize_on_goal=True)
@@ -622,6 +634,10 @@ def compile_source(source: dict, *, root: Path, request: dict, script_count: int
     validate_reward_assertion_paths(acceptance['executable_scenarios'], metrics,
                                     routed=bool(spec.get('execution_routes')))
     validate_capture_paths(scenarios, spec["tool_contracts"])
+    from env_factory.contracts.tool_chain_contract import tool_chain_issues
+    chain_issues = tool_chain_issues(result)
+    if chain_issues:
+        raise ValueError('TOOL_CHAIN_QUALIFICATION: ' + json.dumps(chain_issues, ensure_ascii=False))
     if source.get('business_lifecycle'):
         from types import SimpleNamespace
         from env_factory.sandbox_runtime import BusinessLifecycle
@@ -954,7 +970,7 @@ def _verify_execution(artifacts: dict, root: Path, *, calibration: dict | None =
                 last_evaluated_scores.clear()
                 result = {}
             elif path.startswith("/v1/tools/"):
-                user.guard_tool(path.removeprefix("/v1/tools/"))
+                user.guard_tool(path.removeprefix("/v1/tools/"), body)
                 result = registry.execute(path.removeprefix("/v1/tools/"), body,
                                           idem_key=headers.get('Idempotency-Key'))
             elif path == "/v1/user_simulator":
@@ -1137,7 +1153,10 @@ def _verify_execution(artifacts: dict, root: Path, *, calibration: dict | None =
         if deterministic_only:
             from .deterministic_preflight import run_scenarios
             from .dynamic_choice_coverage import observe as observe_choices
-            return run_scenarios(successes + failures, artifacts['metrics'], runner, call,
+            positive_probes = [{'scenario_id': 'positive-probe:' + pair['id'], 'kind': 'goal_success',
+                                'steps': pair['steps'], 'assertions': []}
+                               for pair in artifacts.get('reward_pair_probes', [])]
+            return run_scenarios(successes + failures + positive_probes, artifacts['metrics'], runner, call,
                                  latest_proof, diagnostic, progress, root, DeferredSemanticEvidence,
                                  observe=lambda: observe_choices(store.replay(), user.scripts.values()))
         reference_failures = []

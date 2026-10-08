@@ -6,6 +6,20 @@ from env_factory.generation.delivery_preflight import verify_delivery
 from .test_dynamic_state_goal import dynamic_source
 
 class CaptureFieldsTest(unittest.TestCase):
+    def test_default_projection_exposes_real_columns_and_rejects_missing_capture_early(self):
+        from env_factory.contracts.tool_chain_contract import tool_chain_issues
+        source, request = dynamic_source()
+        source['tool_implementations'][0].pop('projection')
+        with tempfile.TemporaryDirectory() as directory:
+            result = compile_source(source, root=Path(directory), request=request)
+            self.assertFalse(tool_chain_issues(result))
+            items = result['task_spec']['tool_contracts'][0]['output_contract']['schema']['properties']['records']['items']
+            self.assertEqual(items['properties']['id'], {'type': 'integer'})
+            self.assertEqual(set(items['required']), {c['name'] for c in source['tables'][0]['columns']})
+            source['scenarios'][0]['steps'][0]['capture']['zone_id'] = '$.records[0].nonexistent'
+            with self.assertRaisesRegex(ValueError, 'CAPTURE_PATH_INVALID|TOOL_CHAIN_QUALIFICATION'):
+                compile_source(source, root=Path(directory), request=request, structural_preview=True)
+
     def test_object_and_array_fields_compile_to_real_executable_dependencies(self):
         for capture, path, reference in [("zone", "$.records[0]", "zone.id"),
                                          ("zones", "$.records", "zones[0].id")]:

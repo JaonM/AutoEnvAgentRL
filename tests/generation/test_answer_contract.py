@@ -24,6 +24,23 @@ def answer_source():
 
 
 class AnswerContractTest(unittest.TestCase):
+    def test_mixed_observed_text_and_literal_stop_codes_need_public_normalization(self):
+        source, _ = answer_source()
+        field = {'type': 'string'}
+        source['answer_contract']['schema']['properties'] = {'voice_types': field}
+        target = source['metric_implementations'][0]['expected']['targets'][0]
+        target['expression'] = {'if': {'condition': {'literal': False},
+            'then': {'tool_result': {'name': 'read', 'path': '$.status'}},
+            'else': {'literal': 'UNQUERIED'}}}
+        source['scenarios'][0]['steps'][0]['content'] = '{"voice_types":"UNQUERIED"}'
+        with self.assertRaisesRegex(ValueError, 'ANSWER_FALLBACK_UNDISCLOSED.*UNQUERIED'):
+            bind_answer_contract(source)
+        self.assertNotIn('UNQUERIED', source['description']['public_input']['initial_user_message'])
+        field['description'] = 'Copy observed status; when the query has not run, return exactly UNQUERIED.'
+        bound = bind_answer_contract(source)
+        self.assertNotIn('enum', bound['schema']['properties']['voice_types'])
+        self.assertIn('UNQUERIED', source['description']['public_input']['initial_user_message'])
+
     def test_array_comparison_contract_publishes_keys_and_directions_without_gold_values(self):
         for order, mode in [(['code'], 'ordered_records'), ([], 'unordered'), (None, 'exact_sequence')]:
             with self.subTest(order=order):
