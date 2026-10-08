@@ -5,9 +5,9 @@ from env_factory.contracts.tool_chain_contract import captured_schema
 def measured_component_failure(scenario, execution, metrics):
     """Recognize explicit low outcome assertions on the final observed reward.
 
-    The runner has already enforced every authored assertion. Only a terminal
-    reward observation can replace the default aggregate-failure check; an early
-    empty episode or a process-only penalty is insufficient.
+    Enforce the qualifying assertions here as delivery probes may strip them.
+    Only a terminal reward observation can replace the aggregate-failure check;
+    an early empty episode or a process-only penalty is insufficient.
     """
     import math
     steps = scenario.get('steps', [])
@@ -15,7 +15,7 @@ def measured_component_failure(scenario, execution, metrics):
         return None
     last = steps[-1]
     outcomes = {m['id'] for m in metrics if m.get('category') == 'outcome'}
-    targets = set()
+    targets = {}
     for assertion in scenario.get('assertions', []):
         source = assertion.get('source')
         if source == 'variables' or (str(source).startswith('step:')
@@ -28,15 +28,22 @@ def measured_component_failure(scenario, execution, metrics):
             continue
         for metric_id in outcomes:
             if assertion.get('path') == f'$.components.{metric_id}':
-                targets.add(metric_id)
+                targets.setdefault(metric_id, []).append((assertion['operator'], expected))
     if not targets:
         return None
-    observed = execution['history'][-1]['body']
+    history = (execution or {}).get('history', [])
+    terminal = history[-1] if history else {}
+    observed = terminal.get('body', {}) if terminal.get('operation') == 'reward' else {}
+    if not isinstance(observed, dict):
+        observed = {}
     total = observed.get('reward')
     components = {name: observed.get('components', {}).get(name) for name in sorted(targets)}
     passed = (type(total) in {int, float} and math.isfinite(total) and 0 <= total < 1 - 1e-9
               and all(type(value) in {int, float} and math.isfinite(value) and 0 <= value <= .2
                       and name not in observed.get('inactive_components', [])
+                      and all(value == expected if operator == 'eq' else
+                              value < expected if operator == 'lt' else value <= expected
+                              for operator, expected in targets[name])
                       for name, value in components.items()))
     return {'scenario_id': scenario.get('scenario_id'), 'scope': 'final_observed_outcome_components',
             'reward': total, 'components': components, 'passed': passed}

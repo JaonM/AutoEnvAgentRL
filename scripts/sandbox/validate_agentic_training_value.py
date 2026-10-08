@@ -19,6 +19,7 @@ from env_factory.sandbox_http import HTTPSandboxClient, evaluator_http_timeout
 from env_factory.sandbox_runtime import AcceptanceScenarioRunner, BusinessGoalEvaluator
 from env_factory.evidence.data_governance import provider_identity
 from env_factory.runtime_llm import RuntimeLLMConfig
+from env_factory.generation.scenario_assertions import measured_component_failure
 from env_factory.contracts.reward_contract import numeric_answer_counterfactual, terminal_outcome_weight
 from env_factory.contracts.trajectory_probes import bind_success_steps, idempotent_call_groups, logical_trace_matches, swap_logical_calls, optional_observation_positions
 
@@ -902,11 +903,15 @@ def validate(
         failures.append({"gate": "success_trajectory", "message": "valid goal trajectory must satisfy all reward components (reward 1.0)", "reward": success_reward})
     negative_evidence = negative_requirement_evidence(task, by_kind['goal_failure'], failure_run)
     evidence['failure_requirement_validation'] = negative_evidence
+    component_evidence = measured_component_failure(
+        by_kind['goal_failure'], failure_run, task.get('metrics', []))
+    evidence['failure_component_validation'] = component_evidence
     failure_passed = (failure_reward is not None and
         (negative_evidence['passed'] and failure_reward < 1 - 1e-9 if negative_evidence is not None
+         else component_evidence['passed'] if component_evidence is not None
          else failure_reward <= .2))
     if not failure_passed:
-        failures.append({"gate": "failure_trajectory", "message": "failure must reject each bound requirement and full reward, or produce reward <= 0.2 when unbound", "reward": failure_reward})
+        failures.append({"gate": "failure_trajectory", "message": "failure must reject each bound requirement, prove explicit final outcome component failure, or produce reward <= 0.2 when unbound; full reward is invalid", "reward": failure_reward})
 
     if success_run and tool_required:
         tool_bodies = [item.get("body") for item in success_run.get("history", []) if item.get("operation") == "tool_call"]

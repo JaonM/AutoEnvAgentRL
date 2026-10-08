@@ -1,5 +1,38 @@
 from scripts.sandbox import validate_agentic_training_value as module
 from scripts.sandbox.validate_agentic_training_value import meaningful_result, negative_requirement_evidence, sensitive_outcomes
+import pytest
+
+
+@pytest.mark.parametrize('failed_requirement', [False, True])
+def test_delivery_accepts_the_component_negative_already_verified_by_compiler(tmp_path, monkeypatch, failed_requirement):
+    import importlib.util
+    import json
+    import sys
+    from env_factory import sandbox_runtime
+    from env_factory.generation.agent_authoring import compile_source
+    from scripts.sandbox.generate_sandbox_scaffold import generate
+    from tests.generation.test_component_negative_preflight import partial_failure_source
+
+    source, request = partial_failure_source()
+    for scenario in source['scenarios']:
+        scenario['steps'].insert(0, {'operation': 'reset', 'body': {'episode_id': 'partial', 'seed': 17}})
+        if scenario['steps'][-1]['operation'] != 'reward':
+            scenario['steps'].append({'operation': 'reward', 'step_id': 'score'})
+    artifact = compile_source(source, root=tmp_path, request=request)
+    assert artifact['generation_pipeline']['verification']['checks']['authored_failure_1']
+    (tmp_path / 'task.json').write_text(json.dumps(artifact))
+    (tmp_path / 'BUILD_CONTRACT.json').write_text(json.dumps({**artifact, 'artifacts': artifact}))
+    generate(tmp_path)
+    monkeypatch.setitem(sys.modules, 'sandbox_runtime', sandbox_runtime)
+    spec = importlib.util.spec_from_file_location('task_impl', tmp_path / 'task_impl.py')
+    hooks = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hooks)
+    monkeypatch.setitem(sys.modules, 'task_impl', hooks)
+    if failed_requirement:
+        monkeypatch.setattr(module, 'negative_requirement_evidence', lambda *args: {'passed': False})
+    report = module.validate(tmp_path)
+    assert 'success_trajectory' not in report['failed_gates'], report['failures']
+    assert ('failure_trajectory' in report['failed_gates']) is failed_requirement, report['failures']
 
 def test_zero_count_is_evidence_only_for_declared_aggregation():
     assert meaningful_result({'count': 0}, operation='aggregate_count')

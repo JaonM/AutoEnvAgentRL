@@ -78,4 +78,27 @@ def test_component_evidence_cannot_certify_full_credit_or_unmeasured_outcome(mut
     else:
         body['components']['temperature_answer'] = float('nan')
     assert not measured_component_failure(source['scenarios'][-1],
-        {'history': [{'body': body}]}, source['metrics'])['passed']
+        {'history': [{'operation': 'reward', 'body': body}]}, source['metrics'])['passed']
+
+
+@pytest.mark.parametrize('operator,expected,value,passed', [
+    ('eq', 0, .1, False), ('lt', .2, .2, False), ('lte', .2, .2, True),
+    ('eq', 0, 0, True), ('lt', .2, .1, True),
+])
+def test_component_evidence_enforces_authored_comparator(operator, expected, value, passed):
+    from env_factory.generation.scenario_assertions import measured_component_failure
+    source, _ = partial_failure_source()
+    scenario = source['scenarios'][-1]
+    scenario['assertions'][0].update(operator=operator, expected=expected)
+    run = {'history': [{'operation': 'reward', 'body': {
+        'reward': .6, 'components': {'temperature_answer': value}}}]}
+    assert measured_component_failure(scenario, run, source['metrics'])['passed'] is passed
+
+
+@pytest.mark.parametrize('run', [None, {}, {'history': []}, {'history': [
+    {'operation': 'reward', 'body': {'reward': .5, 'components': {'temperature_answer': 0}}},
+    {'operation': 'agent_response', 'body': {}}]}])
+def test_component_evidence_requires_fresh_terminal_reward(run):
+    from env_factory.generation.scenario_assertions import measured_component_failure
+    source, _ = partial_failure_source()
+    assert not measured_component_failure(source['scenarios'][-1], run, source['metrics'])['passed']
