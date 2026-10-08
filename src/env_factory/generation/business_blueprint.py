@@ -19,10 +19,16 @@ Schema:
   structured fields; identify any genuinely required cross-field inference.
   Explanation entries may add context_fields: a list of observed/derived field
   names supplying facts for that inference. Freeze these dependencies too.
+  For large data, use evidence_mode: fields on explanations: the judge receives
+  declared executable field facts, public input, user turns and tool statuses,
+  not entire business tables or tool result rows. Include every required premise.
   Freeze these meanings and roles now; source.answer_fields must preserve them.
 - requirements: nonempty list of {id, statement}, one per actual business obligation.
 - tools: list of {name, purpose, operation, inputs: {argument_name: origin}}.
   Optional result_field names a non-default read result envelope (default records).
+  A paginated select declares pagination: {cursor_argument, page_size: 1..100}.
+  That optional input has origin {kind:pagination_cursor}; it consumes this tool's
+  next_cursor on later pages. It is transport provenance, not a business DAG edge.
   operation: select, aggregate_count, insert, update or delete.
   reference_data tools are read-only; stateful requires a write operation.
   origin is {kind:public, pointer:/description/public_input/...},
@@ -129,6 +135,13 @@ def validate_blueprint(blueprint, request):
             raise ValueError('BLUEPRINT: unsupported tool operation')
         if not isinstance(tool.get('inputs'), dict):
             raise ValueError('BLUEPRINT: tool inputs must be an object')
+        if 'pagination' in tool:
+            paging = tool['pagination']
+            if (not isinstance(paging, dict) or set(paging) != {'cursor_argument', 'page_size'}
+                    or tool['operation'] != 'select' or type(paging['page_size']) is not int
+                    or not 1 <= paging['page_size'] <= 100 or not isinstance(paging['cursor_argument'], str)
+                    or tool['inputs'].get(paging['cursor_argument']) != {'kind': 'pagination_cursor'}):
+                raise ValueError('BLUEPRINT: pagination requires a bounded select and its cursor input origin')
         if 'result_field' in tool and (tool['operation'] not in {'select', 'aggregate_count'}
                 or not isinstance(tool['result_field'], str) or not tool['result_field']):
             raise ValueError('BLUEPRINT: invalid read result_field')
@@ -144,7 +157,7 @@ def validate_blueprint(blueprint, request):
         if (not isinstance(answer_fields, dict) or not 1 <= len(answer_fields) <= 16
                 or any(not isinstance(name, str) or not name or not isinstance(field, dict)
                     or not {'kind', 'meaning'} <= set(field)
-                    or set(field) - {'kind', 'meaning', 'context_fields'} or field['kind'] not in FIELD_KINDS
+                    or set(field) - {'kind', 'meaning', 'context_fields', 'evidence_mode'} or field['kind'] not in FIELD_KINDS
                     or not isinstance(field['meaning'], str) or not field['meaning'].strip()
                     for name, field in answer_fields.items())):
             raise ValueError('BLUEPRINT: answer_fields must freeze kind and public meaning for every field')
@@ -155,6 +168,10 @@ def validate_blueprint(blueprint, request):
                         or key not in answer_fields or answer_fields[key]['kind'] == 'explanation' for key in context)
                     or len(set(context)) != len(context)):
                 raise ValueError('BLUEPRINT: explanation context must uniquely select observed or derived fields')
+            mode = field.get('evidence_mode', 'runtime')
+            if (mode not in ('runtime', 'fields') or 'evidence_mode' in field and field['kind'] != 'explanation'
+                    or mode == 'fields' and not context):
+                raise ValueError('BLUEPRINT: fields evidence mode requires explanation context fields')
     for stage in stages.values():
         if (not isinstance(stage.get('kind'), str) or stage['kind'] not in KINDS
                 or not isinstance(stage.get('before_tool'), str) or stage['before_tool'] not in tools
@@ -171,6 +188,9 @@ def validate_blueprint(blueprint, request):
         if stage['kind'] != 'execution_confirmation' and (not isinstance(stage.get('argument'), str)
                 or stage['argument'] not in tools[stage['before_tool']]['inputs']):
             raise ValueError('BLUEPRINT: user disclosure must bind a real tool input')
+        if (stage['kind'] != 'execution_confirmation' and tools[stage['before_tool']].get('pagination', {}).get(
+                'cursor_argument') == stage.get('argument')):
+            raise ValueError('BLUEPRINT: pagination cursor is not a user disclosure')
     if len({stage['kind'] for stage in stages.values()}) < 2:
         raise ValueError('BLUEPRINT: at least two distinct interaction kinds are required')
     dependencies = {name: set() for name in tools}
@@ -214,10 +234,17 @@ def validate_blueprint(blueprint, request):
                 raise ValueError('BLUEPRINT: ambiguous producer field equals a request argument; '
                     'select does not echo request arguments. Use an explicit returned-column path '
                     'or reuse the original user disclosure with kind:user.')
+            roots = {tools[producer].get('result_field', 'records'), 'count'}
+            if tools[producer].get('pagination'):
+                roots.update({'total_count', 'has_more'})
             if (tools[producer]['operation'] == 'select' and value['field'].startswith('$.')
-                    and tokens and tokens[0] not in [('field', tools[producer].get('result_field', 'records')), ('field', 'count')]):
+                    and tokens and tokens[0] not in [('field', name) for name in roots]):
                 raise ValueError('BLUEPRINT: select output has records/count, not arbitrary root fields')
             dependencies[consumer].add(producer)
+        elif kind == 'pagination_cursor':
+            if (depth or set(value) != {'kind'}
+                    or tools[consumer].get('pagination', {}).get('cursor_argument') != argument):
+                raise ValueError('BLUEPRINT: pagination cursor must be the declared transport input')
         elif kind == 'derived':
             if not isinstance(value.get('sources'), list) or not value['sources']:
                 raise ValueError('BLUEPRINT: derived input requires provenance sources')
@@ -261,7 +288,8 @@ def validate_implementation(blueprint, source, request):
         except (KeyError, TypeError, AttributeError) as exc:
             raise ValueError('BLUEPRINT_DRIFT: invalid answer field definitions') from exc
         expected_meanings = {name: {key: value for key, value in field.items()
-            if key != 'context_fields' or value} for name, field in blueprint['answer_fields'].items()}
+            if (key != 'context_fields' or value) and (key != 'evidence_mode' or value != 'runtime')}
+            for name, field in blueprint['answer_fields'].items()}
         if actual_meanings != expected_meanings:
             raise ValueError('BLUEPRINT_DRIFT: answer field business meanings or roles changed')
     if source.get('description') != blueprint['description']:
@@ -284,6 +312,8 @@ def validate_implementation(blueprint, source, request):
             raise ValueError('BLUEPRINT_DRIFT: tool operation changed')
         if 'result_field' in tool and implementation.get('result_field', 'records') != tool['result_field']:
             raise ValueError('BLUEPRINT_DRIFT: read result envelope changed')
+        if implementation.get('pagination') != tool.get('pagination'):
+            raise ValueError('BLUEPRINT_DRIFT: pagination contract changed')
     actual_deps = {item['action_name']: set(item.get('dependencies', [])) for item in source['capability_plan']}
     for name, deps in evidence['dependencies'].items():
         if not set(deps) <= actual_deps.get(name, set()):
@@ -331,6 +361,14 @@ def validate_implementation(blueprint, source, request):
         for step in scenario.get('steps', []):
             if step.get('operation') != 'tool_call':
                 continue
+            planned = next((tool for tool in blueprint['tools'] if tool['name'] == step['tool_name']), {})
+            paging = planned.get('pagination')
+            if paging and paging['cursor_argument'] in step.get('arguments', {}):
+                cursor = step['arguments'][paging['cursor_argument']]
+                if cursor != '' and (not isinstance(cursor, dict) or set(cursor) != {'$ref'}
+                        or not isinstance(cursor['$ref'], str)
+                        or captures.get(cursor.get('$ref')) != (step['tool_name'], '$.next_cursor')):
+                    raise ValueError('BLUEPRINT_DRIFT: pagination cursor must consume this tool\'s previous next_cursor')
             for argument, value in step.get('arguments', {}).items():
                 key = (step['tool_name'], argument)
                 if key not in intended:

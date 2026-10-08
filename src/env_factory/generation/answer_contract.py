@@ -326,6 +326,7 @@ def bind_answer_contract(source: dict) -> dict | None:
     if semantic:
         public_criteria = [{"fields": metric["semantic_fields"], "rubric": metric["rubric"],
                             "criteria": metric["criteria"],
+                            **({'evidence_mode': 'fields'} if metric.get('semantic_evidence_mode') == 'fields' else {}),
                             **({'context_fields': metric['semantic_context_fields']}
                                if metric.get('semantic_context_fields') else {})} for metric in semantic]
         public["semantic_answer_criteria"] = copy.deepcopy(public_criteria)
@@ -336,4 +337,11 @@ def bind_answer_contract(source: dict) -> dict | None:
             "to those facts without copying them again. Still explain every required inference; "
             "contradictions and unsupported claims fail. This does not remove any explicit business obligation:\n"
             + json.dumps(public_criteria, ensure_ascii=False, sort_keys=True))
+        if any(metric.get('semantic_evidence_mode') == 'fields' for metric in semantic):
+            public['initial_user_message'] += (
+                '\nFor explanations declaring evidence_mode=fields, the declared context fields are '
+                'the factual premises. Their expected values are computed from actual execution, '
+                'independently of your submitted values. Explain the required inference using those '
+                'premises and observed user/tool statuses. Missing-value defaults are not observations; '
+                'do not claim facts beyond the available evidence. Structured facts are still scored separately.')
     return copy.deepcopy(contract)

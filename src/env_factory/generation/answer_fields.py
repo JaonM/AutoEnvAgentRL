@@ -10,6 +10,7 @@ KINDS = {'observed', 'derived', 'explanation'}
 
 def field_meanings(fields):
     return {name: {'kind': field['kind'], 'meaning': field['schema']['description'],
+                   **({'evidence_mode': field['evidence_mode']} if field.get('evidence_mode', 'runtime') != 'runtime' else {}),
                    **({'context_fields': field['context_fields']} if field.get('context_fields') else {})}
             for name, field in fields.items()}
 
@@ -35,7 +36,7 @@ def expand_answer_fields(source, *, required=False):
         kind = field['kind']
         expected = {'kind', 'schema'} | ({'observation', 'missing'} if kind == 'observed'
             else {'expression'} if kind == 'derived' else set())
-        optional = {'context_fields'} if kind == 'explanation' else {'tolerance', 'array_order'}
+        optional = {'context_fields', 'evidence_mode'} if kind == 'explanation' else {'tolerance', 'array_order'}
         if set(field) - expected - optional or not expected <= set(field):
             raise ValueError('ANSWER_FIELDS_INVALID: invalid definition for ' + name)
         schema = field['schema']
@@ -70,6 +71,11 @@ def expand_answer_fields(source, *, required=False):
                 raise ValueError('ANSWER_FIELDS_INVALID: explanation context must uniquely select observed or derived fields')
             if context:
                 public[name]['context_fields'] = list(context)
+            mode = field.get('evidence_mode', 'runtime')
+            if mode not in ('runtime', 'fields') or mode == 'fields' and not context:
+                raise ValueError('ANSWER_FIELDS_INVALID: fields evidence mode requires deterministic context fields')
+            if mode == 'fields':
+                public[name]['evidence_mode'] = mode
 
     remaining_nodes = 20000
     def resolve(value, stack=(), depth=0):
@@ -107,8 +113,13 @@ def expand_answer_fields(source, *, required=False):
         elif 'semantic' in outcome:
             if any(fields.get(name, {}).get('kind') != 'explanation' for name in outcome['semantic'].get('fields', [])):
                 raise ValueError('ANSWER_FIELDS_INVALID: semantic outcomes may own only explanation fields')
-            if 'context_fields' in outcome['semantic']:
+            if {'context_fields', 'evidence_mode'} & set(outcome['semantic']):
                 raise ValueError('ANSWER_FIELDS_DUPLICATE: explanation context is derived from answer_fields')
+            modes = {fields[name].get('evidence_mode', 'runtime') for name in outcome['semantic'].get('fields', [])}
+            if len(modes) > 1:
+                raise ValueError('ANSWER_FIELDS_INVALID: one semantic outcome must have one evidence mode')
+            if modes == {'fields'}:
+                outcome['semantic']['evidence_mode'] = 'fields'
             context = list(dict.fromkeys(key for name in outcome['semantic'].get('fields', [])
                 for key in fields[name].get('context_fields', [])))
             if context:

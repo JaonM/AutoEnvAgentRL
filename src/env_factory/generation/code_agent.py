@@ -143,11 +143,14 @@ For new multi-step tasks, business_requirements is mandatory. Follow the coverag
 schema in AUTHORING.md. Cover every terminal outcome, cite real public/user input pointers,
 and name an executable positive and targeted negative scenario for each obligation.
 When request.require_answer_fields is true, use compact answer_fields from AUTHORING.md.
-Preserve blueprint.answer_fields names, kind, meaning and context_fields exactly. Define each field's
+Preserve blueprint.answer_fields names, kind, meaning, context_fields and evidence_mode exactly. Define each field's
 schema and value once. Deterministic outcomes select fields by ID; never restate their
 value expressions or author answer_contract separately. Explanation context_fields select
-deterministic facts that the runtime verifies before showing them to the judge. State the
-inference still required; calibrate concise faithful paraphrases, contradictions and missing
+deterministic facts that the runtime verifies before showing them to the judge.
+For large data use evidence_mode=fields with sufficient bounded deterministic premises;
+this mode omits raw tables/results from the judge but computes declared facts locally.
+Include every premise needed for the original inference. Missing defaults are not observations.
+State the inference still required; calibrate concise faithful paraphrases, contradictions and missing
 reasoning. Do not demand a duplicate prose copy of already reported structured facts unless
 the original goal explicitly requires it. Observed values remain actual
 observations even when a result is ambiguous; use separate derived fields for uniqueness

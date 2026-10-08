@@ -114,8 +114,8 @@ def test_observed_primitive_cannot_hide_a_conditional_value():
         DeclarativeMetricEvaluator._value_expression(expression, {})
 
 
-@pytest.mark.parametrize('with_explanation', [False, True])
-def test_generated_sandbox_rewards_observed_truth_under_ambiguity(tmp_path, with_explanation, monkeypatch):
+@pytest.mark.parametrize('explanation_mode', [None, 'runtime', 'fields'])
+def test_generated_sandbox_rewards_observed_truth_under_ambiguity(tmp_path, explanation_mode, monkeypatch):
     import os
     from pathlib import Path
     import shutil
@@ -127,11 +127,17 @@ def test_generated_sandbox_rewards_observed_truth_under_ambiguity(tmp_path, with
     monkeypatch.setenv('SANDBOX_EVALUATOR_MOCK', '0')
     monkeypatch.setenv('SANDBOX_LLM_API_KEY', 'offline-test')
     monkeypatch.setenv('SANDBOX_LLM_MODEL', 'offline-test')
+    with_explanation = explanation_mode is not None
     value, request = explanation_source() if with_explanation else source()
+    if with_explanation:
+        value['answer_fields']['why']['evidence_mode'] = explanation_mode
     def model(messages, **kwargs):
         evidence = json.loads(messages[1]['content'])['runtime_evidence']
         assert evidence['verified_answer_context']['count']['value'] == 2
         assert evidence['verified_answer_context']['unique']['value'] is False
+        if explanation_mode == 'fields':
+            assert evidence['executable_field_facts']['count']['value'] == 2
+            assert 'business_data' not in evidence and 'tool_results' not in evidence
         why = json.loads(evidence['final_agent_response'])['why']
         return {'label': 'pass' if why in {'候选不唯一，无法唯一选定。', '仍有多个候选，因此不能选定唯一对象。'} else 'fail'}
     with patch('env_factory.sandbox_runtime.RuntimeLLMClient.json_chat', side_effect=model):
@@ -146,7 +152,7 @@ def test_generated_sandbox_rewards_observed_truth_under_ambiguity(tmp_path, with
     for name in ('sandbox_runtime.py', 'runtime_llm.py'):
         shutil.copy2(project / 'src/env_factory' / name, tmp_path / name)
     script = tmp_path / 'verify_answer_fields.py'
-    script.write_text('with_explanation = ' + repr(with_explanation) + '\n' + '''import json
+    script.write_text('with_explanation = ' + repr(with_explanation) + '\nexplanation_mode = ' + repr(explanation_mode) + '\n' + '''import json
 from app import create_app
 from sandbox_runtime import RuntimeLLMClient
 def model(self, messages, **kwargs):
@@ -154,6 +160,9 @@ def model(self, messages, **kwargs):
     assert evidence['verified_answer_context']['count']['value'] == 2
     assert evidence['verified_answer_context']['unique']['value'] is False
     assert set(json.loads(evidence['final_agent_response'])) == {'why'}
+    if explanation_mode == 'fields':
+        assert evidence['executable_field_facts']['count']['value'] == 2
+        assert 'business_data' not in evidence and 'tool_results' not in evidence
     return {'label': 'pass'}
 RuntimeLLMClient.json_chat = model
 app = create_app()
@@ -193,9 +202,11 @@ def explanation_source():
     return value, request
 
 
-def test_shared_context_is_derived_once_and_published_without_cases():
+@pytest.mark.parametrize('mode', ['runtime', 'fields'])
+def test_shared_context_is_derived_once_and_published_without_cases(mode):
     from env_factory.generation.answer_contract import bind_answer_contract
     value, request = explanation_source()
+    value['answer_fields']['why']['evidence_mode'] = mode
     expanded = expand_source(value, request)
     bind_answer_contract(expanded)
     metric = next(m for m in expanded['metrics'] if m['id'] == 'reasoning')
@@ -203,6 +214,9 @@ def test_shared_context_is_derived_once_and_published_without_cases():
     public = expanded['description']['public_input']
     assert public['answer_field_semantics']['why']['context_fields'] == ['count', 'unique']
     assert public['semantic_answer_criteria'][0]['context_fields'] == ['count', 'unique']
+    assert metric.get('semantic_evidence_mode', 'runtime') == mode
+    assert public['answer_field_semantics']['why'].get('evidence_mode', 'runtime') == mode
+    assert public['semantic_answer_criteria'][0].get('evidence_mode', 'runtime') == mode
     assert '可以直接唯一选定' not in str(public)
 
 
@@ -242,3 +256,32 @@ def test_context_requires_deterministic_owner_even_for_legacy_contract():
     metric['semantic_context_fields'] = ['why']
     with pytest.raises(ValueError, match='context fields require deterministic'):
         bind_answer_contract(expanded)
+
+
+@pytest.mark.parametrize('change', ['unknown_mode', 'missing_context', 'duplicate_mode', 'mixed_mode'])
+def test_invalid_evidence_scope_is_rejected_during_authoring(change):
+    value, request = explanation_source()
+    value['answer_fields']['why']['evidence_mode'] = 'fields'
+    if change == 'unknown_mode': value['answer_fields']['why']['evidence_mode'] = 'unknown'
+    if change == 'missing_context': value['answer_fields']['why']['context_fields'] = []
+    if change == 'duplicate_mode': value['outcomes'][-1]['semantic']['evidence_mode'] = 'fields'
+    if change == 'mixed_mode':
+        value['answer_fields']['other'] = {'kind': 'explanation', 'schema': {'type': 'string', 'description': 'Other'}}
+        value['outcomes'][-1]['semantic']['fields'].append('other')
+    with pytest.raises(ValueError, match='ANSWER_FIELDS_'):
+        expand_source(value, request)
+
+
+def test_blueprint_cannot_silently_shrink_evidence_scope():
+    from .test_business_blueprint import blueprint, implementation, request
+    from env_factory.generation.business_blueprint import validate_blueprint, validate_implementation
+    plan, materialized, req = blueprint(), implementation(), request()
+    plan['answer_fields']['why'] = {'kind': 'explanation', 'meaning': 'Explain option',
+        'context_fields': ['option'], 'evidence_mode': 'fields'}
+    materialized['answer_fields']['why'] = {'kind': 'explanation', 'schema': {
+        'type': 'string', 'description': 'Explain option'}, 'context_fields': ['option'], 'evidence_mode': 'fields'}
+    validate_blueprint(plan, req)
+    validate_implementation(plan, materialized, req)
+    materialized['answer_fields']['why']['evidence_mode'] = 'runtime'
+    with pytest.raises(ValueError, match='BLUEPRINT_DRIFT: answer field'):
+        validate_implementation(plan, materialized, req)

@@ -21,7 +21,7 @@ def compile_semantic_outcome(item: dict, *, schema: dict, weight: float,
     semantic = item.get("semantic")
     if ("rule" in item or not isinstance(semantic, dict)
             or not {"fields", "criteria", "cases"} <= set(semantic)
-            or set(semantic) - {"fields", "criteria", "cases", "context_fields"}):
+            or set(semantic) - {"fields", "criteria", "cases", "context_fields", "evidence_mode"}):
         raise ValueError("SEMANTIC_REWARD_CONTRACT: declare semantic fields, criteria and cases, without rule")
     fields, criteria, cases = (semantic[key] for key in ("fields", "criteria", "cases"))
     properties = schema.get("properties", {})
@@ -36,6 +36,9 @@ def compile_semantic_outcome(item: dict, *, schema: dict, weight: float,
             or key not in properties or key in fields for key in context_fields)
             or len(set(context_fields)) != len(context_fields)):
         raise ValueError('SEMANTIC_REWARD_CONTEXT: context must uniquely name separate public answer fields')
+    mode = semantic.get('evidence_mode', 'runtime')
+    if mode not in ('runtime', 'fields') or mode == 'fields' and not context_fields:
+        raise ValueError('SEMANTIC_REWARD_CONTEXT: fields evidence mode requires context fields')
     if (not isinstance(criteria, list) or not criteria or len(criteria) > 16
             or any(not isinstance(x, str) or not x.strip() for x in criteria)):
         raise ValueError("SEMANTIC_REWARD_CRITERIA: provide explicit public meaning-based criteria")
@@ -100,6 +103,7 @@ def compile_semantic_outcome(item: dict, *, schema: dict, weight: float,
         "evaluator": {"kind": "external_llm_judge", "source": "external_llm",
                       "score_mapping": {"pass": 1, "fail": 0}},
         "semantic_fields": list(fields),
+        **({'semantic_evidence_mode': mode} if mode == 'fields' else {}),
         **({'semantic_context_fields': list(context_fields)} if context_fields else {})}
     return metric, copy.deepcopy(cases)
 

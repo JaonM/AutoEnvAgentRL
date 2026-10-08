@@ -690,10 +690,10 @@ class ManifestDataStore:
                     target = foreign.get("ref_column") or foreign.get("references_column")
                 else:
                     _, field, parent, target = foreign
-                if parent not in tables or any(
-                    row.get(field) is not None and not any(other.get(target) == row.get(field) for other in tables[parent])
-                    for row in rows
-                ):
+                # Schema validation restricts relational keys to scalar values.
+                # Build one index instead of rescanning the parent for each row.
+                parent_values = {other.get(target) for other in tables[parent]} if parent in tables else set()
+                if parent not in tables or any(row.get(field) is not None and row[field] not in parent_values for row in rows):
                     raise SandboxError("DATA_INVALID", f"foreign key violation: {name}.{field}", 400)
 
     def reset(self, _episode: Episode | None = None) -> None:
@@ -2563,7 +2563,8 @@ class ContractEvaluatorRuntime:
             key: stable_replay(value) if key in {"trajectory", "tool_results"} else stable(value)
             for key, value in context.items()
         }
-        field_scope = ({'version': 2, 'fields': list(metric['semantic_fields']),
+        field_scope = ({'version': 3, 'fields': list(metric['semantic_fields']),
+                        'evidence_mode': metric.get('semantic_evidence_mode', 'runtime'),
                         'context_fields': list(metric.get('semantic_context_fields', [])),
                         'response_is_projected': True, 'other_fields': 'assessed_by_separate_metrics'}
                        if metric.get('semantic_fields') else None)
@@ -2665,6 +2666,21 @@ class ContractEvaluatorRuntime:
                     'The highest score requires every listed criterion and rubric to be satisfied.')
             if field_scope:
                 judge_instructions['metric_field_scope'] = field_scope
+                if field_scope['evidence_mode'] == 'fields':
+                    judge_instructions['rules'].append(
+                        'This contract declares fields evidence mode. executable_field_facts are '
+                        'computed locally from the declared deterministic targets and actual executed '
+                        'state/checkpoints, independently of submitted answer values. Use these as '
+                        'the factual premises for the owned explanation; raw database rows are '
+                        'intentionally absent. Do not invent additional premises. Unresolved fields '
+                        'are not facts. observation_availability describes all referenced read paths '
+                        '(including inactive branches): present=false means its missing_value is a '
+                        'contract normalization, not an observed business fact. decimal_values retain '
+                        'exact decimal results where JSON numbers may round. Tool statuses establish '
+                        'only success/failure, never omitted result contents. Incorrect submitted '
+                        'structured fields retain their separate penalty; judge this explanation '
+                        'against executable facts even when those submitted fields are wrong. '
+                        'Still require every inference in the rubric and reject unsupported claims.')
                 judge_instructions['rules'].insert(0,
                     'This metric assesses only metric_field_scope.fields. The final response is '
                     'intentionally projected to those fields after full answer-shape validation. '
@@ -2861,6 +2877,7 @@ class ContractModelMetricEvaluator:
         if set(targets) != set(names):
             raise SandboxError('EVALUATOR_CONTRACT_INVALID', 'semantic context requires deterministic targets', 500)
         verified, unverified = {}, []
+        facts, unresolved = {}, []
         state = ExpressionBusinessState.from_context(context)
         response = context.get('final_agent_response', '')
         for name in names:
@@ -2870,7 +2887,59 @@ class ContractModelMetricEvaluator:
                                   'meaning': schema['properties'][name].get('description', '')}
             else:
                 unverified.append(name)
-        return {'verified_answer_context': verified, 'unverified_answer_context_fields': unverified}
+            if metric.get('semantic_evidence_mode') == 'fields':
+                expression = targets[name]['expression']
+                value = DeclarativeMetricEvaluator._value_expression(expression, state)
+                if value is None:
+                    unresolved.append(name)
+                    continue
+                decimals = []
+                def json_value(value, path='$'):
+                    if isinstance(value, Decimal):
+                        if not value.is_finite():
+                            raise SandboxError('EVALUATOR_CONTRACT_INVALID', 'nonfinite field evidence', 500)
+                        if value == value.to_integral_value():
+                            return int(value)
+                        converted = float(value)
+                        if not math.isfinite(converted):
+                            raise SandboxError('EVALUATOR_CONTRACT_INVALID', 'field evidence exceeds JSON number range', 500)
+                        decimals.append({'path': path, 'value': str(value)})
+                        return converted
+                    if isinstance(value, list):
+                        return [json_value(child, f'{path}[{index}]') for index, child in enumerate(value)]
+                    if isinstance(value, Mapping):
+                        return {key: json_value(child, f'{path}[{json.dumps(key)}]') for key, child in value.items()}
+                    return value
+                fact = {'value': json_value(value), 'meaning': schema['properties'][name].get('description', '')}
+                validate_json_schema(schema['properties'][name], fact['value'], 'executable_field_facts.' + name)
+                availability = []
+                def observations(node):
+                    if isinstance(node, Mapping):
+                        if set(node) == {'literal'}:
+                            return
+                        if set(node) == {'observed_value'}:
+                            spec = node['observed_value']
+                            item = {**spec['value']['tool_result'],
+                                'present': DeclarativeMetricEvaluator._value_expression(spec['value'], state) is not None,
+                                'missing_value': spec['missing']['literal']}
+                            if item not in availability:
+                                availability.append(item)
+                        for child in node.values():
+                            observations(child)
+                    elif isinstance(node, list):
+                        for child in node:
+                            observations(child)
+                observations(expression)
+                if availability:
+                    fact['observation_availability'] = availability
+                if decimals:
+                    fact['decimal_values'] = decimals
+                facts[name] = fact
+        result = {'verified_answer_context': verified, 'unverified_answer_context_fields': unverified}
+        if metric.get('semantic_evidence_mode') == 'fields':
+            result.update(executable_field_facts=facts, unresolved_field_facts=unresolved,
+                          evidence_scope='declared_executable_fields_public_request_user_turns_tool_statuses')
+        return result
 
     def evaluate_all(self, context: Mapping[str, Any], existing: Mapping[str, float]) -> dict[str, float]:
         scores = {}
@@ -2882,6 +2951,12 @@ class ContractModelMetricEvaluator:
                 "external_llm_judge", "hybrid_outcome",
             }:
                 continue
+            evidence_mode = metric.get('semantic_evidence_mode', 'runtime')
+            if (evidence_mode not in ('runtime', 'fields') or evidence_mode == 'fields'
+                    and (not metric.get('semantic_fields') or not metric.get('semantic_context_fields')
+                         or not isinstance(metric.get('evaluation_inputs'), list)
+                         or 'final_agent_response' not in metric['evaluation_inputs'])):
+                raise SandboxError('EVALUATOR_CONTRACT_INVALID', 'invalid semantic evidence mode', 500)
             mapping = evaluator.get("score_mapping", {})
             labels = {name: value for name, value in mapping.items()
                       if isinstance(value, (int, float)) and not isinstance(value, bool)}
@@ -2950,6 +3025,8 @@ class ContractModelMetricEvaluator:
                     observation = {}
                 for name in declared_inputs:
                     if not isinstance(name, str):
+                        continue
+                    if evidence_mode == 'fields' and name != 'final_agent_response':
                         continue
                     if name == "tool_results":
                         trajectory = context.get("trajectory")
@@ -3027,6 +3104,17 @@ class ContractModelMetricEvaluator:
                 # the submitted answer. Retain only the utterances, not FSM data.
                 trajectory = context.get("trajectory")
                 events = trajectory.get("events") if isinstance(trajectory, Mapping) else None
+                if evidence_mode == 'fields':
+                    statuses = []
+                    for event in events if isinstance(events, list) else []:
+                        if not isinstance(event, Mapping) or event.get('event') != 'tool_attempt':
+                            continue
+                        payload, result = event.get('payload'), event.get('result')
+                        if (isinstance(payload, Mapping) and isinstance(result, Mapping)
+                                and isinstance(payload.get('tool_name'), str)
+                                and type(result.get('status')) is int and 200 <= result['status'] <= 599):
+                            statuses.append({'tool_name': payload['tool_name'], 'status': result['status']})
+                    selected_context['observed_tool_statuses'] = statuses
                 observed_turns = []
                 for event in events if isinstance(events, list) else []:
                     if not isinstance(event, Mapping) or event.get("event") != "user_turn":
@@ -3061,6 +3149,9 @@ class ContractModelMetricEvaluator:
                     selected_context["final_agent_response"] = canonical_json({
                         key: owned[key] for key in metric["semantic_fields"]})
                 selected_context.update(verified_context)
+                if evidence_mode == 'fields' and len(canonical_json(selected_context).encode('utf-8')) > 65536:
+                    raise SandboxError('EVALUATOR_EVIDENCE_TOO_LARGE',
+                        'declared field evidence exceeds 65536 bytes; use sufficient bounded aggregates', 500)
                 result = self.runtime.json_judge(metric, selected_context, fallback={"label": failure}, response_schema={
                     "type": "object", "required": ["label"],
                     "properties": {"label": {"type": "string", "enum": list(labels)}},

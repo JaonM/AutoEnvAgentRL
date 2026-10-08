@@ -1768,6 +1768,28 @@ unrelated fact does not automatically fail the explanation. Neither aggregate
 metric scores nor submitted claims of verification establish a supporting fact.
 Context is part of judgment cache identity and is rebuilt in calibration cases.
 
+For large data, an explanation may additionally declare `evidence_mode: fields`,
+also frozen in its blueprint. This requires nonempty `context_fields`; every
+explanation owned by one semantic metric must use the same mode. The default
+`runtime` preserves full declared runtime evidence. Do not repeat the mode in a
+shared-field outcome. In `fields` mode, the judge receives `executable_field_facts`
+computed from the deterministic targets and actual state/read checkpoints even
+when submitted structured values are wrong. It also receives the owned prose,
+public task, actual user turns and compact tool attempt statuses. Raw business
+tables, tool arguments and result rows are excluded. This changes only the
+semantic evidence transport: deterministic scoring still uses all actual data.
+The evidence context has a 65,536-byte UTF-8 limit; overflow is an explicit error,
+never silent truncation. Use sufficient bounded aggregates for large collections.
+
+Unresolved targets are listed without fabricated values. `observation_availability`
+records every referenced observed path, including inactive branches; a missing
+path's default is normalization, not evidence that the business observation occurred.
+`decimal_values` preserves exact decimal results alongside JSON numeric values.
+The runner ignores submitted claims of executable facts. Independent review must
+check that the declared premises cover every required business inference; omitting
+a required premise to fit the bound is invalid. Mode changes invalidate judgment
+reuse. This mode does not prove that the shared business rule itself is correct.
+
 Criteria should state the inference still required, such as why multiple current
 records prevent a unique selection. Correct structured facts can be referenced
 without copying them into prose; they do not substitute for that inference. Include
