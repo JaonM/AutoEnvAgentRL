@@ -1,4 +1,5 @@
 import copy
+import pytest
 
 from env_factory.sandbox_runtime import observed_interaction_options, interaction_request_matches
 
@@ -70,3 +71,31 @@ def test_projected_menu_remains_a_collection_with_one_remaining_choice():
     event = {'event': 'tool_call', 'payload': {'tool_name': 'catalog'}, 'result': {'records': [{'id': 'a'}]}}
     assert observed_interaction_options(stage, [event])['options'] == ['a']
     assert observed_interaction_options({**stage, 'private_fact': 'b'}, [event]) is None
+
+
+@pytest.mark.parametrize('path', ['$.records[?(@.current==true)].id',
+    '$.records[?(@.current==true)][?(@.status=="open")].id'])
+def test_filtered_menu_renders_and_selects_its_single_remaining_value(path):
+    import json
+    from env_factory.sandbox_runtime import AcceptanceScenarioRunner
+    stage = {'kind': 'option_selection', 'before_tool': 'read',
+             'bind_to': {'argument': 'choice'}, 'private_fact': 'a',
+             'options_from': {'tool': 'catalog', 'path': path}}
+    event = {'event': 'tool_call', 'payload': {'tool_name': 'catalog'},
+             'result': {'records': [{'id': 'a', 'current': True, 'status': 'open'},
+                                    {'id': 'b', 'current': False, 'status': 'open'}]}}
+    selected = observed_interaction_options(stage, [event])
+    assert selected['options'] == ['a']
+    content = json.dumps({'question': '{{observed_options}}', 'request': {
+        'intent': 'request_input', 'tool': 'read', 'arguments': ['choice'], 'options': ['a', 'b']}})
+    rendered = AcceptanceScenarioRunner.render_observed_dialogue(content, stage['options_from'], [event])
+    assert interaction_request_matches(selected, rendered, 'structured_v1')
+    assert observed_interaction_options({**stage, 'private_fact': 'b'}, [event]) is None
+    event['result']['records'][0]['current'] = False
+    assert observed_interaction_options(stage, [event]) is None
+
+
+def test_scalar_field_is_not_implicitly_a_menu():
+    stage = {'private_fact': 'a', 'options_from': {'tool': 'catalog', 'path': '$.value'}}
+    event = {'event': 'tool_call', 'payload': {'tool_name': 'catalog'}, 'result': {'value': 'a'}}
+    assert observed_interaction_options(stage, [event]) is None

@@ -452,8 +452,13 @@ def probe_reference_data_reward_sensitivity(
                     variants.append(decisive)
     best: dict[str, Any] | None = None
     variants_tried = 0
+    execution_errors = []
     for variant in variants:
         altered = copy.deepcopy(scenario)
+        # The unchanged baseline must take its declared branch. A changed
+        # business fact may legitimately change that branch; judge the actual
+        # response and stale final answer rather than a fixture expectation.
+        clear_dialogue_expectations(altered)
         mutations = variant if isinstance(variant, list) else [variant]
         altered["steps"][reset_index + 1:reset_index + 1] = [
             {"operation": "mutate_business_state", "mutation": item} for item in mutations
@@ -464,7 +469,9 @@ def probe_reference_data_reward_sensitivity(
         for _ in range(2):
             try:
                 changed = runner.run(altered)
-            except Exception:
+            except Exception as exc:
+                execution_errors.append({'error_type': type(exc).__name__,
+                    'code': getattr(exc, 'code', None), 'message': str(exc)[:800]})
                 break
             changed_rewards.append(reward_of(changed))
             changed_tools = tool_evidence_signature(changed)
@@ -495,6 +502,7 @@ def probe_reference_data_reward_sensitivity(
             "verified_outcome_drops": affected_outcomes,
             "tool_results_changed": tools_changed,
             "variants_tried": variants_tried,
+            "execution_errors": execution_errors,
         }
         if proved:
             return result
@@ -505,7 +513,7 @@ def probe_reference_data_reward_sensitivity(
                     "baseline_reward": baseline_reward,
                     "baseline_rewards": baseline_rewards,
                     "baseline_tool_results_stable": baseline_tool_results_stable,
-                    "variants_tried": variants_tried}
+                    "variants_tried": variants_tried, "execution_errors": execution_errors}
 
 
 def probe_reference_data_reward_candidates(
@@ -589,6 +597,41 @@ def scenario_without_assertions(scenario: Mapping[str, Any]) -> dict[str, Any]:
     result = copy.deepcopy(dict(scenario))
     result["assertions"] = []
     return result
+
+
+def clear_dialogue_expectations(scenario: dict[str, Any]) -> None:
+    """Remove only positive-path expectations from a counterfactual copy."""
+    for step in scenario.get('steps', []):
+        if step.get('operation') == 'dialogue_turn':
+            step.pop('expected_stage', None)
+            step.pop('expected_branch', None)
+
+
+def select_success_scenario(scenarios, task):
+    """Select the broadest declared dependency path before any execution.
+
+    Multiple full and stop references share goal_success. The last list entry
+    must not silently replace a complete workflow with a short refusal prefix.
+    This selection never consults scores or retries a different case on failure;
+    all authored references still require their independent route validation.
+    """
+    spec = task.get('task_spec', {})
+    edges = spec.get('capability_dag', {}).get('edges', [])
+    routes = {route['id']: route for route in spec.get('execution_routes', [])}
+
+    def rank(scenario):
+        positions = {}
+        for index, step in enumerate(scenario.get('steps', [])):
+            if step.get('operation') == 'tool_call':
+                positions.setdefault(step.get('tool_name'), index)
+        covered = {(edge.get('from_tool'), edge.get('to_tool')) for edge in edges
+                   if edge.get('from_tool') in positions and edge.get('to_tool') in positions
+                   and positions[edge['from_tool']] < positions[edge['to_tool']]}
+        route = routes.get(scenario.get('execution_route'))
+        required = set(route['required_tools']) if route is not None else set(positions)
+        return -len(covered), -len(required & positions.keys()), str(scenario.get('scenario_id', ''))
+
+    return min((scenario for scenario in scenarios if scenario.get('kind') == 'goal_success'), key=rank)
 
 
 def dependency_swap_positions(
@@ -682,7 +725,13 @@ def validate(
             "failures": failures,
         }
 
-    success_scenario = scenario_without_assertions(by_kind["goal_success"])
+    selected_success = select_success_scenario(scenarios, task)
+    evidence['selected_success_scenario'] = {
+        'scenario_id': selected_success.get('scenario_id'),
+        'execution_route': selected_success.get('execution_route'),
+        'selection': 'declared_dependency_coverage_before_execution',
+    }
+    success_scenario = scenario_without_assertions(selected_success)
     tool_steps = [step for step in success_scenario.get("steps", []) if isinstance(step, Mapping) and step.get("operation") == "tool_call"]
     if tool_required and not tool_steps:
         failures.append({"gate": "agentic_path", "message": "goal_success has no tool calls"})
@@ -1000,10 +1049,7 @@ def validate(
     # positive-path dialogue assertions into tool-chain counterfactuals:
     # exercise the remaining calls and judge actual rejection/reward.
     # The original success scenario retains both stage and branch assertions.
-    for step in bound_success["steps"]:
-        if step.get("operation") == "dialogue_turn":
-            step.pop("expected_stage", None)
-            step.pop("expected_branch", None)
+    clear_dialogue_expectations(bound_success)
     call_positions = [index for index, step in enumerate(success_scenario['steps']) if step.get('operation') == 'tool_call']
     call_ordinals = {position: index for index, position in enumerate(call_positions)}
     call_groups = idempotent_call_groups(resolved_success_steps) if tool_required else []

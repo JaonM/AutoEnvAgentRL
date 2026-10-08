@@ -3701,7 +3701,7 @@ def observed_interaction_options(stage, events, *, require_selection=True):
     choices = DeclarativeMetricEvaluator._resolve(response, binding['path'])
     if 'separator' in binding:
         choices = [part.strip() for part in choices.split(binding['separator'])] if isinstance(choices, str) else None
-    elif isinstance(choices, str) and any(kind == 'wildcard' for kind, _ in DeclarativeMetricEvaluator.path_tokens(binding['path'])):
+    elif isinstance(choices, str) and any(kind in {'wildcard', 'filter'} for kind, _ in DeclarativeMetricEvaluator.path_tokens(binding['path'])):
         # The general scalar resolver unwraps one projected row. A menu keeps
         # its collection type when a catalog changes from two choices to one.
         choices = [choices]
