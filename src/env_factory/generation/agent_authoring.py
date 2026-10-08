@@ -143,6 +143,8 @@ def expand_source(source: dict, request: dict) -> dict:
     from .business_contract import expand_business_contract
     from .decision_table import expand_decision_table
     source = expand_business_contract(expand_decision_table(copy.deepcopy(source)))
+    from .answer_fields import expand_answer_fields
+    source = expand_answer_fields(source, required=request.get('require_answer_fields', False))
     if "business_tools" not in source:
         return source
     if any(key in source for key in ("tools", "tool_implementations", "metrics", "scenarios")):

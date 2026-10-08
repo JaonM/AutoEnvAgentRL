@@ -106,9 +106,10 @@ def expand_business_contract(source: dict) -> dict:
                       and rule.get('operator') in {'value_targets', 'numeric_targets'})
         valid_semantic = (set(report) == {'id', 'rubric', 'semantic'}
                           and isinstance(semantic, dict))
+        valid_fields = set(report) == {'id', 'rubric', 'fields'} and isinstance(report['fields'], list)
         if (not isinstance(identity, str) or not identity.strip() or identity in ids
                 or not isinstance(rubric, str) or not rubric.strip()
-                or not (valid_rule or valid_semantic)):
+                or not (valid_rule or valid_semantic or valid_fields)):
             raise ValueError('BUSINESS_CONTRACT_INVALID: report outcomes must evaluate answers, not duplicate state targets')
         ids.add(report['id'])
         outcomes.append(copy.deepcopy(report))

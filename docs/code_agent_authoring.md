@@ -1650,6 +1650,65 @@ preserving the previous files under the continuation's `previous_delivery/` dire
 The Python `generate(..., resume_from=checkpoint_path)` API requires a fresh output directory
 and an unchanged normalized request; it never silently overwrites the failed run.
 
+### Shared answer field meanings
+
+New multi-step requests set `require_answer_fields=true`. In `blueprint.json`,
+declare `answer_fields` as `{field_name: {kind, meaning}}`; this public business
+meaning and role are immutable during implementation/repair. In compact source,
+define each field once under `answer_fields`. Its `schema.description` must equal
+the blueprint meaning. Do not separately author `answer_contract` or answer target
+expressions in outcomes. Deterministic outcomes select field IDs:
+
+```json
+{
+  "answer_fields": {
+    "current": {
+      "kind": "observed",
+      "schema": {"type": "boolean", "description": "Current flag of the first returned record"},
+      "observation": {"tool": "read_dossiers", "path": "$.records[0].is_current"},
+      "missing": false
+    },
+    "count": {
+      "kind": "observed",
+      "schema": {"type": "integer", "description": "Number of returned records"},
+      "observation": {"tool": "read_dossiers", "path": "$.count"},
+      "missing": 0
+    },
+    "unique": {
+      "kind": "derived",
+      "schema": {"type": "boolean", "description": "Whether exactly one record was returned"},
+      "expression": {"op": "eq", "args": [{"answer_field": "count"}, 1]}
+    }
+  },
+  "outcomes": [{"id": "facts", "rubric": "Report observations and uniqueness accurately",
+                "fields": ["current", "count", "unique"]}]
+}
+```
+
+`observed` permits only `kind`, `schema`, `observation`, `missing` and optional
+`tolerance`/`array_order` comparison options. The compiler emits `observed_value`
+with a `tool_result` and a literal missing value. Actual false, zero, empty strings
+and empty collections remain observations; missing applies only when the path is
+unresolved. Multiple records never by themselves overwrite an observed flag.
+The path refers to the existing first successful process-matching read checkpoint;
+use a separate tool/checkpoint when the business goal requires a distinct later read.
+All origin and missing rules are public. Never put a private fixture answer in missing.
+
+`derived` uses one `expression` and may reference other deterministic fields with
+`{"answer_field":"name"}`. References are expanded from the same definitions;
+unknown names, cycles and excessive expansion fail. Its schema description must
+state the actual public decision rule. A role declaration does not prove that rule
+matches the business goal; independent review and executed counterexamples remain
+required. `explanation` has an open string schema and remains owned by an ordinary
+semantic outcome, with explicit criteria and positive/negative calibration cases.
+Stateful `business_contract.report_outcomes` also accepts `fields` references.
+
+The compiler derives the final answer schema, publishes `answer_field_semantics`
+and binds each field to exactly one outcome. Do not repeat a structured fact as a
+separate prose obligation unless the original goal requires it; preserve actual
+reasoning obligations. Existing checkpoint requests retain their original contract
+requirements. Shared fields currently require compact source authoring.
+
 ### Generation timing evidence
 
 Business-condition counterfactuals preserve scheduled task events. If an event

@@ -65,6 +65,7 @@ def generate(*, request: dict, artifact_dir: Path, script_count: int = 3,
     root = artifact_dir.resolve()
     request = {**request, 'user_script_count':script_count, 'require_bound_authorization': True, 'require_interaction_contract':request.get('training_category') == 'multi_step_agentic', 'require_business_requirements':request.get('training_category') == 'multi_step_agentic', 'require_structured_interactions':request.get('training_category') == 'multi_step_agentic'}
     if resume_from is None:
+        request.setdefault('require_answer_fields', request.get('training_category') == 'multi_step_agentic')
         request.setdefault('require_behavioral_diversity', request.get('training_category') == 'multi_step_agentic' and script_count > 1)
         request.setdefault('require_dynamic_choice_coverage', request.get('training_category') == 'multi_step_agentic')
     resumed = None
@@ -141,6 +142,13 @@ with at_tool so a missing prerequisite read rejects the write instead of guessin
 For new multi-step tasks, business_requirements is mandatory. Follow the coverage-table
 schema in AUTHORING.md. Cover every terminal outcome, cite real public/user input pointers,
 and name an executable positive and targeted negative scenario for each obligation.
+When request.require_answer_fields is true, use compact answer_fields from AUTHORING.md.
+Preserve blueprint.answer_fields names, kind and meaning exactly. Define each field's
+schema and value once. Deterministic outcomes select fields by ID; never restate their
+value expressions or author answer_contract separately. Observed values remain actual
+observations even when a result is ambiguous; use separate derived fields for uniqueness
+or eligibility. Explanation criteria must assess their declared business reasoning,
+without silently requiring another copy of correctly reported structured facts.
 Use reward_pair_probes for meaningful equivalent answers or read-only exploration followed
 by correct recovery. See AUTHORING.md for bounded declarative probe definitions. Never
 relabel an incorrect answer as equivalent. Platform JSON-format/repeated-read probes

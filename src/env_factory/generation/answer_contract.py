@@ -276,6 +276,8 @@ def bind_answer_contract(source: dict) -> dict | None:
     if "answer_contract" in public:
         raise ValueError("ANSWER_CONTRACT_INVALID: define answer_contract once at source root")
     public["answer_contract"] = copy.deepcopy(contract)
+    if source.get('answer_field_semantics'):
+        public['answer_field_semantics'] = copy.deepcopy(source['answer_field_semantics'])
     public["initial_user_message"] = public["initial_user_message"].rstrip() + (
         "\n\nFinal answer format (only after required user interactions and tool calls are complete): "
         "return only a JSON object matching this schema. "
@@ -284,6 +286,9 @@ def bind_answer_contract(source: dict) -> dict | None:
         "Copy requested textual facts accurately from the supplied evidence; preserve requested array order.\n"
         + json.dumps(schema, ensure_ascii=False, sort_keys=True)
     )
+    if source.get('answer_field_semantics'):
+        public['initial_user_message'] += ('\n\nAnswer field meanings and evidence rules:\n'
+            + json.dumps(source['answer_field_semantics'], ensure_ascii=False, sort_keys=True))
     tolerances = {target['key']: target['tolerance'] for rule in structured
                   for target in rule['expected']['targets'] if 'tolerance' in target}
     if tolerances:

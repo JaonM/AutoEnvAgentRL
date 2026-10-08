@@ -10,6 +10,14 @@ Schema:
 - description: the complete eventual source description (task, goal, expected_result,
   task_intent, complexity, requirements input/output_modalities, public_input).
 - environment_mode: one requested available mode.
+- answer_fields: when request.require_answer_fields is true, a nonempty mapping
+  of final JSON field names to {kind, meaning}. kind is observed, derived or
+  explanation. meaning states the public business meaning, not fixture answers.
+  Observed fields copy actual response values; ambiguity cannot turn a true
+  observed flag into false. Give uniqueness/eligibility their own derived fields.
+  Explanation obligations describe reasoning beyond facts already reported in
+  structured fields; identify any genuinely required cross-field inference.
+  Freeze these meanings and roles now; source.answer_fields must preserve them.
 - requirements: nonempty list of {id, statement}, one per actual business obligation.
 - tools: list of {name, purpose, operation, inputs: {argument_name: origin}}.
   Optional result_field names a non-default read result envelope (default records).
@@ -128,6 +136,15 @@ def validate_blueprint(blueprint, request):
         raise ValueError('BLUEPRINT: reference_data must be read-only')
     if mode == 'stateful' and not writes:
         raise ValueError('BLUEPRINT: stateful requires a write operation')
+    answer_fields = blueprint.get('answer_fields')
+    if answer_fields is not None or request.get('require_answer_fields'):
+        from .answer_fields import KINDS as FIELD_KINDS
+        if (not isinstance(answer_fields, dict) or not 1 <= len(answer_fields) <= 16
+                or any(not isinstance(name, str) or not name or not isinstance(field, dict)
+                    or set(field) != {'kind', 'meaning'} or field['kind'] not in FIELD_KINDS
+                    or not isinstance(field['meaning'], str) or not field['meaning'].strip()
+                    for name, field in answer_fields.items())):
+            raise ValueError('BLUEPRINT: answer_fields must freeze kind and public meaning for every field')
     for stage in stages.values():
         if (not isinstance(stage.get('kind'), str) or stage['kind'] not in KINDS
                 or not isinstance(stage.get('before_tool'), str) or stage['before_tool'] not in tools
@@ -227,6 +244,14 @@ def validate_blueprint(blueprint, request):
 
 def validate_implementation(blueprint, source, request):
     evidence = validate_blueprint(blueprint, request)
+    if 'answer_fields' in blueprint:
+        from .answer_fields import field_meanings
+        try:
+            actual_meanings = field_meanings(source.get('answer_fields', {}))
+        except (KeyError, TypeError, AttributeError) as exc:
+            raise ValueError('BLUEPRINT_DRIFT: invalid answer field definitions') from exc
+        if actual_meanings != blueprint['answer_fields']:
+            raise ValueError('BLUEPRINT_DRIFT: answer field business meanings or roles changed')
     if source.get('description') != blueprint['description']:
         raise ValueError('BLUEPRINT_DRIFT: original description changed')
     if source.get('environment_plan', {}).get('mode') != blueprint['environment_mode']:

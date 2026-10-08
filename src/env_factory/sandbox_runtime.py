@@ -3047,6 +3047,15 @@ class DeclarativeMetricEvaluator:
             result = cls._value_expression(expression["initial"],
                 ExpressionBusinessState(initial, initial, getattr(business_state, "snapshots", {})), depth=depth + 1)
             return result if initial is not None else None
+        if set(expression) == {'observed_value'}:
+            spec = expression['observed_value']
+            if (not isinstance(spec, Mapping) or set(spec) != {'value', 'missing'}
+                    or not isinstance(spec['value'], Mapping) or set(spec['value']) != {'tool_result'}
+                    or not isinstance(spec['missing'], Mapping) or set(spec['missing']) != {'literal'}):
+                raise SandboxError('METRIC_SPEC_INVALID', 'observed_value requires a tool_result and literal missing value', 500)
+            observed = cls._value_expression(spec['value'], business_state, depth=depth + 1)
+            missing = cls._value_expression(spec['missing'], business_state, depth=depth + 1)
+            return observed if observed is not None else missing
         if set(expression) == {'user_rejection'}:
             ref = expression['user_rejection']
             if (not isinstance(ref, Mapping) or set(ref) != {'stage', 'branch'}
@@ -3283,7 +3292,7 @@ class DeclarativeMetricEvaluator:
     ) -> Decimal | None:
         if depth > 12 or not isinstance(expression, Mapping):
             raise SandboxError("METRIC_SPEC_INVALID", "numeric expression is invalid", 500)
-        if set(expression) in ({"if"}, {"initial"}, {"at_tool"}, {"tool_result"}, {"tool_argument"}, {"user_value"}):
+        if set(expression) in ({"if"}, {"initial"}, {"at_tool"}, {"tool_result"}, {"tool_argument"}, {"user_value"}, {"observed_value"}):
             value = cls._value_expression(expression, business_state, depth=depth + 1)
             return Decimal(str(value)) if not isinstance(value, bool) and isinstance(value, (int, float, Decimal)) else None
         if set(expression) == {"literal"}:

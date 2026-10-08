@@ -14,6 +14,7 @@ def blueprint():
         'requirements': {'input_modalities': ['text'], 'output_modalities': ['text']},
         'public_input': {'initial_user_message': 'Find an option in the catalogue', 'materials': []}},
         'environment_mode': 'reference_data', 'requirements': [{'id': 'fit', 'statement': 'Respect the user limit'}],
+        'answer_fields': {'option': {'kind': 'observed', 'meaning': 'Returned option identity'}},
         'tools': [{'name': 'lookup', 'purpose': 'Find collection identity', 'operation': 'select',
                    'inputs': {'name': {'kind': 'user', 'stage': 'collection'}}},
                   {'name': 'quote', 'purpose': 'Read option terms', 'operation': 'select',
@@ -33,6 +34,9 @@ def request():
 def implementation():
     plan = blueprint()
     return {'description': plan['description'], 'environment_plan': {'mode': 'reference_data'},
+            'answer_fields': {'option': {'kind': 'observed', 'schema': {
+                'type': 'string', 'description': 'Returned option identity'},
+                'observation': {'tool': 'quote', 'path': '$.records[0].id'}, 'missing': ''}},
             'business_requirements': plan['requirements'],
             'tool_implementations': [{'tool_name': t['name'], 'operation': t['operation']} for t in plan['tools']],
             'tools': [{'function': {'name': t['name'], 'parameters': {'properties': dict.fromkeys(t['inputs'], {})}}}
