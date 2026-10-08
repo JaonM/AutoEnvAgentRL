@@ -92,9 +92,8 @@ def decode_shared_values(envelope):
 
 
 def review_payload(bundle, *, inline_limit=900_000):
-    pretty = json.dumps(bundle, ensure_ascii=False, indent=2, allow_nan=False)
-    if len(pretty) <= inline_limit:
-        return pretty, 'json'
+    # Whitespace carries no review evidence. Use the same lossless compact
+    # representation for ordinary candidates and oversized shared envelopes.
     compact = _json(bundle)
     if len(compact) <= inline_limit:
         return compact, 'json'
@@ -102,7 +101,4 @@ def review_payload(bundle, *, inline_limit=900_000):
     # Review display must preserve every value; never truncate evidence to fit.
     if decode_shared_values(encoded) != bundle:
         raise ValueError('Review transport did not preserve the candidate')
-    text = json.dumps(encoded, ensure_ascii=False, indent=2, allow_nan=False)
-    if len(text) > inline_limit:
-        text = _json(encoded)
-    return text, 'lossless_json_dag_v1'
+    return _json(encoded), 'lossless_json_dag_v1'

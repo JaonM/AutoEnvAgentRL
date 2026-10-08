@@ -1,4 +1,4 @@
-"""Conservative negative-test proof for normalized, nonnegative reward contracts."""
+"""Conservative negative-test proof for normalized rewards and known penalties."""
 import math
 import json
 from env_factory.sandbox_runtime import ContractRewardGate, ContractRewardAggregator
@@ -34,8 +34,9 @@ def validate_reward_goal_consistency(source):
 
 
 def reward_upper_bound(metrics, deterministic_scores, gate, context):
-    # Do not extrapolate this monotonicity argument to custom gates, negative
-    # weights, penalty metrics or non-normalized ranges.
+    # Nonnegative weights make unknown [0,1] scores monotone. A known [-1,0]
+    # penalty contributes its actual fixed value, including during route weight
+    # normalization. Unknown penalties and custom contracts still need judgment.
     if type(gate) is not ContractRewardGate or not metrics:
         return None
     ids = [metric.get('id') for metric in metrics]
@@ -43,14 +44,18 @@ def reward_upper_bound(metrics, deterministic_scores, gate, context):
         return None
     for metric in metrics:
         weight = metric.get('weight')
-        if (metric.get('category') not in {'process', 'outcome'}
-                or metric.get('score_range') != [0, 1]
+        penalty = metric.get('category') == 'penalty'
+        if (metric.get('category') not in {'process', 'outcome', 'penalty'}
+                or metric.get('score_range') != ([-1, 0] if penalty else [0, 1])
+                or penalty and metric['id'] not in deterministic_scores
                 or isinstance(weight, bool) or not isinstance(weight, (int, float))
                 or not math.isfinite(weight) or weight < 0):
             return None
     known = {identity: deterministic_scores[identity] for identity in ids if identity in deterministic_scores}
+    ranges = {metric['id']: metric['score_range'] for metric in metrics}
     if any(isinstance(value, bool) or not isinstance(value, (int, float))
-           or not math.isfinite(value) or not 0 <= value <= 1 for value in known.values()):
+           or not math.isfinite(value) or not ranges[identity][0] <= value <= ranges[identity][1]
+           for identity, value in known.items()):
         return None
     unknown = [identity for identity in ids if identity not in known]
     optimistic = {**known, **dict.fromkeys(unknown, 1.0)}

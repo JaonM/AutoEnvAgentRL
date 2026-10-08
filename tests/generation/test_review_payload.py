@@ -23,6 +23,7 @@ def test_small_payload_remains_plain_json():
     text,encoding=review_payload(source)
     assert encoding=='json'
     assert json.loads(text)==source
+    assert text == json.dumps(source, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
 
 
 def test_unique_oversized_content_is_never_dropped():

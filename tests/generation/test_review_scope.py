@@ -49,6 +49,31 @@ def test_public_conflict_requires_resolving_public_evidence():
     with pytest.raises(SemanticReviewUnavailable,match='public evidence'):check(value)
 
 
+@pytest.mark.parametrize('path', ['compiled_tools.0.function.description',
+                                 'compiled_tools[0].function.description'])
+def test_tool_public_citations_accept_both_equivalent_index_spellings(path):
+    context = bundle()
+    context['compiled_tools'] = [{'function': {'description': 'Use the selected public scope.'}}]
+    value = example()
+    value.update(basis='public_contract', script_assumptions=[], public_paths=[path])
+    original = copy.deepcopy(value)
+    check(value, context)
+    assert value == original
+    value['public_paths'] = [path.replace('description', 'missing')]
+    with pytest.raises(SemanticReviewUnavailable, match='does not resolve'):
+        check(value, context)
+
+
+@pytest.mark.parametrize('path', ['compiled_tools_private.0.secret',
+                                 'compiled_tools.-1.function.description',
+                                 'compiled_tools.secret'])
+def test_tool_citation_normalization_does_not_expand_public_root_scope(path):
+    value = example()
+    value['public_paths'] = [path]
+    with pytest.raises(SemanticReviewUnavailable, match='unsupported root'):
+        check(value)
+
+
 def test_dotted_list_index_resolves_same_real_evidence_without_aliasing_missing_fields():
     from env_factory.generation.repair_feedback import _location
     context = bundle()

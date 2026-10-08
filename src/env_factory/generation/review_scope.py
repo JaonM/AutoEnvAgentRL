@@ -74,6 +74,10 @@ def validate_review_scope(report, bundle):
             except SandboxError as exc:
                 reject('business mutation violates runtime data constraints: '+str(exc))
         for path in example['public_paths']:
+            # The shared resolver accepts both list-index spellings. Apply the
+            # same spelling rule before checking the public-root boundary.
+            if isinstance(path, str):
+                path = re.sub(r'^compiled_tools\.(\d+)(?=\.|\[|$)', r'compiled_tools[\1]', path)
             allowed = ('compiled_public_input.', 'compiled_tools[', 'source.description.',
                        'original_goal.public_input.')
             if not isinstance(path, str) or not path.startswith(allowed):

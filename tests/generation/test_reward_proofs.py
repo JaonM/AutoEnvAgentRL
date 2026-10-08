@@ -44,6 +44,35 @@ def test_runtime_prerequisite_gate_is_part_of_bound():
     assert proof['reward_upper_bound']==0
 
 
+@pytest.mark.parametrize('penalty', [-1, -.4, 0])
+@pytest.mark.parametrize('weight', [0, .5, 2])
+def test_known_penalty_bound_dominates_actual_unknown_scores(penalty, weight):
+    contract = metrics() + [{'id': 'stop', 'category': 'penalty', 'weight': weight, 'score_range': [-1, 0]}]
+    gate = ContractRewardGate({}, contract)
+    known = {'rule': .5, 'stop': penalty}
+    proof = reward_upper_bound(contract, known, gate, {})
+    assert proof['assumed_full_credit'] == ['meaning', 'reason']
+    assert proof['deterministic_components']['stop'] == penalty
+    for meaning, reason in itertools.product([0, .25, .5, .75, 1], repeat=2):
+        scores = {**known, 'meaning': meaning, 'reason': reason}
+        actual = ContractRewardAggregator(contract).aggregate(gate.apply(scores, {}))
+        assert actual['reward'] <= proof['reward_upper_bound'] + 1e-12
+
+
+@pytest.mark.parametrize('known', [{}, {'stop': .1}, {'stop': -1.1}, {'stop': True}, {'stop': float('nan')}])
+def test_unknown_or_invalid_penalty_requires_actual_evaluation(known):
+    contract = metrics() + [{'id': 'stop', 'category': 'penalty', 'weight': 1, 'score_range': [-1, 0]}]
+    assert reward_upper_bound(contract, known, ContractRewardGate({}, contract), {}) is None
+
+
+def test_penalty_does_not_bypass_missing_runtime_prerequisites():
+    contract = metrics() + [{'id': 'stop', 'category': 'penalty', 'weight': 2, 'score_range': [-1, 0]}]
+    gate = ContractRewardGate({'training_contract': {'category': 'multi_step_agentic'},
+                              'capability_dag': {'nodes': ['query'], 'edges': []}}, contract)
+    proof = reward_upper_bound(contract, {'rule': 1, 'stop': -1}, gate, {'trajectory': {'events': []}})
+    assert proof['reward_upper_bound'] == -1
+
+
 def test_preflight_skips_only_provable_negative_model_evaluations(tmp_path,monkeypatch):
     from tests.generation.test_agent_authoring import fixture
     from env_factory.generation.agent_authoring import compile_source,verify_execution
