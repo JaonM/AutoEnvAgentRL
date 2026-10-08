@@ -20,4 +20,5 @@ def is_business_conflict(path, status, response):
     return (path.startswith('/v1/tools/') and status==409 and isinstance(response, dict)
             and isinstance(response.get('error'), dict)
             and response['error'].get('code') in {'INVALID_TRANSITION','TRANSITION_TARGET_INVALID',
-                'USER_INTERACTION_REQUIRED','IDEMPOTENCY_CONFLICT'})
+                'USER_INTERACTION_REQUIRED','USER_INPUT_MISMATCH','USER_REQUEST_STOPPED',
+                'BUSINESS_PRECONDITION_FAILED','IDEMPOTENCY_CONFLICT'})
