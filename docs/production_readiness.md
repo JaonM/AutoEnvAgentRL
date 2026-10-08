@@ -320,7 +320,7 @@ RL 收敛、训练后提升、跨模型泛化或任意离线 RL 算法兼容性�
 
 ```bash
 uv run python scripts/verify_training_materials.py \
-  output/loop_experiment_v1/training_materials_manifest.json
+  output/certification/training_materials_manifest.json
 ```
 
 验证器会分别重新计算任务文件、沙箱可移植文件树、rollout JSON 和整批清单摘要；任何文件变化、
@@ -333,7 +333,7 @@ uv run python scripts/verify_training_materials.py \
 
 ```bash
 uv run python scripts/export_training_materials.py \
-  output/loop_experiment_v1/production_readiness.json \
-  --output output/loop_experiment_v1/training_materials_bundle \
+  output/certification/production_readiness.json \
+  --output output/certification/training_materials_bundle \
   --verify-only
 ```

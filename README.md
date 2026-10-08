@@ -8,11 +8,15 @@
 
 项目目标是让 Agent 在有真实业务约束的环境中学习：向用户澄清需求、调用工具、使用前一步的结果完成后续操作，最终交付可验证的业务结果。项目将任务、业务数据、用户剧本、工具和奖励组织为统一契约，通过共享运行时和多层验收减少生成与构建的不一致。
 
+主入口：`scripts/run_pipeline.sh` → `python -m env_factory.task_pipeline`。任务生成和沙箱构建仅支持 Code Agent（Codex、Claude、OpenCode）；默认作者及构建模型为 `gpt-6.1-sol`。不再提供旧模型阶段、规格原型或循环实验入口。
+
+拟真机制统一按业务契约生成和验收，不再区分 standard/recovery。适合有状态场景的多步任务按正常／外部变化／故障恢复 50%／30%／20% 分配要求；单样本按该概率抽样。运行结果按机制汇总到 `realism_summary.json`。
+
 ## 项目主旨
 
 - **生成任务**：Code Agent 根据 Scene 图谱路径设计任务、业务数据、工具、参考轨迹与奖励，覆盖直接回答、单步和多步 Agentic 任务。
 - **构建环境**：将任务契约编译为沙箱，提供状态持久化、工具接口、用户模拟器与奖励接口；Code Agent 补充业务实现。
-- **验证质量**：前置结构检查、独立语义审核、成功与失败轨迹、反事实测试以及 live 验收，筛选可用于训练的环境。
+- **验证质量**：前置结构检查、独立语义审核、成功与失败轨迹、反事实测试以及 Docker 可执行验收，筛选可用于训练的环境。
 - **训练 Agent**：在 Apple Silicon 上使用 MLX 运行异步 PPO / GRPO，支持并行 rollout、批量解码、有限旧策略数据复用及量化感知微调（QAT）。
 
 ```text
@@ -20,7 +24,7 @@ Scene 知识图谱
     ↓
 Code Agent 生成任务 → 前置检查与语义审核
     ↓
-沙箱构建 → 契约、奖励与真实 rollout 验收
+沙箱构建 → 契约、奖励与 Docker 可执行验收
     ↓
 Docker 沙箱服务 ← HTTP → 并行 rollout workers
                               ↓
@@ -55,12 +59,12 @@ cp .env.example .env
 | --- | --- |
 | `NEO4J_URI`、`NEO4J_USER`、`NEO4J_PASSWORD`、`NEO4J_DATABASE` | Scene 图谱数据库 |
 | `LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL` | 通用模型服务及角色配置的回退值 |
-| `ROLLOUT_LLM_*` | live 验收中的 Agent 模型 |
+| `ROLLOUT_LLM_*` | 独立诊断工具的 Agent 模型，构建主链路不使用 |
 | `SANDBOX_LLM_*` | 沙箱用户模拟器与模型评分器 |
 | `GRAPH_SEEDS_FILE` | 图谱种子词文件，每行一个词语 |
 | `WIKIPEDIA_DUMP_DB` | 可选的本地 Wikipedia 索引；未配置时使用在线来源 |
 
-任务作者、沙箱构建和独立审查使用所选 **Code Agent CLI 的认证与模型配置**。`--code-agent-model` 不改变 live 验收或用户模拟器模型；RL 训练的策略模型另外通过 `train_rl.sh --model` 指定。
+任务作者、沙箱构建和独立审查使用所选 **Code Agent CLI 的认证与模型配置**。`--code-agent-model` 不改变独立诊断或用户模拟器模型；RL 训练的策略模型另外通过 `train_rl.sh --model` 指定。
 
 ### 准备知识图谱
 
@@ -86,8 +90,10 @@ cp .env.example .env
 # 生成并构建 5 个任务，指定输出目录
 ./scripts/run_pipeline.sh --count 5 --output output/my_tasks
 
+# 恢复型复杂任务：强制有状态多步生成，验证外部事件与故障恢复
+
 # 指定生成语种与 Code Agent 模型
-./scripts/run_pipeline.sh --code-agent-model gpt-6-luna --language en
+./scripts/run_pipeline.sh --code-agent-model gpt-6.1-sol --language en
 ```
 
 ### 常用参数
@@ -96,12 +102,13 @@ cp .env.example .env
 | --- | --- | --- |
 | `--count` | `1` | 新生成的任务数量；不保证全部通过验收 |
 | `--output` | `output` | 任务、沙箱与日志的输出根目录 |
-| `--task-ids` | 未设置 | 重建已有任务，例如 `1` 或 `1,2`；不能与 `--count` 同用 |
 | `--code-agent` | `codex` | 支持 `codex`、`claude`、`opencode` |
-| `--code-agent-model` | `gpt-6-luna` | 作者、构建与独立审查模型；非 codex 必须显式设置 |
+| `--code-agent-model` | `gpt-6.1-sol` | 任务生成模型；非 codex 必须显式设置 |
+| `--sandbox-model` | `gpt-6.1-sol`（Codex） | 沙箱构建与独立审查模型；其他 CLI 默认沿用任务生成模型 |
 | `--language` | `zh-CN` | 生成内容语种，例如 `en`、`ja`；不翻译平台日志 |
-| `--validation` | `live` | `live` 执行真实模型验收；`offline` 不能替代训练资格验证 |
-| `--code-agent-timeout` | `600` | 任务生成与修复共享的超时秒数 |
+| `--code-agent-timeout` | `600` | 生成与修复模型进程累计预算；不含父进程验收，独立审查每次另有 180 秒 |
+
+良品率优化路线与验收标准见 [优化方案](docs/plans/astra-quality-improvement.md)。
 
 默认目标类别比例为直接回答 20%、单步 Agentic 30%、多步 Agentic 50%；小样本实际数量以分配结果为准。主链路没有单样本 5 分钟硬截止。
 
@@ -111,8 +118,6 @@ cp .env.example .env
 ./scripts/run_pipeline.sh --code-agent claude --code-agent-model YOUR_MODEL
 ./scripts/run_pipeline.sh --code-agent opencode --code-agent-model PROVIDER/MODEL
 
-# 使用同一输出根目录，跳过生成并重建 task-1
-./scripts/run_pipeline.sh --output output/my_tasks --task-ids 1
 ```
 
 只生成任务，或专门生成多步任务：
@@ -122,12 +127,16 @@ cp .env.example .env
 ./scripts/generate_task.sh --training-category multi_step_agentic --count 5
 ```
 
+`--generation-hops N` 设置图谱跳数上限（0..20，默认 2）；每次生成尝试均匀抽取 0..N 跳，0 跳表示单个节点。主流水线每次生成新任务，不再提供 `--task-ids`。
+
 ### 产物与日志
 
 ```text
 output/
-├── task/task-N/           # 任务契约、业务数据、用户剧本与生成证据
-├── sandbox/task-N/        # 沙箱代码、构建日志、验收报告与 status.json
+├── artifacts/
+│   └── artifact-N/
+│       ├── task/          # 任务契约、业务数据、用户剧本与生成证据
+│       └── sandbox/       # 沙箱代码、构建日志、验收报告与 status.json
 ├── logs/pipeline-*        # 每次主链路运行的独立终端日志
 ├── generation.log        # 主链路任务生成日志
 └── pipeline_events.jsonl  # 阶段、耗时、结果与运行 ID
@@ -135,7 +144,9 @@ output/
 
 新任务编号自动递增。失败任务保留诊断信息，其他合格任务继续构建。
 
-训练接入检查 `status.json` 和 `pipeline_result.json` 的 **`training_ready == true`**，并校验产物哈希；仅有构建 `success` 或高质量分不够。主链路退出码：`0` 通过当前验收，`1` 不合格，`2` 配置或基础设施失败。
+训练接入检查 `status.json` 和 `pipeline_result.json` 的 **`training_ready == true`**，并校验产物哈希；仅有构建 `success` 或高质量分不够。`training_ready` 表示允许进入训练，不代表经过真实策略验证。构建不运行真实 rollout 或 live 奖励校准，评分完全来自 10 分制可执行验收；对应 live 检查记录为 `not_run`。训练阶段继续执行真实 rollout，观察环境错误、终局奖励与策略成功率。
+
+主链路退出码：`0` 通过当前验收，`1` 不合格，`2` 配置或基础设施失败。
 
 ## 3. 运行 RL 训练
 
@@ -146,7 +157,7 @@ uv sync --extra rl
 ./scripts/train_rl.sh --help
 
 ./scripts/train_rl.sh \
-  --sandbox output/sandbox/task-1 \
+  --sandbox output/artifacts/artifact-1/sandbox \
   --model /absolute/path/to/mlx-model \
   --output output/rl_runs/grpo-new \
   --algorithm grpo --tuning qat \
@@ -185,9 +196,9 @@ uv sync --extra rl
 任务和沙箱质量评分均为 0–10 分制；硬门禁失败时有效分为 0，原始分和失败证据用于诊断。
 
 ```bash
-uv run python examples/score_tasks.py output/task --min-score 8 \
+uv run python examples/score_tasks.py output/artifacts/artifact-1/task/task.json --min-score 8 \
   --report output/task_quality_report.json
-uv run python scripts/sandbox/score_sandbox_offline.py output/sandbox/task-1
+uv run python scripts/sandbox/score_sandbox_offline.py output/artifacts/artifact-1/sandbox
 ```
 
 | 文档 | 内容 |
@@ -197,5 +208,15 @@ uv run python scripts/sandbox/score_sandbox_offline.py output/sandbox/task-1
 | [运行时一致性](docs/runtime_integrity.md) | 共享运行时、验收与证据边界 |
 | [Agent RL](docs/agent_rl.md) | 训练参数、异步调度、QAT、Docker 与恢复 |
 | [代码结构](docs/code_structure.md) | 代码入口与模块边界 |
-| [循环实验](docs/loop_experiments.md) | 多轮实验与诊断工具 |
+| [流水线](docs/task_generation_pipeline.md) | Code Agent 生成、构建与验收 |
 | [训练素材准备认证](docs/production_readiness.md) | production 素材认证；与本地 RL 训练是不同范围 |
+
+### 拟真业务沙箱
+
+主运行时支持业务权限与状态迁移、条件式用户回应、虚拟时间和外部事件、
+有限故障注入、幂等重试及跨步骤补偿。Code Agent 可通过 `business_lifecycle`
+配置这些机制，预验收和生成沙箱使用同一实现。
+
+[采购与取消示例](examples/realism/README.md) 提供本地和 Docker HTTP 验收命令，
+覆盖库存竞争、拒绝拆单、提交成功但响应丢失、支付失败和退款释放库存。
+示例验收通过不等于模型生成任务已经获得 `training_ready`。

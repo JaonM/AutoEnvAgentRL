@@ -16,10 +16,19 @@ uv sync --extra rl
 ```
 
 需要 Python ≥ 3.14、Apple Silicon/Metal，以及运行中的 Docker Engine（脚本默认使用 Docker 沙箱）。
-用户模拟器与模型评分器仍使用外部模型服务，按项目 `.env.example` 配置 `SANDBOX_LLM_*` 等变量；
+模型驱动的用户模拟器与语义评分器使用外部模型服务，按项目 `.env.example` 配置 `SANDBOX_LLM_*` 等变量；
+声明 `deterministic_task_protocol` 的用户剧本由平台状态机执行，不要求外部用户模型调用。
 训练 policy 本身由 `--model` 指向本地模型。仅运行 RL 不要求重新执行图谱生成流程。
 本地开发可显式传 `--sandbox-backend local`，已有独立 HTTP 服务使用 `--sandbox-services`，
 详见[沙箱服务管理](#单机-docker-engine--沙箱管理器默认)。
+
+公开材料声明 `user_interaction_format` 时，rollout 自动提供原生
+`request_user_input` 工具（业务工具重名时加下划线前缀）。策略填写问题、后续业务工具名、
+待询问的参数名及可选的选项，适配层转换为沙箱现有结构化对话请求。
+此工具不执行业务操作，不读取隐藏剧本；阶段、选项来源和授权仍由沙箱校验。
+只向策略返回用户回复与是否结束，不暴露 FSM、脚本编号或奖励。
+本地与 HTTP 环境共用该适配，最终答案及 episode 结束后评分的行为不变。
+旧的结构化文本请求仍可使用；未声明该协议的任务不会增加此工具。
 
 本项目已验证的 0.6B 路径是 `models/Qwen3-0.6B`（官方浮点底座）与
 `models/Qwen3-0.6B-4bit`（由它转换的 MLX affine 量化底座）。尚未下载时可执行：
@@ -41,8 +50,15 @@ GGUF 不是此训练框架的输入格式。
 
 沙箱须通过项目生成与验收流程：`status.json` 和 `pipeline_result.json` 均为
 `training_ready=true`，且产物哈希匹配。不要通过手动修改状态文件跳过验收。
+新资格 `executable_v1` 基于 Docker 与可执行验收，不要求构建时执行真实 rollout。
+训练从首批采样开始记录环境异常、episode 奖励与成功率；环境执行错误不能作为零奖励样本加入训练，
+网络或服务异常按现有有界恢复机制处理，耗尽恢复预算时报错停止。采样 worker 遇到不可恢复的环境 RPC 错误时，
+在当前训练输出的任务队列 `quarantine/` 中记录沙箱身份及原因，跳过该沙箱后续任务（续跑保留），继续处理其他沙箱；
+不创建虚假奖励或训练轨迹。独立评估仍严格报错，不以跳过异常沙箱提高评估分数。
+正常执行但策略未完成任务的轨迹保留真实奖励，
+是否形成更新仍由 PPO/GRPO 的轨迹准入和零方差策略决定。
 
-- 单沙箱：`--sandbox output/sandbox/task-1`。
+- 单沙箱：`--sandbox output/artifacts/artifact-1/sandbox`。
 - 多沙箱：`--tasks tasks.json`；与 `--sandbox` 二选一。
 
 例如在项目根目录保存 `tasks.json`：
@@ -256,7 +272,7 @@ uv run --extra rl hf download mlx-community/Qwen3-4B-Instruct-2507-4bit \
   --local-dir models/Qwen3-4B-Instruct-2507-4bit
 
 ./scripts/train_rl.sh --help
-./scripts/train_rl.sh --sandbox output/sandbox/task-1 \
+./scripts/train_rl.sh --sandbox output/artifacts/artifact-1/sandbox \
   --output output/rl_runs/ppo-new --algorithm ppo
 ./scripts/train_rl.sh --tasks output/rl_multitask_manifest.json \
   --output output/rl_runs/grpo-new --algorithm grpo
@@ -385,7 +401,7 @@ TensorBoard 继续使用 restart 事件隐藏未提交步。代码身份校验�
 ### 跨运行导入
 
 ```bash
-./scripts/train_rl.sh --sandbox output/sandbox/task-1 \
+./scripts/train_rl.sh --sandbox output/artifacts/artifact-1/sandbox \
   --output output/rl_runs/replay-new --algorithm ppo \
   --replay-source output/rl_runs/previous-run --replay-batches-per-batch 1
 ```
@@ -446,13 +462,13 @@ Qwen3-4B 在一个 worker 下约需 96 GB 起，因此本机 48 GB 不适合该�
 
 ```bash
 # 原版 Qwen3-4B 的 MLX 4-bit 版本：可分别用 thinking / no-thinking
-./scripts/train_rl.sh --sandbox output/sandbox/task-1 \
+./scripts/train_rl.sh --sandbox output/artifacts/artifact-1/sandbox \
   --model models/Qwen3-4B-4bit --tuning lora --thinking-mode thinking \
   --max-tokens 2048 --max-context 4096 \
   --output output/rl_runs/qwen3-thinking
 
 # 全参训练：需要完整浮点底座和足够内存
-./scripts/train_rl.sh --sandbox output/sandbox/task-1 \
+./scripts/train_rl.sh --sandbox output/artifacts/artifact-1/sandbox \
   --model /path/to/floating-model --tuning full \
   --output output/rl_runs/full-new
 ```
@@ -491,7 +507,7 @@ norm 和普通 bias 保持浮点并参与训练，量化 scales/biases 从 maste
 
 ```bash
 # 需要足够内存；本机 48 GB 会在 Qwen3-4B 全参 QAT 加载前被检查拦截
-./scripts/train_rl.sh --sandbox output/sandbox/task-1 \
+./scripts/train_rl.sh --sandbox output/artifacts/artifact-1/sandbox \
   --model models/Qwen3-4B-4bit --tuning qat --qat-scope full --bits 4 \
   --thinking-mode thinking --max-tokens 2048 --max-context 4096 \
   --output output/rl_runs/qwen3-full-qat
@@ -550,7 +566,7 @@ rollout index、action step、用户消息、原生工具调用与工具结果�
 例如展示组内所有 4 条轨迹：
 
 ```bash
-./scripts/train_rl.sh --sandbox output/sandbox/task-1 --output output/rl_runs/grpo-new \
+./scripts/train_rl.sh --sandbox output/artifacts/artifact-1/sandbox --output output/rl_runs/grpo-new \
   --rollout-group 4 --rollout-trace-samples 4 --log-flush-seconds 2
 ```
 
@@ -836,11 +852,11 @@ worker 持续补充候选池。多余结果留给后续 batch，再按当时策�
 库级 `Config` 默认仍是 `local`，方便直接运行已有本地测试和自定义 runtime。
 
 ```bash
-./scripts/train_rl.sh --sandbox output/sandbox/task-1 \
+./scripts/train_rl.sh --sandbox output/artifacts/artifact-1/sandbox \
   --output output/train-docker --sandbox-max-active 4 --sandbox-startup-workers 2
 
 # 调试时明确使用原有进程内环境
-./scripts/train_rl.sh --sandbox output/sandbox/task-1 \
+./scripts/train_rl.sh --sandbox output/artifacts/artifact-1/sandbox \
   --output output/train-local --sandbox-backend local
 ```
 
@@ -871,11 +887,11 @@ worker 持续补充候选池。多余结果留给后续 batch，再按当时策�
 
 ```bash
 # 设置 SANDBOX_TRAINER_API_KEY；独立服务与训练必须使用同一个值。
-./scripts/sandbox_services.sh start --sandbox output/sandbox/task-1 \
+./scripts/sandbox_services.sh start --sandbox output/artifacts/artifact-1/sandbox \
   --output output/services --max-active 4 --startup-workers 2
 ./scripts/sandbox_services.sh status --output output/services
 
-./scripts/train_rl.sh --sandbox output/sandbox/task-1 \
+./scripts/train_rl.sh --sandbox output/artifacts/artifact-1/sandbox \
   --sandbox-services output/services/services.json --output output/train-reuse
 
 ./scripts/sandbox_services.sh stop --output output/services
@@ -905,7 +921,7 @@ Kubernetes 直接运行 Docker/OCI 镜像，不需要在 Pod 内启动 Docker da
 `images.json` 将训练任务清单的 ID 映射为已发布、集群可拉取的不可变镜像引用：
 
 ```json
-{"task-1": "registry.example.com/sandbox/task-1@sha256:<64位摘要>"}
+{"task-1": "registry.example.com/artifacts/artifact-1/sandbox@sha256:<64位摘要>"}
 ```
 
 单任务 `--sandbox` 使用 ID `task-1`。多个任务使用已有 `--tasks tasks.json`。
@@ -920,11 +936,11 @@ Kubernetes 直接运行 Docker/OCI 镜像，不需要在 Pod 内启动 Docker da
 ```bash
 # 只生成资源清单，不访问集群
 .venv/bin/python -m rl.kubernetes render \
-  --sandbox output/sandbox/task-1 --images images.json --output output/services
+  --sandbox output/artifacts/artifact-1/sandbox --images images.json --output output/services
 
 # 提交后即返回，不等待调度、镜像拉取和 readiness
 .venv/bin/python -m rl.kubernetes start \
-  --sandbox output/sandbox/task-1 --images images.json \
+  --sandbox output/artifacts/artifact-1/sandbox --images images.json \
   --namespace training --secret sandbox-env --prefix training-a \
   --host 10.0.0.10 --output output/services
 ```
@@ -938,7 +954,7 @@ NodePort 由 Kubernetes 分配。输出 `resources.json` 和 `services.json`，�
 ### 3. 启动训练
 
 ```bash
-./scripts/train_rl.sh --sandbox output/sandbox/task-1 \
+./scripts/train_rl.sh --sandbox output/artifacts/artifact-1/sandbox \
   --sandbox-services output/services/services.json \
   --output output/train-remote --rollout-concurrency 2
 ```
@@ -987,7 +1003,7 @@ chunking 保持完整 softmax 分布，不增加 top-k/top-p 截断。
 
 ```bash
 # 全 28 层 QLoRA；替换 sandbox 路径为已通过验收的沙箱
-./scripts/train_rl.sh --sandbox output/sandbox/task-1 --output output/rl-qwen06 \
+./scripts/train_rl.sh --sandbox output/artifacts/artifact-1/sandbox --output output/rl-qwen06 \
   --model models/Qwen3-0.6B-4bit --tuning lora --layers 28 \
   --lora-targets all-linear --thinking-mode no-thinking \
   --gradient-checkpointing --logits-chunk-size 32 \
@@ -1156,3 +1172,16 @@ mini-batch 安全边界也会检查 checkpoint 间隔。
 
 既有 `tests/rl/` 测试路径保留，新增 `tests/rl/architecture/` 检查兼容导入、模块依赖、
 独立 HTTP 服务文件与递归源码身份。单独运行模块或添加第二种后端时，优先使用规范子包路径。
+
+### 多步任务学习信号
+
+每组采样新增 `reward_range`、`reward_non_success_rate`、`all_success_group`、
+`all_failure_group`、`grpo_zero_advantage_group`、`high_reward_unterminated`，写入 rollout
+事件及 TensorBoard。优化指标、训练集奖励与独立 eval 仍分别记录。
+训练退出（包括异常退出）时从指标日志生成 `learning_signals.json`，按任务汇总有效组、
+成功/未成功轨迹、GRPO 零优势组、隔离任务及准入拒绝原因。重复通知按任务、数据集索引和
+采样尝试去重；旧日志缺失指标标为未测量。沙箱隔离不计作零奖励 episode。
+
+这里的成功以终止标记和环境奖励为依据，不是独立业务真值。高奖励但未终止只表示值得检查，
+不能据此证明奖励投机；奖励准确率需使用有独立标签的正反例。GRPO 零优势也不意味着 PPO
+没有学习信号。跨任务泛化仍应查看独立 eval，不能由训练集奖励或更新次数推出。
