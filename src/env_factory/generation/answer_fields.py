@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import copy
 
-from env_factory.sandbox_runtime import validate_json_schema, SandboxError
+from env_factory.sandbox_runtime import validate_json_schema, SandboxError, DeclarativeMetricEvaluator
 
 KINDS = {'observed', 'derived', 'explanation'}
 
@@ -47,8 +47,12 @@ def expand_answer_fields(source, *, required=False):
             ref = field['observation']
             if (not isinstance(ref, dict) or set(ref) != {'tool', 'path'}
                     or not isinstance(ref['tool'], str) or ref['tool'] not in tools
-                    or not isinstance(ref['path'], str) or not ref['path'].startswith('$.')):
-                raise ValueError('ANSWER_FIELDS_INVALID: observation requires declared tool and response JSON path')
+                    or not isinstance(ref['path'], str) or not ref['path'].startswith('$')):
+                raise ValueError('ANSWER_FIELDS_INVALID: ' + name + ' observation requires declared tool and response JSON path')
+            try:
+                DeclarativeMetricEvaluator.path_tokens(ref['path'])
+            except SandboxError as exc:
+                raise ValueError('ANSWER_FIELDS_INVALID: ' + name + ' observation has unsupported JSON path') from exc
             try:
                 validate_json_schema(schema, field['missing'])
             except SandboxError as exc:

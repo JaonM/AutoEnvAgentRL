@@ -32,9 +32,12 @@ def observe_counterexample(finding, bundle):
         for target in rule.get('expected', {}).get('targets', []):
             item = {'metric_id': rule.get('metric_id'), 'field': target['key']}
             try:
+                resolutions = []
                 for label, state in [('original_target', initial), ('mutated_target', mutated)]:
-                    item[label] = DeclarativeMetricEvaluator._value_expression(target['expression'], state)
-                item['resolved'] = item['original_target'] is not None and item['mutated_target'] is not None
+                    result = DeclarativeMetricEvaluator.value_resolution(target['expression'], state)
+                    item[label] = result['value']
+                    resolutions.append(result['resolved'])
+                item['resolved'] = all(resolutions)
             except SandboxError as exc:
                 item.update(resolved=False, error=str(exc))
             observations.append(item)
@@ -79,7 +82,7 @@ def baseline_reward_observations(bundle):
         for target in rule.get('expected', {}).get('targets', []):
             item = {'metric_id':rule.get('metric_id'), 'field':target['key'], 'lookups':[]}
             try:
-                item['value'] = DeclarativeMetricEvaluator._value_expression(target['expression'], state)
+                item.update(DeclarativeMetricEvaluator.value_resolution(target['expression'], state))
                 walk(target['expression'], '$', state, item['lookups'])
             except SandboxError as exc:
                 item['error'] = str(exc)

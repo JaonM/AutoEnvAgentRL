@@ -122,7 +122,7 @@ class ValueRewardTest(unittest.TestCase):
         nested = "x"
         for _ in range(14):
             nested = [nested]
-        for value in [[None], {"value": float("inf")}, [0] * 65, nested]:
+        for value in [{"value": float("inf")}, [0] * 65, nested]:
             with self.subTest(value=value), self.assertRaises(SandboxError):
                 Evaluator._value_expression({"literal": value}, {})
 

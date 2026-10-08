@@ -57,6 +57,23 @@ def test_defaulted_observation_is_marked_even_when_used_in_derived_fact(tmp_path
         'observation_availability'][0]['present'] is True
 
 
+def test_null_fact_distinguishes_observed_null_from_unqueried_default(tmp_path):
+    judge, metric, context = scoped(tmp_path)
+    schema = judge.contract['public_input']['answer_contract']['schema']
+    schema['properties']['count']['type'] = ['integer', 'null']
+    rule = judge.contract['metric_implementations'][0]
+    rule['expected']['targets'][0]['expression']['observed_value']['missing'] = {'literal': None}
+    context = submitted(context, count=None, unique=False)
+    for results, present in [({'read': {'count': None}}, True), ({}, False)]:
+        context['reward_state_snapshots'] = {'$tool_results': results}
+        evidence = judge._verified_answer_context(metric, context)
+        fact = evidence['executable_field_facts']['count']
+        assert fact['value'] is None
+        assert fact['observation_availability'][0]['present'] is present
+        assert evidence['verified_answer_context']['count']['value'] is None
+        json.dumps(evidence, allow_nan=False)
+
+
 def test_unresolved_is_not_a_fact_and_decimal_value_retains_precision(tmp_path):
     judge, metric, context = scoped(tmp_path)
     rule = judge.contract['metric_implementations'][0]

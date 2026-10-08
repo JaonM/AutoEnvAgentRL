@@ -202,12 +202,21 @@ def test_structured_observed_result_tracks_full_typed_collection(tmp_path, rows)
         assert E._value_expression(expression, context(store, data)) == rows
 
 
-@pytest.mark.parametrize('value', [None, [None], [{'value': None}], [float('inf')],
+@pytest.mark.parametrize('value', [[float('inf')],
     [float('nan')], list(range(65)), {str(i):i for i in range(65)}])
-def test_structured_result_rejects_missing_null_nonfinite_and_oversized_values(value):
+def test_structured_result_rejects_nonfinite_and_oversized_values(value):
     expression = {'tool_result': {'name': 'read', 'path': '$.records'}}
     state = ExpressionBusinessState({}, snapshots={'$tool_results': {'read': {'records': value}}})
-    assert E._value_expression(expression, state) is None
+    assert E.value_resolution(expression, state) == {'resolved': False, 'value': None}
+
+
+@pytest.mark.parametrize('value', [None, [None], [{'value': None}]])
+def test_structured_null_is_observed_evidence_but_missing_records_are_not(value):
+    expression = {'tool_result': {'name': 'read', 'path': '$.records'}}
+    state = ExpressionBusinessState({}, snapshots={'$tool_results': {'read': {'records': value}}})
+    assert E.value_resolution(expression, state) == {'resolved': True, 'value': value}
+    missing = ExpressionBusinessState({}, snapshots={'$tool_results': {'read': {}}})
+    assert E.value_resolution(expression, missing) == {'resolved': False, 'value': None}
 
 
 def test_structured_result_does_not_change_script_binding_or_checkpoint_time(tmp_path):

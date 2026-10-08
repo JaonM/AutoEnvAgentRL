@@ -7,6 +7,17 @@ import json
 from env_factory.sandbox_runtime import SandboxError, validate_json_schema, normalize_record_order
 
 
+def _types(schema):
+    """Use the runtime's JSON types; unions retain each branch's constraints."""
+    kind = schema.get('type')
+    values = kind if isinstance(kind, list) else [kind]
+    if (not values or any(not isinstance(value, str) for value in values)
+            or len(set(values)) != len(values)
+            or set(values) - {'object', 'array', 'string', 'boolean', 'integer', 'number', 'null'}):
+        raise ValueError('ANSWER_CONTRACT_INVALID: type must name distinct supported JSON types')
+    return set(values)
+
+
 def validate_direct_text_targets(source: dict) -> None:
     """Require public evidence for exact literal text, before publishing schemas.
 
@@ -30,7 +41,7 @@ def validate_direct_text_targets(source: dict) -> None:
         if not isinstance(expression, dict):
             return
         if set(expression) == {"literal"} and isinstance(expression["literal"], str):
-            if schema.get("type") not in {None, "string"}:
+            if schema.get('type') is not None and 'string' not in _types(schema):
                 return  # schema/reference validation owns type mismatches
             value = " ".join(expression["literal"].split())
             choices = schema.get("enum", []) if isinstance(schema, dict) else []
@@ -71,7 +82,7 @@ def validate_conditional_text_fallbacks(target, field, public):
     This checks public disclosure, not the semantic truth of a condition. It
     never publishes literals inferred from private reward expressions.
     """
-    if field.get('type') != 'string':
+    if 'string' not in _types(field):
         return
     literals, dynamic = set(), False
 
@@ -117,7 +128,7 @@ def validate_conditional_text_fallbacks(target, field, public):
 def _schema(schema: object, depth: int = 0) -> None:
     if not isinstance(schema, dict) or depth > 8:
         raise ValueError("ANSWER_CONTRACT_INVALID: schema must be a bounded object")
-    kind = schema.get("type")
+    kinds = _types(schema)
     allowed = {"type", "description", "enum"}
     if "enum" in schema:
         values = schema["enum"]
@@ -125,7 +136,7 @@ def _schema(schema: object, depth: int = 0) -> None:
             raise ValueError("ANSWER_CONTRACT_INVALID: public enums require 2..64 choices, not a gold answer")
         if len({json.dumps(value, sort_keys=True) for value in values}) != len(values):
             raise ValueError("ANSWER_CONTRACT_INVALID: enum choices must be distinct")
-    if kind == "object":
+    if 'object' in kinds:
         allowed |= {"properties", "required", "additionalProperties"}
         properties = schema.get("properties")
         if (not isinstance(properties, dict) or not 1 <= len(properties) <= 64
@@ -138,7 +149,7 @@ def _schema(schema: object, depth: int = 0) -> None:
             if not isinstance(key, str) or not key:
                 raise ValueError("ANSWER_CONTRACT_INVALID: property names must be nonempty strings")
             _schema(child, depth + 1)
-    elif kind == "array":
+    if 'array' in kinds:
         allowed |= {"items", "minItems", "maxItems"}
         _schema(schema.get("items"), depth + 1)
         for key in ("minItems", "maxItems"):
@@ -146,8 +157,6 @@ def _schema(schema: object, depth: int = 0) -> None:
                 raise ValueError("ANSWER_CONTRACT_INVALID: array bounds must be integers within 0..64")
         if schema.get("minItems", 0) > schema.get("maxItems", 64):
             raise ValueError("ANSWER_CONTRACT_INVALID: invalid array bounds")
-    elif kind not in {"string", "boolean", "integer", "number"}:
-        raise ValueError("ANSWER_CONTRACT_INVALID: unsupported answer type")
     if set(schema) - allowed:
         raise ValueError("ANSWER_CONTRACT_INVALID: unsupported schema keywords: " +
                          ", ".join(sorted(set(schema) - allowed)))
@@ -235,23 +244,25 @@ def bind_answer_contract(source: dict) -> dict | None:
             labels = _finite_labels(target["expression"])
             field = schema["properties"][target["key"]]
             if 'array_order' in target:
-                if field.get('type') != 'array':
+                if _types(field) - {'null'} != {'array'}:
                     raise ValueError('ANSWER_CONTRACT_TYPES: array_order requires an array answer field')
                 items = field.get('items', {})
                 order = normalize_record_order(target['array_order'])
                 if order and (items.get('type') != 'object' or any(
-                        items.get('properties', {}).get(item['field'], {}).get('type')
-                        not in {'string', 'number', 'integer', 'boolean'} for item in order)):
+                        item['field'] not in items.get('properties', {}) or
+                        _types(items['properties'][item['field']]) - {'null'}
+                        not in ({'string'}, {'number'}, {'integer'}, {'boolean'}) for item in order)):
                     raise ValueError('ANSWER_CONTRACT_TYPES: array_order fields must be declared scalar record fields')
                 if 'tolerance' in target:
                     raise ValueError('ANSWER_CONTRACT_TYPES: array_order cannot use numeric tolerance')
             if 'tolerance' in target:
-                if field.get('type') not in {'number', 'integer'}:
+                numeric_types = _types(field) - {'null'}
+                if not numeric_types or numeric_types - {'number', 'integer'}:
                     raise ValueError('ANSWER_CONTRACT_TYPES: numeric tolerance requires a numeric answer field')
-                if field.get('type') == 'integer' and target['tolerance'] != 0:
+                if numeric_types == {'integer'} and target['tolerance'] != 0:
                     raise ValueError('ANSWER_CONTRACT_TYPES: integer answer fields require exact equality')
             if labels and len(labels) > 1:
-                if field.get("type") != "string":
+                if _types(field) - {'null'} != {'string'}:
                     raise ValueError("ANSWER_CONTRACT_TYPES: decision labels require a string field")
                 if "enum" in field and not labels <= set(field["enum"]):
                     raise ValueError("ANSWER_CONTRACT_ENUM: public enum omits a reachable decision label")
@@ -305,7 +316,7 @@ def bind_answer_contract(source: dict) -> dict | None:
     array_comparisons = {}
     for rule in structured:
         for target in rule['expected']['targets']:
-            if schema['properties'][target['key']].get('type') != 'array':
+            if 'array' not in _types(schema['properties'][target['key']]):
                 continue
             if 'array_order' in target:
                 order = normalize_record_order(target['array_order'])

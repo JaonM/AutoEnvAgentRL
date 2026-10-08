@@ -1737,8 +1737,22 @@ expressions in outcomes. Deterministic outcomes select field IDs:
 `observed` permits only `kind`, `schema`, `observation`, `missing` and optional
 `tolerance`/`array_order` comparison options. The compiler emits `observed_value`
 with a `tool_result` and a literal missing value. Actual false, zero, empty strings
-and empty collections remain observations; missing applies only when the path is
+and empty collections or explicit JSON null remain observations; missing applies only when the path is
 unresolved. Multiple records never by themselves overwrite an observed flag.
+Observation paths use the runtime JSON-path parser, including `$` for the entire
+tool response. Declare the complete bounded response schema when using `$`;
+`$.` is not a valid substitute. A nullable deterministic answer field uses
+`type: ["integer", "null"]` (or another concrete type plus `null`), retaining all
+object/array constraints on non-null values. Public descriptions must distinguish
+an unqueried null default from an observed empty result or observed null.
+Other unions of the supported JSON types are permitted, for example heterogeneous
+array items with `type: ["string", "integer", "boolean", "null"]`. Every object
+or array branch still requires its complete bounded schema. Scalar ordering and
+numeric tolerance options must remain compatible with all possible non-null types.
+Internally, absent tools, missing paths and missing checkpoints remain unresolved;
+submitting null cannot satisfy such an unresolved target. Only an explicit literal
+or declared `observed_value.missing` rule can supply a null target without that read.
+Such answer normalization never satisfies a required process or retrieval gate.
 The path refers to the existing first successful process-matching read checkpoint;
 use a separate tool/checkpoint when the business goal requires a distinct later read.
 All origin and missing rules are public. Never put a private fixture answer in missing.
@@ -1784,6 +1798,9 @@ never silent truncation. Use sufficient bounded aggregates for large collections
 Unresolved targets are listed without fabricated values. `observation_availability`
 records every referenced observed path, including inactive branches; a missing
 path's default is normalization, not evidence that the business observation occurred.
+Explicit null facts stay resolved; their availability flag distinguishes an observed
+null from the same value supplied by a declared missing default. Reviewer replay
+and parent failure diagnostics retain resolution separately from the JSON value.
 `decimal_values` preserves exact decimal results alongside JSON numeric values.
 The runner ignores submitted claims of executable facts. Independent review must
 check that the declared premises cover every required business inference; omitting

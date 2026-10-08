@@ -55,6 +55,9 @@ _TOOL_BUSINESS_READS: ContextVar[list[str] | None] = ContextVar(
     "tool_business_reads", default=None,
 )
 
+# Internal only: JSON null is an observed value, not absence of evidence.
+_UNRESOLVED_VALUE = object()
+
 
 def canonical_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -1640,8 +1643,9 @@ class RewardStateSnapshots:
                     result = node[kind]
                     if (not isinstance(result, Mapping) or set(result) != {'name', 'path'}
                             or not isinstance(result['name'], str) or not result['name']
-                            or not isinstance(result['path'], str) or not result['path'].startswith('$.')):
+                            or not isinstance(result['path'], str) or not result['path'].startswith('$')):
                         raise SandboxError('METRIC_SPEC_INVALID', f'{kind} requires name and JSON path', 500)
+                    DeclarativeMetricEvaluator.path_tokens(result['path'])
                     names.add(result['name'])
                 if set(node) == {"at_tool"}:
                     checkpoint = node["at_tool"]
@@ -2079,10 +2083,10 @@ class BusinessGoalEvaluator:
     def expected_values(predicate: Mapping[str, Any], state: Mapping[str, Any], baseline: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
         values = dict(predicate.get("values", {}))
         for field, expression in predicate.get("value_expressions", {}).items():
-            expected = DeclarativeMetricEvaluator._value_expression(expression, ExpressionBusinessState(state, baseline))
-            if expected is None or field in values:
+            result = DeclarativeMetricEvaluator.value_resolution(expression, ExpressionBusinessState(state, baseline))
+            if not result['resolved'] or field in values:
                 return None
-            values[field] = expected
+            values[field] = result['value']
         return values
 
     @staticmethod
@@ -2094,11 +2098,11 @@ class BusinessGoalEvaluator:
             selector = predicate.get("where", {})
             if table not in state or not isinstance(selector, Mapping):
                 return False
-            rows = [row for row in state[table] if all(row.get(key) == value for key, value in selector.items())]
+            rows = [row for row in state[table] if all(key in row and row[key] == value for key, value in selector.items())]
             expected = BusinessGoalEvaluator.expected_values(predicate, state, baseline)
             if expected is None:
                 return False
-            matching = [row for row in rows if all(row.get(key) == value for key, value in expected.items())]
+            matching = [row for row in rows if all(key in row and row[key] == value for key, value in expected.items())]
             if len(matching) != predicate.get("count"):
                 return False
         return True
@@ -3107,10 +3111,11 @@ class ContractModelMetricEvaluator:
                 unverified.append(name)
             if metric.get('semantic_evidence_mode') == 'fields':
                 expression = targets[name]['expression']
-                value = DeclarativeMetricEvaluator._value_expression(expression, state)
-                if value is None:
+                resolution = DeclarativeMetricEvaluator.value_resolution(expression, state)
+                if not resolution['resolved']:
                     unresolved.append(name)
                     continue
+                value = resolution['value']
                 decimals = []
                 def json_value(value, path='$'):
                     if isinstance(value, Decimal):
@@ -3138,7 +3143,7 @@ class ContractModelMetricEvaluator:
                         if set(node) == {'observed_value'}:
                             spec = node['observed_value']
                             item = {**spec['value']['tool_result'],
-                                'present': DeclarativeMetricEvaluator._value_expression(spec['value'], state) is not None,
+                                'present': DeclarativeMetricEvaluator.value_resolution(spec['value'], state)['resolved'],
                                 'missing_value': spec['missing']['literal']}
                             if item not in availability:
                                 availability.append(item)
@@ -3415,10 +3420,12 @@ class DeclarativeMetricEvaluator:
                 cls._value_expression(expression, {})
 
     @classmethod
-    def _json_value_equal(cls, left: Any, right: Any, *, depth: int = 0) -> bool:
+    def _json_value_equal(cls, left: Any, right: Any, *, depth: int = 0, allow_null: bool = False) -> bool:
         """Type-safe equality for bounded structured answers, including arrays."""
-        if depth > 12 or left is None or right is None:
+        if depth > 12:
             return False
+        if left is None or right is None:
+            return allow_null and left is None and right is None
         if isinstance(left, bool) or isinstance(right, bool):
             return type(left) is type(right) and left == right
         if isinstance(left, (int, float, Decimal)):
@@ -3431,10 +3438,10 @@ class DeclarativeMetricEvaluator:
             return left == right
         if isinstance(left, list):
             return len(left) == len(right) <= 64 and all(
-                cls._json_value_equal(a, b, depth=depth + 1) for a, b in zip(left, right))
+                cls._json_value_equal(a, b, depth=depth + 1, allow_null=allow_null) for a, b in zip(left, right))
         if isinstance(left, dict):
             return len(left) <= 64 and set(left) == set(right) and all(
-                isinstance(key, str) and cls._json_value_equal(value, right[key], depth=depth + 1)
+                isinstance(key, str) and cls._json_value_equal(value, right[key], depth=depth + 1, allow_null=allow_null)
                 for key, value in left.items())
         return False
 
@@ -3450,7 +3457,10 @@ class DeclarativeMetricEvaluator:
                 if not isinstance(expression, Mapping):
                     return {"literal": expression}
                 if set(expression) == {"$ref"}:
-                    return {"literal": variables.get(str(expression["$ref"]))}
+                    name = str(expression['$ref'])
+                    if name not in variables:
+                        raise SandboxError('CAPTURE_EXPRESSION_INVALID', 'capture expression references unavailable evidence', 500)
+                    return {"literal": variables[name]}
                 if set(expression) == {"literal"}:
                     return dict(expression)
                 if set(expression) == {"op", "args"} and isinstance(expression["args"], list):
@@ -3471,33 +3481,46 @@ class DeclarativeMetricEvaluator:
 
     @classmethod
     def _value_expression(cls, expression: Any, business_state: Mapping[str, Any], *, depth: int = 0) -> Any:
+        """Compatibility projection; use value_resolution when absence matters."""
+        value = cls._resolved_value_expression(expression, business_state, depth=depth)
+        return None if value is _UNRESOLVED_VALUE else value
+
+    @classmethod
+    def value_resolution(cls, expression: Any, business_state: Mapping[str, Any]) -> dict:
+        """JSON-safe resolution evidence; explicit null remains resolved."""
+        value = cls._resolved_value_expression(expression, business_state)
+        return {'resolved': value is not _UNRESOLVED_VALUE,
+                'value': None if value is _UNRESOLVED_VALUE else value}
+
+    @classmethod
+    def _resolved_value_expression(cls, expression: Any, business_state: Mapping[str, Any], *, depth: int = 0) -> Any:
         """Evaluate a bounded JSON business expression, including string keys.
 
-        None represents unresolved evidence, never a successful target. This is
-        a declarative interpreter; task text cannot execute arbitrary code.
+        Missing evidence has a private sentinel distinct from JSON null.
+        This is a declarative interpreter; task text cannot execute arbitrary code.
         """
         if depth > 12 or not isinstance(expression, Mapping):
             raise SandboxError("METRIC_SPEC_INVALID", "value expression is invalid", 500)
         if set(expression) == {"literal"}:
             value = expression["literal"]
-            if not cls._json_value_equal(value, value, depth=depth):
-                raise SandboxError("METRIC_SPEC_INVALID", "value literal must be bounded, finite JSON without null", 500)
+            if not cls._json_value_equal(value, value, depth=depth, allow_null=True):
+                raise SandboxError("METRIC_SPEC_INVALID", "value literal must be bounded, finite JSON", 500)
             return value
         if set(expression) == {"initial"}:
             initial = getattr(business_state, "initial", None)
             # Validate syntax even if no initial snapshot was supplied, then fail closed.
-            result = cls._value_expression(expression["initial"],
+            result = cls._resolved_value_expression(expression["initial"],
                 ExpressionBusinessState(initial, initial, getattr(business_state, "snapshots", {})), depth=depth + 1)
-            return result if initial is not None else None
+            return result if initial is not None else _UNRESOLVED_VALUE
         if set(expression) == {'observed_value'}:
             spec = expression['observed_value']
             if (not isinstance(spec, Mapping) or set(spec) != {'value', 'missing'}
                     or not isinstance(spec['value'], Mapping) or set(spec['value']) != {'tool_result'}
                     or not isinstance(spec['missing'], Mapping) or set(spec['missing']) != {'literal'}):
                 raise SandboxError('METRIC_SPEC_INVALID', 'observed_value requires a tool_result and literal missing value', 500)
-            observed = cls._value_expression(spec['value'], business_state, depth=depth + 1)
-            missing = cls._value_expression(spec['missing'], business_state, depth=depth + 1)
-            return observed if observed is not None else missing
+            observed = cls._resolved_value_expression(spec['value'], business_state, depth=depth + 1)
+            missing = cls._resolved_value_expression(spec['missing'], business_state, depth=depth + 1)
+            return observed if observed is not _UNRESOLVED_VALUE else missing
         if set(expression) == {'user_rejection'}:
             ref = expression['user_rejection']
             if (not isinstance(ref, Mapping) or set(ref) != {'stage', 'branch'}
@@ -3509,33 +3532,33 @@ class DeclarativeMetricEvaluator:
         if set(expression) == {'user_value'}:
             RewardStateSnapshots.user_values(expression)
             observed = getattr(business_state, 'snapshots', {}).get('$user_values', {}).get(expression['user_value']['stage'], {})
-            value = observed.get('value')
+            value = observed.get('value', _UNRESOLVED_VALUE)
             return copy.deepcopy(value) if (observed.get('disclosed') is True
-                and cls._json_value_equal(value, value)) else None
+                and cls._json_value_equal(value, value, allow_null=True)) else _UNRESOLVED_VALUE
         if set(expression) in ({'tool_result'}, {'tool_argument'}):
             RewardStateSnapshots.requested(expression)
             kind = next(iter(expression))
             ref = expression[kind]
             key = '$tool_results' if kind == 'tool_result' else '$tool_arguments'
             results = getattr(business_state, 'snapshots', {}).get(key, {})
-            value = cls._resolve(results.get(ref['name']), ref['path'])
+            value = cls._resolve(results.get(ref['name'], _UNRESOLVED_VALUE), ref['path'], missing=_UNRESOLVED_VALUE)
             # Same bounded, typed JSON domain as literals and answer targets.
-            # Empty collections are observed evidence; missing/null remains unresolved.
-            return copy.deepcopy(value) if cls._json_value_equal(value, value) else None
+            # Empty collections and null are observed evidence; absence is not.
+            return copy.deepcopy(value) if cls._json_value_equal(value, value, allow_null=True) else _UNRESOLVED_VALUE
         if set(expression) == {"at_tool"}:
             RewardStateSnapshots.requested(expression)
             checkpoint = expression["at_tool"]
             snapshots = getattr(business_state, "snapshots", {})
             snapshot = snapshots.get(checkpoint["name"])
-            value = cls._value_expression(checkpoint["expression"], ExpressionBusinessState(
+            value = cls._resolved_value_expression(checkpoint["expression"], ExpressionBusinessState(
                 snapshot, getattr(business_state, "initial", None), snapshots), depth=depth + 1)
-            return value if snapshot is not None else None
+            return value if snapshot is not None else _UNRESOLVED_VALUE
         if set(expression) == {"array"}:
             items = expression["array"]
             if not isinstance(items, list) or len(items) > 64:
                 raise SandboxError("METRIC_SPEC_INVALID", "array expression requires at most 64 items", 500)
-            values = [cls._value_expression(item, business_state, depth=depth + 1) for item in items]
-            return None if any(value is None for value in values) else values
+            values = [cls._resolved_value_expression(item, business_state, depth=depth + 1) for item in items]
+            return _UNRESOLVED_VALUE if any(value is _UNRESOLVED_VALUE for value in values) else values
         if set(expression) == {"lookup"}:
             lookup = expression["lookup"]
             if (not isinstance(lookup, Mapping) or set(lookup) != {"table", "field", "where"}
@@ -3545,56 +3568,63 @@ class DeclarativeMetricEvaluator:
                 raise SandboxError("METRIC_SPEC_INVALID", "value lookup is invalid", 500)
             where = cls._numeric_where(lookup["where"], business_state, depth=depth)
             if any(value is None for value in where.values()):
-                return None
+                return _UNRESOLVED_VALUE
             rows = business_state.get(lookup["table"], [])
             matches = [row for row in rows if isinstance(row, Mapping)
                        and cls._where_matches(row, where)] if isinstance(rows, list) else []
-            value = matches[0].get(lookup["field"]) if len(matches) == 1 else None
-            if not isinstance(value, (str, bool, int, float)) or isinstance(value, float) and not math.isfinite(value):
-                return None
+            value = matches[0].get(lookup["field"], _UNRESOLVED_VALUE) if len(matches) == 1 else _UNRESOLVED_VALUE
+            if value is not None and (not isinstance(value, (str, bool, int, float))
+                    or isinstance(value, float) and not math.isfinite(value)):
+                return _UNRESOLVED_VALUE
             return value
         if set(expression) == {"if"}:
             branch = expression["if"]
             if not isinstance(branch, Mapping) or set(branch) != {"condition", "then", "else"}:
                 raise SandboxError("METRIC_SPEC_INVALID", "conditional expression is invalid", 500)
-            condition = cls._value_expression(branch["condition"], business_state, depth=depth + 1)
+            condition = cls._resolved_value_expression(branch["condition"], business_state, depth=depth + 1)
             # Validate both branches even when one is inactive for this fixture.
-            yes = cls._value_expression(branch["then"], business_state, depth=depth + 1)
-            no = cls._value_expression(branch["else"], business_state, depth=depth + 1)
-            return (yes if condition else no) if isinstance(condition, bool) else None
+            yes = cls._resolved_value_expression(branch["then"], business_state, depth=depth + 1)
+            no = cls._resolved_value_expression(branch["else"], business_state, depth=depth + 1)
+            return (yes if condition else no) if isinstance(condition, bool) else _UNRESOLVED_VALUE
         if set(expression) == {"op", "args"} and expression["op"] in {"eq", "ne", "gt", "gte", "lt", "lte", "and", "or"}:
             operator, args = expression["op"], expression["args"]
             if not isinstance(args, list) or not (2 <= len(args) <= 8 if operator in {"and", "or"} else len(args) == 2):
                 raise SandboxError("METRIC_SPEC_INVALID", "predicate arity is invalid", 500)
-            values = [cls._value_expression(arg, business_state, depth=depth + 1) for arg in args]
+            values = [cls._resolved_value_expression(arg, business_state, depth=depth + 1) for arg in args]
             if operator in {"and", "or"}:
-                if any(value is not None and not isinstance(value, bool) for value in values):
-                    return None
+                if any(value is not _UNRESOLVED_VALUE and not isinstance(value, bool) for value in values):
+                    return _UNRESOLVED_VALUE
                 # A known false prerequisite excludes a downstream branch even
                 # before its read occurs. Unknown prerequisites never count as true.
                 if operator == 'and' and any(value is False for value in values):
                     return False
                 if operator == 'or' and any(value is True for value in values):
                     return True
-                if any(value is None for value in values):
-                    return None
+                if any(value is _UNRESOLVED_VALUE for value in values):
+                    return _UNRESOLVED_VALUE
                 return all(values) if operator == "and" else any(values)
-            if any(value is None for value in values):
-                return None
+            if any(value is _UNRESOLVED_VALUE for value in values):
+                return _UNRESOLVED_VALUE
             left, right = values
+            if left is None or right is None:
+                if operator == 'eq':
+                    return left is None and right is None
+                if operator == 'ne':
+                    return not (left is None and right is None)
+                return _UNRESOLVED_VALUE
             if isinstance(left, bool) != isinstance(right, bool):
-                return None
+                return _UNRESOLVED_VALUE
             try:
-                if operator == "eq": return left == right
-                if operator == "ne": return left != right
+                if operator == "eq": return cls._json_value_equal(left, right, allow_null=True)
+                if operator == "ne": return not cls._json_value_equal(left, right, allow_null=True)
                 if operator == "gt": return left > right
                 if operator == "gte": return left >= right
                 if operator == "lt": return left < right
                 if operator == "lte": return left <= right
             except TypeError:
-                return None
+                return _UNRESOLVED_VALUE
         value = cls._numeric_expression(expression, business_state, depth=depth)
-        return value
+        return value if value is not None else _UNRESOLVED_VALUE
 
     @classmethod
     def validate_value_targets(cls, expected: Any) -> None:
@@ -3650,8 +3680,14 @@ class DeclarativeMetricEvaluator:
         if not isinstance(actual, dict) or set(actual) != keys:
             return False
         for target in expected["targets"]:
-            wanted = cls._value_expression(target["expression"], business_state)
+            wanted = cls._resolved_value_expression(target["expression"], business_state)
             value = actual[target["key"]]
+            if wanted is _UNRESOLVED_VALUE:
+                return False
+            if wanted is None:
+                if value is not None:
+                    return False
+                continue
             if 'array_order' in target:
                 if not cls._array_targets_match(wanted, value, target['array_order']):
                     return False
@@ -3664,7 +3700,7 @@ class DeclarativeMetricEvaluator:
                 if (not left.is_finite() or not right.is_finite()
                         or abs(left - right) > Decimal(str(target['tolerance']))):
                     return False
-            elif not cls._json_value_equal(wanted, value):
+            elif not cls._json_value_equal(wanted, value, allow_null=True):
                 return False
         return True
 
@@ -3673,16 +3709,16 @@ class DeclarativeMetricEvaluator:
         # Membership is a typed multiset: duplicates are meaningful, and bool
         # must not compare equal to 1. Only declared ordering ties may permute.
         if (not isinstance(wanted, list) or not isinstance(actual, list)
-                or len(wanted) != len(actual) or not cls._json_value_equal(actual, actual)):
+                or len(wanted) != len(actual) or not cls._json_value_equal(actual, actual, allow_null=True)):
             return False
         try:
-            if order and not cls._json_value_equal(actual, order_records(actual, order)):
+            if order and not cls._json_value_equal(actual, order_records(actual, order), allow_null=True):
                 return False
         except (TypeError, KeyError):
             return False
         remaining = list(wanted)
         for value in actual:
-            index = next((i for i, item in enumerate(remaining) if cls._json_value_equal(item, value)), None)
+            index = next((i for i, item in enumerate(remaining) if cls._json_value_equal(item, value, allow_null=True)), None)
             if index is None:
                 return False
             remaining.pop(index)
@@ -3959,26 +3995,32 @@ class DeclarativeMetricEvaluator:
         return tokens
 
     @classmethod
-    def _resolve(cls, value: Any, path: str) -> Any:
+    def _resolve(cls, value: Any, path: str, *, missing: Any = None) -> Any:
         current = value
         for kind, part in cls.path_tokens(path):
+            if missing is _UNRESOLVED_VALUE and current is _UNRESOLVED_VALUE:
+                return missing
             if kind == "wildcard":
+                if missing is _UNRESOLVED_VALUE and not isinstance(current, list):
+                    return missing
                 current = list(current) if isinstance(current, list) else []
                 continue
             if kind == "filter":
+                if missing is _UNRESOLVED_VALUE and not isinstance(current, list):
+                    return missing
                 column, expected = part
                 current = [row for row in current if isinstance(row, Mapping) and row.get(column) == expected] if isinstance(current, list) else []
                 continue
             if isinstance(current, Mapping):
-                current = current.get(part)
+                current = current.get(part, missing)
             elif isinstance(current, list) and (kind == "index" or str(part).isdigit()):
                 index = int(part)
-                current = current[index] if index < len(current) else None
+                current = current[index] if index < len(current) else missing
             elif isinstance(current, list) and kind == "field":
-                values = [row.get(part) for row in current if isinstance(row, Mapping)]
+                values = [row.get(part, missing) for row in current if isinstance(row, Mapping)]
                 current = values[0] if len(values) == 1 else values
             else:
-                return None
+                return missing
         return current
 
     @classmethod

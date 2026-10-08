@@ -778,7 +778,7 @@ def unresolved_lookup_diagnostics(expression: object, state: dict) -> list[dict]
                 walk(child, path + "." + key, state)
             if set(node) == {"lookup"}:
                 lookup = node["lookup"]
-                if Evaluator._value_expression(node, state) is None:
+                if not Evaluator.value_resolution(node, state)['resolved']:
                     where = Evaluator._numeric_where(lookup["where"], state, depth=0)
                     unresolved = any(value is None for value in where.values())
                     rows = state.get(lookup["table"], [])
@@ -1083,11 +1083,13 @@ def _verify_execution(artifacts: dict, root: Path, *, calibration: dict | None =
                 if rule.get("operator") not in {"value_targets", "numeric_targets"}:
                     continue
                 for target in rule["expected"]["targets"]:
-                    wanted = evaluator._value_expression(target["expression"], state)
+                    resolution = evaluator.value_resolution(target["expression"], state)
+                    wanted = resolution['value']
                     from decimal import Decimal
                     result["answer_targets"].append({"metric_id": rule["metric_id"],
                         "field": target.get("key", target.get("label")),
                         "expected": wanted,
+                        "expected_resolved": resolution['resolved'],
                         "expected_numeric_exact": str(wanted) if isinstance(wanted, Decimal) else None,
                         "absolute_tolerance": target.get('tolerance', 0),
                         "unresolved_lookups": unresolved_lookup_diagnostics(target["expression"], state),
