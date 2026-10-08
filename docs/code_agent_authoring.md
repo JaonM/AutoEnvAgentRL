@@ -38,11 +38,15 @@ Do not use a fixed task prototype. Do not modify compiler/runtime/graders.
 ## Preferred compact format
 
 Author-side environments may not have online evaluator access. Use the compiler's
-`--structural-preview` option with a separate output directory to check schemas,
-reward expressions, bindings, data and interaction contracts without model calls.
+`--deterministic-preview` option with a separate output directory to check schemas,
+reward expressions, bindings, data and interaction contracts, then execute reference
+and route diagnostics without model calls. `--structural-preview` performs only
+the structure/data portion when that narrower diagnostic is needed.
 `structural_preview.json` explicitly leaves execution and semantic calibration
-pending; it does not export a task or establish training readiness. After structural
-preview passes, submit the source and end the author turn promptly. This applies to
+pending; it does not export a task or establish training readiness. Inspect
+`deterministic_preflight_all_routes.json`, repair concrete defects, then submit the
+source and end the author turn promptly. Deferred model evidence is not a defect.
+This applies to
 both deterministic and semantic rewards. Preserve explanations and calibration
 examples. The parent runs full reference/counterfactual execution, reward probes,
 online calibration where applicable and independent review before accepting the task.
@@ -62,9 +66,9 @@ preservation target valid. Unrelated state preservation is already enforced by
 the runtime; avoid redundant targets that look up entities absent on stop routes.
 State-predicate diagnostics include unresolved lookup paths and counts, and omit
 unselected conditional branches so repair can address the actual missing fact.
-If execution fails, repair the reported defect and submit again after structural
-preview; the parent repeats full execution. This avoids paying for duplicate execution
-inside the author subprocess and again in the parent.
+If execution fails, repair the reported defect and submit again after deterministic
+preview; the parent repeats full execution. Author diagnostics do not perform online
+calibration, model-based ablations, delivery validation or independent review.
 
 Use `version`, `description`, `environment_plan`, `tables`,
 `business_tools`, `reference`, and `answer_contract` for JSON answers.
@@ -1914,6 +1918,17 @@ lifecycle guard operands also count. The cheap execution pass uses conservative
 reward upper bounds. Unknown semantic evidence is deferred, and its report always
 has `training_ready: false`. Structural preview remains a structure/data check.
 
+Fresh multi-step requests require dynamic choice coverage. For each distinct stage
+with `options_from`, execute a reference or route probe with a nonempty actual menu
+that excludes the script's private preference. A declared non-advancing branch must
+actually execute and complete a valid stop or recovery route with full reward.
+Empty menus, a refusal while the preference remains available, a stale menu, or an
+unexecuted branch declaration cannot establish coverage. Use legitimate fixture
+changes and user behavior; never invent a choice or override menu membership.
+The deterministic pass detects missing cases before model grading; the full pass
+counts only passing scenarios. Model-dependent unresolved trajectories defer this
+check to full execution. This is finite coverage, not proof over all possible menus.
+
 Full reference and route validation uses at most two independent workers per task,
 with separate episode databases and probe directories. The runtime bridge bounds
 model concurrency across tasks. Independent branch failures are collected into
@@ -1933,6 +1948,9 @@ loaded as cache authority. Calibration still requests fresh judgments; independe
 final delivery receives no repair cache. Opposite labels for the same dependency
 key invalidate reuse, retain both judgments and prevent acceptance for that key.
 A resumed author process starts with an empty cache.
+Concurrent validation requests with the identical dependency key share one in-flight
+judgment. Different keys remain concurrent; transient fallback results are not cached,
+and fresh calibration judgments are never coalesced.
 
 `execution_progress.jsonl` timestamps actionable findings as they appear;
 `code_agent_generation.json` records author/repair and validation phase windows.

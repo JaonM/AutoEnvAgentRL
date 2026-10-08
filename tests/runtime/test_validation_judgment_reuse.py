@@ -130,3 +130,69 @@ def test_provider_change_invalidates_episode_cache_without_reset(store, monkeypa
         monkeypatch.setenv('SANDBOX_LLM_MODEL', 'another-model')
         evaluator.json_judge(METRIC, CONTEXT, fallback={})
     assert judge.call_count == 2
+
+
+@pytest.mark.parametrize('mode,expected_calls', [('same', 1), ('different', 2), ('fresh', 2), ('fallback', 2)])
+def test_concurrent_validation_coalesces_only_reusable_identical_judgments(tmp_path, monkeypatch, mode, expected_calls):
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import contextmanager
+    import threading
+    from env_factory.sandbox_runtime import ValidationJudgmentCache
+
+    monkeypatch.setenv('SANDBOX_EVALUATOR_MOCK', '0')
+    shared = ValidationJudgmentCache()
+    started, release = threading.Event(), threading.Event()
+    both_requested = threading.Event()
+    original_flight = shared.singleflight
+    arrivals = []
+
+    @contextmanager
+    def tracked_flight(key):
+        arrivals.append(key)
+        if len(arrivals) == 2:
+            both_requested.set()
+        with original_flight(key):
+            yield
+
+    shared.singleflight = tracked_flight
+    independent = threading.Barrier(2) if mode in {'different', 'fresh'} else None
+    calls = []
+
+    def judge(*args, **kwargs):
+        calls.append(len(calls) + 1)
+        number = calls[-1]
+        started.set()
+        if independent:
+            independent.wait(timeout=5)  # Different keys/fresh judgments must not serialize.
+        assert release.wait(timeout=5)
+        if mode == 'fallback' and number == 1:
+            raise OSError('transient transport failure')
+        return {'label': 'pass'}
+
+    stores = []
+    for index in range(2):
+        store = EpisodeStore(tmp_path / f'episode-{index}.sqlite3')
+        store.reset(seed=17)
+        stores.append(store)
+    def evaluate(index):
+        evaluator = ContractEvaluatorRuntime(stores[index], reuse_across_resets=mode != 'fresh', judgment_cache=shared)
+        context = {**CONTEXT, **({'final_agent_response': str(index)} if mode == 'different' else {})}
+        return evaluator.json_judge(METRIC, context, fallback={'label': 'fail'})
+
+    with patch('env_factory.sandbox_runtime.RuntimeLLMClient.json_chat', side_effect=judge) as model:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(evaluate, 0)
+            assert started.wait(timeout=5)
+            second = pool.submit(evaluate, 1)
+            if mode in {'same', 'fallback'}:
+                assert both_requested.wait(timeout=5)
+                assert model.call_count == 1
+            release.set()
+            results = [first.result(timeout=5), second.result(timeout=5)]
+    assert model.call_count == expected_calls
+    assert results == [{'label': 'fail' if mode == 'fallback' else 'pass'}, {'label': 'pass'}]
+    assert not shared._flights
+    if mode == 'same':
+        original = stores[0].replay()['events'][-1]['payload']
+        reused = stores[1].replay()['events'][-1]['payload']
+        assert reused['cached'] and reused['origin_judgment_id'] == original['judgment_id']

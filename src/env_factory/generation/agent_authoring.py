@@ -556,6 +556,9 @@ def compile_source(source: dict, *, root: Path, request: dict, script_count: int
         spec['interaction_complexity']['behavioral_diversity'] = interaction_diversity(
             interaction_scripts, acceptance['executable_scenarios'])
         spec['interaction_complexity']['require_behavioral_diversity'] = bool(request.get('require_behavioral_diversity'))
+        if request.get('require_dynamic_choice_coverage'):
+            from .dynamic_choice_coverage import requirements as choice_requirements
+            spec['interaction_complexity']['dynamic_choice_requirements'] = choice_requirements(interaction_scripts)
         if (request.get('require_behavioral_diversity') and len(interaction_scripts) > 1
                 and spec['interaction_complexity']['behavioral_diversity']['wording_only_variants']):
             raise ValueError('INTERACTION_BEHAVIOR_DIVERSITY: multiple user scripts only paraphrase the same behavior; '
@@ -1127,13 +1130,16 @@ def _verify_execution(artifacts: dict, root: Path, *, calibration: dict | None =
         condition_runs = []
         realism_observations = []
         reference_observations = []
+        dynamic_choice_observations = []
         executed_interaction_behaviors = set()
         validated_runs = {}
         requirement_observations = {}
         if deterministic_only:
             from .deterministic_preflight import run_scenarios
+            from .dynamic_choice_coverage import observe as observe_choices
             return run_scenarios(successes + failures, artifacts['metrics'], runner, call,
-                                 latest_proof, diagnostic, progress, root, DeferredSemanticEvidence)
+                                 latest_proof, diagnostic, progress, root, DeferredSemanticEvidence,
+                                 observe=lambda: observe_choices(store.replay(), user.scripts.values()))
         reference_failures = []
         for scenario in successes + failures:
             call("POST", "/v1/reset", {}, {})
@@ -1216,6 +1222,9 @@ def _verify_execution(artifacts: dict, root: Path, *, calibration: dict | None =
             steps = scenario["steps"]
             checks[f"reference_{i}"] = reward(steps) >= 1 - 1e-9
             if checks[f"reference_{i}"]:
+                from .dynamic_choice_coverage import observe as observe_choices
+                dynamic_choice_observations.extend({**item, 'scenario_id': scenario.get('scenario_id')}
+                    for item in observe_choices(store.replay(), user.scripts.values()))
                 from .interaction_diversity import executed_behavior_signature
                 signature = executed_behavior_signature(store.replay()['events'], user.scripts.values())
                 if signature is not None:
@@ -1366,6 +1375,7 @@ def _verify_execution(artifacts: dict, root: Path, *, calibration: dict | None =
                 "distinct_executed_interaction_behaviors": len(executed_interaction_behaviors),
                 "realism_observations": realism_observations,
                 "reference_observations": reference_observations,
+                "dynamic_choice_observations": dynamic_choice_observations,
                 "execution_route_coverage": route_coverage,
                 "business_condition_execution": [{key: value for key, value in run.items() if key != 'replay'}
                                                  for run in condition_runs]}
@@ -1390,23 +1400,30 @@ def main() -> None:
     parser.add_argument("--request", type=Path, required=True)
     parser.add_argument("--blueprint", type=Path, help="Accepted business blueprint; enforce implementation consistency")
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--structural-preview", action="store_true",
+    preview = parser.add_mutually_exclusive_group()
+    preview.add_argument("--structural-preview", action="store_true",
                         help="Check structure without online judges; does not certify or export a training task")
+    preview.add_argument("--deterministic-preview", action="store_true",
+                        help="Check structure and execute model-free route diagnostics; never certifies a task")
     args = parser.parse_args()
-    if args.structural_preview and any((args.output / name).exists()
+    is_preview = args.structural_preview or args.deterministic_preview
+    if is_preview and any((args.output / name).exists()
             for name in ("task.json", "compiled_artifacts.json", "status.json")):
         parser.error("structural preview requires an output directory without delivery artifacts; choose a separate directory")
-    if not args.structural_preview:
+    if not is_preview:
         # A failed rerun must not leave the previous successful delivery in place.
         # Retain those files for diagnosis, outside the active output paths.
         _archive_delivery(args.output, '.previous_deliveries')
     request = json.loads(args.request.read_text())
     result = compile_source(json.loads(args.source.read_text()), root=args.output,
-                            request=request, script_count=request.get('user_script_count', 3), structural_preview=args.structural_preview,
+                            request=request, script_count=request.get('user_script_count', 3), structural_preview=is_preview,
                             blueprint=json.loads(args.blueprint.read_text()) if args.blueprint else None)
-    if args.structural_preview:
+    if is_preview:
         report = result["generation_pipeline"]["verification"]
         (args.output / "structural_preview.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
+        if args.deterministic_preview:
+            from .deterministic_preflight import check_all_routes
+            report = check_all_routes(result, args.output, verify_execution, prepare_route_probe)
         print(json.dumps(report, ensure_ascii=False))
         return
     from env_factory.generation.delivery_preflight import verify_delivery

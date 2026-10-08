@@ -23,7 +23,7 @@ import uuid
 import unicodedata
 from decimal import Decimal, InvalidOperation
 from dataclasses import dataclass
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -2330,6 +2330,22 @@ class ValidationJudgmentCache(dict):
         super().__init__()
         self.lock = threading.RLock()
         self.conflicts = {}
+        self._flights = {}
+
+    @contextmanager
+    def singleflight(self, key):
+        """Serialize reusable judgments for one key without blocking other keys."""
+        with self.lock:
+            flight = self._flights.setdefault(key, {'lock': threading.Lock(), 'users': 0})
+            flight['users'] += 1
+        try:
+            with flight['lock']:
+                yield
+        finally:
+            with self.lock:
+                flight['users'] -= 1
+                if not flight['users']:
+                    del self._flights[key]
 
     def get(self, key, default=None):
         with self.lock:
@@ -2452,6 +2468,18 @@ class ContractEvaluatorRuntime:
             "context": stable_context,
             **({'metric_field_scope': field_scope} if field_scope else {}),
         })
+        # Independent route workers can request the same judgment before either
+        # has populated the cache. Wait only on that exact evidence/contract key.
+        # Fresh calibration deliberately bypasses coalescing and can still
+        # expose conflicting labels, which invalidate dependent acceptance.
+        reusable = self._validation_cache is not None and self._allow_validation_reuse
+        with (self._validation_cache.singleflight(context_hash) if reusable else nullcontext()):
+            return self._json_judge_cached(metric, stable_context, context_hash,
+                field_scope=field_scope, criterion_contract=criterion_contract,
+                fallback=fallback, response_schema=response_schema)
+
+    def _json_judge_cached(self, metric, stable_context, context_hash, *, field_scope,
+                           criterion_contract, fallback, response_schema):
         cache = self.episode_store.get_state(self.STATE_KEY, {})
         conflicted = self._validation_cache is not None and self._validation_cache.conflicted(context_hash)
         if isinstance(cache, Mapping) and context_hash in cache and not conflicted:

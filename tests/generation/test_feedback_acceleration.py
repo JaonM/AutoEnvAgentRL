@@ -81,3 +81,25 @@ def test_serial_and_parallel_route_verdicts_and_checks_agree(tmp_path):
     assert reports[0]['checks'] == reports[1]['checks']
     assert reports[0]['execution_route_coverage'] == reports[1]['execution_route_coverage']
     assert reports[0]['reference_observations'] == reports[1]['reference_observations']
+
+
+def test_author_deterministic_preview_never_calls_models_or_exports_task(tmp_path, monkeypatch):
+    from env_factory.generation.agent_authoring import main
+    source, request = fixture('direct_response')
+    source_path, request_path = tmp_path / 'source.json', tmp_path / 'request.json'
+    source_path.write_text(json.dumps(source))
+    request_path.write_text(json.dumps(request))
+    output = tmp_path / 'preview'
+    monkeypatch.setattr('sys.argv', ['preview', '--source', str(source_path), '--request',
+        str(request_path), '--output', str(output), '--deterministic-preview'])
+    with patch('env_factory.sandbox_runtime.RuntimeLLMClient.json_chat') as model:
+        main()
+    model.assert_not_called()
+    report = json.loads((output / 'deterministic_preflight_all_routes.json').read_text())
+    assert report['training_ready'] is False
+    assert report['model_calls'] == 0
+    assert not any((output / name).exists() for name in ['task.json', 'compiled_artifacts.json', 'status.json'])
+    (output / 'task.json').write_text('original')
+    with pytest.raises(SystemExit):
+        main()
+    assert (output / 'task.json').read_text() == 'original'

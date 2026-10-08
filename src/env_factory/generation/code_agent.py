@@ -66,6 +66,7 @@ def generate(*, request: dict, artifact_dir: Path, script_count: int = 3,
     request = {**request, 'user_script_count':script_count, 'require_bound_authorization': True, 'require_interaction_contract':request.get('training_category') == 'multi_step_agentic', 'require_business_requirements':request.get('training_category') == 'multi_step_agentic', 'require_structured_interactions':request.get('training_category') == 'multi_step_agentic'}
     if resume_from is None:
         request.setdefault('require_behavioral_diversity', request.get('training_category') == 'multi_step_agentic' and script_count > 1)
+        request.setdefault('require_dynamic_choice_coverage', request.get('training_category') == 'multi_step_agentic')
     resumed = None
     if resume_from is not None:
         from .authoring_checkpoint import load_checkpoint
@@ -195,14 +196,15 @@ or consequential authorization branches. Wording-only variants are insufficient.
 Use reference.user_script_indices and reference_variants for different executable
 choices. Give each reference its own answer and targeted negatives; do not reuse a
 fixed first-script answer or assume all scripts have identical process arguments.
-First check structure without online judge access:
-PYTHONPATH={shlex.quote(str(PROJECT / 'src'))} {shlex.quote(sys.executable)} -m env_factory.generation.agent_authoring --source source.json --request request.json --output structural_preview --structural-preview
-This produces structural_preview.json with execution/semantic validation pending;
+First check structure and model-free execution without online judge access:
+PYTHONPATH={shlex.quote(str(PROJECT / 'src'))} {shlex.quote(sys.executable)} -m env_factory.generation.agent_authoring --source source.json --request request.json --output structural_preview --deterministic-preview
+This produces structural_preview.json and deterministic_preflight_all_routes.json.
+Inspect findings and repair deterministic failures before submitting. Semantic and full execution validation remain pending;
 it does not certify a task. After it passes, submit source.json and END your turn
 promptly. Do not run the full execution compiler in this author subprocess, including
 for deterministic-only tasks. The parent owns complete reference/negative replay,
 reward probes, online calibration and independent semantic review. It returns concrete
-execution defects for a bounded repair. After a repair, run structural preview and
+execution defects for a bounded repair. After a repair, run deterministic preview and
 submit promptly again; the parent repeats the full execution checks before acceptance.
 Do not remove explanations or substitute exact matching to work around author-side
 judge availability. Structural preview alone cannot validate HTTP statuses, recovery,
@@ -354,6 +356,14 @@ their actual menu in every declared probe; do not merely hide a stale menu asser
 The observed menu offers each identifier once, while all original records remain
 available for business ambiguity checks. Selecting an identifier
 does not establish that it identifies exactly one business record.
+For every options_from stage, provide an executed route probe where the observed
+menu is NONEMPTY but excludes the actual script preference. Declare the user's
+real non-advancing response (for example declining to choose a replacement) and
+a corresponding valid stop/recovery route and answer. A normal refusal with the
+preference still available, an empty catalog or an unexecuted branch does not
+cover this case. Use schema-valid initial_changes and scoped reference variants;
+retain the same private preference and strict observed-menu membership. The
+parent checks this coverage before calling semantic evaluators.
 When a valid public outcome must not write (for example insufficient stock), declare
 a decision_table (see AUTHORING.md) with explicit observed boolean decisions and
 exhaustive, disjoint branches. Include a real probe for every alternate branch.

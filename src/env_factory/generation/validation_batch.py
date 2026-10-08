@@ -62,6 +62,7 @@ def verify_independent_routes(artifacts, root, verify, prepare, *, workers=2, **
         directory = root / 'route_probes' / probe['route_id']
         (directory / 'verification.json').write_text(json.dumps(observed, ensure_ascii=False, indent=2) + '\n')
         report['realism_observations'].extend(observed.get('realism_observations', []))
+        report.setdefault('dynamic_choice_observations', []).extend(observed.get('dynamic_choice_observations', []))
         coverage['probes'].append({'route_id': probe['route_id'], 'initial_changes': probe['initial_changes'],
             'user_variables': probe.get('user_variables', {}), 'passed': observed['passed'], 'checks': observed['checks']})
     routes = artifacts['task_spec'].get('execution_routes', [])
@@ -69,6 +70,12 @@ def verify_independent_routes(artifacts, root, verify, prepare, *, workers=2, **
         raise ValueError('EXECUTION_ROUTE_UNCOVERED: every declared route needs a passing reference/probe')
     from .realism_requirements import require_realism_coverage
     require_realism_coverage(artifacts, report['realism_observations'])
+    from .dynamic_choice_coverage import coverage as choice_coverage, REPAIR_HINT
+    choices = choice_coverage(artifacts, report.get('dynamic_choice_observations', []))
+    report['dynamic_choice_coverage'] = choices
+    if not choices['passed']:
+        raise ValueError('DYNAMIC_CHOICE_UNCOVERED: ' + json.dumps(choices['missing'], ensure_ascii=False)
+                         + '. ' + REPAIR_HINT)
     complexity = artifacts['task_spec'].get('interaction_complexity', {})
     if (complexity.get('require_behavioral_diversity') and complexity.get('variants', 0) > 1
             and report['distinct_executed_interaction_behaviors'] < 2):
