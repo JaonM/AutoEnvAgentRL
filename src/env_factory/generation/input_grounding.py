@@ -5,7 +5,7 @@ import json
 import re
 
 
-def validate_stateful_value_origins(source: dict) -> None:
+def validate_stateful_value_origins(source: dict, *, validated_scripts=()) -> None:
     """Reject copied private numeric fixture values in successful writes/goals.
 
     This is an origin check, not a proof of arbitrary business arithmetic.
@@ -29,6 +29,7 @@ def validate_stateful_value_origins(source: dict) -> None:
     words = "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty".split()
     public.update(Decimal(index) for index, word in enumerate(words)
                   if re.search(r"\b" + word + r"\b", public_text, re.I))
+    disclosed = set()
     def check(value, path, captures):
         if isinstance(value, dict):
             if set(value) == {"$ref"}:
@@ -40,7 +41,7 @@ def validate_stateful_value_origins(source: dict) -> None:
         elif isinstance(value, list):
             for index, item in enumerate(value):
                 check(item, f"{path}[{index}]", captures)
-        elif numbers(value) & (private - public):
+        elif numbers(value) & (private - public - disclosed):
             raise ValueError(f"STATE_VALUE_UNGROUNDED: {path} copies a private numeric fixture value; "
                 "derive the write from preceding tool captures ($ref/$expr) and use "
                 "semantic_goal value_expressions for a data-dependent target")
@@ -49,14 +50,27 @@ def validate_stateful_value_origins(source: dict) -> None:
         if scenario.get("kind") != "goal_success":
             continue
         captures = set()
+        disclosed = set()
+        stages = {}
         for step in scenario["steps"]:
+            if step.get('operation') == 'reset':
+                import random
+                captures.clear()
+                disclosed.clear()
+                if validated_scripts:
+                    script = random.Random(step.get('body', {}).get('seed', 0)).choice(validated_scripts)
+                    stages = {stage['id']: stage for stage in script['interaction_protocol']['stages']}
+            if step.get('operation') == 'dialogue_turn':
+                stage = stages.get(step.get('expected_stage'))
+                if stage and step.get('content') == stage['reference_response']:
+                    disclosed.update(numbers(stage.get('private_fact')))
             if step.get("operation") != "tool_call":
                 continue
             if implementations[step["tool_name"]].get("operation") in {"insert", "update", "delete"}:
                 check(step.get("arguments", {}), step["tool_name"], captures)
             captures.update(step.get("capture", {}))
-    for index, predicate in enumerate(source.get("semantic_goal", {}).get("row_predicates", [])):
-        check(predicate.get("values", {}), f"semantic_goal.row_predicates[{index}].values", set())
+        for index, predicate in enumerate(source.get("semantic_goal", {}).get("row_predicates", [])):
+            check(predicate.get("values", {}), f"semantic_goal.row_predicates[{index}].values", set())
 
 
 def validate_query_inputs(source: dict) -> list[dict]:
@@ -89,8 +103,13 @@ def validate_query_inputs(source: dict) -> list[dict]:
                     # Match whole ASCII tokens: ID 'A1' is not disclosed by A10.
                     pattern = r"(?<!\w)" + re.escape(value) + r"(?!\w)" if value.isascii() else re.escape(value)
                     variants = source.get('interaction_contract', {}).get('variants', [])
+                    if variants:
+                        from .interaction_contract import scenario_script_indices
+                        variants = [variants[index] for index in scenario_script_indices(scenario, len(variants))]
+                    from .interaction_contract import stage_bindings
                     disclosed = bool(variants) and all(any(
-                        stage.get('private_fact') == value and stage.get('before_tool') == name
+                        stage.get('private_fact') == value
+                        and {'tool': name, 'argument': argument} in stage_bindings(stage)
                         for stage in variant.get('stages', [])) for variant in variants)
                     if not re.search(pattern, visible) and not disclosed:
                         raise ValueError(f"QUERY_INPUT_UNDISCOVERABLE: {name}.{argument} requires exact value {value!r}, "

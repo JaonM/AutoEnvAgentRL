@@ -13,6 +13,8 @@ import tempfile
 from env_factory.generation.artifacts import write_task_artifact
 from env_factory.graph.knowledge_graph import TaskType
 from env_factory.tasks.task import Task
+from env_factory.tasks.task_quality import score_file
+from .semantic_reward import SemanticCalibrationUnavailable
 
 PROJECT = Path(__file__).resolve().parents[3]
 
@@ -28,6 +30,10 @@ def verify_delivery(artifacts: dict, root: Path) -> dict:
             artifacts["metrics"], task_type=TaskType(artifacts["task_type"]),
             task_intent=artifacts["task_intent"], complexity=artifacts["complexity"], artifacts=artifacts),
             artifacts["training_category"])
+        qualification = score_file(task_path)
+        if not qualification.eligible:
+            raise ValueError('AGENT_TASK_QUALIFICATION_FAILED: ' + json.dumps(
+                list(qualification.eligibility_failures), ensure_ascii=False))
         contract = json.loads(task_path.read_text())
         contract.pop("actions", None)
         (check_root / "BUILD_CONTRACT.json").write_text(json.dumps(contract, ensure_ascii=False))
@@ -48,23 +54,38 @@ def verify_delivery(artifacts: dict, root: Path) -> dict:
             raise ValueError(f"AGENT_CONTRACT_PREFLIGHT_FAILED: {exc}") from exc
         report_path = root / "prebuild_agentic_value.json"
         log_path = root / "prebuild_agentic_value.log"
+        semantic = any(metric.get('evaluator', {}).get('kind') in
+                       {'external_llm_judge', 'hybrid_outcome'} for metric in artifacts['metrics'])
+        mode = 'live' if semantic else 'mock'
+        deadline = 900 if semantic else 90
         env = {**os.environ, "PYTHONPATH": str(PROJECT / "src"),
-               "SANDBOX_TRAINER_API_KEY": "preflight-local-key", "SANDBOX_EVALUATOR_MOCK": "1"}
+               "SANDBOX_TRAINER_API_KEY": "preflight-local-key",
+               "SANDBOX_EVALUATOR_MOCK": "0" if semantic else "1"}
         with log_path.open("w") as log:
             try:
                 result = subprocess.run([sys.executable,
                     str(PROJECT / "scripts/sandbox/validate_agentic_training_value.py"),
-                    "--root", str(check_root), "--output", str(report_path)],
-                    stdout=log, stderr=subprocess.STDOUT, env=env, timeout=90)
+                    "--root", str(check_root), "--output", str(report_path), "--evaluator-mode", mode],
+                    stdout=log, stderr=subprocess.STDOUT, env=env, timeout=deadline)
             except subprocess.TimeoutExpired as exc:
+                if semantic:
+                    raise SemanticCalibrationUnavailable(
+                        'SEMANTIC_CALIBRATION_UNAVAILABLE: delivery evaluator exceeded 900 seconds') from exc
                 raise ValueError("AGENT_DELIVERY_PREFLIGHT_TIMEOUT: final deterministic gate exceeded 90 seconds") from exc
+        if not report_path.is_file() and semantic:
+            raise SemanticCalibrationUnavailable(
+                'SEMANTIC_CALIBRATION_UNAVAILABLE: delivery evaluator produced no report; see ' + log_path.name)
         if not report_path.is_file():
             raise ValueError("AGENT_DELIVERY_PREFLIGHT_ERROR: " + log_path.read_text()[-4000:])
         report = json.loads(report_path.read_text())
+        if any(item.get('gate') == 'evaluator_availability' for item in report.get('failures', [])):
+            raise SemanticCalibrationUnavailable(
+                'SEMANTIC_CALIBRATION_UNAVAILABLE: delivery used missing or fallback judgments')
         if result.returncode or not report.get("curriculum_training_ready"):
             raise ValueError("AGENT_DELIVERY_PREFLIGHT_FAILED: " + json.dumps(
                 report.get("failures", []), ensure_ascii=False))
         evidence = {"passed": True, "scope": "fresh_scaffold_original_agentic_gate",
+                    "evaluator_mode": mode,
                     "contract_and_tools": True, "report": report_path.name}
         artifacts["generation_pipeline"]["verification"]["delivery_preflight"] = evidence
         return evidence

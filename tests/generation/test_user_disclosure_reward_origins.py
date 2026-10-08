@@ -43,5 +43,5 @@ def test_disclosed_key_is_not_valid_for_an_unrelated_table(tmp_path):
 def test_invalid_disclosure_binding_is_rejected_before_origin_exemption(tmp_path):
     source, request = disclosed_key_source()
     source['interaction_contract']['variants'][0]['stages'][0]['bind_to']['argument'] = 'region'
-    with pytest.raises(ValueError, match='does not match executable reference argument'):
+    with pytest.raises(ValueError, match='QUERY_INPUT_UNDISCOVERABLE: lookup_zone.name'):
         compile_source(source, root=tmp_path, request=request)

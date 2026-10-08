@@ -24,13 +24,13 @@ def test_harness_error_is_not_evidence_that_no_tools_policy_was_rejected(tmp_pat
     artifacts = compile_source(source, root=tmp_path, request=request)
     original = AcceptanceScenarioRunner.run
 
-    def run(self, scenario):
+    def run(self, scenario, **kwargs):
         steps = scenario.get("steps", [])
         if (not scenario.get("scenario_id")
                 and not any(s.get("operation") == "tool_call" for s in steps)
                 and any(s.get("operation") == "agent_response" and "18" in s.get("content", "") for s in steps)):
             raise KeyError("synthetic harness defect")
-        return original(self, scenario)
+        return original(self, scenario, **kwargs)
 
     with patch.object(AcceptanceScenarioRunner, "run", run), pytest.raises(KeyError, match="synthetic harness defect"):
         verify_execution(artifacts, tmp_path)

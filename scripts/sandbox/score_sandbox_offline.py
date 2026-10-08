@@ -118,7 +118,7 @@ def evaluate_offline(
         "mode": "offline_executable",
         "score_scope": "offline_sandbox_qualification",
         "delivery_verified": False,
-        "verification_status": "requires_live",
+        "verification_status": "executable_passed" if scored["passed"] else "executable_failed",
         "live_rollout_verified": False,
         "evidence_fingerprint": result.get("evidence_fingerprint"),
         "evidence_reused": result.get("evidence_reused", False),

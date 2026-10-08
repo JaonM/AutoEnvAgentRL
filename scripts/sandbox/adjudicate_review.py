@@ -28,7 +28,7 @@ def adjudicate(root: Path, report: dict) -> dict:
             continue
         verdict = {'finding_index': index, 'status': 'unresolved', 'evidence': 'No supported executable reproduction.'}
         probe = finding.get('reproduction')
-        if isinstance(probe, dict) and probe.get('kind') in {'invalid_goal_reward', 'no_tool_reward'}:
+        if isinstance(probe, dict) and probe.get('kind') in {'invalid_goal_reward', 'no_tool_reward', 'reference_recovery'}:
             try:
                 verdict.update(replay_probe(root, probe))
             except Exception as exc:
@@ -45,8 +45,67 @@ def adjudicate(root: Path, report: dict) -> dict:
             'review_run_id': report.get('review_run_id'), 'coverage_complete': coverage, 'findings': verdicts}
 
 
+def replay_reference_recovery(root: Path, probe: dict) -> dict:
+    """Compare the same reference with extra read-only exploration, never model code."""
+    from env_factory.sandbox_runtime import AcceptanceScenarioRunner
+    task = json.loads((root / 'task.json').read_text())
+    lifecycle = task.get('business_lifecycle', {})
+    if (task.get('environment_plan', {}).get('mode') != 'reference_data'
+            or lifecycle.get('events') or lifecycle.get('faults')
+            or any(m.get('type') != 'rule-based' or m.get('category') == 'penalty'
+                   for m in task.get('metrics', []))):
+        raise ValueError('Recovery probe requires static read-only data and deterministic non-penalty metrics')
+    reference = next((s for s in task.get('acceptance_contract', {}).get('executable_scenarios', [])
+                      if s.get('kind') == 'goal_success' and s.get('scenario_id') == probe.get('scenario_id')), None)
+    if reference is None:
+        raise ValueError('Recovery probe must name an existing successful reference')
+    position, additions = probe.get('before_step'), probe.get('steps')
+    if type(position) is not int or not 1 <= position < len(reference['steps']):
+        raise ValueError('before_step must be an index after the reference reset')
+    implementations = {i['tool_name']: i for i in task.get('tool_implementations', [])}
+    if (not isinstance(additions, list) or not 1 <= len(additions) <= 5
+            or any(not isinstance(step, dict) or step.get('operation') != 'tool_call'
+                   or set(step) - {'operation', 'tool_name', 'arguments', 'expected_status'}
+                   or not isinstance(step.get('arguments'), dict)
+                   or step.get('expected_status', 200) != 200
+                   or implementations.get(step.get('tool_name'), {}).get('operation') not in {'select', 'aggregate_count'}
+                   for step in additions)):
+        raise ValueError('Recovery additions must be 1..5 read-only tool calls without capture changes')
+    os.environ['SANDBOX_EVALUATOR_MOCK'] = '1'
+    os.environ['SANDBOX_MUTATION_MODE'] = 'disabled'
+    os.environ['SANDBOX_TRAINER_API_KEY'] = 'review-reproduction-local'
+    sys.path.insert(0, str(root))
+    spec = importlib.util.spec_from_file_location('review_recovery_app', root / 'app.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    results = []
+    with tempfile.TemporaryDirectory(prefix='review-recovery-') as temporary:
+        for with_exploration in (False, True):
+            app = module.create_app(db_path=Path(temporary) / f'{with_exploration}.sqlite3')
+            steps = copy.deepcopy(reference['steps'])
+            if with_exploration:
+                steps[position:position] = copy.deepcopy(additions)
+            runner = AcceptanceScenarioRunner(app.handle,
+                trainer_headers={'Authorization': 'Bearer review-reproduction-local'},
+                business_snapshot=app.business_snapshot, mutate_business_state=app.mutate_business_state)
+            run = runner.run({'steps': steps, 'assertions': []})
+            rewards = [entry['body']['reward'] for entry in run['history'] if entry.get('operation') == 'reward']
+            if not rewards:
+                raise ValueError('Reference did not produce a reward')
+            results.append((rewards[-1], app.business_snapshot()))
+    baseline, recovered = results
+    if baseline[0] < 0.8 or baseline[1] != recovered[1]:
+        raise ValueError('Reference is not successful or exploration changed the business state')
+    return {'status': 'confirmed' if recovered[0] < baseline[0] - 1e-9 else 'refuted',
+            'evidence': {'reference_reward': baseline[0], 'recovery_reward': recovered[0],
+                         'same_business_state': True, 'scenario_id': probe['scenario_id'],
+                         'added_readonly_calls': len(additions)}}
+
+
 def replay_probe(root: Path, probe: dict) -> dict:
     from env_factory.sandbox_runtime import AcceptanceScenarioRunner, BusinessGoalEvaluator
+    if probe.get('kind') == 'reference_recovery':
+        return replay_reference_recovery(root, probe)
     steps = probe.get('steps')
     allowed = {'reset', 'tool_call', 'agent_response', 'reward', 'business_snapshot', 'mutate_business_state', 'replay', 'observation'}
     if (not isinstance(steps, list) or not 1 <= len(steps) <= 30

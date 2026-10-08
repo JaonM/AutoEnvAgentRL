@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Shared contract/tool/interface gate used by authoring and final construction."""
 import json
-import sys
 from pathlib import Path
 
 
@@ -225,5 +224,15 @@ def validate(task_path: Path, contract_path: Path, tools_path: Path) -> None:
     print("runtime HTTP interface: ok")
 
 
+def main() -> None:
+    import argparse
+    parser = argparse.ArgumentParser(description="校验任务、构建契约和工具定义是否一致")
+    parser.add_argument("task_path", type=Path, help="任务 JSON")
+    parser.add_argument("contract_path", type=Path, help="BUILD_CONTRACT.json")
+    parser.add_argument("tools_path", type=Path, help="tools.json")
+    args = parser.parse_args()
+    validate(args.task_path, args.contract_path, args.tools_path)
+
+
 if __name__ == "__main__":
-    validate(*map(Path, sys.argv[1:]))
+    main()

@@ -15,7 +15,7 @@ from env_factory.sandbox_runtime import (
     DeclarativeMetricEvaluator, EpisodeStore, ManifestDataStore, SandboxError,
 )
 from env_factory.tasks.task_quality import score_file
-from env_factory.task_pipeline import PipelineGenerationError, TaskGenerationPipeline
+from env_factory.generation.contract_compiler import PipelineGenerationError, ContractCompiler
 from env_factory.tasks.task_spec import TaskSpecError, validate_task_spec
 from env_factory.contracts.runtime_contract import missing_system_endpoints
 from env_factory.contracts.tool_chain_contract import tool_chain_issues as _tool_chain_issues
@@ -68,7 +68,7 @@ def assess(root: Path, *, threshold: float = 8.0) -> dict[str, Any]:
 
     mode = task.get("environment_plan", {}).get("mode")
     if (mode == "stateful" and task.get("task_spec", {}).get("goal_contract", {}).get("allow_noop") is not True
-            and TaskGenerationPipeline._has_conditional_noop_branch(
+            and ContractCompiler._has_conditional_noop_branch(
         task, task.get("public_input", {}) if isinstance(task.get("public_input"), dict) else {},
     )):
         issues.append(_issue(
@@ -120,14 +120,18 @@ def assess(root: Path, *, threshold: float = 8.0) -> dict[str, Any]:
 
     if preview_tables and mode in {"reference_data", "stateful"}:
         try:
-            preview = TaskGenerationPipeline._preview_success_tool_results(
-                scenarios=task.get("acceptance_contract", {}).get("executable_scenarios", []),
-                data_tables=preview_tables,
-                tool_implementations=task.get("tool_implementations", []),
-                environment_mode=mode,
-                tools=task.get("tools", []),
-                semantic_goal=task.get("task_spec", {}).get("goal_contract"),
-            )
+            if task.get('business_lifecycle'):
+                from env_factory.generation.lifecycle_preview import preview_lifecycle_task
+                preview = preview_lifecycle_task(task, root)
+            else:
+                preview = ContractCompiler._preview_success_tool_results(
+                    scenarios=task.get("acceptance_contract", {}).get("executable_scenarios", []),
+                    data_tables=preview_tables,
+                    tool_implementations=task.get("tool_implementations", []),
+                    environment_mode=mode,
+                    tools=task.get("tools", []),
+                    semantic_goal=task.get("task_spec", {}).get("goal_contract"),
+                )
             issues.extend(_issue(
                 issue["code"], "task_generation",
                 "reward metric captures a positional row from a multirow tool result",
@@ -169,7 +173,7 @@ def assess(root: Path, *, threshold: float = 8.0) -> dict[str, Any]:
     missing_handlers = sorted(declared_tools - implemented_tools - noise_tools)
     for spec in task.get("tool_implementations", []):
         if isinstance(spec, dict):
-            missing_columns = TaskGenerationPipeline._missing_insert_columns(spec, table_schemas)
+            missing_columns = ContractCompiler._missing_insert_columns(spec, table_schemas)
             if missing_columns:
                 issues.append(_issue(
                     "INSERT_ROW_INCOMPLETE", "task_generation",
@@ -177,7 +181,7 @@ def assess(root: Path, *, threshold: float = 8.0) -> dict[str, Any]:
                     tool_name=spec.get("tool_name"), table=spec.get("table"),
                     missing_columns=missing_columns,
                 ))
-            optional = TaskGenerationPipeline._optional_mutation_arguments(
+            optional = ContractCompiler._optional_mutation_arguments(
                 spec, task.get("tools", []),
             )
             if optional:
@@ -226,7 +230,7 @@ def assess(root: Path, *, threshold: float = 8.0) -> dict[str, Any]:
     issues.extend(_tool_chain_issues(task))
     issues.extend(reward_contract_issues(task))
     try:
-        TaskGenerationPipeline._validate_business_tool_semantics(
+        ContractCompiler._validate_business_tool_semantics(
             tools=business_tools,
             implementations=[
                 item for item in task.get("tool_implementations", [])

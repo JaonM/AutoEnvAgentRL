@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import copy
 import importlib.util
+import inspect
 import json
 import math
 import os
@@ -15,10 +16,11 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from env_factory.sandbox_http import HTTPSandboxClient, evaluator_http_timeout
-from env_factory.sandbox_runtime import AcceptanceScenarioRunner
+from env_factory.sandbox_runtime import AcceptanceScenarioRunner, BusinessGoalEvaluator
 from env_factory.evidence.data_governance import provider_identity
 from env_factory.runtime_llm import RuntimeLLMConfig
 from env_factory.contracts.reward_contract import numeric_answer_counterfactual, terminal_outcome_weight
+from env_factory.contracts.trajectory_probes import bind_success_steps, idempotent_call_groups, logical_trace_matches, swap_logical_calls, optional_observation_positions
 
 
 PLACEHOLDERS = {"fixture-value", "example", "placeholder", "todo", "unknown", "test"}
@@ -28,14 +30,32 @@ def load(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def import_app(root: Path):
+def import_app(root: Path, *, reuse_validation_judgments: bool = False):
     sys.path.insert(0, str(root))
     spec = importlib.util.spec_from_file_location("agentic_value_app", root / "app.py")
     if spec is None or spec.loader is None:
         raise RuntimeError("cannot import generated app.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    parameters = inspect.signature(module.create_app).parameters
+    if 'reuse_validation_judgments' in parameters:
+        return module.create_app(reuse_validation_judgments=reuse_validation_judgments)
     return module.create_app()
+
+
+def reference_data_immutability(baseline, after, replay):
+    """Exclude platform external updates, while retaining the no-Agent-write gate."""
+    events = replay.get("events") if isinstance(replay, Mapping) else None
+    valid = (isinstance(baseline, Mapping) and isinstance(after, Mapping)
+             and isinstance(events, list) and all(isinstance(event, Mapping) for event in events))
+    adjusted = BusinessGoalEvaluator.external_baseline(baseline, events) if valid else None
+    return {
+        "unchanged": valid and adjusted == after,
+        "scope": "no_agent_writes_after_platform_external_changes",
+        "raw_state_unchanged": baseline is not None and baseline == after,
+        "external_change_count": sum(isinstance(event, Mapping) and
+            event.get("event") == "external_business_change" for event in events) if valid else 0,
+    }
 
 
 def reward_of(run: Mapping[str, Any]) -> float | None:
@@ -68,16 +88,41 @@ def empty_critical_collection(value: Any) -> bool:
     return False
 
 
-def meaningful_result(body: Any) -> bool:
+def meaningful_result(body: Any, *, operation: str | None = None) -> bool:
     if not isinstance(body, Mapping):
         return body not in (None, "", [], {})
-    if isinstance(body.get("count"), int):
-        return body["count"] > 0
+    if 'count' in body:
+        if type(body['count']) is not int:
+            return False
+        if operation == 'select':
+            collections = [body[key] for key in ('records', 'items', 'results', 'rows', 'data')
+                           if key in body]
+            if collections:
+                # A successful filtered read with no matching rows is evidence.
+                # Do not accept contradictory counts or malformed collections.
+                return body['count'] >= 0 and all(
+                    isinstance(rows, list) and len(rows) == body['count'] for rows in collections)
+        return body["count"] >= 0 if operation == 'aggregate_count' else body["count"] > 0
     for key in ("records", "items", "results", "rows", "data"):
         if key in body:
             return isinstance(body[key], (list, Mapping)) and bool(body[key])
     ignored = {"status", "accepted", "request_id", "episode_id"}
     return any(key not in ignored and value not in (None, "", [], {}) for key, value in body.items())
+
+
+def negative_requirement_evidence(task, scenario, run):
+    """Use fresh component scores; stored coverage verdicts cannot authorize a pass."""
+    from env_factory.generation.requirement_coverage import score_requirement_pairs
+    identifier = scenario.get('scenario_id')
+    coverage = task.get('requirement_coverage', {})
+    rows = [dict(row, positive_scenarios=[], negative_scenarios=[identifier])
+            for row in coverage.get('requirements', []) if identifier in row.get('negative_scenarios', [])]
+    if coverage.get('status') != 'structurally_valid' or not rows:
+        return None
+    body = next((event.get('body', {}) for event in reversed((run or {}).get('history', []))
+                 if event.get('operation') == 'reward'), {})
+    return score_requirement_pairs({'status': 'structurally_valid', 'requirements': rows},
+        task['metrics'], {identifier: {'kind': 'completed', 'reward': body}})
 
 
 def business_data_reads_from_replay(replay: Any, table_names: set[str]) -> set[str]:
@@ -156,6 +201,7 @@ def semantic_terminal_requires_live(task: Mapping[str, Any]) -> bool:
 def probe_reference_data_causality(
     app: Any, trainer_headers: Mapping[str, str],
     success_scenario: Mapping[str, Any], manifest: Mapping[str, Any],
+    implementations: list[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Prove that a private table change affects a tool's returned evidence."""
     snapshot = getattr(app, "business_snapshot", None)
@@ -224,6 +270,21 @@ def probe_reference_data_causality(
                 selector = {key: row[key] for key in primary_keys[table_name] if key in row}
                 if len(selector) != len(primary_keys[table_name]) or not selector:
                     continue
+                changes_to_try = []
+                implementation = next((item for item in implementations or []
+                    if item.get('tool_name') == step.get('tool_name')
+                    and item.get('table') == table_name
+                    and item.get('operation') in {'aggregate_count', 'select'}), None)
+                if implementation and isinstance(baseline_output, Mapping) and baseline_output.get('count') == 0:
+                    arguments = tool_events[-1]['payload'].get('arguments', {})
+                    filters = implementation.get('filters', [])
+                    if filters and all(f.get('operator') == 'eq' and not f.get('resolve')
+                                       and f.get('argument') in arguments for f in filters):
+                        matching = {f['column']: arguments[f['argument']] for f in filters}
+                        if not any(k in primary_keys[table_name] and row.get(k) != v for k, v in matching.items()):
+                            changes = {k: v for k, v in matching.items() if row.get(k) != v}
+                            if changes:
+                                changes_to_try.append(('query_membership', None, changes))
                 for field, value in sorted(
                     row.items(),
                     key=lambda item: (
@@ -236,12 +297,14 @@ def probe_reference_data_causality(
                     changed = _changed_scalar(value)
                     if changed is None:
                         continue
+                    changes_to_try.append((field, value, {field: changed}))
+                for field, value, changes in changes_to_try:
                     candidate_count += 1
                     tool_candidates += 1
                     altered_steps = [copy.deepcopy(prefix[0]), {
                         "operation": "mutate_business_state",
                         "mutation": {"table": table_name, "selector": selector,
-                                     "changes": {field: changed}},
+                                     "changes": changes},
                     }, *copy.deepcopy(prefix[1:])]
                     try:
                         altered = runner.run({"steps": altered_steps, "assertions": []})
@@ -257,7 +320,7 @@ def probe_reference_data_causality(
                             "answer_value_mentioned": _answer_mentions_value(answer, value),
                             "_probe_mutation": {
                                 "table": table_name, "selector": selector,
-                                "changes": {field: changed},
+                                "changes": changes,
                             },
                         }
                         if fallback is None or (
@@ -278,10 +341,54 @@ def probe_reference_data_causality(
     return fallback or {"proved": False, "candidates_tried": candidate_count}
 
 
+def sensitive_outcomes(baseline, changed, metrics):
+    """Verify a whole outcome loses credit and its weighted loss reaches total reward."""
+    def components(run):
+        return next((event.get('body', {}).get('components', {})
+                     for event in reversed(run.get('history', [])) if event.get('operation') == 'reward'), {})
+    before, after = components(baseline), components(changed)
+    initial, final = reward_of(baseline), reward_of(changed)
+    total_weight = sum(float(m.get('weight', 0)) for m in metrics)
+    verified = []
+    if initial is None or final is None or total_weight <= 0:
+        return verified
+    for metric in metrics:
+        if metric.get('category') != 'outcome' or metric.get('weight', 0) <= 0:
+            continue
+        key = metric['id']; low, high = metric['score_range']
+        values = [before.get(key), after.get(key)]
+        if high <= low or any(isinstance(v, bool) or not isinstance(v, (int, float))
+                or not math.isfinite(v) or not low <= v <= high for v in values):
+            continue
+        if ((values[0] - low) / (high - low) >= 1 - 1e-9
+                and (values[1] - low) / (high - low) <= .2 + 1e-9
+                and initial - final >= .5 * metric['weight'] / total_weight - 1e-9):
+            verified.append(key)
+    return verified
+
+
+def tool_evidence_signature(run: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Compare actual status and payload, excluding only platform error correlation IDs."""
+    results = []
+    for item in run.get('history', []):
+        if item.get('operation') != 'tool_call':
+            continue
+        status, body = item.get('status'), copy.deepcopy(item.get('body'))
+        if (isinstance(status, int) and status >= 400 and isinstance(body, dict)
+                and set(body) == {'error'} and isinstance(body['error'], dict)
+                and set(body['error']) == {'code', 'message', 'details', 'request_id'}):
+            # SandboxApplication assigns a fresh correlation ID to each error.
+            # Keep error semantics and all business fields, including nested IDs.
+            body['error'].pop('request_id')
+        results.append({'status': status, 'body': body})
+    return results
+
+
 def probe_reference_data_reward_sensitivity(
     app: Any, trainer_headers: Mapping[str, str],
     success_scenario: Mapping[str, Any], mutation: Mapping[str, Any] | list[Mapping[str, Any]],
     terminal_weight: float,
+    metrics: list[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Keep the final answer fixed after changing an answer-bearing private input."""
     snapshot = getattr(app, "business_snapshot", None)
@@ -310,10 +417,8 @@ def probe_reference_data_reward_sensitivity(
     baseline_rewards = [reward_of(baseline), reward_of(repeated_baseline)]
     baseline_reward = baseline_rewards[0]
     required_drop = 0.5 * terminal_weight
-    baseline_tools = [item.get("body") for item in baseline["history"]
-                      if item.get("operation") == "tool_call"]
-    repeated_tools = [item.get("body") for item in repeated_baseline["history"]
-                      if item.get("operation") == "tool_call"]
+    baseline_tools = tool_evidence_signature(baseline)
+    repeated_tools = tool_evidence_signature(repeated_baseline)
     baseline_tool_results_stable = baseline_tools == repeated_tools
     if (not baseline_tool_results_stable or baseline_reward is None
             or baseline_reward < 1.0 - 1e-9 or baseline_rewards[1] != baseline_reward):
@@ -354,15 +459,16 @@ def probe_reference_data_reward_sensitivity(
         ]
         changed_rewards: list[float | None] = []
         changed_tool_flags: list[bool] = []
+        component_checks = []
         for _ in range(2):
             try:
                 changed = runner.run(altered)
             except Exception:
                 break
             changed_rewards.append(reward_of(changed))
-            changed_tools = [item.get("body") for item in changed["history"]
-                             if item.get("operation") == "tool_call"]
+            changed_tools = tool_evidence_signature(changed)
             changed_tool_flags.append(baseline_tools != changed_tools)
+            component_checks.append(sensitive_outcomes(baseline, changed, metrics or []))
         if len(changed_rewards) != 2:
             continue
         variants_tried += 1
@@ -370,11 +476,12 @@ def probe_reference_data_reward_sensitivity(
             value is not None for value in changed_rewards
         ) else None
         tools_changed = all(changed_tool_flags)
+        affected_outcomes = sorted(set.intersection(*(set(item) for item in component_checks))) if component_checks else []
         proved = (
             tools_changed and baseline_reward is not None
             and baseline_reward >= 1.0 - 1e-9 and changed_reward is not None
             and changed_reward < 1.0 - 1e-9
-            and baseline_reward - changed_reward >= required_drop - 1e-9
+            and (baseline_reward - changed_reward >= required_drop - 1e-9 or bool(affected_outcomes))
         )
         result = {
             "proved": proved, "baseline_reward": baseline_reward,
@@ -384,6 +491,7 @@ def probe_reference_data_reward_sensitivity(
             "changed_reward": changed_reward,
             "changed_rewards": changed_rewards,
             "required_drop": required_drop,
+            "verified_outcome_drops": affected_outcomes,
             "tool_results_changed": tools_changed,
             "variants_tried": variants_tried,
         }
@@ -402,6 +510,7 @@ def probe_reference_data_reward_sensitivity(
 def probe_reference_data_reward_candidates(
     app: Any, trainer_headers: Mapping[str, str], success_scenario: Mapping[str, Any],
     mutations: list[Mapping[str, Any]], terminal_weight: float,
+    metrics: list[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Try executable counterfactuals, then combine independently stale facts.
 
@@ -420,7 +529,7 @@ def probe_reference_data_reward_candidates(
             continue
         seen.add(key)
         result = probe_reference_data_reward_sensitivity(
-            app, trainer_headers, success_scenario, mutation, terminal_weight,
+            app, trainer_headers, success_scenario, mutation, terminal_weight, metrics,
         )
         attempts.append({"mutation": mutation, "result": result})
         if result.get("proved"):
@@ -434,7 +543,7 @@ def probe_reference_data_reward_candidates(
             partial.append(result["mutation"])
     if len(partial) > 1:
         result = probe_reference_data_reward_sensitivity(
-            app, trainer_headers, success_scenario, partial, terminal_weight,
+            app, trainer_headers, success_scenario, partial, terminal_weight, metrics,
         )
         attempts.append({"mutation": partial, "result": result})
         if result.get("proved"):
@@ -501,6 +610,31 @@ def dependency_swap_positions(
         if source in positions and target in positions and positions[source] < positions[target]:
             return positions[source], positions[target]
     return None
+
+
+class EvaluatorEvidenceAudit:
+    """Keep evaluator outages distinct from successfully judged negative answers."""
+
+    def __init__(self, app, headers, failures):
+        self._app, self._headers, self._failures = app, headers, failures
+
+    def __getattr__(self, name):
+        return getattr(self._app, name)
+
+    def handle(self, method, path, body, headers):
+        response = self._app.handle(method, path, body, headers)
+        if path in {'/v1/reward', '/v1/user_simulator'}:
+            status, replay, _ = self._app.handle('GET', '/v1/replay', None, self._headers)
+            unavailable = status != 200 or not isinstance(replay, Mapping)
+            if not unavailable:
+                unavailable = any(
+                    event.get('event') == 'evaluator_call'
+                    and event.get('payload', {}).get('judgment_obtained') is not True
+                    for event in replay.get('events', []) if isinstance(event, Mapping))
+            if unavailable and not any(item.get('gate') == 'evaluator_availability' for item in self._failures):
+                self._failures.append({'gate': 'evaluator_availability',
+                    'message': 'Live semantic evidence is unavailable or used a fallback; do not classify this as an authored reward defect.'})
+        return response
 
 
 def validate(
@@ -578,13 +712,16 @@ def validate(
         HTTPSandboxClient(
             base_url,
             timeout=evaluator_http_timeout(runtime.timeout_seconds, runtime.max_retries),
-        ) if base_url else import_app(root)
+        ) if base_url else import_app(root, reuse_validation_judgments=evaluator_mode == 'live')
     )
     from sandbox_runtime import AcceptanceScenarioRunner
 
     trainer_headers = {
         "Authorization": f"Bearer {os.environ['SANDBOX_TRAINER_API_KEY']}"
     }
+
+    if evaluator_mode == 'live':
+        app = EvaluatorEvidenceAudit(app, trainer_headers, failures)
 
     def remote_business_snapshot() -> Any:
         status, body, _ = app.handle("GET", "/v1/state", None, trainer_headers)
@@ -595,8 +732,26 @@ def validate(
             raise RuntimeError("trainer state endpoint returned an invalid snapshot")
         return dict(snapshot)
 
+    request_faults = []
+    def observed_call(method, path, body, headers):
+        request_faults.clear()
+        before = None
+        if path.startswith('/v1/tools/'):
+            status, replay, _ = app.handle('GET', '/v1/replay', None, trainer_headers)
+            if status == 200 and isinstance(replay, Mapping):
+                before = len(replay.get('events', []))
+        response = app.handle(method, path, body, headers)
+        if before is not None and 500 <= response[0] < 600:
+            status, replay, _ = app.handle('GET', '/v1/replay', None, trainer_headers)
+            if status == 200 and isinstance(replay, Mapping):
+                request_faults.extend(event.get('payload', {}) for event in replay.get('events', [])[before:]
+                                      if event.get('event') == 'injected_fault')
+        return response
+
     runner = AcceptanceScenarioRunner(
-        app.handle,
+        observed_call,
+        injected_fault_check=lambda name, status: any(
+            fault.get('tool') == name and fault.get('status') == status for fault in request_faults),
         trainer_headers=trainer_headers,
         business_snapshot=(
             remote_business_snapshot
@@ -612,7 +767,7 @@ def validate(
 
     def execute(name: str, scenario: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
         try:
-            result = runner.run(scenario)
+            result = runner.run(scenario, allow_untriggered_faults=name != 'goal_success')
             evidence["counterfactuals"][name] = {"reward": reward_of(result), "status": "completed"}
             return result, None
         except Exception as exc:  # rejected counterfactuals are valid evidence
@@ -652,21 +807,27 @@ def validate(
         except Exception:
             reference_baseline = None
     success_run, success_error = execute("goal_success", success_scenario)
+    resolved_success_steps = success_scenario['steps']
+    if success_run:
+        resolved_success_steps = bind_success_steps(success_scenario['steps'], success_run['history'])
+        evidence['success_history'] = success_run['history']
     if environment_mode == "reference_data":
         try:
             reference_after = remote_business_snapshot() if base_url else app.business_snapshot()
         except Exception:
             reference_after = None
-        unchanged = (
-            reference_baseline is not None
-            and reference_after is not None
-            and reference_baseline == reference_after
-        )
-        evidence["reference_data_immutability"] = {"unchanged": unchanged}
+        try:
+            replay_status, replay_body, _ = app.handle("GET", "/v1/replay", None, trainer_headers)
+        except Exception:
+            replay_status, replay_body = None, None
+        integrity = reference_data_immutability(
+            reference_baseline, reference_after, replay_body if replay_status == 200 else None)
+        unchanged = integrity["unchanged"]
+        evidence["reference_data_immutability"] = integrity
         if not unchanged:
             failures.append({
                 "gate": "reference_data_immutability",
-                "message": "reference_data success path changed private business state",
+                "message": "reference_data success path contains unexplained business-state changes beyond platform external events",
             })
     if tool_required and environment_mode in {"reference_data", "stateful"}:
         manifest = task.get("artifacts", {}).get("data_manifest", {})
@@ -691,21 +852,18 @@ def validate(
                 "gate": "business_data_dependency",
                 "message": "success path business tools did not read sandbox business data",
             })
-        if (
-            len(tool_reads) != len(tool_steps)
-            or any(
-                item.get("tool_name") != step.get("tool_name")
-                for item, step in zip(tool_reads, tool_steps)
-            )
-        ):
+        if not logical_trace_matches(resolved_success_steps,
+                [item.get('tool_name') for item in tool_reads], task.get('business_lifecycle')):
             failures.append({
                 "gate": "business_tool_trace_coverage",
-                "message": "every success-path business tool must have an ordered runtime event",
+                "message": "every logical success-path business request must have an ordered committed runtime event",
             })
         if environment_mode == "reference_data" and private_reads:
             causal_app = app if not base_url else import_app(root)
+            if base_url and evaluator_mode == 'live':
+                causal_app = EvaluatorEvidenceAudit(causal_app, trainer_headers, failures)
             causality = probe_reference_data_causality(
-                causal_app, trainer_headers, success_scenario, manifest,
+                causal_app, trainer_headers, success_scenario, manifest, task.get('tool_implementations', []),
             )
             probe_mutation = causality.pop("_probe_mutation", None)
             fallback_mutations = causality.pop("_fallback_mutations", [])
@@ -727,7 +885,7 @@ def validate(
             elif answer_sensitivity_needed:
                 candidates = ([probe_mutation] if isinstance(probe_mutation, Mapping) else []) + fallback_mutations
                 sensitivity = probe_reference_data_reward_candidates(
-                    causal_app, trainer_headers, success_scenario, candidates, terminal_weight,
+                    causal_app, trainer_headers, success_scenario, candidates, terminal_weight, task.get('metrics', []),
                 )
                 evidence["business_data_reward_sensitivity"] = sensitivity
                 if not sensitivity.get("proved"):
@@ -742,12 +900,21 @@ def validate(
     failure_reward = reward_of(failure_run or {})
     if success_error or success_reward is None or success_reward < 1.0 - 1e-9:
         failures.append({"gate": "success_trajectory", "message": "valid goal trajectory must satisfy all reward components (reward 1.0)", "reward": success_reward})
-    if failure_reward is None or failure_reward > 0.2:
-        failures.append({"gate": "failure_trajectory", "message": "failure trajectory must produce reward <= 0.2", "reward": failure_reward})
+    negative_evidence = negative_requirement_evidence(task, by_kind['goal_failure'], failure_run)
+    evidence['failure_requirement_validation'] = negative_evidence
+    failure_passed = (failure_reward is not None and
+        (negative_evidence['passed'] and failure_reward < 1 - 1e-9 if negative_evidence is not None
+         else failure_reward <= .2))
+    if not failure_passed:
+        failures.append({"gate": "failure_trajectory", "message": "failure must reject each bound requirement and full reward, or produce reward <= 0.2 when unbound", "reward": failure_reward})
 
     if success_run and tool_required:
         tool_bodies = [item.get("body") for item in success_run.get("history", []) if item.get("operation") == "tool_call"]
-        if not tool_bodies or not all(meaningful_result(body) for body in tool_bodies):
+        calls = [step for step in success_scenario['steps'] if step.get('operation') == 'tool_call']
+        operations = {item['tool_name']: item['operation'] for item in task.get('tool_implementations', [])}
+        if not tool_bodies or len(tool_bodies) != len(calls) or not all(
+                meaningful_result(body, operation=operations.get(call.get('tool_name')))
+                for body, call in zip(tool_bodies, calls)):
             failures.append({"gate": "meaningful_tool_results", "message": "every success-path tool call must return meaningful business evidence"})
 
     final_step = next((step for step in success_scenario.get("steps", []) if step.get("operation") == "agent_response"), None)
@@ -780,9 +947,23 @@ def validate(
                 next(step for step in numerical["steps"] if step.get("operation") == "agent_response")["content"] = numeric_answer
                 numeric_run, numeric_error = execute("wrong_numeric_answer", numerical)
                 numeric_reward = reward_of(numeric_run or {})
+                try:
+                    original_fields = json.loads(final_step['content'])
+                    changed_fields = json.loads(numeric_answer)
+                except (ValueError, TypeError):
+                    original_fields = changed_fields = {}
+                affected_ids = {rule['metric_id'] for rule in task.get('metric_implementations', [])
+                    if rule.get('operator') == 'numeric_targets' or (
+                        rule.get('operator') == 'value_targets'
+                        and isinstance(original_fields, Mapping) and isinstance(changed_fields, Mapping)
+                        and any(original_fields.get(target['key']) != changed_fields.get(target['key'])
+                            for target in rule.get('expected', {}).get('targets', [])))}
+                verified_drops = sorted(affected_ids & set(sensitive_outcomes(
+                    success_run or {}, numeric_run or {}, task.get('metrics', []))))
+                evidence['numeric_answer_outcome_drops'] = verified_drops
                 if (numeric_error is not None or success_reward is None or numeric_reward is None
                         or numeric_reward >= 1.0 - 1e-9
-                        or success_reward - numeric_reward < required_drop - 1e-9):
+                        or (success_reward - numeric_reward < required_drop - 1e-9 and not verified_drops)):
                     failures.append({
                         "gate": "numeric_answer_sensitivity",
                         "message": "incorrect numerical answer must score below success on the same tool trajectory",
@@ -808,27 +989,31 @@ def validate(
     # Otherwise changing an upstream argument can make a later $ref unresolved
     # inside the test runner, without exercising the environment or reward.
     bound_success = copy.deepcopy(success_scenario)
+    bound_success['steps'] = copy.deepcopy(resolved_success_steps)
     # A deliberately broken tool chain may correctly keep the user FSM in its
-    # prior stage. Do not carry positive-path stage assertions into negative
-    # probes: exercise the remaining calls and judge actual rejection/reward.
-    # The original success scenario retains all stage assertions.
+    # prior stage or select a different conditional branch. Do not carry
+    # positive-path dialogue assertions into tool-chain counterfactuals:
+    # exercise the remaining calls and judge actual rejection/reward.
+    # The original success scenario retains both stage and branch assertions.
     for step in bound_success["steps"]:
         if step.get("operation") == "dialogue_turn":
             step.pop("expected_stage", None)
-    if success_run:
-        for step in bound_success["steps"]:
-            if step.get("operation") == "tool_call":
-                step["arguments"] = runner._resolve(
-                    step.get("arguments", {}), success_run.get("variables", {})
-                )
-    for tool_index, original in enumerate(tool_steps if tool_required else []):
+            step.pop("expected_branch", None)
+    call_positions = [index for index, step in enumerate(success_scenario['steps']) if step.get('operation') == 'tool_call']
+    call_ordinals = {position: index for index, position in enumerate(call_positions)}
+    call_groups = idempotent_call_groups(resolved_success_steps) if tool_required else []
+    evidence['idempotent_call_groups'] = [[call_ordinals[position] + 1 for position in group] for group in call_groups]
+    optional = optional_observation_positions(success_scenario['steps'], task.get('tool_implementations', []))
+    for group in call_groups:
+        if set(group) <= optional:
+            continue
+        tool_index = call_ordinals[group[0]]
+        original = tool_steps[tool_index]
         for argument_index, key in enumerate(argument_probe_keys(original, task.get("tools", []))):
             corrupted = copy.deepcopy(bound_success)
-            candidate = [step for step in corrupted["steps"]
-                         if step.get("operation") == "tool_call"][tool_index]
-            arguments = dict(candidate.get("arguments", {}))
-            arguments[key] = corrupt(arguments[key])
-            candidate["arguments"] = arguments
+            changed = corrupt(corrupted['steps'][group[0]]['arguments'][key])
+            for position in group:
+                corrupted['steps'][position]['arguments'][key] = copy.deepcopy(changed)
             name = f"corrupted_arguments_{tool_index + 1}"
             if argument_index:
                 name += f"__{argument_index + 1}"
@@ -844,19 +1029,24 @@ def validate(
     if dependency_required and len(tool_steps) >= 2:
         # Bind known baseline values before removing/reordering producers so
         # the counterfactual reaches the environment rather than failing in $ref.
-        for tool_index in range(len(tool_steps)):
+        for group in call_groups:
+            tool_index = call_ordinals[group[0]]
             skipped = copy.deepcopy(bound_success)
-            positions = [
-                index for index, step in enumerate(skipped["steps"])
-                if step.get("operation") == "tool_call"
-            ]
-            del skipped["steps"][positions[tool_index]]
-            skipped_run, skipped_error = execute(f"skipped_tool_{tool_index + 1}", skipped)
+            omitted = set(group)
+            skipped['steps'] = [step for index, step in enumerate(skipped['steps']) if index not in omitted]
+            is_optional = omitted <= optional
+            skipped_run, skipped_error = execute(
+                f"optional_observation_{tool_index + 1}" if is_optional else f"skipped_tool_{tool_index + 1}", skipped)
+            if is_optional:
+                observed_reward = reward_of(skipped_run or {})
+                if skipped_error is not None or observed_reward is None or observed_reward < 1 - 1e-9:
+                    failures.append({'gate': 'optional_observation', 'message': 'optional read omission must preserve full success'})
+                continue
             skipped_reward = reward_of(skipped_run or {})
             if skipped_error is None and (skipped_reward is None or skipped_reward > 0.2):
                 failures.append({
                     "gate": "step_necessity",
-                    "message": f"skipping tool step {tool_index} must be rejected or reward <= 0.2",
+                    "message": f"skipping logical tool request at steps {group} must be rejected or reward <= 0.2",
                     "reward": skipped_reward,
                 })
         reordered = copy.deepcopy(bound_success)
@@ -869,9 +1059,9 @@ def validate(
             })
         else:
             first_pos, second_pos = pair
-            reordered["steps"][first_pos], reordered["steps"][second_pos] = (
-                reordered["steps"][second_pos], reordered["steps"][first_pos]
-            )
+            # Group from requests resolved at their original capture positions.
+            swap_logical_calls(reordered['steps'], first_pos, second_pos,
+                               grouping_steps=resolved_success_steps)
             reordered_run, reordered_error = execute("reordered_tools", reordered)
             reordered_reward = reward_of(reordered_run or {})
             if reordered_error is None and (reordered_reward is None or reordered_reward > 0.2):
@@ -887,6 +1077,11 @@ def validate(
         if noise_reward is None or noise_reward > 0:
             failures.append({"gate": "noise_selection", "message": "noise tool trajectory must produce reward <= 0", "reward": noise_reward})
 
+    judgment_report = getattr(app, 'validation_judgment_report', None)
+    if not base_url and callable(judgment_report):
+        # Original judgments and provenance accompany reuse; repeated tool and
+        # mutation runs still execute, but are not independent model samples.
+        evidence['semantic_judgment_reuse'] = judgment_report()
     failed_gates = sorted({item["gate"] for item in failures})
     runtime_execution = (
         {

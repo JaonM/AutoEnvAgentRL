@@ -1,65 +1,49 @@
-"""Transient review connection failures must not become repair defects."""
-
-from __future__ import annotations
-
 import importlib.util
+import os
 from pathlib import Path
-import subprocess
-import tempfile
-import unittest
-from unittest.mock import patch
+import sys
+import threading
+import time
+spec=importlib.util.spec_from_file_location('review',Path(__file__).resolve().parents[2]/'scripts/sandbox/run_readonly_review.py')
+review=importlib.util.module_from_spec(spec);spec.loader.exec_module(review)
 
+def setup(tmp_path,monkeypatch,body):
+ script=tmp_path/'codex';script.write_text('#!'+sys.executable+'\n'+body);script.chmod(0o755)
+ monkeypatch.setenv('PATH',str(tmp_path)+os.pathsep+os.environ['PATH'])
+ return dict(cwd=tmp_path,prompt='review',response=tmp_path/'response.json',stdout=tmp_path/'stdout.log',stderr=tmp_path/'stderr.log',retry_delay=0)
 
-SCRIPT = Path(__file__).resolve().parents[2] / "scripts/sandbox/run_readonly_review.py"
-SPEC = importlib.util.spec_from_file_location("run_readonly_review", SCRIPT)
-assert SPEC and SPEC.loader
-review = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(review)
+def test_retry_and_success(tmp_path,monkeypatch):
+ args=setup(tmp_path,monkeypatch,"""import sys
+from pathlib import Path
+p=Path('attempt');n=int(p.read_text())+1 if p.exists() else 1;p.write_text(str(n))
+if n==1:
+ print('HTTP 503',file=sys.stderr);sys.exit(1)
+Path(sys.argv[sys.argv.index('--output-last-message')+1]).write_text('{}')
+print('done')
+""")
+ assert review.run_review(**args)==0
+ assert (tmp_path/'attempt').read_text()=='2'
+ assert 'done' in args['stdout'].read_text()
 
+def test_timeout_is_infrastructure_and_streams_before_exit(tmp_path,monkeypatch):
+ args=setup(tmp_path,monkeypatch,"import time\nprint('working',flush=True)\ntime.sleep(30)\n")
+ results=[]
+ thread=threading.Thread(target=lambda:results.append(review.run_review(**args,timeout=3)))
+ thread.start()
+ deadline=time.monotonic()+5
+ while time.monotonic()<deadline and (not args['stdout'].exists() or 'working' not in args['stdout'].read_text()):time.sleep(.01)
+ assert 'working' in args['stdout'].read_text()
+ assert thread.is_alive()
+ thread.join(5)
+ assert results==[75]
+ assert 'deadline exceeded' in args['stderr'].read_text()
 
-class ReadonlyReviewRetryTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
-        self.response = self.root / "response.json"
-        self.stdout = self.root / "stdout.log"
-        self.stderr = self.root / "stderr.log"
+def test_product_error_does_not_retry(tmp_path,monkeypatch):
+ args=setup(tmp_path,monkeypatch,"import sys\nprint('invalid model name',file=sys.stderr)\nsys.exit(2)\n")
+ assert review.run_review(**args)==2
+ assert args['stderr'].read_text().count('review attempt')==1
 
-    def run_review(self) -> int:
-        return review.run_review(
-            cwd=self.root, prompt="check sandbox", response=self.response,
-            stdout=self.stdout, stderr=self.stderr, retry_delay=0,
-        )
-
-    def test_transient_failure_retries_then_succeeds(self) -> None:
-        calls = 0
-
-        def invoke(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
-            nonlocal calls
-            calls += 1
-            if calls == 1:
-                return subprocess.CompletedProcess([], 1, "", "HTTP 503")
-            self.response.write_text('{"status":"pass"}', encoding="utf-8")
-            return subprocess.CompletedProcess([], 0, "reviewed", "")
-
-        with patch.object(review.subprocess, "run", side_effect=invoke):
-            self.assertEqual(self.run_review(), 0)
-        self.assertEqual(calls, 2)
-        self.assertIn("attempt 2/3", self.stdout.read_text(encoding="utf-8"))
-
-    def test_exhausted_connection_retries_are_infrastructure(self) -> None:
-        failed = subprocess.CompletedProcess([], 1, "", "connection reset")
-        with patch.object(review.subprocess, "run", return_value=failed) as run:
-            self.assertEqual(self.run_review(), review.INFRA_EXIT)
-        self.assertEqual(run.call_count, 3)
-
-    def test_product_or_command_error_does_not_retry(self) -> None:
-        failed = subprocess.CompletedProcess([], 2, "", "invalid model name")
-        with patch.object(review.subprocess, "run", return_value=failed) as run:
-            self.assertEqual(self.run_review(), 2)
-        self.assertEqual(run.call_count, 1)
-
-
-if __name__ == "__main__":
-    unittest.main()
+def test_transient_retry_exhaustion(tmp_path,monkeypatch):
+ args=setup(tmp_path,monkeypatch,"import sys\nprint('connection reset',file=sys.stderr)\nsys.exit(1)\n")
+ assert review.run_review(**args)==75
+ assert args['stderr'].read_text().count('review attempt')==3

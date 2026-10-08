@@ -141,7 +141,7 @@ def bind_answer_contract(source: dict) -> dict | None:
                 raise ValueError("ANSWER_CONTRACT_INVALID: numeric format is derived by the compiler")
             public["answer_contract"] = contract
             public["initial_user_message"] = public["initial_user_message"].rstrip() + (
-                "\n\nRequired answer format: exactly " + target["label"] + ": <number>" + target["unit"]
+                "\n\nFinal answer format (only after required user interactions and tool calls are complete): exactly " + target["label"] + ": <number>" + target["unit"]
                 + ". Replace <number> with the calculated value; include the exact label and unit, "
                   "with no additional prose or numbers."
             )
@@ -169,16 +169,32 @@ def bind_answer_contract(source: dict) -> dict | None:
         keys.extend(fields)
     if len(keys) != len(set(keys)) or set(keys) != set(schema["properties"]):
         raise ValueError("ANSWER_CONTRACT_COVERAGE: public fields must each have exactly one reward target")
+    private_values = {
+        stage['private_fact'] if isinstance(stage['private_fact'], str)
+        else json.dumps(stage['private_fact'], ensure_ascii=False)
+        for variant in (source.get('interaction_contract') or {}).get('variants', [])
+        for stage in variant.get('stages', []) if 'private_fact' in stage
+    }
     for rule in structured:
         for target in rule["expected"]["targets"]:
             labels = _finite_labels(target["expression"])
             field = schema["properties"][target["key"]]
+            if 'tolerance' in target:
+                if field.get('type') not in {'number', 'integer'}:
+                    raise ValueError('ANSWER_CONTRACT_TYPES: numeric tolerance requires a numeric answer field')
+                if field.get('type') == 'integer' and target['tolerance'] != 0:
+                    raise ValueError('ANSWER_CONTRACT_TYPES: integer answer fields require exact equality')
             if labels and len(labels) > 1:
                 if field.get("type") != "string":
                     raise ValueError("ANSWER_CONTRACT_TYPES: decision labels require a string field")
                 if "enum" in field and not labels <= set(field["enum"]):
                     raise ValueError("ANSWER_CONTRACT_ENUM: public enum omits a reachable decision label")
-                field.setdefault("enum", sorted(labels))
+                # A private selected ID plus an empty/no-result branch is not
+                # a public categorical vocabulary. Keep authored shape and
+                # exact reward rules without publishing hidden user answers.
+                # Explicit author enums still undergo ordinary privacy review.
+                if not labels & private_values:
+                    field.setdefault("enum", sorted(labels))
     _schema(schema)
     if semantic:
         for rule in structured:
@@ -200,11 +216,20 @@ def bind_answer_contract(source: dict) -> dict | None:
         raise ValueError("ANSWER_CONTRACT_INVALID: define answer_contract once at source root")
     public["answer_contract"] = copy.deepcopy(contract)
     public["initial_user_message"] = public["initial_user_message"].rstrip() + (
-        "\n\nRequired answer format: return only a JSON object matching this schema. "
+        "\n\nFinal answer format (only after required user interactions and tool calls are complete): "
+        "return only a JSON object matching this schema. "
+        "Intermediate questions follow the public user interaction format, not this final-answer schema. "
         "Use exactly the declared keys and JSON types; no Markdown fences or extra prose. "
         "Copy requested textual facts accurately from the supplied evidence; preserve requested array order.\n"
         + json.dumps(schema, ensure_ascii=False, sort_keys=True)
     )
+    tolerances = {target['key']: target['tolerance'] for rule in structured
+                  for target in rule['expected']['targets'] if 'tolerance' in target}
+    if tolerances:
+        public['numeric_answer_tolerances'] = copy.deepcopy(tolerances)
+        public['initial_user_message'] += ('\n\nNumeric answer fields allow the following absolute errors '
+            'in their declared units. Other value fields still require exact values:\n'
+            + json.dumps(tolerances, ensure_ascii=False, sort_keys=True))
     if semantic:
         public_criteria = [{"fields": metric["semantic_fields"], "rubric": metric["rubric"],
                             "criteria": metric["criteria"]} for metric in semantic]

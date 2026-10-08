@@ -219,6 +219,22 @@ class SandboxRuntimeTest(unittest.TestCase):
             self.assertNotIn("trajectory", sent)
             self.assertIn("stale private-record value", captured["messages"][0]["content"])
 
+    def test_wsgi_routes_utf8_tool_names_without_double_decoding(self):
+        with tempfile.TemporaryDirectory() as directory:
+            names = ['读取库存', 'café', 'literal%2Fname']
+            tools = [{'type': 'function', 'function': {'name': name, 'parameters': {
+                'type': 'object', 'properties': {}, 'additionalProperties': False}}} for name in names]
+            registry = ContractToolRegistry(tools, {name: (lambda args, name=name: {'tool': name}) for name in names})
+            app = SandboxApplication(episode_store=EpisodeStore(Path(directory) / 'episodes.sqlite3'),
+                tool_registry=registry, observation=lambda: {}, reward=lambda: {}, user_turn=lambda messages: {})
+            for name in names:
+                path = '/v1/tools/' + name
+                for supplied in [path, path.encode('utf-8').decode('latin-1')]:
+                    with self.subTest(path=supplied):
+                        response = self._wsgi_request(app, supplied, raw=b'{}')
+                        self.assertEqual(response['status'], '200 OK')
+                        self.assertEqual(response['body'], {'tool': name})
+
     def test_wsgi_auth_precedes_malformed_json_and_preserves_request_id(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(
             os.environ, {"SANDBOX_TRAINER_API_KEY": "trainer-key"}
@@ -415,6 +431,50 @@ class SandboxRuntimeTest(unittest.TestCase):
             self.assertEqual(result["fsm_recovery_count"], 0)
             self.assertEqual(state["state_id"], "done")
             self.assertTrue(state["variables"]["known"])
+
+    def test_terminal_followup_preserves_schema_and_does_not_advance_episode(self):
+        from env_factory.generation.contract_compiler import ContractCompiler
+
+        interface = ContractCompiler._build_runtime_interface([], {})
+        schema = next(endpoint["response_schema"] for endpoint in interface["endpoints"]
+                      if endpoint["name"] == "user_simulator")
+        for reason, outcome, match in (
+            ("completed", "user_acceptance", "matched"),
+            ("submitted", "goal_satisfied", "matched"),
+            ("unresolved_dialogue", "unrecognized", "unmatched"),
+        ):
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory() as directory:
+                store = EpisodeStore(Path(directory) / "episode.sqlite3")
+                store.reset(episode_id="terminal", seed=1)
+                state = {
+                    "script_id": "s1", "state_id": "done", "termination_reason": reason,
+                    "recovery_count": 2, "turn_index": 3, "conversation_prefix": [],
+                    "memory": [{"result": {"outcome_category": outcome, "match_status": match}}],
+                }
+                store.set_state(ContractUserSimulator.STATE_KEY, state)
+                simulator = ContractUserSimulator(
+                    store, renderer=lambda _: self.fail("terminal followup called model"),
+                    profiles=[{"profile_id": "p1"}],
+                    scripts=[{
+                        "script_id": "s1", "initial_state": "start",
+                        "states": [{"state_id": "start", "terminal": False},
+                                   {"state_id": "done", "terminal": True}],
+                        "transitions": [{"transition_id": "accept", "from_state": "start",
+                                         "to_state": "done", "outcome_category": "user_acceptance",
+                                         "condition": "accepted", "should_end": True}],
+                    }],
+                )
+                before = store.replay()
+                result = simulator.turn([{"role": "assistant", "content": "再确认一下"}])
+                validate_json_schema(result, schema)
+                self.assertTrue(result["should_end"])
+                self.assertFalse(result["fsm_transition_applied"])
+                self.assertIsNone(result["fsm_transition_id"])
+                self.assertEqual(result["outcome_category"], outcome)
+                self.assertEqual(result["termination_reason"], reason)
+                self.assertEqual(result["fsm_script_id"], "s1")
+                self.assertEqual(store.get_state(ContractUserSimulator.STATE_KEY), state)
+                self.assertEqual(store.replay(), before)
 
     def test_contract_user_simulator_does_not_advance_on_unmatched_dialogue(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -989,11 +1049,19 @@ class SandboxRuntimeTest(unittest.TestCase):
                 auth = {"Authorization": "Bearer trainer-key"}
                 status, reset, _ = app.handle("POST", "/v1/reset", {"seed": 7}, auth)
                 self.assertEqual(reset["seed"], 7)
+                snapshots = {'lookup': {'private': 'decision-time-secret'}}
+                store.set_state('reward_state_snapshots', snapshots)
+                denied, _, _ = app.handle('GET', '/v1/state')
+                self.assertEqual(denied, 401)
                 status, state, _ = app.handle("GET", "/v1/state", headers=auth)
                 self.assertEqual(
                     (status, state),
-                    (200, {"business_state": {"private": "trainer-only"}}),
+                    (200, {"business_state": {"private": "trainer-only"},
+                           "reward_state_snapshots": snapshots}),
                 )
+                _, public, _ = app.handle('GET', '/v1/observation', headers=auth)
+                self.assertNotIn('reward_state_snapshots', public)
+                self.assertNotIn('decision-time-secret', json.dumps(public))
                 status, result, tool_headers = app.handle("POST", "/v1/tools/lookup", {"name": "x"})
                 self.assertEqual((status, result), (200, {"value": "x"}))
                 self.assertTrue(tool_headers["X-Tool-Call-ID"].startswith("call-"))
@@ -1061,6 +1129,16 @@ class SandboxRuntimeTest(unittest.TestCase):
                 registry.execute("write", {"value": "different"}, idem_key="same")
             self.assertEqual(first, second)
             self.assertEqual(calls, [{"value": "a"}])
+            events = store.replay()['events']
+            attempts = [event for event in events if event['event'] == 'tool_attempt']
+            self.assertEqual([event['result']['status'] for event in attempts], [200, 200, 409])
+            self.assertEqual([event['payload']['arguments']['value'] for event in attempts], ['a', 'a', 'different'])
+            events = [event for event in events if event['event'] != 'tool_attempt']
+            self.assertEqual(len(events), 2)
+            self.assertEqual([event['event'] for event in events], ['tool_call', 'tool_call_replay'])
+            self.assertTrue(events[1]['payload']['idempotent_replay'])
+            self.assertEqual(events[1]['result'], first)
+            self.assertNotIn('idempotent_replay', events[0]['payload'])
 
     def test_shared_runtime_owns_all_declared_mutation_seams(self):
         tools = [{

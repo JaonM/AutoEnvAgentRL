@@ -217,13 +217,15 @@ def check_acceptance_contract(task: dict[str, Any], names: list[str], metrics: l
     if executable:
         if not isinstance(executable, list):
             fail("acceptance_contract.executable_scenarios must be a list")
-        allowed = {"reset", "tool_call", "agent_response", "observation", "reward", "replay", "business_snapshot", "mutate_business_state"}
+        allowed = {"reset", "tool_call", "dialogue_turn", "agent_response", "observation", "reward", "replay", "business_snapshot", "mutate_business_state"}
         for scenario in executable:
             if not isinstance(scenario, dict) or not scenario.get("scenario_id") or not isinstance(scenario.get("steps"), list):
                 fail("executable acceptance scenario is invalid")
-            for step in scenario["steps"]:
+            for index, step in enumerate(scenario["steps"]):
                 if not isinstance(step, dict) or step.get("operation") not in allowed:
-                    fail("executable acceptance step is invalid")
+                    operation = step.get("operation") if isinstance(step, dict) else None
+                    fail(f"executable acceptance step is invalid: scenario={scenario['scenario_id']} "
+                         f"step_index={index} operation={operation!r}")
                 if step.get("operation") == "tool_call" and step.get("tool_name") not in names:
                     fail("executable acceptance step references unknown tool")
     return contract

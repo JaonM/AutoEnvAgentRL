@@ -22,7 +22,7 @@ def test_explicit_quotes_enums_and_entity_names_remain_valid(source):
 
 
 def test_failure_taxonomy_does_not_parse_words_inside_review_findings():
-    from examples.generate_task import _generation_failure_class
+    from env_factory.generate_task import _generation_failure_class
     from env_factory.generation.task_generator import TaskGenerationError
     error = TaskGenerationError('SOURCE_SEMANTIC_REVIEW_FAILED: {"source_paths":[], "reason":"schema requires meaningful explanation"}')
     assert _generation_failure_class(error) == 'GEN_SEMANTIC'

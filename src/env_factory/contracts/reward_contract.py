@@ -20,7 +20,16 @@ def ambiguous_metric_captures(task: dict[str, Any], preview: list[dict[str, Any]
         expected = metric.get("expected")
         if not isinstance(expected, dict):
             continue
-        for capture in expected.get("captures", []):
+        # Runtime ignores the canonical fallback once script-scoped options
+        # exist. Inspect every executable option, including wildcard options,
+        # so alternate-script positional shortcuts cannot hide in that branch.
+        scoped = expected.get('by_user_script')
+        options = ([option for entries in scoped.values() if isinstance(entries, list)
+                    for option in entries if isinstance(option, dict)]
+                   if isinstance(scoped, dict) else [])
+        captures = [capture for option in (options or [expected])
+                    for capture in option.get('captures', [])]
+        for capture in captures:
             if not isinstance(capture, dict):
                 continue
             path, source = capture.get("path"), capture.get("tool_name")

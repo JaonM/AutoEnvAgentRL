@@ -238,7 +238,10 @@ def valid_score_report(
             and report.get("score_scope", "offline_sandbox_qualification")
             == "offline_sandbox_qualification"
             and report.get("delivery_verified", False) is False
-            and report.get("verification_status", "requires_live") == "requires_live"
+            and report.get("verification_status", "requires_live") in {
+                "requires_live",  # Previously issued executable evidence.
+                "executable_passed" if eligible and score >= threshold else "executable_failed",
+            }
             and report.get("network_used") is False
             and report.get("model_used") is False
             and report.get("live_rollout_verified") is False

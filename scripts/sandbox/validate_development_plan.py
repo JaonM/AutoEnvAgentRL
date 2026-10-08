@@ -50,6 +50,9 @@ def validate(plan: dict) -> list[str]:
             if dependency == node_id:
                 errors.append(f"node {node_id} cannot depend on itself")
 
+    if "business_integration" not in by_id:
+        errors.append("development plan requires the Code Agent business_integration node")
+
     # Check dependencies against the complete ID set and detect cycles.
     known = set(ids)
     graph = {node_id: set(node.get("depends_on", [])) for node_id, node in by_id.items()}

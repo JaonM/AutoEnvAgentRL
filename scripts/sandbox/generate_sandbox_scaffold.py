@@ -11,11 +11,12 @@ from __future__ import annotations
 import argparse, json
 from pathlib import Path
 from wsgiref.simple_server import make_server
-from sandbox_runtime import ContractRewardAggregator, ContractRewardGate, ContractModelMetricEvaluator, ContractToolRegistry, ContractUserSimulator, DeclarativeMetricEvaluator, DeclarativeToolCompiler, EpisodeStore, ManifestDataStore, SandboxApplication
+from sandbox_runtime import BusinessLifecycle, ContractRewardAggregator, ContractRewardGate, ContractModelMetricEvaluator, ContractToolRegistry, ContractUserSimulator, DeclarativeMetricEvaluator, DeclarativeToolCompiler, EpisodeStore, ManifestDataStore, SandboxApplication, RewardStateSnapshots, ExecutionRoutes
 from task_impl import TaskHooks
 ROOT = Path(__file__).resolve().parent
 def _json(path): return json.loads(path.read_text(encoding="utf-8"))
-def create_app(*, db_path=None):
+def create_app(*, db_path=None, reuse_validation_judgments=False):
+    if type(reuse_validation_judgments) is not bool: raise ValueError("validation reuse must be boolean")
     contract = _json(ROOT / "BUILD_CONTRACT.json"); artifacts = contract.get("artifacts", {})
     manifest = artifacts["data_manifest"]; store = EpisodeStore(db_path or ROOT / ".runtime" / "episodes.sqlite3")
     data = ManifestDataStore(manifest, ROOT / manifest["root"], store); hooks = TaskHooks(contract, data, store)
@@ -23,18 +24,21 @@ def create_app(*, db_path=None):
     extensions = hooks.business_handlers()
     if handlers.keys() & extensions.keys(): raise ValueError("custom handlers cannot override compiled tools")
     handlers.update(extensions)
-    registry = ContractToolRegistry(contract.get("tools", []), handlers, noise_tools=contract.get("noise_tools", []), event_recorder=store.event, tool_contracts=contract.get("task_spec", {}).get("tool_contracts", []))
+    lifecycle = BusinessLifecycle(contract.get("business_lifecycle"), data, store, handlers)
+    snapshots = RewardStateSnapshots(data, contract.get("tool_implementations", []), [contract.get("metric_implementations", []), contract.get("task_spec", {}).get("goal_contract", {}), contract.get("task_spec", {}).get("execution_routes", [])])
+    registry = ContractToolRegistry(contract.get("tools", []), handlers, noise_tools=contract.get("noise_tools", []), event_recorder=store.event, tool_contracts=contract.get("task_spec", {}).get("tool_contracts", []), lifecycle=lifecycle, reward_snapshots=snapshots)
     user_manifest = artifacts.get("user_simulation_manifest", {}); user_root = ROOT / user_manifest.get("root", "data/user_simulation")
     profiles = _json(user_root / user_manifest["profiles_file"]) if user_manifest.get("profiles_file") else []
     scripts = _json(user_root / user_manifest["scripts_file"]) if user_manifest.get("scripts_file") else []
     # Runtime user behavior defaults to the shared external-LLM boundary.
     # Task-specific hooks must not silently replace semantic FSM reasoning.
-    user = ContractUserSimulator(store, profiles=profiles, scripts=scripts)
+    user = ContractUserSimulator(store, profiles=profiles, scripts=scripts, execution_routes=ExecutionRoutes(contract.get("task_spec", {})), route_context=lambda: {"business_state": data._all(), "initial_business_state": data.baseline, "reward_state_snapshots": store.get_state(RewardStateSnapshots.KEY, {})})
     metric_evaluator = DeclarativeMetricEvaluator(); aggregator = ContractRewardAggregator(contract.get("metrics", [])); reward_gate = ContractRewardGate(contract.get("task_spec", {}), contract.get("metrics", []))
-    model_metrics = ContractModelMetricEvaluator(contract, store)
+    model_metrics = ContractModelMetricEvaluator(contract, store, reuse_across_resets=reuse_validation_judgments)
     def reward():
         context = dict(hooks.metric_context())
         context.update(business_state={name: data.table(name) for name in data.baseline}, initial_business_state=data.baseline, trajectory=store.replay(), final_agent_response=store.get_state("final_agent_response", ""))
+        context["reward_state_snapshots"] = store.get_state(RewardStateSnapshots.KEY, {})
         scores = metric_evaluator.evaluate_all(contract.get("metric_implementations", []), context)
         scores.update(model_metrics.evaluate_all(context, scores))
         extensions = hooks.custom_metric_scores(context, dict(scores))
@@ -47,6 +51,7 @@ def create_app(*, db_path=None):
     def reset(episode): data.reset(episode); user.reset(episode); hooks.reset(episode)
     app = SandboxApplication(episode_store=store, tool_registry=registry, observation=hooks.observation, reward=reward, user_turn=user.turn, business_snapshot=lambda: {name: data.table(name) for name in data.baseline}, reset_hook=reset, data_hash=data.data_hash)
     app.mutate_business_state = lambda mutation: data.update(mutation["table"], mutation.get("selector", {}), mutation.get("changes", {}))
+    app.validation_judgment_report = model_metrics.runtime.validation_cache_report
     return app
 def main():
     parser=argparse.ArgumentParser(); parser.add_argument("--host",default="0.0.0.0"); parser.add_argument("--port",type=int,required=True); args=parser.parse_args()

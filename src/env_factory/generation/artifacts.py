@@ -30,6 +30,10 @@ def write_task_artifact(task_dir: Path, task: object, training_category: str) ->
             "public_input": pipeline_artifacts.get("public_input", {
                 "initial_user_message": task.desc, "materials": []
             }),
+            "business_lifecycle": pipeline_artifacts.get("business_lifecycle", {}),
+            "requirement_coverage": pipeline_artifacts.get("requirement_coverage", {
+                "version": "1.0", "status": "not_declared", "requirements": []}),
+            "realism_requirements": pipeline_artifacts.get("realism_requirements", {"version": "1.0", "mechanisms": []}),
             "environment_plan": pipeline_artifacts.get("environment_plan", {}),
             "environment": task.env,
             "actions": pipeline_artifacts.get("actions", []),
@@ -42,6 +46,9 @@ def write_task_artifact(task_dir: Path, task: object, training_category: str) ->
             "reward_key_steps": pipeline_artifacts.get("reward_key_steps", []),
             "metrics": task.metrics,
             "metric_implementations": pipeline_artifacts.get("metric_implementations", []),
+            "execution_route_probes": pipeline_artifacts.get("execution_route_probes", []),
+            "reward_pair_probes": pipeline_artifacts.get("reward_pair_probes", []),
+            "reward_pair_validation": pipeline_artifacts.get("reward_pair_validation", {"status": "not_run"}),
             "reward_formula": pipeline_artifacts.get("reward_formula", {}),
             "acceptance_contract": pipeline_artifacts.get("acceptance_contract", {}),
             "task_readiness": pipeline_artifacts.get("task_readiness", {}),

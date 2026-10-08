@@ -66,7 +66,7 @@ def fixture(category):
 
 class AgentAuthoringTest(unittest.TestCase):
     def test_graph_relation_metadata_is_rejected_before_data_materialization(self):
-        from env_factory.task_pipeline import PipelineGenerationError
+        from env_factory.generation.contract_compiler import PipelineGenerationError
         source, request = fixture("direct_response")
         request["graph_context"]["relation"] = "SAME_EVENT_ELEMENT"
         source["description"]["public_input"]["initial_user_message"] += " SAME_EVENT_ELEMENT"
@@ -261,13 +261,13 @@ class AgentAuthoringTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(ValueError, "NUMERIC_DEPENDENCY_UNUSED"):
             compile_source(source, root=Path(directory), request=request)
 
-    def test_real_multihop_is_required_before_agent_invocation(self):
+    def test_sampled_path_length_is_required_before_agent_invocation(self):
         store = Mock()
         store.random_scene_event_path.return_value = (SceneNode(name="仓储", words=("仓储",)),)
-        generator = TaskGenerator(store, None, generation_backend="code_agent")
+        generator = TaskGenerator(store)
         with patch("env_factory.generation.code_agent.generate") as agent:
-            with self.assertRaisesRegex(TaskGenerationError, "full multi-hop"):
-                generator.generate(hops=2)
+            with self.assertRaisesRegex(TaskGenerationError, "sampled length"):
+                generator.generate(hops=2, seed=5)
             agent.assert_not_called()
 
 

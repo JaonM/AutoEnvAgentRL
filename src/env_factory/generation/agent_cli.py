@@ -1,7 +1,35 @@
 """CLI differences shared by task authoring and semantic review."""
 import json
 
+from .codex_transport import transport_args
+
 AGENTS = ("codex", "claude", "opencode")
+
+
+def transport_diagnostics(text):
+    """Count explicit CLI transport notices, never infer network time from them."""
+    reconnects = fallbacks = malformed = 0
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            malformed += 1
+            continue
+        if not isinstance(event, dict):
+            continue
+        notice = event if event.get('type') == 'error' else event.get('item', {})
+        if not isinstance(notice, dict) or notice.get('type') != 'error':
+            continue
+        message = notice.get('message', '')
+        if not isinstance(message, str):
+            continue
+        reconnects += message.startswith('Reconnecting...')
+        fallbacks += message.startswith('Falling back from WebSockets to HTTPS transport.')
+    return {'scope': 'explicit_cli_notices_only', 'reconnect_notices': reconnects,
+            'https_fallback_notices': fallbacks, 'malformed_event_lines': malformed,
+            'network_seconds': None}
 
 
 def command(agent, model, prompt, response, *, readonly=False, schema=None):
@@ -12,6 +40,7 @@ def command(agent, model, prompt, response, *, readonly=False, schema=None):
                 "read-only" if readonly else "workspace-write",
                 "--skip-git-repo-check", "--model", model, "--json",
                 "--output-last-message", str(response)]
+        args += transport_args()
         if schema:
             args += ["--output-schema", str(schema)]
         return args + ["-"]

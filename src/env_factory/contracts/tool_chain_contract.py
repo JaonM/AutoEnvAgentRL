@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..sandbox_runtime import DeclarativeMetricEvaluator, SandboxError
+from ..sandbox_runtime import DeclarativeMetricEvaluator, SandboxError, validate_json_schema
 
 
 def captured_schema(schema: Any, path: str) -> dict[str, Any] | None:
@@ -14,23 +14,54 @@ def captured_schema(schema: Any, path: str) -> dict[str, Any] | None:
         tokens = DeclarativeMetricEvaluator.path_tokens(path)
     except (SandboxError, ValueError, SyntaxError):
         return None
-    current = schema
-    for kind, value in tokens:
-        if kind == "field":
-            current = current.get("properties", {}).get(value)
-        elif kind == "index":
-            current = current.get("items")
-        else:
-            return None
+    def walk(current, remaining):
         if not isinstance(current, dict):
             return None
-    return current
+        if not remaining:
+            return current
+        kind, value = remaining[0]
+        if kind == "field":
+            if current.get('type') == 'array':
+                # Runtime projection unwraps exactly one match, but retains an
+                # array for zero or multiple matches. Do not assert uniqueness
+                # from a filter alone; execution still validates actual values.
+                projected = walk(current.get('items'), [(kind, value)])
+                if projected is None:
+                    return None
+                branches = [projected, {'type': 'array', 'items': projected}]
+                resolved = [walk(branch, remaining[1:]) for branch in branches]
+                resolved = [branch for branch in resolved if branch is not None]
+                return {'anyOf': resolved} if resolved else None
+            child = current.get("properties", {}).get(value)
+        elif kind == "index":
+            child = current.get("items")
+        elif kind in {'filter', 'wildcard'}:
+            if current.get('type') != 'array' or not isinstance(current.get('items'), dict):
+                return None
+            if kind == 'filter':
+                column, expected = value
+                selector = current['items'].get('properties', {}).get(column)
+                if not isinstance(selector, dict):
+                    return None
+                try:
+                    validate_json_schema(selector, expected, 'capture_filter')
+                except (SandboxError, TypeError, ValueError):
+                    return None
+            child = {'type': 'array', 'items': current['items']}
+        else:
+            return None
+        return walk(child, remaining[1:])
+
+    return walk(schema, tokens)
 
 
 def schema_conflict(source: Any, target: Any, path: str = "") -> str | None:
     """Report only shape conflicts guaranteed by declared schemas."""
     if not isinstance(source, dict) or not isinstance(target, dict):
         return None
+    if isinstance(source.get('anyOf'), list) and source['anyOf']:
+        conflicts = [schema_conflict(branch, target, path) for branch in source['anyOf']]
+        return conflicts[0] if all(conflicts) else None
     source_kind, target_kind = source.get("type"), target.get("type")
     if source_kind and target_kind and source_kind != target_kind:
         if {source_kind, target_kind} != {"integer", "number"}:

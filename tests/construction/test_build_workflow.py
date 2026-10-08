@@ -60,17 +60,17 @@ class BuildWorkflowTest(unittest.TestCase):
         plan = planner.build_plan({"artifacts": {"generation_pipeline": {"backend": "code_agent"}}})
         self.assertEqual([node["id"] for node in plan["nodes"]], ["business_integration"])
         self.assertIn("tests/business_integration", plan["nodes"][0]["validation"][0])
-        self.assertEqual(planner.build_plan({})["nodes"], [])
+        self.assertEqual([node["id"] for node in planner.build_plan({})["nodes"]], ["business_integration"])
 
-    def test_zero_extension_reward_timeout_is_not_sent_to_task_agent(self):
+    def test_platform_reward_timeout_is_not_sent_to_task_agent(self):
         router = load_script("route_delivery_failure.py")
         timeout = "independent baseline conformance failed\n" \
                   "runtime endpoint unavailable GET /v1/reward: timed out"
-        self.assertTrue(router.zero_extension_reward_timeout({"nodes": []}, timeout))
-        self.assertFalse(router.zero_extension_reward_timeout(
+        self.assertTrue(router.platform_reward_timeout({"nodes": [{"id": "business_integration"}]}, timeout))
+        self.assertFalse(router.platform_reward_timeout(
             {"nodes": [{"id": "task_handlers"}]}, timeout,
         ))
-        self.assertFalse(router.zero_extension_reward_timeout(
+        self.assertFalse(router.platform_reward_timeout(
             {"nodes": []}, "scenario assertion failed",
         ))
 
@@ -249,12 +249,12 @@ class BuildWorkflowTest(unittest.TestCase):
         builder = (ROOT / "scripts/build_docker_sandbox_image.sh").read_text(
             encoding="utf-8"
         )
-        loop = (ROOT / "scripts/loop_experiment.py").read_text(encoding="utf-8")
+        loop = (ROOT / "src/env_factory/task_pipeline.py").read_text(encoding="utf-8")
         runtime_mount = (
             "/app/.runtime:rw,nosuid,size=64m,uid=10001,gid=10001,mode=0700"
         )
         self.assertIn(runtime_mount, builder)
-        self.assertIn(runtime_mount, loop)
+        self.assertNotIn("start_rollout_container", loop)
         self.assertIn('docker exec "$smoke_cid"', builder)
         self.assertIn("service_health", builder)
 
@@ -410,41 +410,6 @@ class BuildWorkflowTest(unittest.TestCase):
             (root / "extra_business_logic.py").write_text("LIMIT = 11\n", encoding="utf-8")
             self.assertFalse(scorer.review_check(root)[0])
 
-    def test_sandbox_loop_is_pinned_to_high_value_tasks_and_luna(self):
-        loop = load_script("run_sandbox_build_loop.py")
-        command = loop.build_command(ROOT, 45, ROOT / "output/example", 3)
-        self.assertEqual(loop.DEFAULT_TASK_IDS, (45, 78, 92, 175))
-        self.assertIn("gpt-6-luna", command)
-        self.assertIn(str(ROOT / "output/task/task-45/task.json"), command)
-
-        with tempfile.TemporaryDirectory() as directory:
-            project = Path(directory)
-            legacy = project / "output/task_artifacts/task-45/task.json"
-            legacy.parent.mkdir(parents=True)
-            legacy.write_text("{}", encoding="utf-8")
-            self.assertIn(str(legacy), loop.build_command(project, 45, project / "sandbox", 3))
-            current = project / "output/task/task-45/task.json"
-            current.parent.mkdir(parents=True)
-            current.write_text("{}", encoding="utf-8")
-            self.assertIn(str(current), loop.build_command(project, 45, project / "sandbox", 3))
-        history = {"rounds": [{"round": 3, "tasks": [{
-            "task_id": "task-78", "score": {
-                "score": 10.0, "passed": True, "model": "gpt-5.6-luna",
-                "review_model": "gpt-5.6-luna",
-            }
-        }]}]}
-        self.assertIsNone(loop.reusable_result(history, 78))  # stale/unexecuted evidence cannot be reused
-
-        with tempfile.TemporaryDirectory() as tmp:
-            seed = Path(tmp) / "task-92"
-            seed.mkdir()
-            (seed / "task_impl.py").write_text("# implementation\n", encoding="utf-8")
-            seed_history = {"rounds": [{"round": 6, "tasks": [{
-                "task_id": "task-92", "output": str(seed), "score": {"score": 4.5}
-            }]}]}
-            self.assertEqual(loop.latest_seed(seed_history, 92), seed)
-            resumed = loop.build_command(ROOT, 92, ROOT / "output/example", 3, resume=True)
-            self.assertIn("--resume", resumed)
 
     def test_build_workflow_always_captures_terminal_status(self):
         workflow = (ROOT / "scripts" / "develop_sandbox_with_agent.sh").read_text(encoding="utf-8")
@@ -1100,8 +1065,8 @@ def handler(data, arguments):
         self.assertIn('auto_score="true"', workflow)
         self.assertIn('scripts/sandbox/score_sandbox_offline.py', workflow)
         self.assertIn('offline_sandbox_score.json', workflow)
-        loop = load_script("run_sandbox_build_loop.py")
-        self.assertIn("--skip-auto-score", loop.build_command(ROOT, 45, ROOT / "output/example", 3))
+        pipeline = (ROOT / 'src/env_factory/task_pipeline.py').read_text()
+        self.assertIn('"--skip-auto-score"', pipeline)
 
     def test_scaffold_generator_creates_compilable_thin_composition(self):
         generator = load_script("generate_sandbox_scaffold.py")
@@ -1172,7 +1137,7 @@ def handler(data, arguments):
         self.assertEqual(first["version"], "2.0")
         self.assertEqual(
             [node["id"] for node in first["nodes"]],
-            ["task_handlers", "metric_extensions"],
+            ["task_handlers", "metric_extensions", "business_integration"],
         )
         self.assertEqual(first["nodes"][0]["scope"]["tables"], ["items"])
 
@@ -1183,13 +1148,14 @@ def handler(data, arguments):
             {"id": "hybrid_quality", "evaluator": {"kind": "hybrid_outcome"}},
         ]})
         self.assertNotIn("metric_extensions", [node["id"] for node in plan["nodes"]])
-        self.assertEqual(plan["nodes"], [])
+        self.assertEqual([node["id"] for node in plan["nodes"]], ["business_integration"])
         self.assertEqual(load_script("validate_development_plan.py").validate(plan), [])
 
-    def test_builder_supports_a_fully_declarative_zero_node_plan(self):
-        workflow = (ROOT / "scripts/develop_sandbox_with_agent.sh").read_text(encoding="utf-8")
-        self.assertIn('node_ids=("")', workflow)
-        self.assertIn('[[ -z "$node_id" ]] && continue', workflow)
+    def test_builder_rejects_zero_node_or_extension_only_plans(self):
+        validator = load_script("validate_development_plan.py")
+        for nodes in ([], [{"id": "task_handlers"}]):
+            self.assertIn("development plan requires the Code Agent business_integration node",
+                          validator.validate({"nodes": nodes}))
 
     def test_builder_restores_platform_assets_changed_by_task_agent(self):
         workflow = (ROOT / "scripts/develop_sandbox_with_agent.sh").read_text(encoding="utf-8")

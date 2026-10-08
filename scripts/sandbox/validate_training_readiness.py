@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from env_factory.contracts.episode_evidence import initial_replay_events
+
 
 FORBIDDEN_PUBLIC_KEYS = {"ground_truth", "expected_tool_call", "hidden_state", "api_key", "trainer_token", "password"}
 
@@ -23,6 +25,20 @@ def load(path: Path) -> Any:
 
 def canonical(value: Any) -> Any:
     if isinstance(value, dict):
+        if isinstance(value.get('history'), list) and isinstance(value.get('step_results'), dict):
+            normalized = copy.deepcopy(value)
+            for original, entry in zip(value['history'], normalized['history']):
+                body = original.get('body')
+                error = body.get('error') if isinstance(body, dict) else None
+                if (not isinstance(original.get('status'), int) or original['status'] < 400
+                        or not isinstance(error, dict) or set(body) != {'error'}
+                        or set(error) != {'code', 'message', 'details', 'request_id'}):
+                    continue
+                entry['body']['error'].pop('request_id')
+                for key, result in value['step_results'].items():
+                    if result == body:
+                        normalized['step_results'][key]['error'].pop('request_id', None)
+            return {key: canonical(item) for key, item in normalized.items()}
         if (isinstance(value.get("events"), list) and "trace_hash" in value
                 and "episode_id" in value):
             events = []
@@ -99,6 +115,14 @@ def valid_delta_precondition(delta: Any, tables: dict[str, Any]) -> bool:
     return bool(rows) and all(field in row and type(row[field]) is type(before) and row[field] == before for row in rows)
 
 
+def goal_evaluation_state(app, baseline):
+    """Use trusted episode checkpoints, as the actual reward endpoint does."""
+    from sandbox_runtime import ExpressionBusinessState, RewardStateSnapshots
+    store = getattr(app, 'episode_store', None)
+    snapshots = store.get_state(RewardStateSnapshots.KEY, {}) if store is not None else {}
+    return ExpressionBusinessState(app.business_snapshot(), baseline, snapshots)
+
+
 def preservation_probes(app, runner, scenario, goal, headers):
     """Run final-sandbox counterexamples while keeping the requested goal true."""
     from sandbox_runtime import BusinessGoalEvaluator
@@ -126,9 +150,12 @@ def preservation_probes(app, runner, scenario, goal, headers):
                     app.mutate_business_state({"table": table, "selector": {k: row[k] for k in keys}, "changes": {field: changed}})
                 except Exception:
                     continue  # schema/constraint rejection is not reward evidence
-                current = app.business_snapshot()
+                current = goal_evaluation_state(app, baseline)
+                store = getattr(app, 'episode_store', None)
+                events = store.replay().get('events', []) if store is not None else []
+                allowed_baseline = BusinessGoalEvaluator.external_baseline(baseline, events)
                 if (not BusinessGoalEvaluator.evaluate(goal["row_predicates"], current, baseline)
-                        or BusinessGoalEvaluator.preserves_unrelated(goal, baseline, current)):
+                        or BusinessGoalEvaluator.preserves_unrelated(goal, allowed_baseline, current)):
                     continue
                 status, payload, _ = app.handle("GET", "/v1/reward", headers=headers)
                 reward = payload.get("reward") if isinstance(payload, dict) else None
@@ -240,7 +267,8 @@ def validate(root: Path) -> dict[str, Any]:
             goal = (task_spec or {}).get("goal_contract", {})
             if goal.get("row_predicates"):
                 snapshot = getattr(app, "business_snapshot", None)
-                if snapshot is None or not BusinessGoalEvaluator.evaluate(goal["row_predicates"], snapshot(), baseline_by_table):
+                if snapshot is None or not BusinessGoalEvaluator.evaluate(
+                        goal["row_predicates"], goal_evaluation_state(app, baseline_by_table), baseline_by_table):
                     failures.append({"gate": "state_causality", "message": "success rollout did not satisfy business postconditions"})
         except Exception as exc:
             failures.append({"gate": "determinism", "message": str(exc)})
@@ -265,6 +293,8 @@ def validate(root: Path) -> dict[str, Any]:
             "POST", "/v1/reset", {"episode_id": episode_a, "seed": 1701}, headers_a
         )
         baseline_a = canonical(app.business_snapshot())
+        initial_status_a, initial_replay_a, _ = app.handle('GET', '/v1/replay', headers=headers_a)
+        initial_events = initial_replay_events(initial_replay_a.get('events'))
         marker = "envfactory episode isolation marker"
         marker_status, _, _ = app.handle(
             "POST", "/v1/agent_response", {"content": marker}, headers_a
@@ -285,15 +315,17 @@ def validate(root: Path) -> dict[str, Any]:
         reset_a = canonical(app.business_snapshot())
         _, replay_a_after_reset, _ = app.handle("GET", "/v1/replay", headers=headers_a)
         reset_reproducible = (
-            status_a == status_b == reset_status == 200
+            status_a == status_b == reset_status == initial_status_a == 200
             and baseline_a == baseline_b == reset_a
-            and replay_a_after_reset.get("events") == []
+            and initial_events is not None
+            and initial_replay_events(replay_a_after_reset.get('events')) == initial_events
         )
         episode_isolation = (
             marker_status == replay_status_a == replay_status_b == 200
             and replay_a.get("episode_id") == episode_a
             and replay_b.get("episode_id") == episode_b
-            and replay_b.get("events") == []
+            and initial_events is not None
+            and initial_replay_events(replay_b.get('events')) == initial_events
             and any(
                 event.get("event") == "agent_response"
                 and event.get("payload", {}).get("content") == marker
@@ -311,6 +343,7 @@ def validate(root: Path) -> dict[str, Any]:
             "replay_consistent": replay_consistent,
             "episode_a_event_count": len(replay_a.get("events", [])),
             "episode_b_event_count": len(replay_b.get("events", [])),
+            "episode_b_initial_events": replay_b.get('events', []),
         }
         for gate, passed, message in (
             ("reset_reproducibility", reset_reproducible, "same seed reset did not restore the baseline"),

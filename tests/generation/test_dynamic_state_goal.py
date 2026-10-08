@@ -54,6 +54,35 @@ def dynamic_source(offset=0):
 
 
 class DynamicStateGoalTest(unittest.TestCase):
+    def test_numeric_user_disclosure_is_scoped_to_selected_script_and_order(self):
+        import copy
+        import random
+        from env_factory.generation.input_grounding import validate_stateful_value_origins
+        source, _ = dynamic_source()
+        steps = source['scenarios'][0]['steps']
+        steps[2]['arguments']['value'] = 25
+        scripts = [{'interaction_protocol': {'stages': [{
+            'id': 'target', 'reference_response': 'Which temperature?',
+            'private_fact': value}]}} for value in [25, 26]]
+        seed = next(n for n in range(100) if random.Random(n).randrange(2) == 0)
+        steps.insert(0, {'operation': 'reset', 'body': {'seed': seed}})
+        disclosure = {'operation': 'dialogue_turn', 'expected_stage': 'target',
+                      'content': 'Which temperature?'}
+        steps.insert(3, disclosure)
+        validate_stateful_value_origins(source, validated_scripts=scripts)
+        for defect in ('late', 'other_script', 'wrong_question'):
+            broken = copy.deepcopy(source)
+            changed = broken['scenarios'][0]['steps']
+            if defect == 'late':
+                changed.append(changed.pop(3))
+            elif defect == 'other_script':
+                changed[0]['body']['seed'] = next(n for n in range(100)
+                    if random.Random(n).randrange(2) == 1)
+            else:
+                changed[3]['content'] = 'Unrelated question'
+            with self.subTest(defect=defect), self.assertRaisesRegex(ValueError, 'STATE_VALUE_UNGROUNDED'):
+                validate_stateful_value_origins(broken, validated_scripts=scripts)
+
     def test_copied_private_write_and_goal_are_rejected_before_materialization(self):
         for location in ("write", "goal"):
             source, request = dynamic_source()

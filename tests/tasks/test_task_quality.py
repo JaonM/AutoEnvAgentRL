@@ -12,7 +12,7 @@ from env_factory.tasks.task_quality import (
     unsourced_real_world_exemplars,
     unobservable_tool_preconditions,
 )
-from env_factory.task_pipeline import TaskGenerationPipeline
+from env_factory.generation.contract_compiler import ContractCompiler
 
 
 def valid_task():
@@ -21,7 +21,7 @@ def valid_task():
         "task": "查询公开库存记录，比较候选商品并给出有依据的采购建议。",
         "task_intent": "recommend",
         "complexity": "standard",
-        "requirements": {"output_format": "markdown", "runtime_interface": TaskGenerationPipeline._build_runtime_interface([], {})},
+        "requirements": {"output_format": "markdown", "runtime_interface": ContractCompiler._build_runtime_interface([], {})},
         "environment_plan": {"mode": "reference_data"},
         "actions": [
             {"name": "读取库存"}, {"name": "筛选候选"},
@@ -128,7 +128,7 @@ class TaskQualityTest(unittest.TestCase):
         report = score_task(task)
         self.assertIn("只读数据结果奖励缺少答案与业务证据核对：outcome",
                       report.eligibility_failures)
-        TaskGenerationPipeline._ground_reference_outcome_metrics(
+        ContractCompiler._ground_reference_outcome_metrics(
             task["metrics"], environment_mode="reference_data",
         )
         report = score_task(task)
@@ -191,7 +191,7 @@ class TaskQualityTest(unittest.TestCase):
             "table": "inventory", "where": {"id": "i1"},
             "values": {"quantity": 3}, "count": 1,
         }]}
-        TaskGenerationPipeline._ground_reference_outcome_metrics(
+        ContractCompiler._ground_reference_outcome_metrics(
             task["metrics"], environment_mode="stateful",
         )
         self.assertTrue(score_task(task).eligible)
@@ -323,7 +323,7 @@ class TaskQualityTest(unittest.TestCase):
             preview = [{"tool_name": "read_inventory", "result": {"records": [
                 {"id": 1}, {"id": 3},
             ]}}]
-            with patch.object(TaskGenerationPipeline, "_preview_success_tool_results", return_value=preview):
+            with patch.object(ContractCompiler, "_preview_success_tool_results", return_value=preview):
                 report = score_file(path)
             self.assertFalse(report.eligible)
             self.assertEqual(report.score, 0)
@@ -752,7 +752,7 @@ class TaskQualityTest(unittest.TestCase):
         self.assertFalse(report.eligible)
         self.assertIn("状态结果奖励缺少最终业务状态核对：outcome",
                       report.eligibility_failures)
-        TaskGenerationPipeline._ground_reference_outcome_metrics(
+        ContractCompiler._ground_reference_outcome_metrics(
             task["metrics"], environment_mode="stateful",
         )
         self.assertTrue(score_task(task).eligible)

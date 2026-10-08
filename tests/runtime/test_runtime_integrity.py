@@ -223,12 +223,14 @@ class IntegrityTest(unittest.TestCase):
             event_recorder=self.store.event,
         )
         registry.execute("lookup", {})
-        event = self.store.replay()["events"][-1]
+        event = next(event for event in reversed(self.store.replay()["events"])
+                     if event['event'] == 'tool_call')
         self.assertEqual(event["payload"]["business_data_reads"], ["items"])
 
         registry.handlers["lookup"] = lambda args: {"records": [{"id": 1}]}
         registry.execute("lookup", {})
-        event = self.store.replay()["events"][-1]
+        event = next(event for event in reversed(self.store.replay()["events"])
+                     if event['event'] == 'tool_call')
         self.assertEqual(event["payload"]["business_data_reads"], [])
 
     def test_explicit_episode_context_isolates_interleaved_work(self):
@@ -337,7 +339,7 @@ class IntegrityTest(unittest.TestCase):
             self.assertIn("outcome does not match transition", corrected_request["messages"][-1]["content"])
 
     def test_acceptance_compiler_preserves_calls_but_owns_assertions(self):
-        from env_factory.task_pipeline import TaskGenerationPipeline
+        from env_factory.generation.contract_compiler import ContractCompiler
         baseline = [{"kind": "goal_success", "steps": [{"operation": "reset"},
                     {"operation": "agent_response", "content": "verified answer"}, {"operation": "reward"}],
                     "assertions": [{"path": "$.reward", "operator": "gte", "expected": 0.6}]},
@@ -346,7 +348,7 @@ class IntegrityTest(unittest.TestCase):
                     {"operation": "tool_call", "tool_name": "read", "arguments": {}, "capture": {"id": "$.records[0].id"}},
                     {"operation": "tool_call", "tool_name": "write", "arguments": {"id": {"$ref": "id"}}}],
                     "assertions": [{"operator": "equals", "expected": "anything"}]}]
-        result = TaskGenerationPipeline._compile_business_scenario_structure(proposal, baseline)
+        result = ContractCompiler._compile_business_scenario_structure(proposal, baseline)
         self.assertEqual(result[0]["assertions"], baseline[0]["assertions"])
         self.assertEqual(result[0]["steps"][2]["arguments"], {"id": {"$ref": "id"}})
         self.assertNotIn("mutate_business_state", [step["operation"] for step in result[0]["steps"]])

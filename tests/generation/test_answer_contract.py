@@ -64,6 +64,22 @@ class AnswerContractTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "ANSWER_CONTRACT_ENUM"):
             bind_answer_contract(source)
 
+    def test_inferred_decision_enum_must_not_publish_private_user_values(self):
+        for private_value in ['selected-private-code', 73, True]:
+            with self.subTest(private_value=private_value):
+                source, _ = answer_source()
+                value = private_value if isinstance(private_value, str) else json.dumps(private_value)
+                source['interaction_contract'] = {'variants': [{'stages': [{'private_fact': private_value}]}]}
+                source['answer_contract']['schema']['properties'] = {'voice_types': {'type': 'string'}}
+                expression = {'if': {'condition': {'literal': True},
+                                      'then': {'literal': value}, 'else': {'literal': ''}}}
+                source['metric_implementations'][0]['expected']['targets'][0]['expression'] = expression
+                source['scenarios'][0]['steps'][0]['content'] = json.dumps({'voice_types': value})
+                bound = bind_answer_contract(source)
+                self.assertNotIn('enum', bound['schema']['properties']['voice_types'])
+                self.assertNotIn(value, source['description']['public_input']['initial_user_message'])
+                self.assertEqual(source['metric_implementations'][0]['expected']['targets'][0]['expression'], expression)
+
     def test_delivery_preflight_rebuilds_scaffold_and_rejects_false_reference(self):
         from env_factory.generation.delivery_preflight import verify_delivery
         source, request = answer_source()

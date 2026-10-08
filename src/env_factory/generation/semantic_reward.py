@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import copy
 import json
+from contextlib import nullcontext
 
 from env_factory.sandbox_runtime import SandboxError, validate_json_schema
 
 
-def compile_semantic_outcome(item: dict, *, schema: dict, weight: float) -> tuple[dict, list[dict]]:
+def compile_semantic_outcome(item: dict, *, schema: dict, weight: float,
+                             reference_answers: dict | None = None) -> tuple[dict, list[dict]]:
     """Validate one field-scoped judge and its executable calibration cases.
 
     Cases are calibration evidence, never reference answers supplied to the judge.
@@ -29,9 +31,41 @@ def compile_semantic_outcome(item: dict, *, schema: dict, weight: float) -> tupl
         raise ValueError("SEMANTIC_REWARD_CRITERIA: provide explicit public meaning-based criteria")
     if not isinstance(cases, list) or not 4 <= len(cases) <= 16:
         raise ValueError("SEMANTIC_REWARD_CASES: provide 4 to 16 positive and negative calibration answers")
+    expanded = []
+    for case in cases:
+        if not isinstance(case, dict) or 'answer_overrides' not in case:
+            expanded.append(case)
+            continue
+        if set(case) != {'answer_overrides', 'expected', 'reference_id'}:
+            raise ValueError('SEMANTIC_REWARD_CASES: answer_overrides requires reference_id and expected, without answer')
+        identity = case['reference_id']
+        if not isinstance(identity, str) or not identity:
+            raise ValueError('SEMANTIC_REWARD_CASES: answer_overrides requires a named reference')
+        name = identity
+        if name not in (reference_answers or {}):
+            base, separator, script = name.rpartition('-script-')
+            if separator and script.isdigit() and int(script) > 0:
+                name = base
+        if name not in (reference_answers or {}):
+            raise ValueError('SEMANTIC_REWARD_CASES: unknown answer_overrides reference: ' + identity)
+        overrides = case['answer_overrides']
+        if not isinstance(overrides, dict) or set(overrides) - set(fields):
+            raise ValueError('SEMANTIC_REWARD_CASES: answer_overrides may replace only this metric\'s owned fields')
+        try:
+            answer = json.loads(reference_answers[name])
+        except (ValueError, TypeError) as exc:
+            raise ValueError('SEMANTIC_REWARD_CASES: reference answer must be a JSON object') from exc
+        if not isinstance(answer, dict):
+            raise ValueError('SEMANTIC_REWARD_CASES: reference answer must be a JSON object')
+        answer.update(copy.deepcopy(overrides))
+        expanded.append({'reference_id': identity, 'answer': answer, 'expected': case['expected']})
+    cases = expanded
     seen, counts = set(), {"pass": 0, "fail": 0}
     for case in cases:
-        if (not isinstance(case, dict) or set(case) != {"answer", "expected"}
+        if (not isinstance(case, dict) or not {"answer", "expected"} <= set(case)
+                or set(case) - {"answer", "expected", "reference_id"}
+                or ("reference_id" in case and (not isinstance(case["reference_id"], str)
+                    or not case["reference_id"].strip()))
                 or case.get("expected") not in counts):
             raise ValueError("SEMANTIC_REWARD_CASES: each case requires answer and expected pass/fail")
         try:
@@ -39,7 +73,8 @@ def compile_semantic_outcome(item: dict, *, schema: dict, weight: float) -> tupl
         except (SandboxError, TypeError, ValueError) as exc:
             raise ValueError(f"SEMANTIC_REWARD_CASES: invalid answer shape: {exc}") from exc
         # Cases must differ in the fields this judge actually owns.
-        identity = json.dumps({key: case["answer"][key] for key in fields}, sort_keys=True, ensure_ascii=False)
+        identity = (case.get("reference_id"), json.dumps(
+            {key: case["answer"][key] for key in fields}, sort_keys=True, ensure_ascii=False))
         if identity in seen:
             raise ValueError("SEMANTIC_REWARD_CASES: duplicate or contradictory owned-field answer")
         seen.add(identity)
@@ -62,7 +97,40 @@ class SemanticCalibrationUnavailable(RuntimeError):
     """Infrastructure failure cannot establish semantic acceptance or rejection."""
 
 
-def calibrate_semantic_outcomes(contract: dict, calibration: dict, *, context: dict, store) -> dict:
+def scope_calibration_references(calibration, successes):
+    """A named reference family calibrates every expanded user script, never one chosen context."""
+    scoped, references = {}, {None: successes[0]}
+    for metric_id, cases in calibration.items():
+        expanded = []
+        seen = set()
+        for case in cases:
+            if 'reference_id' not in case:
+                expanded.append(copy.deepcopy(case))
+                continue
+            name = case['reference_id']
+            matches = [s for s in successes if s.get('scenario_id') == name]
+            if not matches:
+                prefix = name + '-script-'
+                matches = [s for s in successes if s.get('scenario_id', '').startswith(prefix)
+                           and s['scenario_id'][len(prefix):].isdigit()]
+            if not matches:
+                raise ValueError('SEMANTIC_CALIBRATION_REFERENCE: unknown successful reference: ' + str(name))
+            if len(matches) > 8:
+                raise ValueError('SEMANTIC_CALIBRATION_REFERENCE: at most eight expanded scripts per reference')
+            for scenario in matches:
+                identity = name if len(matches) == 1 else scenario['scenario_id']
+                key = (scenario['scenario_id'], json.dumps(case['answer'], sort_keys=True, ensure_ascii=False))
+                if key in seen:
+                    raise ValueError('SEMANTIC_CALIBRATION_REFERENCE: overlapping or contradictory scoped cases')
+                seen.add(key)
+                references[identity] = scenario
+                expanded.append({**copy.deepcopy(case), 'reference_id': identity})
+        scoped[metric_id] = expanded
+    return scoped, references
+
+
+def calibrate_semantic_outcomes(contract: dict, calibration: dict, *, context: dict, store,
+                                progress=None, reference_contexts: dict | None = None) -> dict:
     """Run real runtime judges against declared paraphrase and error cases.
 
     A failed negative judged through an infrastructure fallback is not evidence
@@ -75,6 +143,12 @@ def calibrate_semantic_outcomes(contract: dict, calibration: dict, *, context: d
     metrics = [m for m in contract.get("metrics", []) if m.get("semantic_fields")]
     if set(calibration) != {m["id"] for m in metrics}:
         raise ValueError("SEMANTIC_CALIBRATION_COVERAGE: every semantic metric requires calibration")
+    # Resolve declared contexts before asking any judge. Never pick a context by
+    # whether the candidate answer happens to pass in it.
+    required = {case['reference_id'] for cases in calibration.values() for case in cases
+                if 'reference_id' in case}
+    if required - set(reference_contexts or {}):
+        raise ValueError("SEMANTIC_CALIBRATION_REFERENCE: missing executed reference context")
     report = {"passed": True, "semantic_verification": True, "cases": []}
     for metric in metrics:
         judge_contract = {**contract, "metrics": [metric]}
@@ -83,8 +157,12 @@ def calibrate_semantic_outcomes(contract: dict, calibration: dict, *, context: d
             # Calibration requires a fresh recorded judgment, not a prior cached label.
             store.set_state(ContractEvaluatorRuntime.STATE_KEY, {})
             before = len(store.replay()["events"])
-            evidence = {**context, "final_agent_response": json.dumps(case["answer"], ensure_ascii=False)}
-            scores = judge.evaluate_all(evidence, {})
+            selected = (reference_contexts[case['reference_id']]
+                        if 'reference_id' in case else context)
+            evidence = {**selected, "final_agent_response": json.dumps(case["answer"], ensure_ascii=False)}
+            with (progress.measure("semantic_calibration", metric_id=metric['id'], case_index=index)
+                  if progress is not None else nullcontext()):
+                scores = judge.evaluate_all(evidence, {})
             events = store.replay()["events"][before:]
             calls = [event for event in events if event.get("event") == "evaluator_call"]
             if (not calls or any(not call.get("payload", {}).get("judgment_obtained") for call in calls)):
@@ -95,7 +173,13 @@ def calibrate_semantic_outcomes(contract: dict, calibration: dict, *, context: d
             report["cases"].append({"metric_id": metric["id"], "index": index,
                 "expected_label": case["expected"], "actual_score": actual,
                 "passed": actual == wanted,
+                "reference_id": case.get('reference_id'),
                 "judgment_context_hashes": [call["payload"]["context_hash"] for call in calls]})
+            if actual != wanted:
+                report['cases'][-1]['failed_case_evidence'] = {
+                    'answer': case['answer'], 'semantic_fields': metric.get('semantic_fields', []),
+                    'rubric': metric.get('rubric'), 'criteria': metric.get('criteria', []),
+                }
             report["passed"] &= actual == wanted
     return report
 

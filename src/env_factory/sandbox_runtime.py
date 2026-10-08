@@ -20,6 +20,7 @@ import sqlite3
 import threading
 import time
 import uuid
+import unicodedata
 from decimal import Decimal, InvalidOperation
 from dataclasses import dataclass
 from contextlib import contextmanager
@@ -172,8 +173,25 @@ class EpisodeStore:
 
     @contextmanager
     def transaction(self):
-        with self._lock, self._connect():
-            yield
+        with self._lock:
+            existing = getattr(self._local, "connection", None)
+            if existing is None:
+                with self._connect():
+                    yield
+                return
+            # A caller may catch a nested operation failure and continue its
+            # outer transaction. Isolate the failed writes, events and cached
+            # responses so they cannot accidentally commit with that caller.
+            savepoint = 'txn_' + uuid.uuid4().hex
+            existing.execute(f'SAVEPOINT {savepoint}')
+            try:
+                yield
+            except BaseException:
+                existing.execute(f'ROLLBACK TO SAVEPOINT {savepoint}')
+                existing.execute(f'RELEASE SAVEPOINT {savepoint}')
+                raise
+            else:
+                existing.execute(f'RELEASE SAVEPOINT {savepoint}')
 
     @contextmanager
     def episode_context(self, episode_id: str | None):
@@ -287,7 +305,13 @@ class EpisodeStore:
             if existing:
                 if existing[1] != self._request_hash(event_type, payload):
                     raise SandboxError("IDEMPOTENCY_CONFLICT", "idempotency key belongs to another request", 409)
-                return json.loads(existing[0])
+                result = json.loads(existing[0])
+                if event_type == 'tool_call':
+                    # A cached response is still an observed agent action. Record
+                    # it for causal recovery evidence, without repeating writes,
+                    # lifecycle transitions, fault injection or idempotency storage.
+                    self.event('tool_call_replay', {**payload, 'idempotent_replay': True}, result)
+                return result
             result = operation()
             return self.event(event_type, payload, result, idem_key=idem_key)
 
@@ -334,6 +358,8 @@ class DataManifestValidator:
         if not tables:
             raise SandboxError("DATA_MANIFEST_INVALID", "data manifest has no tables", 500)
         loaded: dict[str, list[dict[str, Any]]] = {}
+        columns_by_table: dict[str, set[str]] = {}
+        nullable_by_table: dict[str, set[str]] = {}
         foreign_keys: list[tuple[str, str, str, str]] = []
         for table in tables:
             if not isinstance(table, Mapping):
@@ -375,6 +401,9 @@ class DataManifestValidator:
             if primary and len({tuple(row[key] for key in primary) for row in rows}) != len(rows):
                 raise SandboxError("DATA_INVALID", f"table {name} primary key is not unique", 500)
             loaded[name] = rows
+            columns_by_table[name] = columns
+            nullable_by_table[name] = {item["name"] for item in declared_columns
+                                       if item.get("nullable") is True and item["name"] not in primary}
             for foreign_key in schema.get("foreign_keys", []):
                 if isinstance(foreign_key, dict):
                     # Accept both the compact runtime vocabulary and the more
@@ -389,10 +418,14 @@ class DataManifestValidator:
         for table, column, ref_table, ref_column in foreign_keys:
             if not all(isinstance(value, str) and value for value in (table, column, ref_table, ref_column)):
                 raise SandboxError("DATA_INVALID", "foreign key declaration is invalid", 500)
-            if ref_table not in loaded or any(
-                row.get(column) not in {item.get(ref_column) for item in loaded[ref_table]}
-                for row in loaded[table]
-            ):
+            if (table not in loaded or ref_table not in loaded
+                    or column not in columns_by_table[table]
+                    or ref_column not in columns_by_table[ref_table]):
+                raise SandboxError("DATA_INVALID", f"foreign key {table}.{column} is invalid", 500)
+            parent_values = {item[ref_column] for item in loaded[ref_table]}
+            if any((row[column] is None and column not in nullable_by_table[table])
+                   or (row[column] is not None and row[column] not in parent_values)
+                   for row in loaded[table]):
                 raise SandboxError("DATA_INVALID", f"foreign key {table}.{column} is invalid", 500)
         return {"tables": loaded, "data_hash": sha256_json(loaded)}
 
@@ -784,6 +817,15 @@ class DeclarativeToolCompiler:
         order_by = spec.get("order_by", [])
         if not isinstance(table, str) or not table or not isinstance(result_field, str) or not result_field:
             raise SandboxError("TOOL_SPEC_INVALID", "select spec requires table and result_field", 500)
+        derived = spec.get('derived_changes', {})
+        columns = ({column['name'] for column in self.data.schemas.get(table, {}).get('columns', [])}
+                   if derived else set())
+        if (not isinstance(derived, Mapping) or set(derived) - columns
+                or set(derived) & set(spec.get('changes', {}).values())
+                or (derived and operation != 'update')):
+            raise SandboxError('TOOL_SPEC_INVALID', 'invalid or overlapping derived changes', 500)
+        for expression in derived.values():
+            DeclarativeMetricEvaluator._value_expression(expression, {})
         if not isinstance(filters, list) or any(
             not isinstance(item, Mapping)
             or not isinstance(item.get("argument"), str)
@@ -871,6 +913,23 @@ class DeclarativeToolCompiler:
             if operation == "update":
                 changes_map = spec.get("changes", {})
                 changes = {column: arguments[argument] for argument, column in changes_map.items()}
+                if spec.get('derived_changes'):
+                    state = ExpressionBusinessState(self.data._all(), self.data.baseline,
+                        self.data.episode_store.get_state(RewardStateSnapshots.KEY, {}))
+                    for column, expression in spec['derived_changes'].items():
+                        value = DeclarativeMetricEvaluator._value_expression(expression, state)
+                        if isinstance(value, Decimal):
+                            value = int(value) if value == value.to_integral_value() else float(value)
+                        if value is None and expression is not None:
+                            raise SandboxError('DERIVED_CHANGE_UNRESOLVED',
+                                'required business evidence for the write is unavailable', 409,
+                                {'table': table, 'field': column})
+                        column_type = next((item['type'] for item in self.data.schemas[table]['columns']
+                                            if item['name'] == column), None)
+                        if (ManifestDataStore._column_json_type(column_type) == 'integer'
+                                and isinstance(value, float) and value.is_integer()):
+                            value = int(value)
+                        changes[column] = value
                 return {"updated_count": self.data.update(table, selector, changes)}
             if operation == "delete":
                 return {"deleted_count": self.data.delete(table, selector)}
@@ -961,6 +1020,495 @@ def validate_json_schema(schema: Mapping[str, Any], value: Any, path: str = "arg
                 validate_json_schema(item_schema, item, f"{path}[{index}]")
 
 
+class PersistentToolError(SandboxError):
+    """A failed response whose clock/events or committed write must survive."""
+
+
+class ScenarioDynamics:
+    """Persisted virtual time, external updates and bounded transport faults.
+
+    One tick per non-cached validated tool attempt; failed business operations
+    roll back to a savepoint, while external events and consumed faults persist.
+    """
+    KEY = 'scenario_dynamics'
+
+    def __init__(self, config, data, store, tool_names):
+        self.config, self.data, self.store = copy.deepcopy(config or {}), data, store
+        if set(self.config) - {'tick_seconds', 'events', 'faults'}:
+            raise SandboxError('DYNAMICS_INVALID', 'unknown dynamics field', 500)
+        tick = self.config.get('tick_seconds', 1)
+        if type(tick) is not int or not 1 <= tick <= 86400:
+            raise SandboxError('DYNAMICS_INVALID', 'tick_seconds must be a positive bounded integer', 500)
+        identities = set()
+        for collection in ('events', 'faults'):
+            items = self.config.get(collection, [])
+            if not isinstance(items, list) or len(items) > 64:
+                raise SandboxError('DYNAMICS_INVALID', 'events/faults must be bounded lists', 500)
+            for item in items:
+                if not isinstance(item, dict) or not isinstance(item.get('id'), str) or not item['id'] or item['id'] in identities:
+                    raise SandboxError('DYNAMICS_INVALID', 'event/fault ids must be unique', 500)
+                identities.add(item['id'])
+                if collection == 'events':
+                    if (set(item) - {'id', 'at_tick', 'changes', 'jitter_ticks'} or not {'id', 'at_tick', 'changes'} <= set(item)
+                            or type(item['at_tick']) is not int or item['at_tick'] < 1
+                            or type(item.get('jitter_ticks', 0)) is not int or not 0 <= item.get('jitter_ticks', 0) <= 1000):
+                        raise SandboxError('DYNAMICS_INVALID', 'invalid scheduled event', 500)
+                    if not isinstance(item['changes'], list) or not 1 <= len(item['changes']) <= 16:
+                        raise SandboxError('DYNAMICS_INVALID', 'event needs bounded changes', 500)
+                    for change in item['changes']:
+                        if not isinstance(change, dict) or set(change) != {'table', 'selector', 'values'}:
+                            raise SandboxError('DYNAMICS_INVALID', 'invalid external change', 500)
+                        schema = data.schemas.get(change['table'], {})
+                        columns = {c['name'] for c in schema.get('columns', [])}
+                        if (not isinstance(change['selector'], dict) or not change['selector']
+                                or set(change['selector']) - columns or not isinstance(change['values'], dict)
+                                or not change['values'] or set(change['values']) - columns
+                                or set(change['values']) & set(schema.get('primary_key', []))):
+                            raise SandboxError('DYNAMICS_INVALID', 'external updates require known immutable identities', 500)
+                else:
+                    if (set(item) != {'id', 'tool', 'call_index', 'phase', 'status'}
+                            or item['tool'] not in tool_names or type(item['call_index']) is not int
+                            or item['call_index'] < 1 or item['phase'] not in {'before', 'after_commit'}
+                            or item['status'] not in {429, 503, 504}):
+                        raise SandboxError('DYNAMICS_INVALID', 'invalid fault schedule', 500)
+        addresses = [(f['tool'], f['call_index']) for f in self.config.get('faults', [])]
+        if len(addresses) != len(set(addresses)):
+            raise SandboxError('DYNAMICS_INVALID', 'only one fault per tool attempt', 500)
+
+    def run(self, name, arguments, idem_key, payload, operation):
+        store = self.store
+        # A committed request is returned exactly once logically; retries do not
+        # advance the simulated world or repeat an after-commit fault.
+        if idem_key:
+            with store._connect() as db:
+                cached = db.execute('SELECT 1 FROM idempotency WHERE episode_id=? AND idem_key=?',
+                                    (store.current().episode_id, idem_key)).fetchone()
+            if cached:
+                return operation()
+        state = store.get_state(self.KEY, {'tick': 0, 'calls': {}, 'fired': []})
+        if 'schedule' not in state:
+            state['schedule'] = {e['id']: e['at_tick'] + random.Random(
+                f"{store.current().seed}:{e['id']}").randint(0, e.get('jitter_ticks', 0))
+                for e in self.config.get('events', [])}
+        state['tick'] += 1
+        state['calls'][name] = state['calls'].get(name, 0) + 1
+        state['elapsed_seconds'] = state['tick'] * self.config.get('tick_seconds', 1)
+        for event in self.config.get('events', []):
+            if event['id'] in state['fired'] or state['schedule'][event['id']] > state['tick']:
+                continue
+            for change in event['changes']:
+                before = self.data.table(change['table'])
+                count = self.data.update(change['table'], change['selector'], change['values'])
+                store.event('external_business_change', {'event_id': event['id'], 'tick': state['tick'],
+                    'table': change['table'], 'selector': change['selector'], 'values': change['values']},
+                    {'updated_count': count, 'before': before, 'after': self.data.table(change['table'])})
+            state['fired'].append(event['id'])
+        store.set_state(self.KEY, state)
+        store.event('virtual_clock', {'tool_name': name}, {'tick': state['tick'], 'elapsed_seconds': state['elapsed_seconds']})
+        fault = next((f for f in self.config.get('faults', [])
+                      if f['tool'] == name and f['call_index'] == state['calls'][name]), None)
+        if fault and fault['phase'] == 'before':
+            store.event('injected_fault', fault, {'committed': False})
+            raise PersistentToolError('TRANSIENT_FAILURE', 'temporary service failure; retry the operation', fault['status'])
+        with store._connect() as db:
+            db.execute('SAVEPOINT scenario_business_operation')
+            try:
+                result = operation()
+            except SandboxError as exc:
+                db.execute('ROLLBACK TO scenario_business_operation')
+                db.execute('RELEASE scenario_business_operation')
+                store.event('tool_failure', payload, {'code': exc.code, 'status': exc.status})
+                raise PersistentToolError(exc.code, str(exc), exc.status, exc.details) from exc
+            except BaseException:
+                db.execute('ROLLBACK TO scenario_business_operation')
+                db.execute('RELEASE scenario_business_operation')
+                raise
+            else:
+                db.execute('RELEASE scenario_business_operation')
+        if fault:
+            store.event('injected_fault', fault, {'committed': True})
+            raise PersistentToolError('RESPONSE_LOST', 'response unavailable; query operation status before retrying', fault['status'])
+        return result
+
+
+class ApprovalTerms:
+    """Trusted consent frozen to literal terms when the user grants it."""
+
+    KEY = 'business_grant_terms'
+
+    @staticmethod
+    def scalar(value):
+        return isinstance(value, (str, bool, int, float)) and (
+            not isinstance(value, float) or math.isfinite(value))
+
+    @staticmethod
+    def proposal_fields(stage):
+        terms = stage.get('approval_terms', {})
+        if not any(term.get('proposal_arguments') for term in terms.values()):
+            return set()
+        return {key for term in terms.values()
+                for key in [*term.get('arguments', {}), *term.get('proposal_arguments', [])]}
+
+    @staticmethod
+    def validate(stage, *, required=False):
+        terms = stage.get('approval_terms', {})
+        grants = stage.get('grant_permissions', [])
+        if not isinstance(terms, dict) or set(terms) - set(grants):
+            raise ValueError('AUTHORIZATION_TERMS_INVALID: terms must match granted permissions')
+        if required and set(terms) != set(grants):
+            raise ValueError('AUTHORIZATION_TERMS_MISSING: explicitly bind every grant or declare operation scope')
+        for grant, term in terms.items():
+            if not isinstance(term, dict) or term.get('scope') not in {'terms', 'operation'}:
+                raise ValueError('AUTHORIZATION_TERMS_INVALID: scope must be terms or operation')
+            if term['scope'] == 'operation':
+                if set(term) != {'scope'}:
+                    raise ValueError('AUTHORIZATION_TERMS_INVALID: operation scope cannot contain hidden terms')
+                continue
+            if set(term) - {'scope', 'arguments', 'postconditions', 'proposal_arguments'}:
+                raise ValueError('AUTHORIZATION_TERMS_INVALID: unsupported term fields')
+            arguments, conditions = term.get('arguments', {}), term.get('postconditions', [])
+            if not isinstance(arguments, dict) or not isinstance(conditions, list):
+                raise ValueError('AUTHORIZATION_TERMS_INVALID: arguments and postconditions have invalid types')
+            proposal = term.get('proposal_arguments', [])
+            if ('proposal_arguments' in term and (not isinstance(proposal, list) or not 1 <= len(proposal) <= 64
+                    or any(not isinstance(name, str) or not name for name in proposal)
+                    or len(set(proposal)) != len(proposal)
+                    or set(proposal) & set(arguments))):
+                raise ValueError('AUTHORIZATION_TERMS_INVALID: proposal_arguments must name unique nonliteral arguments')
+            if not isinstance(arguments, dict) or not isinstance(conditions, list) or not (arguments or conditions or proposal):
+                raise ValueError('AUTHORIZATION_TERMS_INVALID: empty terms')
+            # Consent is fixed when the user grants it, never recomputed from a changing offer.
+            if any(not isinstance(k, str) or not k or not ApprovalTerms.scalar(v) for k, v in arguments.items()):
+                raise ValueError('AUTHORIZATION_TERMS_INVALID: arguments must be literal scalars')
+            if conditions:
+                def approved_value(value):
+                    return ApprovalTerms.scalar(value) or (
+                        isinstance(value, dict) and set(value) == {'proposal_argument'}
+                        and isinstance(value['proposal_argument'], str) and value['proposal_argument'] in proposal)
+                for condition in conditions:
+                    if (not isinstance(condition, dict) or set(condition) != {'table', 'where', 'values', 'count'}
+                            or not isinstance(condition['where'], dict) or not isinstance(condition['values'], dict)
+                            or not condition['where']
+                            or not condition['values'] or condition['count'] != 1
+                            or any(not approved_value(v) for v in [*condition['where'].values(), *condition['values'].values()])):
+                        raise ValueError('AUTHORIZATION_TERMS_INVALID: postconditions must pin one row and literal approved values')
+                shape = copy.deepcopy(conditions)
+                for condition in shape:
+                    for part in ('where', 'values'):
+                        condition[part] = {key: 0 if isinstance(value, dict) else value
+                                           for key, value in condition[part].items()}
+                DeclarativeMetricEvaluator.validate_state_predicates(shape)
+        return terms
+
+    @classmethod
+    def materialize(cls, stage, proposal=None):
+        terms = copy.deepcopy(cls.validate(stage))
+        fields = cls.proposal_fields(stage)
+        if fields:
+            if (not isinstance(proposal, dict) or set(proposal) != fields
+                    or any(not cls.scalar(value) for value in proposal.values())):
+                raise ValueError('AUTHORIZATION_PROPOSAL_INVALID: present every approved scalar argument exactly once')
+            for term in terms.values():
+                if any(not DeclarativeMetricEvaluator._json_value_equal(proposal[key], value)
+                       for key, value in term.get('arguments', {}).items()):
+                    raise ValueError('AUTHORIZATION_PROPOSAL_INVALID: proposal contradicts fixed user terms')
+                if term.get('proposal_arguments'):
+                    term['arguments'] = {**term.get('arguments', {}),
+                        **{key: proposal[key] for key in term.pop('proposal_arguments')}}
+                    term['proposal_bound'] = True
+                    for condition in term.get('postconditions', []):
+                        for part in ('where', 'values'):
+                            condition[part] = {key: proposal[value['proposal_argument']]
+                                if isinstance(value, dict) else value for key, value in condition[part].items()}
+        return terms
+
+    @classmethod
+    def apply(cls, store, stage, *, proposal=None):
+        terms = cls.materialize(stage, proposal)
+        stored = store.get_state(cls.KEY, {})
+        for grant in [*stage.get('revoke_permissions', []), *stage.get('grant_permissions', [])]:
+            stored.pop(grant, None)
+        for grant, term in terms.items():
+            stored[grant] = {'tool': stage['before_tool'], **copy.deepcopy(term)}
+        store.set_state(cls.KEY, stored)
+
+    @classmethod
+    def check(cls, store, data, name, grants, *, arguments=None, before_state=None):
+        stored = store.get_state(cls.KEY, {})
+        for grant in grants:
+            term = stored.get(grant)
+            if term is None:  # historical contracts without structured consent remain readable
+                continue
+            if term['tool'] != name:
+                raise SandboxError('AUTHORIZATION_SCOPE_MISMATCH', 'permission is bound to a different operation', 403)
+            if arguments is not None:
+                if ((term.get('proposal_bound') and set(arguments) != set(term['arguments']))
+                        or any(key not in arguments or not DeclarativeMetricEvaluator._json_value_equal(arguments[key], value)
+                       for key, value in term.get('arguments', {}).items())):
+                    raise SandboxError('AUTHORIZATION_TERMS_MISMATCH', 'operation arguments exceed approved terms', 403)
+            elif term.get('postconditions') and not BusinessGoalEvaluator.evaluate(term['postconditions'], data._all(), data.baseline):
+                raise SandboxError('AUTHORIZATION_TERMS_MISMATCH', 'business write differs from approved terms', 403)
+            if arguments is None and before_state is not None and term.get('postconditions'):
+                for table in {p['table'] for p in term['postconditions']}:
+                    old, new = before_state.get(table, []), data.table(table)
+                    changed = [row for row in old if row not in new] + [row for row in new if row not in old]
+                    selectors = [p['where'] for p in term['postconditions'] if p['table'] == table]
+                    if any(not any(all(DeclarativeMetricEvaluator._json_value_equal(row.get(k), v)
+                                       for k, v in selector.items()) for selector in selectors) for row in changed):
+                        raise SandboxError('AUTHORIZATION_SCOPE_MISMATCH', 'write affected a row outside approved terms', 403)
+
+
+
+class BusinessLifecycle:
+    """Task-declared permissions and state transitions, enforced by the platform.
+
+    Role/grant state is trusted runtime state, never a tool argument. Business
+    writes remain in the tool handler and are rolled back on postcondition failure.
+    """
+
+    def __init__(self, config, data, store, tool_names):
+        self.config, self.data, self.store = copy.deepcopy(config or {}), data, store
+        self.dynamics = ScenarioDynamics(self.config['dynamics'], data, store, tool_names) if self.config.get('dynamics') else None
+        if not self.config:
+            self.rules = {}
+            return
+        if self.config.get('version') != '1.0' or set(self.config) - {'version', 'roles', 'tools', 'dynamics'}:
+            raise SandboxError('LIFECYCLE_INVALID', 'unsupported lifecycle contract', 500)
+        roles = self.config.get('roles', [])
+        if not isinstance(roles, list) or any(not isinstance(x, str) or not x for x in roles):
+            raise SandboxError('LIFECYCLE_INVALID', 'roles must be names', 500)
+        self.rules = self.config.get('tools', {})
+        if not isinstance(self.rules, dict) or set(self.rules) - set(tool_names):
+            raise SandboxError('LIFECYCLE_INVALID', 'unknown lifecycle tool', 500)
+        for name, rule in self.rules.items():
+            if not isinstance(rule, dict) or set(rule) - {'roles', 'requires_grants', 'transition', 'require_idempotency', 'guards'}:
+                raise SandboxError('LIFECYCLE_INVALID', 'invalid tool policy', 500)
+            for field in ('roles', 'requires_grants'):
+                if not isinstance(rule.get(field, []), list) or any(not isinstance(x, str) or not x for x in rule.get(field, [])):
+                    raise SandboxError('LIFECYCLE_INVALID', 'invalid permission names', 500)
+            if not isinstance(rule.get('require_idempotency', False), bool):
+                raise SandboxError('LIFECYCLE_INVALID', 'require_idempotency must be boolean', 500)
+            guards = rule.get('guards', [])
+            if not isinstance(guards, list):
+                raise SandboxError('LIFECYCLE_INVALID', 'guards must be a list', 500)
+            guard_ids = set()
+            for guard in guards:
+                if not isinstance(guard, dict) or set(guard) != {'id', 'table', 'selector', 'conditions'}:
+                    raise SandboxError('LIFECYCLE_INVALID', 'guard requires id/table/selector/conditions', 500)
+                if not isinstance(guard['table'], str):
+                    raise SandboxError('LIFECYCLE_INVALID', 'guard table must be a name', 500)
+                columns = {c['name'] for c in data.schemas.get(guard['table'], {}).get('columns', [])}
+                if (not isinstance(guard['id'], str) or not guard['id']
+                        or guard['id'] in guard_ids
+                        or not isinstance(guard['selector'], dict) or not guard['selector']
+                        or set(guard['selector']) - columns
+                        or not isinstance(guard['conditions'], dict) or not guard['conditions']
+                        or set(guard['conditions']) - columns):
+                    raise SandboxError('LIFECYCLE_INVALID', 'guard must address declared business fields', 500)
+                guard_ids.add(guard['id'])
+                for value in guard['selector'].values():
+                    if isinstance(value, dict):
+                        self._validate_guard_operand(value)
+                for predicates in guard['conditions'].values():
+                    if (not isinstance(predicates, dict) or not predicates
+                            or set(predicates) - {'eq', 'gte', 'lte', 'in', 'contains'}):
+                        raise SandboxError('LIFECYCLE_INVALID', 'invalid guard comparator', 500)
+                    for value in predicates.values():
+                        if isinstance(value, dict):
+                            self._validate_guard_operand(value)
+            transition = rule.get('transition')
+            if transition is None:
+                continue
+            if not isinstance(transition, dict) or set(transition) != {'table', 'selector', 'column', 'from', 'to'}:
+                raise SandboxError('LIFECYCLE_INVALID', 'invalid state transition', 500)
+            schema = data.schemas.get(transition['table'], {})
+            columns = {c['name'] for c in schema.get('columns', [])}
+            if (transition['column'] not in columns or not isinstance(transition['selector'], dict)
+                    or not transition['selector'] or set(transition['selector']) - columns
+                    or not isinstance(transition['from'], list) or not transition['from']):
+                raise SandboxError('LIFECYCLE_INVALID', 'transition must select a known business row', 500)
+            for value in transition['selector'].values():
+                if isinstance(value, dict) and (set(value) != {'argument'} or not isinstance(value['argument'], str)):
+                    raise SandboxError('LIFECYCLE_INVALID', 'selector supports literal or argument', 500)
+
+    @staticmethod
+    def _validate_guard_operand(value):
+        if set(value) == {'argument'} and isinstance(value['argument'], str) and value['argument']:
+            return
+        if set(value) == {'expression'}:
+            DeclarativeMetricEvaluator._value_expression(value['expression'], {})
+            return
+        raise SandboxError('LIFECYCLE_INVALID', 'guard operands require literal, argument or expression', 500)
+
+    def before(self, name, arguments, idem_key):
+        rule = self.rules.get(name, {})
+        roles = set(self.config.get('roles', []))
+        if rule.get('roles') and not roles.intersection(rule['roles']):
+            raise SandboxError('PERMISSION_DENIED', 'current principal cannot perform this operation', 403)
+        grants = self.store.get_state('business_grants', [])
+        if not set(rule.get('requires_grants', [])) <= set(grants):
+            raise SandboxError('AUTHORIZATION_REQUIRED', 'required user authorization is missing', 403)
+        ApprovalTerms.check(self.store, self.data, name, rule.get('requires_grants', []), arguments=arguments)
+        if rule.get('require_idempotency') and not idem_key:
+            raise SandboxError('IDEMPOTENCY_REQUIRED', 'operation requires an Idempotency-Key', 400)
+        for guard in rule.get('guards', []):
+            def resolve_guard_operand(value):
+                if isinstance(value, dict):
+                    if set(value) == {'expression'}:
+                        state = ExpressionBusinessState(self.data._all(), self.data.baseline,
+                            self.store.get_state(RewardStateSnapshots.KEY, {}))
+                        resolved = DeclarativeMetricEvaluator._value_expression(value['expression'], state)
+                        if resolved is None:
+                            raise SandboxError('GUARD_EVIDENCE_MISSING', 'required business evidence is unavailable', 409,
+                                               {'guard_id': guard['id']})
+                        return resolved
+                    if value['argument'] not in arguments:
+                        raise SandboxError('INVALID_ARGUMENT', 'guard argument missing', 400,
+                                           {'guard_id': guard['id'], 'argument': value['argument']})
+                    return arguments[value['argument']]
+                return value
+            selector = {}
+            for key, value in guard['selector'].items():
+                selector[key] = resolve_guard_operand(value)
+            conditions = {field: {operator: resolve_guard_operand(value) for operator, value in predicates.items()}
+                          for field, predicates in guard['conditions'].items()}
+            rows = [row for row in self.data.table(guard['table'])
+                    if all(row.get(key) == value for key, value in selector.items())]
+            if len(rows) != 1 or not DeclarativeMetricEvaluator._where_matches(rows[0], conditions):
+                failed_fields = []
+                if len(rows) == 1:
+                    for field, predicates in conditions.items():
+                        for operator, expected in predicates.items():
+                            if not DeclarativeMetricEvaluator._where_matches(
+                                    rows[0], {field: {operator: expected}}):
+                                failed_fields.append({'field': field, 'operator': operator,
+                                                      'expected': expected, 'actual': rows[0].get(field)})
+                raise SandboxError('BUSINESS_PRECONDITION_FAILED', 'business conditions no longer hold', 409,
+                                   {'guard_id': guard['id'], 'table': guard['table'], 'selector': selector,
+                                    'matched_count': len(rows), 'expected_count': 1,
+                                    'failed_fields': failed_fields})
+        transition = rule.get('transition')
+        if transition is None:
+            return None
+        selector = {}
+        for key, value in transition['selector'].items():
+            if isinstance(value, dict):
+                if value['argument'] not in arguments:
+                    raise SandboxError('INVALID_ARGUMENT', 'transition selector argument missing', 400)
+                value = arguments[value['argument']]
+            selector[key] = value
+        rows = [r for r in self.data.table(transition['table']) if all(r.get(k) == v for k, v in selector.items())]
+        if len(rows) != 1:
+            raise SandboxError('TRANSITION_TARGET_INVALID', 'transition requires exactly one row', 409)
+        if rows[0][transition['column']] not in transition['from']:
+            raise SandboxError('INVALID_TRANSITION', 'operation is not allowed in the current state', 409)
+        return (transition, selector, rows[0][transition['column']])
+
+    def after(self, name, token, *, before_state=None):
+        ApprovalTerms.check(self.store, self.data, name, self.rules.get(name, {}).get('requires_grants', []), before_state=before_state)
+        if token is None:
+            return
+        transition, selector, previous = token
+        rows = [r for r in self.data.table(transition['table']) if all(r.get(k) == v for k, v in selector.items())]
+        if len(rows) != 1 or rows[0][transition['column']] != transition['to']:
+            raise SandboxError('TRANSITION_POSTCONDITION_FAILED', 'tool did not produce its declared business state', 500)
+        self.store.event('business_transition', {'tool_name': name, 'table': transition['table'],
+                         'selector': selector, 'from': previous}, {'to': transition['to']})
+
+
+class RewardStateSnapshots:
+    """Private, episode-local state at the first successful matching declared read.
+
+    Capture inside the tool transaction, after scheduled external events. Only
+    declared read tools can establish checkpoints; repeated reads cannot move an
+    established checkpoint. Snapshots never come from policy arguments/results.
+    Compiled process bindings, when present, exclude unrelated read calls and
+    select the active script's argument/capture constraints.
+    """
+
+    KEY = "reward_state_snapshots"
+
+    @staticmethod
+    def requested(value):
+        names = set()
+        def walk(node):
+            if isinstance(node, list):
+                for child in node:
+                    walk(child)
+            elif isinstance(node, Mapping) and set(node) != {"literal"}:
+                if set(node) in ({'tool_result'}, {'tool_argument'}):
+                    kind = next(iter(node))
+                    result = node[kind]
+                    if (not isinstance(result, Mapping) or set(result) != {'name', 'path'}
+                            or not isinstance(result['name'], str) or not result['name']
+                            or not isinstance(result['path'], str) or not result['path'].startswith('$.')):
+                        raise SandboxError('METRIC_SPEC_INVALID', f'{kind} requires name and JSON path', 500)
+                    names.add(result['name'])
+                if set(node) == {"at_tool"}:
+                    checkpoint = node["at_tool"]
+                    if (not isinstance(checkpoint, Mapping) or set(checkpoint) != {"name", "expression"}
+                            or not isinstance(checkpoint["name"], str) or not checkpoint["name"]):
+                        raise SandboxError("METRIC_SPEC_INVALID", "at_tool requires name and expression", 500)
+                    names.add(checkpoint["name"])
+                for child in node.values():
+                    walk(child)
+        walk(value)
+        return names
+
+    @classmethod
+    def validate_tools(cls, implementations, expressions):
+        names = cls.requested(expressions)
+        operations = {item["tool_name"]: item["operation"] for item in implementations}
+        invalid = sorted(name for name in names if operations.get(name) not in {"select", "aggregate_count"})
+        if invalid:
+            raise SandboxError("METRIC_SPEC_INVALID", "at_tool requires declared read-only tools", 500, invalid)
+        return names
+
+    def __init__(self, data, implementations, expressions):
+        self.data, self.store = data, data.episode_store
+        self.implementations = implementations
+        self.names = self.validate_tools(implementations, expressions)
+        self.call_bindings = {}
+        def collect(node):
+            if isinstance(node, list):
+                for child in node:
+                    collect(child)
+            elif isinstance(node, Mapping) and set(node) != {'literal'}:
+                if node.get('source') == 'trajectory' and node.get('operator') == 'contains_tool_call':
+                    expected = node.get('expected', {})
+                    name = expected.get('tool_name')
+                    # Retain upstream bindings even when only the downstream
+                    # read has a reward checkpoint.
+                    if isinstance(name, str):
+                        self.call_bindings.setdefault(name, []).append(copy.deepcopy(expected))
+                for child in node.values():
+                    collect(child)
+        collect(expressions)
+
+    def capture(self, name, result=None, arguments=None):
+        if name not in self.names:
+            return
+        snapshots = self.store.get_state(self.KEY, {})
+        if name in snapshots:
+            return
+        if name in self.call_bindings:
+            events = self.store.replay()['events'] + [{'event': 'tool_call',
+                'payload': {'tool_name': name, 'arguments': arguments}, 'result': result}]
+            if not any(DeclarativeMetricEvaluator._compare(events, 'contains_tool_call', binding,
+                    call_bindings=self.call_bindings, require_last=True)
+                       for binding in self.call_bindings[name]):
+                return
+        # Called after successful validation of a read-only tool, in its transaction.
+        # Read state directly so this bookkeeping cannot create policy read evidence.
+        state = copy.deepcopy(self.data._all())
+        snapshots[name] = state
+        snapshots.setdefault('$tool_results', {})[name] = copy.deepcopy(result)
+        snapshots.setdefault('$tool_arguments', {})[name] = copy.deepcopy(arguments)
+        self.store.set_state(self.KEY, snapshots)
+        self.store.event("reward_state_checkpoint", {"tool_name": name},
+                         {"state_sha256": hashlib.sha256(canonical_json(state).encode()).hexdigest()})
+
+
 class ContractToolRegistry:
     """Generic Function Tool validation, dispatch, tracing and mutation seam."""
 
@@ -972,7 +1520,14 @@ class ContractToolRegistry:
         noise_tools: Sequence[Mapping[str, Any]] = (),
         event_recorder: Callable[..., Any] | None = None,
         tool_contracts: Sequence[Mapping[str, Any]] = (),
+        lifecycle: BusinessLifecycle | None = None,
+        reward_snapshots: RewardStateSnapshots | None = None,
     ) -> None:
+        self.lifecycle = lifecycle
+        self.reward_snapshots = reward_snapshots
+        if lifecycle and reward_snapshots:
+            reward_snapshots.names.update(RewardStateSnapshots.validate_tools(
+                reward_snapshots.implementations, lifecycle.config))
         self.tools = [dict(item) for item in tools]
         self.handlers = dict(handlers)
         self.event_recorder = event_recorder
@@ -1023,6 +1578,9 @@ class ContractToolRegistry:
                         if argument in args:
                             rows = [row for row in rows if row.get(column) == args[argument]]
                     return {"records": rows, "count": len(rows)}
+                transition = self.lifecycle.before(name, args, idem_key) if self.lifecycle else None
+                approval_before = (self.lifecycle.data._all() if self.lifecycle
+                                   and self.lifecycle.store.get_state(ApprovalTerms.KEY, {}) else None)
                 reads: list[str] = []
                 read_context = _TOOL_BUSINESS_READS.set(reads)
                 try:
@@ -1036,21 +1594,55 @@ class ContractToolRegistry:
                         validate_json_schema(output_schema, result, "tool_result")
                     except SandboxError as exc:
                         raise SandboxError("TOOL_RESULT_INVALID", str(exc), 500) from exc
+                if self.lifecycle:
+                    self.lifecycle.after(name, transition, before_state=approval_before)
+                if self.reward_snapshots:
+                    self.reward_snapshots.capture(name, result, args)
                 return result
             finally:
                 event_payload["duration_ms"] = round((time.monotonic() - tool_started) * 1000, 3)
         recorder_owner = getattr(self.event_recorder, "__self__", None)
         if isinstance(recorder_owner, EpisodeStore):
-            with recorder_owner.transaction():
+            # Transport attempts are distinct from committed business actions.
+            # Record only requests that actually occurred, including a failed
+            # response or an idempotent replay. Hash keys to expose equality
+            # without publishing transport values to semantic evaluators.
+            attempt_payload = {'tool_name': name, 'arguments': copy.deepcopy(args),
+                'idempotency_key_sha256': hashlib.sha256(idem_key.encode()).hexdigest() if idem_key else None}
+            def operation():
                 if idem_key:
                     return recorder_owner.execute_idempotent(idem_key, "tool_call", event_payload, invoke)
-                result = invoke()
-                recorder_owner.event("tool_call", event_payload, result)
-                return result
+                value = invoke()
+                recorder_owner.event("tool_call", event_payload, value)
+                return value
+            pending = None
+            try:
+                with recorder_owner.transaction():
+                    try:
+                        result = (self.lifecycle.dynamics.run(name, args, idem_key, event_payload, operation)
+                                  if self.lifecycle and self.lifecycle.dynamics else operation())
+                    except PersistentToolError as exc:
+                        pending = exc
+                if pending:
+                    raise pending
+            except SandboxError as exc:
+                recorder_owner.event('tool_attempt', attempt_payload, {'status': exc.status})
+                raise
+            recorder_owner.event('tool_attempt', attempt_payload, {'status': 200})
+            return result
         result = invoke()
         if self.event_recorder is not None:
             self.event_recorder("tool_call", event_payload, result, idem_key=idem_key)
         return result
+
+
+class RoutedScores(dict):
+    """Internal gate output: inactive process metrics carry no reward weight."""
+
+    def __init__(self, scores, *, route_id, inactive=()):
+        super().__init__(scores)
+        self.route_id = route_id
+        self.inactive = frozenset(inactive)
 
 
 class ContractRewardAggregator:
@@ -1063,7 +1655,14 @@ class ContractRewardAggregator:
 
     def aggregate(self, scores: Mapping[str, Any]) -> dict[str, Any]:
         components: dict[str, float] = {}
-        raw_reward = 0.0
+        reward_terms = []
+        inactive = scores.inactive if isinstance(scores, RoutedScores) else frozenset()
+        if inactive - {m.get("id") for m in self.metrics if m.get("category") == "process"}:
+            raise SandboxError("REWARD_CONTRACT_INVALID", "only process metrics may be inactive", 500)
+        active_positive_weight = math.fsum(float(m.get("weight", 0)) for m in self.metrics
+                                     if m.get("category") != "penalty" and m.get("id") not in inactive)
+        if inactive and active_positive_weight <= 0:
+            raise SandboxError("REWARD_CONTRACT_INVALID", "route has no active positive reward", 500)
         declared_ids = {
             metric.get("id") for metric in self.metrics
             if isinstance(metric.get("id"), str) and metric.get("id")
@@ -1088,21 +1687,35 @@ class ContractRewardAggregator:
             if not low <= value <= high:
                 raise SandboxError("REWARD_SCORE_INVALID", f"metric {metric_id} score is outside its range", 500)
             weight = float(metric.get("weight", 0.0))
+            if metric_id in inactive:
+                weight = 0.0
+            elif inactive and metric.get("category") != "penalty":
+                weight /= active_positive_weight
             components[metric_id] = value
-            raw_reward += weight * value
+            reward_terms.append(weight * value)
+        # Preserve full credit for normalized fractions (e.g. six 1/6 terms).
+        raw_reward = math.fsum(reward_terms)
         return {
             "reward": max(-1.0, min(1.0, raw_reward)),
             "raw_reward": raw_reward,
             "components": components,
+            **({"execution_route": scores.route_id, "inactive_components": sorted(inactive)}
+               if isinstance(scores, RoutedScores) else {}),
         }
 
 
 class ExpressionBusinessState(dict):
     """Internal evaluation context; initial data is never a user-addressable table."""
 
-    def __init__(self, current, initial=None):
+    def __init__(self, current, initial=None, snapshots=None):
         super().__init__(current or {})
         self.initial = initial
+        self.snapshots = snapshots if snapshots is not None else getattr(current, "snapshots", {})
+
+    @classmethod
+    def from_context(cls, context):
+        return cls(context.get("business_state"), context.get("initial_business_state"),
+                   context.get("reward_state_snapshots", {}))
 
 
 class BusinessGoalEvaluator:
@@ -1137,14 +1750,47 @@ class BusinessGoalEvaluator:
         return True
 
     @staticmethod
-    def preserves_unrelated(goal: Mapping[str, Any], baseline: Mapping[str, Any], state: Mapping[str, Any]) -> bool:
+    def external_baseline(baseline, events):
+        """Account only for platform-recorded external field updates in write scope.
+
+        Outcome expressions still use the original snapshot; this adjustment is
+        exclusively for detecting unrelated final writes attributable to the Agent.
+        """
+        adjusted = copy.deepcopy(baseline)
+        for event in events:
+            if event.get('event') != 'external_business_change':
+                continue
+            payload = event.get('payload', {})
+            result = event.get('result', {})
+            table, selector, values = payload.get('table'), payload.get('selector'), payload.get('values')
+            if (table not in adjusted or not isinstance(selector, dict) or not selector
+                    or not isinstance(values, dict) or not result.get('updated_count')):
+                continue
+            for row in adjusted[table]:
+                if all(row.get(key) == value for key, value in selector.items()):
+                    row.update(copy.deepcopy(values))
+        return adjusted
+
+    @staticmethod
+    def preserves_unrelated(goal: Mapping[str, Any], baseline: Mapping[str, Any], state: Mapping[str, Any],
+                            *, diagnostics: list | None = None) -> bool:
         if set(baseline) != set(state):
+            if diagnostics is not None:
+                diagnostics.append({'reason': 'table_set_changed',
+                    'removed_tables': sorted(set(baseline) - set(state)),
+                    'added_tables': sorted(set(state) - set(baseline))})
             return False
         predicates = goal.get("row_predicates", [])
+        expression_baseline = getattr(state, "initial", baseline)
         for table, old_rows in baseline.items():
             relevant = [item for item in predicates if item.get("table") == table]
             if not relevant:
                 if old_rows != state[table]:
+                    if diagnostics is not None:
+                        diagnostics.append({'reason': 'table_outside_goal_changed', 'table': table,
+                            'before_rows': copy.deepcopy(old_rows[:5]),
+                            'after_rows': copy.deepcopy(state[table][:5]),
+                            'before_count': len(old_rows), 'after_count': len(state[table])})
                     return False
                 continue
             keys = goal.get("table_primary_keys", {}).get(table, [])
@@ -1152,7 +1798,7 @@ class BusinessGoalEvaluator:
                 continue
             index = lambda rows: {canonical_json([row.get(key) for key in keys]): row for row in rows}
             before, after = index(old_rows), index(state[table])
-            for identity in before.keys() | after.keys():
+            for identity in sorted(before.keys() | after.keys()):
                 old, new = before.get(identity), after.get(identity)
                 if old == new:
                     continue
@@ -1161,7 +1807,7 @@ class BusinessGoalEvaluator:
                     valid = any(item["count"] > 0 and expected is not None
                         and all(new.get(key) == value for key, value in expected.items())
                         for item in candidates
-                        for expected in [BusinessGoalEvaluator.expected_values(item, state, baseline)])
+                        for expected in [BusinessGoalEvaluator.expected_values(item, state, expression_baseline)])
                 elif new is None:
                     valid = any(item["count"] == 0 for item in candidates)
                 else:
@@ -1171,11 +1817,177 @@ class BusinessGoalEvaluator:
                         and expected is not None
                         and all(new.get(key) == value for key, value in expected.items())
                         for item in candidates
-                        for expected in [BusinessGoalEvaluator.expected_values(item, state, baseline)]
+                        for expected in [BusinessGoalEvaluator.expected_values(item, state, expression_baseline)]
                     )
                 if not valid:
+                    if diagnostics is not None:
+                        changed_fields = sorted(key for key in (old or {}).keys() | (new or {}).keys()
+                                                if (old or {}).get(key) != (new or {}).get(key)
+                                                or (key in (old or {})) != (key in (new or {})))
+                        allowed = sorted({field for item in candidates
+                                          for field in set(item.get('values', {})) | set(item.get('value_expressions', {}))})
+                        diagnostics.append({'reason': 'row_change_outside_goal_or_wrong_value',
+                            'table': table, 'identity': {key: (old or new).get(key) for key in keys},
+                            'change_kind': 'insert' if old is None else 'delete' if new is None else 'update',
+                            'allowed_fields': allowed,
+                            'unexpected_fields': sorted(set(changed_fields) - set(allowed)),
+                            'changes': [{'field': field, 'before': (old or {}).get(field),
+                                         'after': (new or {}).get(field),
+                                         'before_present': field in (old or {}),
+                                         'after_present': field in (new or {})} for field in changed_fields],
+                            'candidate_goals': [{'path': f'goal_contract.row_predicates[{index}]',
+                                'expected_values': BusinessGoalEvaluator.expected_values(item, state, expression_baseline)}
+                                for index, item in enumerate(predicates) if item in candidates]})
                     return False
         return True
+
+
+class ExecutionRoutes:
+    """One trusted decision selects causal and interaction obligations together."""
+
+    def __init__(self, task_spec):
+        self.routes = task_spec.get("execution_routes", [])
+        self.process_tools = task_spec.get("process_metric_tools", {})
+        self.early_stop_ids = set()
+        self.dialogue_stop_ids = set()
+        tools = {item["name"]: item.get("execution", {}).get("operation")
+                 for item in task_spec.get("tool_contracts", [])}
+        self.writes = {name for name, op in tools.items() if op in {"insert", "update", "delete"}}
+        if not self.routes:
+            return
+        if not isinstance(self.routes, list) or not 2 <= len(self.routes) <= 8:
+            raise SandboxError("EXECUTION_ROUTE_INVALID", "routes require 2..8 alternatives", 500)
+        readonly = task_spec.get('environment_contract', {}).get('mode') == 'reference_data'
+        if not readonly and not task_spec.get("goal_contract", {}).get("row_predicates"):
+            raise SandboxError("EXECUTION_ROUTE_INVALID", "routes require typed business state goals", 500)
+        if readonly and self.writes:
+            raise SandboxError("EXECUTION_ROUTE_INVALID", "readonly routes cannot contain mutating tools", 500)
+        if any(operation not in {"select", "aggregate_count", "insert", "update", "delete", "noise"}
+               for operation in tools.values()):
+            raise SandboxError("EXECUTION_ROUTE_INVALID", "route tool effects must be declaratively known", 500)
+        if (not isinstance(self.process_tools, Mapping)
+                or any(not isinstance(key, str) or not key or value not in tools
+                       for key, value in self.process_tools.items())):
+            raise SandboxError("EXECUTION_ROUTE_INVALID", "invalid process-to-tool bindings", 500)
+        identities = set()
+        for route in self.routes:
+            if (not isinstance(route, Mapping)
+                    or set(route) != {"id", "when", "required_tools", "required_stages", "writes"}
+                    or not isinstance(route["id"], str) or not route["id"] or route["id"] in identities
+                    or route["writes"] not in {"required", "forbidden"}):
+                raise SandboxError("EXECUTION_ROUTE_INVALID", "invalid route fields or identity", 500)
+            identities.add(route["id"])
+            for key in ("required_tools", "required_stages"):
+                values = route[key]
+                if (not isinstance(values, list) or any(not isinstance(x, str) or not x for x in values)
+                        or len(values) != len(set(values))):
+                    raise SandboxError("EXECUTION_ROUTE_INVALID", "route requirements must be unique names", 500)
+            required = set(route["required_tools"])
+            dialogue_stop = isinstance(route['when'], Mapping) and set(route['when']) == {'user_rejection'}
+            if dialogue_stop:
+                if route['writes'] != 'forbidden' or not route['required_stages']:
+                    raise SandboxError('EXECUTION_ROUTE_INVALID', 'user rejection requires dialogue and forbids writes', 500)
+                self.dialogue_stop_ids.add(route['id'])
+            if (not required and not dialogue_stop) or not required <= tools.keys():
+                raise SandboxError("EXECUTION_ROUTE_INVALID", "route requires unknown or empty tools", 500)
+            if bool(required & self.writes) != (route["writes"] == "required"):
+                raise SandboxError("EXECUTION_ROUTE_INVALID", "route write policy contradicts required tools", 500)
+            if not required <= set(self.process_tools.values()):
+                raise SandboxError("EXECUTION_ROUTE_INVALID", "every required tool needs a compiled process metric", 500)
+            self._stable_condition(route["when"])
+            value = DeclarativeMetricEvaluator._value_expression(route["when"], {})
+            if value is not None and not isinstance(value, bool):
+                raise SandboxError("EXECUTION_ROUTE_INVALID", "route condition must be boolean", 500)
+            checkpoints = RewardStateSnapshots.requested(route["when"])
+            if not checkpoints <= required or any(tools[name] not in {'select', 'aggregate_count'}
+                                                   for name in checkpoints):
+                raise SandboxError("EXECUTION_ROUTE_INVALID", "decision checkpoints must be required reads of their route", 500)
+        if task_spec.get('training_contract', {}).get('category') == 'multi_step_agentic':
+            edges = task_spec.get('capability_dag', {}).get('edges', [])
+            dependent = [r for r in self.routes if any(
+                e['from_tool'] in r['required_tools'] and e['to_tool'] in r['required_tools'] for e in edges)]
+            if not dependent:
+                raise SandboxError('EXECUTION_ROUTE_INVALID', 'multi-step tasks need a genuine completion dependency', 500)
+            for route in self.routes:
+                required = set(route['required_tools'])
+                if len(required) != 1 or route['id'] in self.dialogue_stop_ids:
+                    continue
+                first = next(iter(required))
+                # Only an observed first read can end a multi-step task early.
+                # It must be a strict prefix of a declared dependent route;
+                # downstream-only calls and arbitrary one-tool tasks cannot qualify.
+                prefix = any(required < set(r['required_tools']) and any(
+                    e['from_tool'] == first and e['to_tool'] in r['required_tools'] for e in edges)
+                    for r in dependent)
+                if (route['writes'] != 'forbidden' or tools[first] not in {'select', 'aggregate_count'}
+                        or not prefix or any(e['to_tool'] == first for e in edges)
+                        or not self._decision_has_evidence(route['when'])):
+                    raise SandboxError('EXECUTION_ROUTE_INVALID',
+                        'early termination requires a data-dependent first-read prefix of a multi-step route', 500)
+                self.early_stop_ids.add(route['id'])
+
+    @staticmethod
+    def _decision_has_evidence(node):
+        if isinstance(node, list):
+            return any(ExecutionRoutes._decision_has_evidence(child) for child in node)
+        if not isinstance(node, Mapping) or set(node) == {'literal'}:
+            return False
+        return bool(set(node) & {'tool_result', 'tool_argument', 'lookup', 'aggregate'}) or any(
+            ExecutionRoutes._decision_has_evidence(child) for child in node.values())
+
+    def validate_user_branches(self, scripts):
+        for route in self.routes:
+            if route['id'] not in self.dialogue_stop_ids:
+                continue
+            ref = route['when']['user_rejection']
+            if not scripts:
+                raise SandboxError('EXECUTION_ROUTE_INVALID', 'refusal requires actual user scripts', 500)
+            for script in scripts:
+                stages = script.get('interaction_protocol', {}).get('stages', [])
+                position = next((i for i, stage in enumerate(stages) if stage['id'] == ref['stage']), None)
+                if position is None or set(route['required_stages']) != {s['id'] for s in stages[:position + 1]}:
+                    raise SandboxError('EXECUTION_ROUTE_INVALID', 'refusal requires its dialogue prefix', 500)
+                branch = next((b for b in stages[position].get('branches', []) if b['id'] == ref['branch']), {})
+                conditions = branch.get('when', [])
+                preferences = [c for c in conditions if c['source'] == 'user_state']
+                if (branch.get('outcome') != 'user_rejection' or branch.get('advance') is not False
+                        or branch.get('grant_permissions') or not preferences
+                        or any(c['source'] == 'assistant_text' for c in conditions)):
+                    raise SandboxError('EXECUTION_ROUTE_INVALID', 'refusal must be user-controlled, never an assistant-text shortcut', 500)
+                for condition in preferences:
+                    key = condition['path'][2:] if condition['path'].startswith('$.') else ''
+                    if (condition['operator'] != 'eq' or key not in script.get('variables', {})
+                            or not isinstance(condition['expected'], (str, int, float, bool))
+                            or type(condition['expected']) is not type(script['variables'][key])):
+                        raise SandboxError('EXECUTION_ROUTE_INVALID', 'refusal requires a declared scalar user preference', 500)
+
+    @staticmethod
+    def _stable_condition(node, anchored=False):
+        if isinstance(node, list):
+            for child in node:
+                ExecutionRoutes._stable_condition(child, anchored)
+        elif isinstance(node, Mapping) and set(node) != {"literal"}:
+            if ("lookup" in node or "aggregate" in node) and not anchored:
+                raise SandboxError("EXECUTION_ROUTE_INVALID", "route facts must use initial or at_tool, never live state", 500)
+            for key, child in node.items():
+                ExecutionRoutes._stable_condition(child, anchored or key in {"initial", "at_tool"})
+
+    def select(self, context):
+        if not self.routes:
+            return None
+        state = ExpressionBusinessState.from_context(context)
+        values = [DeclarativeMetricEvaluator._value_expression(route["when"], state) for route in self.routes]
+        stopped = [route for route, value in zip(self.routes, values)
+                   if route['id'] in self.dialogue_stop_ids and value is True]
+        # Observed user refusal supersedes decisions that require undisclosed
+        # inputs or unexecuted downstream queries. Compiled terminal routes are
+        # grounded in user-controlled branches, never assistant stop phrases.
+        if stopped:
+            return stopped[0] if len(stopped) == 1 else None
+        # Missing evidence, overlapping routes and uncovered decisions fail closed.
+        if any(type(value) is not bool for value in values) or sum(values) != 1:
+            return None
+        return self.routes[values.index(True)]
 
 
 class ContractRewardGate:
@@ -1184,9 +1996,22 @@ class ContractRewardGate:
     def __init__(self, task_spec: Mapping[str, Any], metrics: Sequence[Mapping[str, Any]]) -> None:
         self.task_spec = dict(task_spec)
         self.metrics = [dict(item) for item in metrics]
+        self.routes = ExecutionRoutes(task_spec)
+        if self.routes.routes and set(self.routes.process_tools) - {
+                metric['id'] for metric in self.metrics if metric.get('category') == 'process'}:
+            raise SandboxError("EXECUTION_ROUTE_INVALID", "route binding references a non-process metric", 500)
 
-    def apply(self, scores: Mapping[str, Any], context: Mapping[str, Any]) -> dict[str, Any]:
+    def apply(self, scores: Mapping[str, Any], context: Mapping[str, Any],
+              *, diagnostics: dict | None = None) -> dict[str, Any]:
         result = dict(scores)
+        route = self.routes.select(context)
+        inactive = {metric_id for metric_id, tool in self.routes.process_tools.items()
+                    if route and tool not in route["required_tools"]}
+        if self.routes.routes:
+            result = RoutedScores(result, route_id=route["id"] if route else None, inactive=inactive)
+            for metric in self.metrics:
+                if metric["id"] in inactive:
+                    result[metric["id"]] = float(metric.get("score_range", [0, 1])[0])
         training = self.task_spec.get("training_contract", {})
         category = training.get("category") if isinstance(training, Mapping) else None
         dag = self.task_spec.get("capability_dag", {})
@@ -1207,23 +2032,58 @@ class ContractRewardGate:
         all_calls = [
             str(event.get("payload", {}).get("tool_name"))
             for event in events if isinstance(event, Mapping)
-            and event.get("event") == "tool_call"
+            and event.get("event") in {"tool_call", "tool_call_replay"}
             and isinstance(event.get("payload"), Mapping)
         ]
         business_calls = [
             str(event.get("payload", {}).get("tool_name"))
             for event in events if isinstance(event, Mapping)
-            and event.get("event") == "tool_call"
+            and event.get("event") in {"tool_call", "tool_call_replay"}
             and isinstance(event.get("payload"), Mapping)
             and event.get("payload", {}).get("noise") is not True
             and valid_tool_result(event)
         ]
         called = set(business_calls)
         edges = dag.get("edges", []) if isinstance(dag, Mapping) else []
+        protocols = [event for event in events if event.get('event') == 'user_protocol']
+        selected_script = protocols[-1].get('payload', {}).get('script_id') if protocols else None
+        if selected_script is not None:
+            edges = [edge for edge in edges if 'user_script_ids' not in edge or selected_script in edge['user_script_ids']]
         # A later valid retry can establish a dependency after an early mistake.
-        calls = [event for event in events if isinstance(event, Mapping) and event.get("event") == "tool_call"
+        calls = [event for event in events if isinstance(event, Mapping) and event.get("event") in {"tool_call", "tool_call_replay"}
                  and isinstance(event.get("payload"), Mapping) and valid_tool_result(event)]
         def established(edge: Mapping[str, Any]) -> bool:
+            if edge.get("capture_plan"):
+                plan = edge["capture_plan"]
+                def match(position, start, variables):
+                    if position == len(plan):
+                        try:
+                            expected = DeclarativeMetricEvaluator.resolve_capture_argument(
+                                edge["consumer_arguments"], variables)
+                        except SandboxError:
+                            return False
+                        return any(item["payload"].get("tool_name") == edge.get("to_tool")
+                                   and item["payload"].get("arguments", {}) == expected
+                                   for item in calls[start:])
+                    producer = plan[position]
+                    try:
+                        expected = DeclarativeMetricEvaluator.resolve_capture_argument(
+                            producer["arguments"], variables)
+                    except SandboxError:
+                        return False
+                    for index in range(start, len(calls)):
+                        item = calls[index]
+                        if (item["payload"].get("tool_name") != producer["tool_name"]
+                                or item["payload"].get("arguments", {}) != expected):
+                            continue
+                        captured = {name: DeclarativeMetricEvaluator._resolve(item.get("result"), path)
+                                    for name, path in producer["capture"].items()}
+                        if any(value is None for value in captured.values()):
+                            continue
+                        if match(position + 1, index + 1, {**variables, **captured}):
+                            return True
+                    return False
+                return match(0, 0, {})
             for index, event in enumerate(calls):
                 if event["payload"].get("tool_name") != edge.get("to_tool"):
                     continue
@@ -1254,6 +2114,8 @@ class ContractRewardGate:
                         return True
             return False
         paths = dag.get("success_paths") or [list(required)]
+        if route:
+            paths = [route["required_tools"]]
         dependency_progress = any(
             bool(path) and set(path) <= called and any(
                 edge.get("from_tool") in path and edge.get("to_tool") in path for edge in edges
@@ -1261,6 +2123,28 @@ class ContractRewardGate:
                       if edge.get("from_tool") in path and edge.get("to_tool") in path)
             for path in paths
         )
+        early_termination = bool(route and route['id'] in self.routes.early_stop_ids
+                                 and set(route['required_tools']) <= called)
+        dialogue_termination = bool(route and route['id'] in self.routes.dialogue_stop_ids
+                                    and set(route['required_tools']) <= called
+                                    and set(all_calls) <= set(route['required_tools'])
+                                    and not any(event.get('event') == 'user_stop_violation' for event in events))
+        if dialogue_termination:
+            stage = route['when']['user_rejection']['stage']
+            observed = context.get('reward_state_snapshots', {}).get('$user_branches', {}).get(stage, {})
+            after = observed.get('event_index', -1)
+            dialogue_termination = (type(after) is int and 0 <= after < len(events)
+                and not any(event.get('event') in {'tool_call', 'tool_call_replay'} for event in events[after + 1:]))
+            if dialogue_termination:
+                event = events[after]
+                outcome = event.get('result', {})
+                dialogue_termination = (event.get('event') == 'user_turn'
+                    and event.get('payload', {}).get('decision_source') == 'interaction_contract'
+                    and outcome.get('fsm_transition_applied') is True
+                    and outcome.get('interaction_stage') is None
+                    and outcome.get('interaction_branch') == route['when']['user_rejection']['branch']
+                    and outcome.get('outcome_category') == 'user_rejection'
+                    and selected_script is not None and outcome.get('fsm_script_id') == selected_script)
         unresolved = any(
             isinstance(event, Mapping)
             and event.get("event") == "user_turn"
@@ -1270,6 +2154,8 @@ class ContractRewardGate:
         )
         causal_progress = (
             not unresolved
+            and (not self.routes.routes or route is not None)
+            and (route is None or set(route["required_tools"]) <= called)
             and (
                 (
                     category == "direct_response"
@@ -1280,24 +2166,33 @@ class ContractRewardGate:
                 or (
                     category == "multi_step_agentic"
                     and bool(edges)
-                    and dependency_progress
+                    and (dependency_progress or early_termination or dialogue_termination)
                 )
             )
         )
         goals = self.task_spec.get("goal_contract", {})
         predicates = goals.get("row_predicates", [])
+        baseline = context.get("initial_business_state", {})
+        state = ExpressionBusinessState.from_context(context)
+        preservation_baseline = BusinessGoalEvaluator.external_baseline(baseline, events)
+        if route:
+            route_writes = self.routes.writes & set(route['required_tools'])
+            causal_progress = causal_progress and not (set(all_calls) & (self.routes.writes - route_writes))
+            if route['writes'] == 'forbidden':
+                causal_progress = causal_progress and state == preservation_baseline
+            else:
+                causal_progress = causal_progress and state != preservation_baseline
         if predicates:
-            baseline = context.get("initial_business_state", {})
-            state = context.get("business_state", {})
             causal_progress = causal_progress and BusinessGoalEvaluator.evaluate(predicates, state, baseline)
-            initially_satisfied = BusinessGoalEvaluator.evaluate(predicates, baseline, baseline)
-            if goals.get("allow_noop") is True and initially_satisfied:
+            initially_satisfied = BusinessGoalEvaluator.evaluate(predicates,
+                ExpressionBusinessState(baseline, baseline, state.snapshots), baseline)
+            if not route and goals.get("allow_noop") is True and initially_satisfied:
                 # An already-satisfied goal permits observation and explanation,
                 # but never collateral writes or a gratuitous rewrite.
                 causal_progress = causal_progress and state == baseline
-            elif goals.get("requires_state_change"):
+            elif not route and goals.get("requires_state_change"):
                 causal_progress = causal_progress and not initially_satisfied and state != baseline
-            causal_progress = causal_progress and BusinessGoalEvaluator.preserves_unrelated(goals, baseline, state)
+            causal_progress = causal_progress and BusinessGoalEvaluator.preserves_unrelated(goals, preservation_baseline, state)
         # Tool presence alone is not evidence that the Agent chose the right
         # arguments or completed every required step.  Compiled process
         # metrics encode those exact causal obligations.  Outcome credit is
@@ -1307,7 +2202,7 @@ class ContractRewardGate:
             metric.get("id") in result
             and float(result[str(metric["id"])]) >= float(metric.get("score_range", [0, 1])[-1])
             for metric in self.metrics
-            if metric.get("category") == "process"
+            if metric.get("category") == "process" and metric.get("id") not in inactive
         )
         causal_progress = causal_progress and process_complete
         if not causal_progress:
@@ -1321,12 +2216,35 @@ class ContractRewardGate:
         if self.task_spec.get('requires_user_interaction'):
             protocols = [event for event in events if event.get('event') == 'user_protocol']
             required_stages = protocols[-1]['payload']['required_stages'] if protocols else None
+            if route and required_stages is not None:
+                required_stages = route['required_stages'] if set(route['required_stages']) <= set(required_stages) else None
             completed = {event.get('result', {}).get('interaction_stage') for event in events
                          if event.get('event') == 'user_turn' and event.get('result', {}).get('fsm_transition_applied')}
-            if not required_stages or not set(required_stages) <= completed:
+            if dialogue_termination:
+                completed.add(route['when']['user_rejection']['stage'])
+            if required_stages is None or (not required_stages and not route) or not set(required_stages) <= completed:
                 for metric in self.metrics:
                     if metric.get('category') == 'outcome':
                         result[metric['id']] = float(metric.get('score_range', [0, 1])[0])
+        if diagnostics is not None:
+            diagnostics.clear()
+            diagnostics.update(causal_passed=causal_progress, dependency_path_passed=dependency_progress,
+                early_termination_passed=early_termination and causal_progress,
+                unresolved_dialogue=unresolved, process_complete=process_complete,
+                selected_route=route.get('id') if route else None,
+                route_required=bool(self.routes.routes), called_tools=sorted(called),
+                dependency_edges=[{'edge': edge, 'established': established(edge)} for edge in edges])
+            if predicates:
+                diagnostics.update(goal_satisfied=BusinessGoalEvaluator.evaluate(predicates, state, baseline),
+                    initially_satisfied=initially_satisfied,
+                    state_changed=state != baseline,
+                    state_changed_after_external_events=state != preservation_baseline,
+                    unrelated_state_preserved=BusinessGoalEvaluator.preserves_unrelated(
+                        goals, preservation_baseline, state))
+            if self.task_spec.get('requires_user_interaction'):
+                diagnostics.update(required_interaction_stages=required_stages,
+                    completed_interaction_stages=sorted(value for value in completed if isinstance(value, str)),
+                    missing_interaction_stages=sorted(set(required_stages or []) - completed))
         return result
 
 
@@ -1335,8 +2253,18 @@ class ContractEvaluatorRuntime:
 
     STATE_KEY = "evaluator_cache"
 
-    def __init__(self, episode_store: EpisodeStore) -> None:
+    def __init__(self, episode_store: EpisodeStore, *, reuse_across_resets: bool = False) -> None:
         self.episode_store = episode_store
+        # Opt-in, in-memory reuse for one validation run. Live episodes and
+        # semantic calibration retain the default episode-isolated behavior.
+        self._validation_cache = {} if reuse_across_resets else None
+        self._validation_cache_hits = 0
+
+    def validation_cache_report(self) -> dict[str, Any]:
+        return {'scope': 'one_validation_invocation_not_independent_judgments',
+                'enabled': self._validation_cache is not None,
+                'reused_judgments': self._validation_cache_hits,
+                'original_judgments': copy.deepcopy(list((self._validation_cache or {}).values()))}
 
     def json_judge(
         self,
@@ -1374,16 +2302,42 @@ class ContractEvaluatorRuntime:
             key: stable_replay(value) if key in {"trajectory", "tool_results"} else stable(value)
             for key, value in context.items()
         }
+        field_scope = ({'version': 1, 'fields': list(metric['semantic_fields']),
+                        'response_is_projected': True, 'other_fields': 'assessed_by_separate_metrics'}
+                       if metric.get('semantic_fields') else None)
         context_hash = sha256_json({
             "metric_id": metric.get("id"), "evaluator": metric.get("evaluator"),
             "rubric": metric.get("rubric"), "criteria": metric.get("criteria"),
             "evaluation_inputs": metric.get("evaluation_inputs"),
             "response_schema": response_schema,
             "context": stable_context,
+            **({'metric_field_scope': field_scope} if field_scope else {}),
         })
         cache = self.episode_store.get_state(self.STATE_KEY, {})
         if isinstance(cache, Mapping) and context_hash in cache:
             return dict(cache[context_hash])
+        validation_key = None
+        if self._validation_cache is not None and os.getenv('SANDBOX_EVALUATOR_MOCK', '').lower() not in {'1', 'true', 'yes'}:
+            # Provider changes invalidate reuse too. Only a digest is retained;
+            # credentials and configuration values never enter replay events.
+            validation_key = sha256_json({'context_hash': context_hash, 'configuration': {
+                name: os.getenv(name) for name in (
+                    'SANDBOX_LLM_API_KEY', 'LLM_API_KEY', 'SANDBOX_LLM_BASE_URL', 'LLM_BASE_URL',
+                    'SANDBOX_LLM_MODEL', 'LLM_MODEL', 'KIMI_K3_REASONING_EFFORT',
+                    'SANDBOX_LLM_TIMEOUT_SECONDS', 'LLM_TIMEOUT', 'SANDBOX_LLM_MAX_RETRIES')}})
+            cached = self._validation_cache.get(validation_key)
+            if cached is not None:
+                self._validation_cache_hits += 1
+                result = copy.deepcopy(cached['result'])
+                updated = dict(cache) if isinstance(cache, Mapping) else {}
+                updated[context_hash] = copy.deepcopy(result)
+                self.episode_store.set_state(self.STATE_KEY, updated)
+                self.episode_store.event('evaluator_call', {
+                    'metric_id': metric.get('id'), 'context_hash': context_hash,
+                    'cached': True, 'cache_scope': 'validation_run', 'used_fallback': False,
+                    'judgment_obtained': True, 'origin_judgment_id': cached['judgment_id'],
+                }, result)
+                return result
         result: Mapping[str, Any]
         used_fallback = False
         try:
@@ -1408,6 +2362,17 @@ class ContractEvaluatorRuntime:
                 "criteria": [str(item) for item in criteria if str(item).strip()],
                 "label_scores": mapping,
             }
+            if field_scope:
+                judge_instructions['metric_field_scope'] = field_scope
+                judge_instructions['rules'].insert(0,
+                    'This metric assesses only metric_field_scope.fields. The final response is '
+                    'intentionally projected to those fields after full answer-shape validation. '
+                    'Apply all material obligations in THIS metric\'s rubric and criteria to those '
+                    'fields using the actual runtime evidence. The public task and answer schema '
+                    'may also describe separate metrics: do not require absent fields, duplicate '
+                    'their content here, or penalize their absence in this metric. Those obligations '
+                    'are assessed separately. Still reject unsupported claims, contradictions, or '
+                    'missing meaning required by this metric within its own fields.')
             result = RuntimeLLMClient().json_chat(
                 [
                     {
@@ -1425,14 +2390,21 @@ class ContractEvaluatorRuntime:
                 raise RuntimeLLMError("evaluator returned a non-object")
         except (RuntimeLLMError, OSError, ValueError, TypeError):
             result, used_fallback = dict(fallback), True
+        judgment_id = None
         if not used_fallback:
             updated = dict(cache) if isinstance(cache, Mapping) else {}
             updated[context_hash] = dict(result)
             self.episode_store.set_state(self.STATE_KEY, updated)
+            if validation_key is not None:
+                judgment_id = uuid.uuid4().hex
+                self._validation_cache[validation_key] = {
+                    'result': copy.deepcopy(dict(result)), 'judgment_id': judgment_id,
+                    'context_hash': context_hash}
         self.episode_store.event("evaluator_call", {
             "metric_id": metric.get("id"), "context_hash": context_hash,
             "cached": False, "used_fallback": used_fallback,
             "judgment_obtained": not used_fallback,
+            **({'judgment_id': judgment_id} if judgment_id is not None else {}),
         }, dict(result))
         return dict(result)
 
@@ -1440,9 +2412,9 @@ class ContractEvaluatorRuntime:
 class ContractModelMetricEvaluator:
     """Platform-owned semantic outcome evaluator and explicitly limited fixture mode."""
 
-    def __init__(self, contract: Mapping[str, Any], store: EpisodeStore) -> None:
+    def __init__(self, contract: Mapping[str, Any], store: EpisodeStore, *, reuse_across_resets: bool = False) -> None:
         self.contract, self.store = contract, store
-        self.runtime = ContractEvaluatorRuntime(store)
+        self.runtime = ContractEvaluatorRuntime(store, reuse_across_resets=reuse_across_resets)
 
     @staticmethod
     def _contains_fact(value: Any, fact: Any) -> bool:
@@ -1511,6 +2483,36 @@ class ContractModelMetricEvaluator:
                         return {"table": table, "field": str(field)}
         return None
 
+    def _mock_references(self, context):
+        """Select fixture answers for the active protocol, never other user choices."""
+        events = context.get('trajectory', {}).get('events', [])
+        protocols = [event for event in events if event.get('event') == 'user_protocol']
+        active = protocols[-1].get('payload', {}).get('script_id') if protocols else None
+        variants = self.contract.get('task_spec', {}).get('interaction_complexity', {}).get(
+            'behavioral_diversity', {}).get('variants', [])
+        identifiers = [item.get('script_id') for item in variants if isinstance(item, Mapping)]
+        identifiers = sorted(set(item for item in identifiers if isinstance(item, str)))
+        references = []
+        for scenario in self.contract.get('acceptance_contract', {}).get('executable_scenarios', []):
+            if scenario.get('kind') != 'goal_success':
+                continue
+            if active is not None:
+                reset = next((step.get('body', {}) for step in scenario.get('steps', [])
+                              if step.get('operation') == 'reset'), {})
+                seed = reset.get('seed')
+                if type(seed) is not int:
+                    continue
+                if active in identifiers:
+                    if identifiers[random.Random(seed).randrange(len(identifiers))] != active:
+                        continue
+                elif seed != self.store.current().seed:
+                    # Historical contracts without a script inventory can only
+                    # reuse the exact seed's fixture, not guess another script.
+                    continue
+            references.extend(step.get('content') for step in scenario.get('steps', [])
+                              if step.get('operation') == 'agent_response')
+        return references
+
     def evaluate_all(self, context: Mapping[str, Any], existing: Mapping[str, float]) -> dict[str, float]:
         scores = {}
         mock = os.getenv("SANDBOX_EVALUATOR_MOCK", "").lower() in {"1", "true", "yes"}
@@ -1557,10 +2559,7 @@ class ContractModelMetricEvaluator:
                     scores[metric_id] = float(labels[failure])
                     continue
             if mock:
-                references = [step.get("content")
-                              for scenario in self.contract.get("acceptance_contract", {}).get("executable_scenarios", [])
-                              if scenario.get("kind") == "goal_success"
-                              for step in scenario.get("steps", []) if step.get("operation") == "agent_response"]
+                references = self._mock_references(context)
                 response = context.get("final_agent_response")
                 matches_reference = bool(response and response in references)
                 fields = metric.get("semantic_fields")
@@ -1605,6 +2604,46 @@ class ContractModelMetricEvaluator:
                                 and event.get("event") == "tool_call"
                                 and isinstance(event.get("payload"), Mapping)
                             ]
+                            # A failed pre-operation injection has no successful
+                            # tool_call event. Recovery criteria still need its
+                            # observed outcome, not the private future schedule.
+                            failures = []
+                            for position, event in enumerate(events):
+                                if (not isinstance(event, Mapping) or event.get('event') != 'injected_fault'
+                                        or not isinstance(event.get('payload'), Mapping)
+                                        or not isinstance(event.get('result'), Mapping)):
+                                    continue
+                                payload, result = event['payload'], event['result']
+                                if (not isinstance(payload.get('tool'), str)
+                                        or type(payload.get('status')) is not int
+                                        or not 400 <= payload['status'] <= 599
+                                        or type(result.get('committed')) is not bool):
+                                    continue
+                                failures.append({'tool_name': payload['tool'], 'status': payload['status'],
+                                    'call_index': payload.get('call_index'), 'phase': payload.get('phase'),
+                                    'committed': result['committed'], 'trajectory_position': position})
+                            if failures:
+                                selected_context['observed_tool_failures'] = failures
+                            attempts = []
+                            for event in events:
+                                if (not isinstance(event, Mapping) or event.get('event') != 'tool_attempt'
+                                        or not isinstance(event.get('payload'), Mapping)
+                                        or not isinstance(event.get('result'), Mapping)):
+                                    continue
+                                payload, result = event['payload'], event['result']
+                                key_hash = payload.get('idempotency_key_sha256')
+                                if (not isinstance(payload.get('tool_name'), str)
+                                        or not isinstance(payload.get('arguments'), Mapping)
+                                        or type(result.get('status')) is not int
+                                        or not 200 <= result['status'] <= 599
+                                        or key_hash is not None and (not isinstance(key_hash, str)
+                                            or re.fullmatch('[0-9a-f]{64}', key_hash) is None)):
+                                    continue
+                                attempts.append({'tool_name': payload['tool_name'],
+                                    'arguments': copy.deepcopy(payload['arguments']),
+                                    'idempotency_key_sha256': key_hash, 'status': result['status']})
+                            if attempts:
+                                selected_context['observed_tool_attempts'] = attempts
                             continue
                     source = aliases.get(name, name)
                     if source in context:
@@ -1620,6 +2659,31 @@ class ContractModelMetricEvaluator:
                 public_task = self.contract.get("task")
                 if isinstance(public_task, str) and public_task.strip():
                     selected_context["task"] = public_task.strip()
+                # A user's observed clarification or refusal changes the public
+                # request just as the initial prompt does. Read actual simulator
+                # events, never private preferences or a claimed conversation in
+                # the submitted answer. Retain only the utterances, not FSM data.
+                trajectory = context.get("trajectory")
+                events = trajectory.get("events") if isinstance(trajectory, Mapping) else None
+                observed_turns = []
+                for event in events if isinstance(events, list) else []:
+                    if not isinstance(event, Mapping) or event.get("event") != "user_turn":
+                        continue
+                    payload, result = event.get("payload"), event.get("result")
+                    if not isinstance(payload, Mapping) or not isinstance(result, Mapping):
+                        continue
+                    reply, messages = result.get("user_query"), payload.get("messages")
+                    if not isinstance(reply, str) or not reply.strip():
+                        continue
+                    turn = {"user_response": reply}
+                    if (isinstance(messages, list) and messages
+                            and isinstance(messages[-1], Mapping)
+                            and messages[-1].get("role") == "assistant"
+                            and isinstance(messages[-1].get("content"), str)):
+                        turn["assistant_response"] = messages[-1]["content"]
+                    observed_turns.append(turn)
+                if observed_turns:
+                    selected_context["observed_user_turns"] = observed_turns
                 # Keep the judge input bounded and contract-directed.  Older
                 # contracts without evaluation_inputs still receive the two
                 # canonical response fields rather than the entire replay and
@@ -1656,7 +2720,7 @@ class DeclarativeMetricEvaluator:
     """Evaluate deterministic metric predicates from a constrained DSL."""
 
     OPERATORS = {
-        "eq", "ne", "gte", "lte", "contains", "exists", "count_gte",
+        "eq", "ne", "gt", "gte", "lt", "lte", "contains", "exists", "count_gte",
         "count_eq", "changed", "unchanged", "subset", "none_tool_calls",
         "contains_tool_call",
         "numeric_targets", "value_targets", "state_predicates",
@@ -1751,8 +2815,34 @@ class DeclarativeMetricEvaluator:
             initial = getattr(business_state, "initial", None)
             # Validate syntax even if no initial snapshot was supplied, then fail closed.
             result = cls._value_expression(expression["initial"],
-                ExpressionBusinessState(initial, initial), depth=depth + 1)
+                ExpressionBusinessState(initial, initial, getattr(business_state, "snapshots", {})), depth=depth + 1)
             return result if initial is not None else None
+        if set(expression) == {'user_rejection'}:
+            ref = expression['user_rejection']
+            if (not isinstance(ref, Mapping) or set(ref) != {'stage', 'branch'}
+                    or any(not isinstance(ref[key], str) or not ref[key] for key in ref)):
+                raise SandboxError('METRIC_SPEC_INVALID', 'user_rejection requires stage and branch identifiers', 500)
+            observed = getattr(business_state, 'snapshots', {}).get('$user_branches', {}).get(ref['stage'], {})
+            return (observed.get('branch') == ref['branch'] and observed.get('outcome') == 'user_rejection'
+                    and observed.get('applied') is True and observed.get('advanced') is False)
+        if set(expression) in ({'tool_result'}, {'tool_argument'}):
+            RewardStateSnapshots.requested(expression)
+            kind = next(iter(expression))
+            ref = expression[kind]
+            key = '$tool_results' if kind == 'tool_result' else '$tool_arguments'
+            results = getattr(business_state, 'snapshots', {}).get(key, {})
+            value = cls._resolve(results.get(ref['name']), ref['path'])
+            # Same bounded, typed JSON domain as literals and answer targets.
+            # Empty collections are observed evidence; missing/null remains unresolved.
+            return copy.deepcopy(value) if cls._json_value_equal(value, value) else None
+        if set(expression) == {"at_tool"}:
+            RewardStateSnapshots.requested(expression)
+            checkpoint = expression["at_tool"]
+            snapshots = getattr(business_state, "snapshots", {})
+            snapshot = snapshots.get(checkpoint["name"])
+            value = cls._value_expression(checkpoint["expression"], ExpressionBusinessState(
+                snapshot, getattr(business_state, "initial", None), snapshots), depth=depth + 1)
+            return value if snapshot is not None else None
         if set(expression) == {"array"}:
             items = expression["array"]
             if not isinstance(items, list) or len(items) > 64:
@@ -1790,12 +2880,20 @@ class DeclarativeMetricEvaluator:
             if not isinstance(args, list) or not (2 <= len(args) <= 8 if operator in {"and", "or"} else len(args) == 2):
                 raise SandboxError("METRIC_SPEC_INVALID", "predicate arity is invalid", 500)
             values = [cls._value_expression(arg, business_state, depth=depth + 1) for arg in args]
-            if any(value is None for value in values):
-                return None
             if operator in {"and", "or"}:
-                if not all(isinstance(value, bool) for value in values):
+                if any(value is not None and not isinstance(value, bool) for value in values):
+                    return None
+                # A known false prerequisite excludes a downstream branch even
+                # before its read occurs. Unknown prerequisites never count as true.
+                if operator == 'and' and any(value is False for value in values):
+                    return False
+                if operator == 'or' and any(value is True for value in values):
+                    return True
+                if any(value is None for value in values):
                     return None
                 return all(values) if operator == "and" else any(values)
+            if any(value is None for value in values):
+                return None
             left, right = values
             if isinstance(left, bool) != isinstance(right, bool):
                 return None
@@ -1819,10 +2917,16 @@ class DeclarativeMetricEvaluator:
             raise SandboxError("METRIC_SPEC_INVALID", "value targets require json_object and 1..16 targets", 500)
         keys = set()
         for target in expected["targets"]:
-            if (not isinstance(target, Mapping) or set(target) != {"key", "expression"}
+            if (not isinstance(target, Mapping) or not {"key", "expression"} <= set(target)
+                    or set(target) - {"key", "expression", "tolerance"}
                     or not isinstance(target["key"], str) or not target["key"] or target["key"] in keys):
                 raise SandboxError("METRIC_SPEC_INVALID", "value target key/expression is invalid", 500)
             keys.add(target["key"])
+            if 'tolerance' in target:
+                tolerance = target['tolerance']
+                if (type(tolerance) not in {int, float} or not 0 <= tolerance <= 1
+                        or not math.isfinite(tolerance)):
+                    raise SandboxError('METRIC_SPEC_INVALID', 'value target tolerance must be finite within [0, 1]', 500)
             cls._value_expression(target["expression"], {})
 
     @classmethod
@@ -1857,7 +2961,16 @@ class DeclarativeMetricEvaluator:
         for target in expected["targets"]:
             wanted = cls._value_expression(target["expression"], business_state)
             value = actual[target["key"]]
-            if not cls._json_value_equal(wanted, value):
+            if 'tolerance' in target:
+                if (isinstance(wanted, bool) or isinstance(value, bool)
+                        or not isinstance(wanted, (int, float, Decimal))
+                        or not isinstance(value, (int, float, Decimal))):
+                    return False
+                left, right = Decimal(str(wanted)), Decimal(str(value))
+                if (not left.is_finite() or not right.is_finite()
+                        or abs(left - right) > Decimal(str(target['tolerance']))):
+                    return False
+            elif not cls._json_value_equal(wanted, value):
                 return False
         return True
 
@@ -1907,7 +3020,7 @@ class DeclarativeMetricEvaluator:
     ) -> Decimal | None:
         if depth > 12 or not isinstance(expression, Mapping):
             raise SandboxError("METRIC_SPEC_INVALID", "numeric expression is invalid", 500)
-        if set(expression) in ({"if"}, {"initial"}):
+        if set(expression) in ({"if"}, {"initial"}, {"at_tool"}, {"tool_result"}, {"tool_argument"}):
             value = cls._value_expression(expression, business_state, depth=depth + 1)
             return Decimal(str(value)) if not isinstance(value, bool) and isinstance(value, (int, float, Decimal)) else None
         if set(expression) == {"literal"}:
@@ -2155,11 +3268,18 @@ class DeclarativeMetricEvaluator:
         return current
 
     @classmethod
-    def _compare(cls, actual: Any, operator: str, expected: Any) -> bool:
+    def _compare(cls, actual: Any, operator: str, expected: Any, *,
+                 call_bindings: Mapping[str, Any] | None = None,
+                 require_last: bool = False) -> bool:
         if operator == "eq":
             return actual == expected
         if operator == "ne":
             return actual != expected
+        if operator in {"gt", "lt"}:
+            if any(isinstance(value, bool) or not isinstance(value, (int, float, Decimal))
+                   or not Decimal(str(value)).is_finite() for value in (actual, expected)):
+                return False
+            return actual > expected if operator == "gt" else actual < expected
         if operator == "gte":
             return actual is not None and actual >= expected
         if operator == "lte":
@@ -2199,48 +3319,83 @@ class DeclarativeMetricEvaluator:
         if operator == "contains_tool_call":
             if not isinstance(actual, list) or not isinstance(expected, Mapping):
                 return False
+            if 'by_user_script' in expected:
+                scoped = expected['by_user_script']
+                protocols = [event for event in actual if isinstance(event, Mapping)
+                             and event.get('event') == 'user_protocol']
+                selected = protocols[-1].get('payload', {}).get('script_id') if protocols else None
+                if not isinstance(scoped, Mapping) or not isinstance(selected, str):
+                    return False
+                options = scoped.get(selected, [])
+                common = scoped.get('*', [])
+                if not isinstance(options, list) or not isinstance(common, list):
+                    return False
+                return any(isinstance(option, Mapping) and 'by_user_script' not in option
+                           and cls._compare(actual, operator, option, call_bindings=call_bindings,
+                                            require_last=require_last) for option in options + common)
             tool_name = expected.get("tool_name")
             arguments = expected.get("arguments")
             captures = expected.get("captures", [])
             if not isinstance(tool_name, str) or not isinstance(arguments, Mapping):
                 return False
-            resolved: dict[str, Any] = {}
             if not isinstance(captures, list):
                 return False
+            # Fields from one producer must come from the same event. Search
+            # ordered alternatives so an exploratory read cannot poison recovery.
+            groups = []
             for capture in captures:
-                if not isinstance(capture, Mapping):
+                if not isinstance(capture, Mapping) or not all(
+                        isinstance(capture.get(key), str) and capture[key]
+                        for key in ("name", "tool_name", "path")):
                     return False
-                capture_name = capture.get("name")
-                capture_tool = capture.get("tool_name")
-                capture_path = capture.get("path")
-                if not all(isinstance(value, str) and value for value in (
-                    capture_name, capture_tool, capture_path
-                )):
-                    return False
-                source = next((
-                    event.get("result") for event in actual
-                    if isinstance(event, Mapping)
-                    and event.get("event") == "tool_call"
-                    and isinstance(event.get("payload"), Mapping)
-                    and event["payload"].get("tool_name") == capture_tool
-                ), None)
-                value = cls._resolve(source, capture_path)
-                if value is None:
-                    return False
-                resolved[capture_name] = value
-
-            try:
-                canonical_arguments = cls.resolve_capture_argument(arguments, resolved)
-            except SandboxError:
+                if not groups or groups[-1][0] != capture["tool_name"]:
+                    groups.append((capture["tool_name"], []))
+                groups[-1][1].append(capture)
+            positions = [index for index, event in enumerate(actual) if isinstance(event, Mapping)
+                         and event.get("event") in {"tool_call", "tool_call_replay"}
+                         and isinstance(event.get("payload"), Mapping)]
+            calls = [actual[index] for index in positions]
+            if require_last and (not calls or calls[-1]["payload"].get("tool_name") != tool_name):
                 return False
-            return any(
-                isinstance(event, Mapping)
-                and event.get("event") == "tool_call"
-                and isinstance(event.get("payload"), Mapping)
-                and event["payload"].get("tool_name") == tool_name
-                and event["payload"].get("arguments") == canonical_arguments
-                for event in actual
-            )
+            def match(group_index, start, resolved):
+                if group_index == len(groups):
+                    try:
+                        canonical = cls.resolve_capture_argument(arguments, resolved)
+                    except SandboxError:
+                        return False
+                    disclosed = expected.get('disclosed_arguments', {})
+                    if (not isinstance(disclosed, Mapping) or not isinstance(canonical, Mapping)
+                            or any(key not in canonical or not cls._json_value_equal(canonical[key], value)
+                                   for key, value in disclosed.items())):
+                        return False
+                    if require_last and start >= len(calls):
+                        return False
+                    candidates = calls[-1:] if require_last else calls[start:]
+                    return any(event["payload"].get("tool_name") == tool_name
+                               and event["payload"].get("arguments") == canonical
+                               for event in candidates)
+                producer, fields = groups[group_index]
+                for index in range(start, len(calls) - (1 if require_last else 0)):
+                    event = calls[index]
+                    if event["payload"].get("tool_name") != producer:
+                        continue
+                    if call_bindings and producer in call_bindings:
+                        # Match this exact producer against the active script's
+                        # own upstream chain, not any similarly named response.
+                        # Each recursive prefix ends before the current consumer.
+                        prefix = actual[:positions[index] + 1]
+                        if not any(cls._compare(prefix, operator, binding,
+                                call_bindings=call_bindings, require_last=True)
+                                   for binding in call_bindings[producer]):
+                            continue
+                    values = {field["name"]: cls._resolve(event.get("result"), field["path"])
+                              for field in fields}
+                    if any(value is None for value in values.values()):
+                        continue
+                    if match(group_index + 1, index + 1, {**resolved, **values}):
+                        return True
+                return False
+            return match(0, 0, {})
         raise SandboxError("METRIC_SPEC_INVALID", f"unsupported metric operator: {operator}", 500)
 
     def evaluate(self, spec: Mapping[str, Any], context: Mapping[str, Any],
@@ -2256,12 +3411,12 @@ class DeclarativeMetricEvaluator:
             if source != "business_state" or path != "$":
                 raise SandboxError("METRIC_SPEC_INVALID", "state_predicates requires business_state at $", 500)
             self.validate_state_predicates(spec.get("expected"))
-            passed = BusinessGoalEvaluator.evaluate(spec["expected"], context.get("business_state", {}),
+            passed = BusinessGoalEvaluator.evaluate(spec["expected"], ExpressionBusinessState.from_context(context),
                 context.get("initial_business_state"))
         elif operator in {"numeric_targets", "value_targets"}:
             if source != "final_agent_response" or path != "$":
                 raise SandboxError("METRIC_SPEC_INVALID", "numeric target source is invalid", 500)
-            arguments = (context.get("final_agent_response"), spec.get("expected"), ExpressionBusinessState(context.get("business_state"), context.get("initial_business_state")))
+            arguments = (context.get("final_agent_response"), spec.get("expected"), ExpressionBusinessState.from_context(context))
             passed = (self._numeric_targets_match(*arguments) if operator == "numeric_targets"
                       else self._value_targets_match(*arguments, allowed_keys=_answer_keys))
         else:
@@ -2294,6 +3449,121 @@ class DeclarativeMetricEvaluator:
         return scores
 
 
+STRUCTURED_INTERACTION_INSTRUCTIONS = (
+    'To request user input, send assistant content as a JSON object with question (natural-language text) '
+    'and request: {"intent":"request_input", "tool":"business tool name", "arguments":["parameter name"]}. '
+    'For a choice include request.options containing the offered values. To request permission for a write, '
+    'use intent="confirm_execution", the write tool name, and arguments=[]. '
+    'For tools listed in the public approval_proposal_tools material, include request.proposal '
+    'with every listed argument name and its actual scalar value presented for approval. '
+    'These values define the confirmation scope; the question must describe the same proposal. '
+    'For other tools omit proposal. '
+    'These are public tool/parameter names, never internal script or stage IDs. '
+    'Do not put guessed private user values into arguments: it lists parameter names only. '
+    'The complete envelope is {"question":"Your question to the user",'
+    '"request":{"intent":"request_input","tool":"TOOL_NAME","arguments":["PARAMETER_NAME"]}}. '
+    'Replace TOOL_NAME and PARAMETER_NAME with public schema names; keep request nested. '
+    'Do not wrap the JSON in Markdown fences. Use this envelope for intermediate questions, '
+    'even when the final answer requires a different JSON schema. '
+    'After user replies, call business tools normally. Final answers retain their task-defined format.'
+)
+
+
+def structured_interaction_request(stage):
+    approval = stage['kind'] == 'execution_confirmation'
+    request = {'intent': 'confirm_execution' if approval else 'request_input',
+               'tool': stage['before_tool'],
+               'arguments': [] if approval else [stage['bind_to']['argument']]}
+    if stage['kind'] == 'option_selection' or 'options_from' in stage:
+        request['options'] = copy.deepcopy(stage['options'])
+    if ApprovalTerms.proposal_fields(stage):
+        request['proposal'] = copy.deepcopy(stage.get('reference_proposal', {}))
+    return request
+
+
+def observed_interaction_options(stage, events, *, require_selection=True):
+    """Resolve declared choices from the latest successful producer response."""
+    binding = stage.get('options_from')
+    if binding is None:
+        return stage
+    if (not isinstance(binding, Mapping) or set(binding) - {'tool', 'path', 'separator'}
+            or not isinstance(binding.get('tool'), str) or not binding['tool']
+            or not isinstance(binding.get('path'), str)
+            or ('separator' in binding and (not isinstance(binding['separator'], str) or not binding['separator']))):
+        raise SandboxError('USER_SIMULATION_INVALID', 'invalid options_from binding', 500)
+    DeclarativeMetricEvaluator.path_tokens(binding['path'])
+    response = next((event.get('result') for event in reversed(events)
+        if event.get('event') == 'tool_call' and event.get('payload', {}).get('tool_name') == binding['tool']
+        and isinstance(event.get('result'), Mapping) and 'error' not in event['result']), None)
+    choices = DeclarativeMetricEvaluator._resolve(response, binding['path'])
+    if 'separator' in binding:
+        choices = [part.strip() for part in choices.split(binding['separator'])] if isinstance(choices, str) else None
+    if (not isinstance(choices, list) or not choices or any(not isinstance(value, str) or not value for value in choices)
+            or require_selection and stage.get('private_fact') not in choices):
+        return None
+    # Multiple business records may share a selectable identifier. Let the
+    # user choose that value so the task can report or resolve the ambiguity;
+    # retain every original record for the ordinary business/route checks.
+    return {**stage, 'options': list(dict.fromkeys(choices))}
+
+
+def interaction_request_matches(stage, text, mode='legacy_phrases', *, validate_approval_terms=True):
+    if mode == 'legacy_phrases':
+        return all(interaction_phrase_matches(text, term) for term in stage['assistant_contains_all'])
+    if mode != 'structured_v1':
+        return False
+    try:
+        event = json.loads(text)
+    except (ValueError, TypeError):
+        return False
+    if (not isinstance(event, dict) or set(event) != {'question', 'request'}
+            or not isinstance(event['question'], str) or not event['question'].strip()):
+        return False
+    request = event['request']
+    if (not isinstance(request, dict) or set(request) - {'intent', 'tool', 'arguments', 'options', 'proposal'}
+            or not isinstance(request.get('arguments'), list)
+            or any(not isinstance(name, str) for name in request['arguments'])
+            or len(set(request['arguments'])) != len(request['arguments'])):
+        return False
+    expected = structured_interaction_request(stage)
+    if any(request.get(key) != expected[key] for key in ('intent', 'tool', 'arguments')):
+        return False
+    rejection_only = (stage.get('kind') == 'execution_confirmation' and not stage.get('grant_permissions'))
+    if ('proposal' in request) != bool(ApprovalTerms.proposal_fields(stage)) and not rejection_only:
+        return False
+    if 'proposal' in request:
+        if (not isinstance(request['proposal'], dict)
+                or any(not isinstance(key, str) or not ApprovalTerms.scalar(value) for key, value in request['proposal'].items())):
+            return False
+        if not validate_approval_terms:
+            fields = ApprovalTerms.proposal_fields(stage)
+            if fields and set(request['proposal']) != fields:
+                return False
+        else:
+            try:
+                ApprovalTerms.materialize(stage, request['proposal'])
+            except (TypeError, ValueError):
+                return False
+    if 'options' in expected:
+        if not isinstance(request.get('options'), list):
+            return False
+        # JSON equality must distinguish booleans from numeric choices.
+        canonical = lambda values: sorted(json.dumps(value, sort_keys=True, ensure_ascii=False) for value in values)
+        if canonical(request['options']) != canonical(expected['options']):
+            return False
+    return True
+
+
+def interaction_phrase_matches(text: str, phrase: str) -> bool:
+    """Ignore typography and single-digit quantity spelling, not business intent."""
+    digits = dict(zip('零一二两三四五六七八九', '01223456789'))
+    def normalized(value):
+        value = re.sub(r'\s+', '', unicodedata.normalize('NFKC', value))
+        return re.sub(r'(?<![零一二两三四五六七八九十百千万亿\d])([零一二两三四五六七八九])(?=[个套件份台次张本条箱片])',
+                      lambda match: digits[match.group(1)], value)
+    return normalized(phrase) in normalized(text)
+
+
 class ContractUserSimulator:
     """Episode-isolated FSM user driven by a runtime LLM with safe fallback."""
 
@@ -2314,8 +3584,13 @@ class ContractUserSimulator:
         scripts: Sequence[Mapping[str, Any]] = (),
         renderer: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
         completion_check: Callable[[], bool] | None = None,
+        execution_routes: ExecutionRoutes | None = None,
+        route_context: Callable[[], Mapping[str, Any]] | None = None,
     ) -> None:
         self.episode_store = episode_store
+        self.execution_routes, self.route_context = execution_routes, route_context
+        if execution_routes and execution_routes.routes and route_context is None:
+            raise SandboxError("EXECUTION_ROUTE_INVALID", "user routes need trusted runtime context", 500)
         self.profiles = {str(item.get("profile_id")): dict(item) for item in profiles if isinstance(item, Mapping)}
         self.scripts = {
             str(item.get("script_id")): self._normalize_script(item)
@@ -2325,6 +3600,8 @@ class ContractUserSimulator:
         self.completion_check = completion_check
         if not self.profiles or not self.scripts:
             raise SandboxError("USER_SIMULATION_INVALID", "profiles and FSM scripts must not be empty", 500)
+        if self.execution_routes:
+            self.execution_routes.validate_user_branches(list(self.scripts.values()))
 
     @classmethod
     def _normalize_script(cls, source: Mapping[str, Any]) -> dict[str, Any]:
@@ -2384,26 +3661,201 @@ class ContractUserSimulator:
         script = self.scripts.get(str(state.get('script_id')), {})
         stages = script.get('interaction_protocol', {}).get('stages', [])
         completed = int(state.get('protocol_index', 0))
-        if any(stage.get('before_tool') == name for stage in stages[completed:]):
+        route = self._execution_route()
+        if route and route['id'] in self.execution_routes.dialogue_stop_ids:
+            self.episode_store.event('user_stop_violation', {'tool_name': name},
+                                     {'execution_route': route['id']})
+            # Preserve the attempted violation across the HTTP transaction.
+            # The guard has executed no business handler or state mutation.
+            raise PersistentToolError('USER_REQUEST_STOPPED', 'the user has declined further execution', 409)
+        if any((stage.get('before_tool') == name or any(
+                    binding.get('tool') == name for binding in stage.get('reuse_bindings', [])))
+               and (route is None or stage['id'] in route['required_stages'])
+               for stage in stages[completed:]):
             raise SandboxError('USER_INTERACTION_REQUIRED', 'complete required user interaction before this tool', 409)
+
+    def _execution_route(self):
+        return self.execution_routes.select(self.route_context()) if self.execution_routes and self.route_context else None
+
+    @staticmethod
+    def validate_branches(branches):
+        if not isinstance(branches, list) or len(branches) > 8:
+            raise SandboxError('USER_SIMULATION_INVALID', 'branches must be a bounded list', 500)
+        seen = set()
+        for branch in branches:
+            if (not isinstance(branch, dict) or set(branch) - {'id', 'when', 'user_reply', 'outcome', 'advance', 'grant_permissions', 'revoke_permissions', 'approval_terms'}
+                    or not isinstance(branch.get('id'), str) or not branch['id'] or branch['id'] in seen
+                    or not isinstance(branch.get('user_reply'), str) or not branch['user_reply']
+                    or type(branch.get('advance')) is not bool
+                    or branch.get('outcome') not in {'user_rejection', 'user_acceptance', 'user_correction', 'information_required'}):
+                raise SandboxError('USER_SIMULATION_INVALID', 'invalid conditional user branch', 500)
+            seen.add(branch['id'])
+            conditions = branch.get('when')
+            if not isinstance(conditions, list) or not 1 <= len(conditions) <= 8:
+                raise SandboxError('USER_SIMULATION_INVALID', 'branch requires bounded conditions', 500)
+            for condition in conditions:
+                if (not isinstance(condition, dict) or set(condition) != {'source', 'path', 'operator', 'expected'}
+                        or condition['source'] not in {'business_state', 'last_tool_result', 'assistant_text', 'virtual_clock', 'user_state'}
+                        or condition['operator'] not in {'eq', 'ne', 'gte', 'lte', 'contains', 'exists'}):
+                    raise SandboxError('USER_SIMULATION_INVALID', 'invalid branch condition', 500)
+                DeclarativeMetricEvaluator.path_tokens(condition['path'])
+            for key in ('grant_permissions', 'revoke_permissions'):
+                if not isinstance(branch.get(key, []), list) or any(not isinstance(x, str) or not x for x in branch.get(key, [])):
+                    raise SandboxError('USER_SIMULATION_INVALID', 'invalid branch permissions', 500)
+            if set(branch.get('grant_permissions', [])) & set(branch.get('revoke_permissions', [])):
+                raise SandboxError('USER_SIMULATION_INVALID', 'conflicting branch permissions', 500)
+
+    def _select_branch(self, stage, text):
+        branches = stage.get('branches', [])
+        self.validate_branches(branches)
+        events = self.episode_store.replay()['events']
+        last_tool = next((e.get('result') for e in reversed(events) if e.get('event') == 'tool_call'), {})
+        context = {'business_state': self.episode_store.get_state(ManifestDataStore.STATE_KEY, {}),
+                   'last_tool_result': last_tool, 'assistant_text': text,
+                   'user_state': self.episode_store.get_state(self.STATE_KEY, {}).get('variables', {}),
+                   'virtual_clock': self.episode_store.get_state(ScenarioDynamics.KEY, {})}
+        matches = [branch for branch in branches if all(DeclarativeMetricEvaluator._compare(
+            DeclarativeMetricEvaluator._resolve(context[c['source']], c['path']), c['operator'], c['expected'])
+            for c in branch['when'])]
+        if len(matches) > 1:
+            raise SandboxError('USER_BRANCH_AMBIGUOUS', 'multiple user branches match current evidence', 500)
+        return matches[0] if matches else None
+
+    @staticmethod
+    def validate_evidence_requirements(stage):
+        """Explicit observed prerequisites; prose and tool presence prove no facts."""
+        if 'requires_evidence' not in stage:
+            return
+        requirements = stage['requires_evidence']
+        def invalid():
+            raise SandboxError('INTERACTION_EVIDENCE_INVALID',
+                               'requires_evidence needs declared tools and bounded result conditions', 500)
+        if not isinstance(requirements, list) or not 1 <= len(requirements) <= 8:
+            invalid()
+        for requirement in requirements:
+            if (not isinstance(requirement, dict)
+                    or set(requirement) - {'tool', 'arguments', 'conditions'}
+                    or not isinstance(requirement.get('tool'), str)
+                    or requirement['tool'] not in stage.get('requires_tools', [])
+                    or 'arguments' in requirement and not isinstance(requirement['arguments'], dict)):
+                invalid()
+            conditions = requirement.get('conditions')
+            if not isinstance(conditions, list) or not 1 <= len(conditions) <= 8:
+                invalid()
+            for condition in conditions:
+                if (not isinstance(condition, dict) or set(condition) != {'path', 'operator', 'expected'}
+                        or not isinstance(condition['path'], str)
+                        or not isinstance(condition['operator'], str)
+                        or condition['operator'] not in {'eq', 'ne', 'gte', 'lte', 'contains'}):
+                    invalid()
+                DeclarativeMetricEvaluator.path_tokens(condition['path'])
+            try:
+                json.dumps(requirement, allow_nan=False)
+            except (TypeError, ValueError):
+                invalid()
+
+    @classmethod
+    def evidence_requirements_met(cls, stage, events):
+        cls.validate_evidence_requirements(stage)
+        for requirement in stage.get('requires_evidence', []):
+            # The latest successful observation is authoritative. Do not search
+            # older matching records after a new lookup contradicts them.
+            observed = next((event for event in reversed(events)
+                if event.get('event') in {'tool_call', 'tool_call_replay'}
+                and event.get('payload', {}).get('tool_name') == requirement['tool']), None)
+            if observed is None:
+                return False
+            result = observed.get('result')
+            if not isinstance(result, Mapping) or 'error' in result:
+                return False
+            if ('arguments' in requirement and canonical_json(requirement['arguments']) !=
+                    canonical_json(observed.get('payload', {}).get('arguments', {}))):
+                return False
+            for condition in requirement['conditions']:
+                actual = DeclarativeMetricEvaluator._resolve(result, condition['path'])
+                expected, operator = condition['expected'], condition['operator']
+                if actual is None:
+                    return False
+                if operator in {'eq', 'ne'}:
+                    equal = canonical_json(actual) == canonical_json(expected)
+                    if equal != (operator == 'eq'):
+                        return False
+                else:
+                    if isinstance(actual, bool) or isinstance(expected, bool):
+                        return False
+                    try:
+                        if not DeclarativeMetricEvaluator._compare(actual, operator, expected):
+                            return False
+                    except (TypeError, ValueError):
+                        return False
+        return True
 
     def _protocol_turn(self, script, state, messages):
         stages = script['interaction_protocol']['stages']
         index = int(state.get('protocol_index', 0))
+        route = self._execution_route()
+        if route and route['id'] in self.execution_routes.dialogue_stop_ids:
+            index = len(stages)
+        while route and index < len(stages) and stages[index]['id'] not in route['required_stages']:
+            self.episode_store.event('interaction_stage_inactive',
+                {'stage_id': stages[index]['id'], 'execution_route': route['id']}, {})
+            index += 1
+        state['protocol_index'] = index
         text = messages[-1]['content']
-        evidence = {event.get('payload', {}).get('tool_name') for event in self.episode_store.replay()['events']
-                    if event.get('event') == 'tool_call'}
-        applied, finished = False, False
+        events = self.episode_store.replay()['events']
+        evidence = {event.get('payload', {}).get('tool_name') for event in events
+                    if event.get('event') in {'tool_call', 'tool_call_replay'}}
+        applied, finished, branch_id = False, False, None
         if index < len(stages):
             stage = stages[index]
-            applied = (all(term in text for term in stage['assistant_contains_all'])
-                       and set(stage.get('requires_tools', [])) <= evidence)
+            evidence_ready = self.evidence_requirements_met(stage, events)
+            resolved_stage = observed_interaction_options(stage, self.episode_store.replay()['events'],
+                                                         require_selection=False)
+            applied = (resolved_stage is not None and interaction_request_matches(resolved_stage, text, script['interaction_protocol'].get('request_mode', 'legacy_phrases'), validate_approval_terms=False)
+                       and set(stage.get('requires_tools', [])) <= evidence and evidence_ready)
+            # Protocol metadata (especially the offered options) is not the
+            # assistant's utterance and must not trigger text-based branches.
+            branch_text = (json.loads(text)['question']
+                           if applied and script['interaction_protocol'].get('request_mode') == 'structured_v1'
+                           else text)
+            branch = self._select_branch(stage, branch_text) if applied else None
+            if branch:
+                stage = {**stage, **branch}
+            if applied:
+                # Select the user's actual approval/rejection branch before
+                # checking its consent limits. Shape validation above grants
+                # nothing, and the effective terms must pass before any grant.
+                applied = interaction_request_matches({**resolved_stage, **(branch or {})}, text,
+                    script['interaction_protocol'].get('request_mode', 'legacy_phrases'))
+                # Membership constrains an actual disclosed choice, including
+                # corrections. A real non-advancing refusal discloses no choice
+                # and remains valid even if the private preference is unavailable.
+                if ('options_from' in stage and (branch is None or branch['advance'])
+                        and stage.get('private_fact') not in resolved_stage['options']):
+                    applied = False
+            if branch and applied:
+                branch_id = branch['id']
             reply = stage['user_reply'] if applied else stage['retry_reply']
             outcome = ('user_correction' if stage['kind'] in {'correction','constraint_update'} else 'information_required') if applied else 'agent_premature_completion'
-            stage_id = stage['id'] if applied else None
+            advance = applied and (branch is None or branch['advance'])
+            stage_id = stages[index]['id'] if advance else None
+            if branch and applied:
+                outcome = branch['outcome']
             if applied:
-                state['protocol_index'] = index + 1
-                state['recovery_count'] = 0
+                if stage['kind'] == 'execution_confirmation':
+                    proposal = json.loads(text)['request'].get('proposal') if script['interaction_protocol'].get('request_mode') == 'structured_v1' else None
+                    ApprovalTerms.apply(self.episode_store, stage, proposal=proposal)
+                    if ApprovalTerms.proposal_fields(stage):
+                        reply += '\n' + json.dumps({'approved_arguments': proposal}, ensure_ascii=False)
+                    grants = set(self.episode_store.get_state('business_grants', []))
+                    grants.difference_update(stage.get('revoke_permissions', []))
+                    grants.update(stage.get('grant_permissions', []))
+                    self.episode_store.set_state('business_grants', sorted(grants))
+                    if stage.get('grant_permissions') or stage.get('revoke_permissions'):
+                        self.episode_store.event('business_authorization', {'stage_id': stage['id']},
+                            {'granted': stage.get('grant_permissions', []), 'revoked': stage.get('revoke_permissions', [])})
+                state['protocol_index'] = index + 1 if advance else index
+                state['recovery_count'] = 0 if advance else int(state.get('recovery_count', 0)) + 1
             else:
                 state['recovery_count'] = int(state.get('recovery_count', 0)) + 1
         else:
@@ -2420,7 +3872,7 @@ class ContractUserSimulator:
         result = {'user_query':reply, 'attachments':[], 'should_end':finished or exhausted,
             'match_status':'matched' if applied else 'unmatched', 'outcome_category':outcome,
             'reason_code':'interaction_contract' if applied else 'interaction_requirement_unmet',
-            'interaction_stage':stage_id, 'fsm_script_id':state['script_id'],
+            'interaction_stage':stage_id, 'interaction_branch':branch_id, 'fsm_script_id':state['script_id'],
             'fsm_transition_id':stage_id or ('complete' if finished else None),
             'fsm_transition_applied':applied, 'fsm_state_before':state.get('state_id'),
             'fsm_state_after':('done' if finished else 'review' if state.get('protocol_index', 0) == len(stages) else f"stage-{state.get('protocol_index', 0)}"),
@@ -2437,6 +3889,12 @@ class ContractUserSimulator:
         self.episode_store.set_state(self.STATE_KEY, state)
         self.episode_store.event('user_turn', {'messages':messages, 'used_fallback':False,
                                 'decision_source':'interaction_contract'}, result)
+        if applied and index < len(stages):
+            snapshots = self.episode_store.get_state(RewardStateSnapshots.KEY, {})
+            snapshots.setdefault('$user_branches', {})[stages[index]['id']] = {
+                'branch': branch_id, 'outcome': outcome, 'applied': True, 'advanced': bool(advance),
+                'event_index': len(self.episode_store.replay()['events']) - 1}
+            self.episode_store.set_state(RewardStateSnapshots.KEY, snapshots)
         return result
 
     @staticmethod
@@ -2550,11 +4008,22 @@ class ContractUserSimulator:
         script = self.scripts.get(str(state.get("script_id")), {})
         profile = self.profiles.get(str(state.get("profile_id")), {})
         if state.get("termination_reason"):
+            history = state.get("memory", [])
+            previous = history[-1].get("result", {}) if history else {}
             return {
                 "user_query": "本次对话已经结束。",
                 "should_end": True,
                 "attachments": [],
                 "termination_reason": state["termination_reason"],
+                "match_status": previous.get("match_status", "unmatched"),
+                "outcome_category": previous.get("outcome_category", "unrecognized"),
+                "reason_code": "episode_already_ended",
+                "fsm_script_id": str(state.get("script_id", "")),
+                "fsm_transition_id": None,
+                "fsm_state_before": str(state.get("state_id", "")),
+                "fsm_state_after": str(state.get("state_id", "")),
+                "fsm_transition_applied": False,
+                "fsm_recovery_count": int(state.get("recovery_count", 0)),
             }
         if script.get('interaction_protocol'):
             return self._protocol_turn(script, state, normalized_messages)
@@ -2738,8 +4207,12 @@ class SandboxApplication:
             episode_id = self._header(supplied, "X-Episode-ID")
             with self.episode_store.episode_context(episode_id):
                 with self.episode_store.transaction():
+                    pending = None
                     with capture_runtime_llm_trace() as llm_trace:
-                        payload = self._dispatch(method.upper(), path, body, supplied)
+                        try:
+                            payload = self._dispatch(method.upper(), path, body, supplied)
+                        except PersistentToolError as exc:
+                            pending = exc
                     if llm_trace and path != "/health":
                         self.episode_store.event(
                             "runtime_llm_call",
@@ -2749,6 +4222,8 @@ class SandboxApplication:
                             },
                             {"recorded": True},
                         )
+            if pending:
+                raise pending
             status, response = 200, dict(payload)
         except SandboxError as exc:
             status, response = exc.status, exc.body(request)
@@ -2814,7 +4289,8 @@ class SandboxApplication:
                 raise SandboxError(
                     "STATE_UNAVAILABLE", "business snapshot callback is unavailable", 500
                 )
-            return {"business_state": dict(self.business_snapshot())}
+            return {"business_state": dict(self.business_snapshot()),
+                    "reward_state_snapshots": self.episode_store.get_state(RewardStateSnapshots.KEY, {})}
         if method == "POST" and path == "/v1/user_simulator":
             if not isinstance(body, Mapping) or not isinstance(body.get("messages"), list):
                 raise SandboxError("INVALID_ARGUMENT", "messages must be an array", 400)
@@ -2862,6 +4338,13 @@ class SandboxApplication:
     def __call__(self, environ: Mapping[str, Any], start_response: Callable[..., Any]) -> list[bytes]:
         method = str(environ.get("REQUEST_METHOD", "GET"))
         path = str(environ.get("PATH_INFO", "/"))
+        # WSGI transports decoded URL bytes through a Latin-1 string. Recover
+        # the original UTF-8 tool name without percent-decoding a second time.
+        # Direct application/test adapters may already provide Unicode paths.
+        try:
+            path = path.encode('latin-1').decode('utf-8')
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            pass
         length = int(environ.get("CONTENT_LENGTH") or 0)
         raw = environ["wsgi.input"].read(length) if length else b""
         request_headers = {
@@ -2909,33 +4392,119 @@ class AcceptanceScenarioRunner:
         trainer_headers: Mapping[str, str] | None = None,
         business_snapshot: Callable[[], Any] | None = None,
         mutate_business_state: Callable[[Mapping[str, Any]], Any] | None = None,
+        injected_fault_check: Callable[[str, int], bool] | None = None,
     ) -> None:
         self.call = call
         self.trainer_headers = dict(trainer_headers or {})
         self.business_snapshot = business_snapshot
         self.mutate_business_state = mutate_business_state
+        self.injected_fault_check = injected_fault_check
 
     @staticmethod
     def _resolve(value: Any, variables: Mapping[str, Any]) -> Any:
         return DeclarativeMetricEvaluator.resolve_capture_argument(value, variables)
 
-    def run(self, scenario: Mapping[str, Any]) -> dict[str, Any]:
+    @classmethod
+    def resolve_dialogue_content(cls, content: Any, variables: Mapping[str, Any]) -> str:
+        """Resolve trusted reference proposals at their actual point of execution."""
+        content = str(cls._resolve(content, variables))
+        try:
+            envelope = json.loads(content)
+        except (ValueError, TypeError):
+            envelope = None
+        if isinstance(envelope, dict) and isinstance(envelope.get('request'), dict) and 'proposal' in envelope['request']:
+            envelope['request']['proposal'] = cls._resolve(envelope['request']['proposal'], variables)
+            content = json.dumps(envelope, ensure_ascii=False)
+        return content
+
+    @staticmethod
+    def render_observed_dialogue(content, binding, events):
+        """Render an explicitly authored reference template from actual reads.
+
+        Live agent utterances are never repaired. Missing/invalid observations
+        produce an empty menu, which the ordinary user protocol must reject.
+        """
+        try:
+            envelope = json.loads(content)
+            question = envelope['question']
+            request = envelope['request']
+            if (not isinstance(question, str) or not isinstance(request, dict)
+                    or '{{observed_options}}' not in question):
+                raise ValueError('missing observed menu template')
+        except (ValueError, TypeError, KeyError) as exc:
+            raise SandboxError('SCENARIO_INVALID', 'observed dialogue requires a structured menu template', 500) from exc
+        resolved = observed_interaction_options({'options_from': binding}, events, require_selection=False)
+        choices = resolved['options'] if resolved else []
+        result = next((event['result'] for event in reversed(events)
+                       if event.get('event') == 'tool_call'
+                       and event.get('payload', {}).get('tool_name') == binding['tool']), None)
+        # Single-pass substitution prevents returned strings containing template
+        # syntax from becoming a second round of interpolation.
+        values = {'observed_options': choices, 'observed_result': result}
+        envelope['question'] = re.sub(r'\{\{(observed_options|observed_result)\}\}',
+            lambda match: json.dumps(values[match.group(1)], ensure_ascii=False), question)
+        request['options'] = choices
+        return json.dumps(envelope, ensure_ascii=False)
+
+    def run(self, scenario: Mapping[str, Any], *, allow_untriggered_faults: bool = False) -> dict[str, Any]:
         variables: dict[str, Any] = {}
         step_results: dict[str, Any] = {}
         history: list[dict[str, Any]] = []
+        observed_tools = []
         conversation = []
         last_body: Any = None
+        counterfactual_tools = scenario.get('counterfactual_argument_tools', [])
+        mutation_arguments = scenario.get('counterfactual_argument_mutations')
+        if counterfactual_tools:
+            steps = scenario.get('steps', [])
+            if (scenario.get('kind') != 'goal_failure' or not isinstance(counterfactual_tools, list)
+                    or any(not isinstance(name, str) or not name for name in counterfactual_tools)
+                    or len(set(counterfactual_tools)) != len(counterfactual_tools)
+                    or not any(step.get('operation') == 'reward' for step in steps)):
+                raise SandboxError('SCENARIO_INVALID', 'invalid argument counterfactual provenance', 500)
+            if mutation_arguments is not None and (
+                    not isinstance(mutation_arguments, dict)
+                    or set(mutation_arguments) != set(counterfactual_tools)
+                    or any(not isinstance(arguments, dict) or not arguments
+                           for arguments in mutation_arguments.values())):
+                raise SandboxError('SCENARIO_INVALID', 'invalid argument counterfactual provenance', 500)
+            for name in counterfactual_tools:
+                calls = [step for step in steps
+                         if step.get('operation') == 'tool_call' and step.get('tool_name') == name]
+                same_idempotent_request = (calls and isinstance(calls[0].get('idempotency_key'), str)
+                    and bool(calls[0]['idempotency_key']) and all(
+                        step.get('idempotency_key') == calls[0]['idempotency_key']
+                        and step.get('arguments') == calls[0].get('arguments') for step in calls))
+                if (not calls or any(step.get('arguments') != calls[0].get('arguments') for step in calls)
+                        or (mutation_arguments is None and len(calls) != 1 and not same_idempotent_request)
+                        or (mutation_arguments is not None and any(
+                            any(key not in step.get('arguments', {}) or step['arguments'][key] != value
+                                for key, value in mutation_arguments[name].items()) for step in calls))):
+                    raise SandboxError('SCENARIO_INVALID', 'invalid argument counterfactual provenance', 500)
+        elif mutation_arguments is not None:
+            raise SandboxError('SCENARIO_INVALID', 'argument mutations require counterfactual tools', 500)
+        observed_mutations, counterfactual_stop = set(), None
+        missing_mutated_captures = set()
+        counterfactual_reward_observed = False
         for index, step in enumerate(scenario.get("steps", [])):
             if not isinstance(step, Mapping):
                 raise SandboxError("SCENARIO_INVALID", f"step {index} is not an object", 500)
             operation = step.get("operation")
+            if counterfactual_stop is not None and operation != 'reward':
+                continue
             if operation == "reset":
+                observed_tools.clear()
                 method, path, auth, body = "POST", "/v1/reset", True, self._resolve(step.get("body", {}), variables)
             elif operation == "tool_call":
                 method, path, auth = "POST", f"/v1/tools/{step.get('tool_name', '')}", False
                 body = self._resolve(step.get("arguments", {}), variables)
             elif operation == "dialogue_turn":
-                content = str(self._resolve(step.get('content', ''), variables))
+                # Only trusted declarative scenarios may interpolate captured
+                # values into a structured proposal. Live agent requests must
+                # already contain actual scalar values.
+                content = self.resolve_dialogue_content(step.get('content', ''), variables)
+                if 'observed_options_from' in step:
+                    content = self.render_observed_dialogue(content, step['observed_options_from'], observed_tools)
                 status, _, _ = self.call('POST', '/v1/agent_response', {'content':content}, self.trainer_headers)
                 if status != 200:
                     raise SandboxError('SCENARIO_ASSERTION_FAILED', 'dialogue response failed', 500)
@@ -2960,22 +4529,88 @@ class AcceptanceScenarioRunner:
             else:
                 raise SandboxError("SCENARIO_INVALID", f"unsupported operation: {operation}", 500)
             if method != "INTERNAL":
-                status, last_body, _ = self.call(method, path, body, self.trainer_headers if auth else {})
+                call_headers = dict(self.trainer_headers) if auth else {}
+                if operation == 'tool_call' and 'idempotency_key' in step:
+                    key = self._resolve(step['idempotency_key'], variables)
+                    if not isinstance(key, str) or not key:
+                        raise SandboxError('SCENARIO_INVALID', 'idempotency_key must be a nonempty string', 500)
+                    call_headers['Idempotency-Key'] = key
+                status, last_body, _ = self.call(method, path, body, call_headers)
             if operation == 'dialogue_turn' and status == 200:
                 if 'expected_stage' in step and step['expected_stage'] != last_body.get('interaction_stage'):
-                    raise SandboxError('SCENARIO_ASSERTION_FAILED', 'interaction branch did not execute', 500)
+                    blocked_counterfactual = (counterfactual_tools
+                        and set(counterfactual_tools) <= observed_mutations
+                        and last_body.get('fsm_transition_applied') is False
+                        and last_body.get('reason_code') == 'interaction_requirement_unmet'
+                        and last_body.get('match_status') == 'unmatched')
+                    if not blocked_counterfactual:
+                        raise SandboxError('SCENARIO_ASSERTION_FAILED', 'interaction branch did not execute', 500)
+                    counterfactual_stop = {'step_index': index, 'operation': operation,
+                        'reason': 'mutated_trajectory_cannot_complete_required_interaction',
+                        'expected_stage': step['expected_stage'],
+                        'observed_response': copy.deepcopy(last_body),
+                        'observed_mutated_tools': sorted(observed_mutations)}
+                if (counterfactual_stop is None and 'expected_branch' in step
+                        and step['expected_branch'] != last_body.get('interaction_branch')):
+                    raise SandboxError('SCENARIO_ASSERTION_FAILED', 'wrong conditional user branch', 500)
                 conversation.append({'role':'user', 'content':last_body['user_query']})
             expected_status = step.get("expected_status", 200)
-            if status != expected_status:
+            # Counterfactual step removal can change fault call indexes. A
+            # successful response must still run through the remaining steps
+            # and reward checks; it is not proof that the ablation was rejected.
+            untriggered_fault = (allow_untriggered_faults and operation == 'tool_call'
+                                 and isinstance(expected_status, int) and 500 <= expected_status < 600
+                                 and 200 <= status < 300)
+            shifted_fault = (allow_untriggered_faults and operation == 'tool_call'
+                             and 500 <= status < 600 and self.injected_fault_check is not None
+                             and self.injected_fault_check(str(step.get('tool_name', '')), status))
+            def missing_counterfactual_refs(value):
+                if isinstance(value, dict):
+                    if set(value) == {'$ref'} and isinstance(value['$ref'], str):
+                        return ({value['$ref']} & missing_mutated_captures
+                                if self._resolve(value, variables) is None else set())
+                    return set().union(*(missing_counterfactual_refs(v) for v in value.values()))
+                if isinstance(value, list):
+                    return set().union(*(missing_counterfactual_refs(v) for v in value))
+                return set()
+            missing_refs = missing_counterfactual_refs(step.get('arguments', {})) if operation == 'tool_call' else set()
+            missing_argument_paths = [f'arguments.{name}' for name, value in step.get('arguments', {}).items()
+                if missing_counterfactual_refs(value) and self._resolve(value, variables) is None] if missing_refs else []
+            error_message = (last_body.get('error', {}).get('message', '')
+                if isinstance(last_body, dict) and isinstance(last_body.get('error'), dict) else '')
+            rejected_missing_capture = (counterfactual_tools and set(counterfactual_tools) <= observed_mutations
+                and operation == 'tool_call' and step.get('tool_name') not in counterfactual_tools
+                and expected_status == 200 and status == 400 and missing_refs
+                and isinstance(last_body, dict) and isinstance(last_body.get('error'), dict)
+                and last_body['error'].get('code') == 'INVALID_ARGUMENT'
+                and isinstance(error_message, str)
+                and any(error_message.startswith(path + ' must ') for path in missing_argument_paths))
+            if rejected_missing_capture:
+                counterfactual_stop = {'step_index': index, 'operation': operation,
+                    'reason': 'mutated_query_removed_required_capture',
+                    'missing_captures': sorted(missing_refs),
+                    'observed_mutated_tools': sorted(observed_mutations)}
+            if status != expected_status and not (untriggered_fault or shifted_fault or rejected_missing_capture):
                 raise SandboxError("SCENARIO_ASSERTION_FAILED", f"step {index} expected HTTP {expected_status}, got {status}", 500, {"body": last_body, "actual_status": status})
+            if operation == 'tool_call' and step.get('tool_name') in counterfactual_tools:
+                observed_mutations.add(step['tool_name'])
             capture = step.get("capture", {})
             if isinstance(capture, Mapping):
                 for name, capture_path in capture.items():
                     variables[str(name)] = DeclarativeMetricEvaluator._resolve(last_body, str(capture_path))
+                    missing_mutated_captures.discard(str(name))
+                    if (operation == 'tool_call' and step.get('tool_name') in counterfactual_tools
+                            and status == 200 and variables[str(name)] is None):
+                        missing_mutated_captures.add(str(name))
             step_id = step.get("step_id")
             if isinstance(step_id, str) and step_id:
                 step_results[step_id] = last_body
             history.append({"operation": operation, "status": status, "body": last_body})
+            if operation == 'tool_call' and status == 200:
+                observed_tools.append({'event': 'tool_call', 'payload': {'tool_name': step.get('tool_name')},
+                                       'result': copy.deepcopy(last_body)})
+            if counterfactual_stop is not None and operation == 'reward':
+                counterfactual_reward_observed = True
         for assertion in scenario.get("assertions", []):
             if not isinstance(assertion, Mapping):
                 raise SandboxError("SCENARIO_INVALID", "assertion must be an object", 500)
@@ -2988,9 +4623,25 @@ class AcceptanceScenarioRunner:
                 source = last_body
             actual = DeclarativeMetricEvaluator._resolve(source, str(assertion.get("path", "$")))
             expected = self._resolve(assertion.get("expected"), variables)
-            if not DeclarativeMetricEvaluator._compare(actual, str(assertion.get("operator")), expected):
+            operator = str(assertion.get("operator"))
+            passed = DeclarativeMetricEvaluator._compare(actual, operator, expected)
+            # Only aggregate reward assertions tolerate binary summation noise.
+            # Business predicates, tool values and the reward itself stay exact.
+            reward_steps = {step.get("step_id") for step in scenario.get("steps", [])
+                            if step.get("operation") == "reward"}
+            if (not passed and source_name in {f"step:{name}" for name in reward_steps}
+                    and assertion.get("path") in {"$.reward", "$.raw_reward"}
+                    and operator in {"eq", "gte", "lte"}
+                    and type(actual) in {int, float} and type(expected) in {int, float}
+                    and math.isfinite(actual) and math.isfinite(expected)):
+                passed = abs(actual - expected) <= 4 * max(math.ulp(actual), math.ulp(expected))
+            if not passed:
                 raise SandboxError("SCENARIO_ASSERTION_FAILED", "scenario assertion failed", 500, {"actual": actual, "assertion": dict(assertion)})
-        return {"scenario_id": scenario.get("scenario_id"), "history": history, "variables": variables, "step_results": step_results}
+        if counterfactual_stop is not None and not counterfactual_reward_observed:
+            raise SandboxError('SCENARIO_INVALID', 'blocked counterfactual requires a subsequent reward observation', 500)
+        return {"scenario_id": scenario.get("scenario_id"), "history": history, "variables": variables,
+                "step_results": step_results,
+                **({'counterfactual_stop': counterfactual_stop} if counterfactual_stop else {})}
 
 
 def request_id() -> str:

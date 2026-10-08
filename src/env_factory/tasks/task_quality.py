@@ -110,13 +110,165 @@ def _text(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False).lower()
 
 
-def _numeric_private_dependencies(value: Any) -> bool:
+def _numeric_private_dependencies(value: Any, tools=()) -> bool:
     if isinstance(value, dict):
+        if set(value) == {'literal'}:
+            return False
         if "lookup" in value or "aggregate" in value:
             return True
-        return any(_numeric_private_dependencies(item) for item in value.values())
+        observed = value.get('tool_result')
+        if isinstance(observed, dict) and any(
+                tool.get('tool_name') == observed.get('name')
+                and tool.get('operation') in {'select', 'aggregate_count'}
+                and isinstance(tool.get('table'), str) and tool['table'] for tool in tools):
+            return True
+        return any(_numeric_private_dependencies(item, tools) for item in value.values())
     if isinstance(value, list):
-        return any(_numeric_private_dependencies(item) for item in value)
+        return any(_numeric_private_dependencies(item, tools) for item in value)
+    return False
+
+
+def _query_scope_reward(item: dict, task: dict, implementations: list[dict]) -> bool:
+    """Allow a query's scope to be reported alongside independently scored evidence.
+
+    A selection is an observed input, not a private result. It may be a separate
+    value field, but cannot replace the positive outcome that checks private data.
+    Restrict this to direct parameters actually used by a private read's filters.
+    """
+    if item.get('operator') != 'value_targets':
+        return False
+    tools = _objects(task.get('tool_implementations'))
+    evidence_ids = {metric.get('id') for metric in _objects(task.get('metrics'))
+                    if metric.get('category') == 'outcome'
+                    and isinstance(metric.get('weight'), (int, float))
+                    and not isinstance(metric.get('weight'), bool) and metric['weight'] > 0}
+    if not any(other.get('metric_id') in evidence_ids
+               and other.get('metric_id') != item.get('metric_id')
+               and other.get('operator') in {'numeric_targets', 'value_targets'}
+               and other.get('source') == 'final_agent_response' and other.get('path') == '$'
+               and _numeric_private_dependencies(other.get('expected'), tools)
+               for other in implementations):
+        return False
+    targets = item.get('expected', {}).get('targets', [])
+    for target in targets:
+        expression = target.get('expression', {})
+        if not isinstance(expression, dict) or set(expression) != {'tool_argument'}:
+            return False
+        observed = expression['tool_argument']
+        match = re.fullmatch(r'\$\.([A-Za-z_][A-Za-z_0-9]*)', observed.get('path', ''))
+        if not match or not any(
+                tool.get('tool_name') == observed.get('name')
+                and tool.get('operation') in {'select', 'aggregate_count'}
+                and isinstance(tool.get('table'), str) and tool['table']
+                and any(clause.get('argument') == match.group(1)
+                        and isinstance(clause.get('column'), str) and clause['column']
+                        for clause in _objects(tool.get('filters')))
+                for tool in tools):
+            return False
+    return bool(targets)
+
+
+def reward_target_qualification_failures(task: dict) -> list[str]:
+    """Share final reward checks with author preview before expensive execution."""
+    mode = task.get('environment_plan', {}).get('mode')
+    implementations = _objects(task.get('metric_implementations'))
+    failures = []
+    from env_factory.sandbox_runtime import DeclarativeMetricEvaluator, SandboxError
+    for item in implementations:
+        if item.get("operator") not in {"numeric_targets", "value_targets"}:
+            continue
+        try:
+            if item.get("source") != "final_agent_response" or item.get("path") != "$":
+                raise SandboxError("METRIC_SPEC_INVALID", "numeric target source is invalid", 500)
+            validator = (DeclarativeMetricEvaluator.validate_numeric_targets if item["operator"] == "numeric_targets"
+                         else DeclarativeMetricEvaluator.validate_value_targets)
+            validator(item.get("expected"))
+            if mode != "stateless" and not (_numeric_private_dependencies(
+                    item.get("expected"), _objects(task.get('tool_implementations')))
+                    or _query_scope_reward(item, task, implementations)):
+                raise SandboxError("METRIC_SPEC_INVALID", "numeric target has no private data dependency", 500)
+        except SandboxError as exc:
+            failures.append(f"数值奖励公式无效：{item.get('metric_id')}：{exc}")
+    return failures
+
+
+def _field_scoped_semantic_metric(metric, task):
+    """Recognize typed semantic fields scored by the platform factuality wrapper."""
+    fields = metric.get('semantic_fields')
+    properties = task
+    for key in ('public_input', 'answer_contract', 'schema', 'properties'):
+        if not isinstance(properties, dict):
+            return False
+        properties = properties.get(key, {})
+    if not isinstance(properties, dict):
+        return False
+    return (isinstance(fields, list) and bool(fields)
+            and all(isinstance(field, str) for field in fields)
+            and len(set(fields)) == len(fields)
+            and all(isinstance(properties.get(field), dict)
+                    and properties[field].get('type') == 'string'
+                    and 'enum' not in properties[field] for field in fields))
+
+
+def _uses_observed_reward(value):
+    if isinstance(value, dict):
+        if set(value) == {'literal'}:
+            return False
+        return bool({'tool_result', 'at_tool', 'initial'} & value.keys()) or any(
+            _uses_observed_reward(child) for child in value.values())
+    return isinstance(value, list) and any(_uses_observed_reward(child) for child in value)
+
+
+def _observed_numeric_sensitive(task, root, spec, tables):
+    """Replay changed private facts with production read-time reward snapshots."""
+    from env_factory.generation.lifecycle_preview import preview_lifecycle_task
+    from env_factory.sandbox_runtime import DeclarativeMetricEvaluator, SandboxError
+    evaluator = DeclarativeMetricEvaluator()
+    baseline = preview_lifecycle_task(task, root, return_context=True)
+    if evaluator.evaluate(spec, baseline) != 1:
+        return False
+    def mutations():
+        tools = {item['tool_name']: item for item in task.get('tool_implementations', [])}
+        for table in tables:
+            for index, row in enumerate(table['rows']):
+                removed = copy.deepcopy(table['rows'])
+                removed.pop(index)
+                yield table['table_name'], removed
+                for event in baseline['trajectory']['events']:
+                    if event.get('event') != 'tool_call' or event.get('result', {}).get('error'):
+                        continue
+                    payload = event.get('payload', {})
+                    tool = tools.get(payload.get('tool_name'), {})
+                    filters = tool.get('filters', [])
+                    arguments = payload.get('arguments', {})
+                    if (tool.get('table') == table['table_name'] and filters
+                            and tool.get('operation') in {'select', 'aggregate_count'}
+                            and all(f.get('operator') == 'eq' and f.get('argument') in arguments for f in filters)):
+                        rows = copy.deepcopy(table['rows'])
+                        rows[index].update({f['column']: arguments[f['argument']] for f in filters})
+                        if rows != table['rows']:
+                            yield table['table_name'], rows
+                for field, value in row.items():
+                    if (field in table.get('primary_key', []) or isinstance(value, bool)
+                            or not isinstance(value, (int, float))):
+                        continue
+                    rows = copy.deepcopy(table['rows'])
+                    rows[index][field] = value + 1
+                    yield table['table_name'], rows
+    attempts = 0
+    for name, rows in mutations():
+        if attempts >= 64:
+            return False
+        attempts += 1
+        try:
+            changed = preview_lifecycle_task(task, root, return_context=True,
+                baseline_overrides={name: rows})
+            # Keep the original answer: a rewritten correct answer is not a negative.
+            changed['final_agent_response'] = baseline['final_agent_response']
+            if evaluator.evaluate(spec, changed) == 0:
+                return True
+        except (SandboxError, ValueError, TypeError, KeyError):
+            continue
     return False
 
 
@@ -284,18 +436,122 @@ def _stateful_goal_tool_issues(task: dict[str, Any]) -> list[str]:
     return issues
 
 
-def _defers_business_truth(task: dict[str, Any]) -> bool:
+def _defined_interaction_inputs(task: dict[str, Any], root: Path | None) -> bool:
+    """Prove concrete user inputs from delivered scripts and executed references.
+
+    An interactive flag or a script filename alone is not evidence. Reuse the
+    authoring validator, then execute every success prefix with production
+    interaction guards and compare resolved arguments with the disclosed facts.
+    This does not certify the task's other business or reward obligations.
+    """
+    if root is None or not task.get('task_spec', {}).get('requires_user_interaction'):
+        return False
+    from env_factory.generation.interaction_contract import compile_interactions
+    from env_factory.generation.lifecycle_preview import preview_lifecycle_task
+    from env_factory.sandbox_runtime import DeclarativeMetricEvaluator, SandboxError
+    import random
+
+    try:
+        root = root.resolve()
+        artifacts = task['artifacts']
+        # This runs before the rest of score_file: validate all paths consumed
+        # by the preview before loading either business data or user scripts.
+        for name, fields in [('data_manifest', ('schema_file', 'rows_file')),
+                             ('user_simulation_manifest', ('profiles_file', 'scripts_file'))]:
+            manifest = artifacts[name]
+            relative = Path(manifest['root'])
+            if relative.is_absolute() or '..' in relative.parts:
+                return False
+            base = root / relative
+            entries = manifest['tables'] if name == 'data_manifest' else [manifest]
+            for entry in entries:
+                for field in fields:
+                    filename = Path(entry[field])
+                    if (filename.is_absolute() or '..' in filename.parts
+                            or not (base / filename).resolve().is_relative_to(root)):
+                        return False
+        users = artifacts['user_simulation_manifest']
+        scripts = json.loads((root / users['root'] / users['scripts_file']).read_text())
+        if not isinstance(scripts, list) or not scripts:
+            return False
+        scripts = sorted(scripts, key=lambda script: script['script_id'])
+        if len({script['script_id'] for script in scripts}) != len(scripts):
+            return False
+        modes = {script['interaction_protocol']['request_mode'] for script in scripts}
+        if len(modes) != 1 or not modes <= {'structured_v1', 'legacy_phrases'}:
+            return False
+        structured = modes == {'structured_v1'}
+        tools = {tool['function']['name']: tool['function'] for tool in task['tools']}
+        variants = []
+        required = set()
+        for index, script in enumerate(scripts):
+            stages = copy.deepcopy(script['interaction_protocol']['stages'])
+            for stage in stages:
+                if structured:
+                    stage['reference_response'] = json.loads(stage['reference_response'])['question']
+                if stage['kind'] != 'execution_confirmation':
+                    binding = stage['bind_to']
+                    if binding['argument'] not in tools[binding['tool']]['parameters']['properties']:
+                        return False
+                    required.add((index, stage['id']))
+            variants.append({'stages': stages, 'variables': copy.deepcopy(script.get('variables', {}))})
+        scenarios = copy.deepcopy([case for case in task['acceptance_contract']['executable_scenarios']
+                                   if case.get('kind') == 'goal_success'])
+        if not scenarios or not required:
+            return False
+        for scenario in scenarios:
+            resets = [step for step in scenario['steps'] if step.get('operation') == 'reset']
+            if len(resets) != 1:
+                return False
+            seed = resets[0].get('body', {}).get('seed', 17)
+            scenario['user_script_indices'] = [random.Random(seed).randrange(len(scripts))]
+        compile_interactions({'version': '1.0', 'variants': variants},
+            {'task': task['task'], 'public_input': task['public_input']}, task['tools'], len(scripts),
+            implementations=task['tool_implementations'], scenarios=scenarios,
+            privacy_findings=[], structured_requests=structured, capture_bindings=[],
+            execution_routes=task['task_spec'].get('execution_routes', []))
+        covered = set()
+        from env_factory.sandbox_runtime import ExecutionRoutes
+        routes = ExecutionRoutes(task['task_spec'])
+        routes.validate_user_branches(scripts)
+        for scenario in scenarios:
+            index = scenario['user_script_indices'][0]
+            context = preview_lifecycle_task(task, root, scenario=scenario, return_context=True)
+            observed = [event['payload'] for event in context['trajectory']['events']
+                        if event.get('event') in {'tool_call', 'tool_call_replay'}]
+            route = routes.select(context)
+            for stage in scripts[index]['interaction_protocol']['stages']:
+                if stage['kind'] == 'execution_confirmation':
+                    continue
+                binding = stage['bind_to']
+                if (route and route['id'] in routes.dialogue_stop_ids
+                        and (stage['id'] not in route['required_stages']
+                             or stage['id'] == route['when']['user_rejection']['stage'])):
+                    covered.add((index, stage['id']))
+                    continue
+                if any(call['tool_name'] == binding['tool'] and
+                       DeclarativeMetricEvaluator._json_value_equal(
+                           call['arguments'].get(binding['argument']), stage['private_fact'])
+                       for call in observed):
+                    covered.add((index, stage['id']))
+        return required <= covered
+    except (OSError, ValueError, TypeError, KeyError, IndexError, AttributeError, SandboxError):
+        return False
+
+
+def _defers_business_truth(task: dict[str, Any], root: Path | None = None) -> bool:
     if task.get("task_intent") not in {"modify", "execute", "schedule"}:
         return False
     corpus = _text({
         key: task.get(key)
         for key in ("task", "requirements", "public_input", "actions", "environment")
     })
-    return any(marker in corpus for marker in (
+    unresolved = any(marker in corpus for marker in (
         "暂时没想好", "先问我", "稍后提供", "之后提供", "待我提供",
         "需要向用户询问", "询问正确", "ask me", "provide later",
         "to be provided",
     ))
+    return unresolved and not _defined_interaction_inputs(task, root)
 
 
 def unsourced_real_world_exemplars(
@@ -357,7 +613,8 @@ def unobservable_tool_preconditions(task: dict[str, Any]) -> list[str]:
     return issues
 
 
-def score_task(task: dict[str, Any], *, task_id: str = "task", path: str = "", min_score: float = 8.0) -> TaskQualityReport:
+def score_task(task: dict[str, Any], *, task_id: str = "task", path: str = "", min_score: float = 8.0,
+               task_root: Path | None = None) -> TaskQualityReport:
     """Score one task artifact on a stable 0-10 training-quality rubric."""
     task_text = str(task.get("task", "")).strip()
     requirements = task.get("requirements") if isinstance(task.get("requirements"), dict) else {}
@@ -408,7 +665,7 @@ def score_task(task: dict[str, Any], *, task_id: str = "task", path: str = "", m
         contract_deductions.append((0.4, "complexity 无效"))
     if any(marker in corpus for marker in ("待补充", "自行假设", "相关信息等", "视情况")):
         contract_deductions.append((0.4, "任务契约包含模糊或未决输入"))
-    deferred_business_truth = _defers_business_truth(task)
+    deferred_business_truth = _defers_business_truth(task, task_root)
     if deferred_business_truth:
         contract_deductions.append((1.2, "状态任务把关键业务真值推迟到未定义的后续用户回复"))
 
@@ -723,7 +980,9 @@ def score_task(task: dict[str, Any], *, task_id: str = "task", path: str = "", m
                         value for value in inputs if isinstance(value, str)
                     )
                     or not isinstance(criteria, list)
-                    or REFERENCE_FACTUALITY_CRITERION not in criteria
+                    or not criteria
+                    or (REFERENCE_FACTUALITY_CRITERION not in criteria
+                        and not _field_scoped_semantic_metric(metric, task))
                     or any(contradicts_reference_factuality(item) for item in criteria)
                     or contradicts_reference_factuality(metric.get("rubric"))):
                 eligibility_failures.append(
@@ -773,20 +1032,7 @@ def score_task(task: dict[str, Any], *, task_id: str = "task", path: str = "", m
     valid_implementation_ids = [value for value in implementation_ids if isinstance(value, str)]
     if len(valid_implementation_ids) != len(set(valid_implementation_ids)):
         eligibility_failures.append("奖励指标实现存在重复 metric_id")
-    from env_factory.sandbox_runtime import DeclarativeMetricEvaluator, SandboxError
-    for item in implementations:
-        if item.get("operator") not in {"numeric_targets", "value_targets"}:
-            continue
-        try:
-            if item.get("source") != "final_agent_response" or item.get("path") != "$":
-                raise SandboxError("METRIC_SPEC_INVALID", "numeric target source is invalid", 500)
-            validator = (DeclarativeMetricEvaluator.validate_numeric_targets if item["operator"] == "numeric_targets"
-                         else DeclarativeMetricEvaluator.validate_value_targets)
-            validator(item.get("expected"))
-            if mode != "stateless" and not _numeric_private_dependencies(item.get("expected")):
-                raise SandboxError("METRIC_SPEC_INVALID", "numeric target has no private data dependency", 500)
-        except SandboxError as exc:
-            eligibility_failures.append(f"数值奖励公式无效：{exc}")
+    eligibility_failures.extend(reward_target_qualification_failures(task))
     if not isinstance(formula, dict) or formula.get("score_range") != [-1, 1]:
         eligibility_failures.append("奖励公式或范围不完整")
     missing_scenarios = {"goal_success", "goal_failure"} - scenario_kinds
@@ -859,7 +1105,7 @@ def score_file(path: Path, *, min_score: float = 8.0) -> TaskQualityReport:
     if not isinstance(data, dict):
         raise ValueError(f"{path}: task artifact must be a JSON object")
     task_id = path.parent.name if path.name == "task.json" else path.stem
-    report = score_task(data, task_id=task_id, path=str(path), min_score=min_score)
+    report = score_task(data, task_id=task_id, path=str(path), min_score=min_score, task_root=path.parent)
     artifacts = data.get("artifacts") if isinstance(data.get("artifacts"), dict) else {}
     manifest = artifacts.get("data_manifest") if isinstance(artifacts, dict) else None
     mode = data.get("environment_plan", {}).get("mode") if isinstance(data.get("environment_plan"), dict) else None
@@ -908,15 +1154,15 @@ def score_file(path: Path, *, min_score: float = 8.0) -> TaskQualityReport:
     if mode == "reference_data" and not any(table.get("rows") for table in tables):
         return _reject(report, "只读数据任务缺少基线业务记录")
     if tables:
-        from env_factory.task_pipeline import TaskGenerationPipeline
+        from env_factory.generation.contract_compiler import ContractCompiler
         for spec in _objects(data.get("tool_implementations")):
-            missing = TaskGenerationPipeline._missing_insert_columns(spec, tables)
+            missing = ContractCompiler._missing_insert_columns(spec, tables)
             if missing:
                 return _reject(
                     report,
                     f"声明式插入缺少存储列：{spec.get('tool_name')} -> {spec.get('table')} {missing}",
                 )
-            optional = TaskGenerationPipeline._optional_mutation_arguments(
+            optional = ContractCompiler._optional_mutation_arguments(
                 spec, _objects(data.get("tools")),
             )
             if optional:
@@ -972,18 +1218,23 @@ def score_file(path: Path, *, min_score: float = 8.0) -> TaskQualityReport:
     if mode in {"reference_data", "stateful"} and tables:
         # Replay the declarative success prefix against the shared data-store
         # rules before admitting the task to the much slower sandbox build.
-        from env_factory.task_pipeline import PipelineGenerationError, TaskGenerationPipeline
+        from env_factory.generation.contract_compiler import PipelineGenerationError, ContractCompiler
         from env_factory.sandbox_runtime import SandboxError
         try:
             acceptance = data.get("acceptance_contract")
             scenarios = acceptance.get("executable_scenarios", []) if isinstance(acceptance, dict) else []
-            preview = TaskGenerationPipeline._preview_success_tool_results(
-                scenarios=scenarios,
-                data_tables=tables,
-                tool_implementations=_objects(data.get("tool_implementations")),
-                environment_mode=mode,
-                tools=_objects(data.get("tools")),
-            )
+            if (data.get('business_lifecycle') or (mode == 'stateful'
+                    and data.get('artifacts', {}).get('generation_pipeline', {}).get('backend') == 'code_agent')):
+                from env_factory.generation.lifecycle_preview import preview_lifecycle_task
+                preview = preview_lifecycle_task(data, path.parent)
+            else:
+                preview = ContractCompiler._preview_success_tool_results(
+                    scenarios=scenarios,
+                    data_tables=tables,
+                    tool_implementations=_objects(data.get("tool_implementations")),
+                    environment_mode=mode,
+                    tools=_objects(data.get("tools")),
+                )
         except (PipelineGenerationError, SandboxError, KeyError, TypeError, ValueError) as exc:
             return _reject(report, f"成功工具轨迹预演失败：{exc}")
         ambiguous = ambiguous_metric_captures(data, preview)
@@ -1032,10 +1283,27 @@ def score_file(path: Path, *, min_score: float = 8.0) -> TaskQualityReport:
                        if item.get("operation") == "agent_response"), None)
         state = {item["table_name"]: item["rows"] for item in tables}
         evaluator = DeclarativeMetricEvaluator()
+        reference_context = {'business_state': state, 'final_agent_response': answer}
+        if _objects(data.get('tool_implementations')):
+            from env_factory.generation.lifecycle_preview import preview_lifecycle_task
+            try:
+                reference_context = preview_lifecycle_task(data, path.parent, return_context=True)
+            except (SandboxError, ValueError, TypeError, KeyError) as exc:
+                return _reject(report, f"数值奖励参考轨迹无法执行：{exc}")
+        answer = reference_context['final_agent_response']
+        state = reference_context['business_state']
         for spec in numeric_specs:
+            if _uses_observed_reward(spec.get('expected')):
+                try:
+                    sensitive = _observed_numeric_sensitive(data, path.parent, spec, tables)
+                except (SandboxError, ValueError, TypeError, KeyError) as exc:
+                    return _reject(report, f"观测奖励轨迹无法执行：{exc}")
+                if not sensitive:
+                    return _reject(report, "观测数值奖励缺少正确基线或私有业务数据敏感性证据")
+                continue
             try:
                 baseline = evaluator.evaluate(spec, {
-                    "final_agent_response": answer, "business_state": state,
+                    **reference_context, "final_agent_response": answer, "business_state": state,
                 })
             except (SandboxError, ValueError, TypeError) as exc:
                 return _reject(report, f"数值奖励公式无法执行：{exc}")
@@ -1068,7 +1336,7 @@ def score_file(path: Path, *, min_score: float = 8.0) -> TaskQualityReport:
                         altered[table_name].pop(index)
                         try:
                             if evaluator.evaluate(spec, {
-                                "final_agent_response": answer, "business_state": altered,
+                                **reference_context, "final_agent_response": answer, "business_state": altered,
                             }) == 0:
                                 sensitive = True
                                 break
@@ -1081,7 +1349,7 @@ def score_file(path: Path, *, min_score: float = 8.0) -> TaskQualityReport:
                     altered[table_name][index][field] = value + 1
                     try:
                         if evaluator.evaluate(spec, {
-                            "final_agent_response": answer, "business_state": altered,
+                            **reference_context, "final_agent_response": answer, "business_state": altered,
                         }) == 0:
                             sensitive = True
                             break

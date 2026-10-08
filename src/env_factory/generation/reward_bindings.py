@@ -5,6 +5,49 @@ import copy
 import json
 import re
 
+from env_factory.contracts.trajectory_probes import idempotent_call_groups
+
+
+def reward_temporal_diagnostics(source: dict) -> list[dict]:
+    """Flag live reward queries over mutable tables, without rejecting valid goals.
+
+    Run after binding: inherited filters and upstream capture lookups matter as
+    much as the returned field. These are review obligations, not proof of a bug.
+    """
+    mutable = {}
+    for impl in source.get("tool_implementations", []):
+        if impl.get("operation") in {"insert", "update", "delete"}:
+            mutable.setdefault(impl["table"], []).append(impl["tool_name"])
+    for event in source.get("business_lifecycle", {}).get("dynamics", {}).get("events", []):
+        for change in event.get("changes", []):
+            mutable.setdefault(change["table"], []).append("event:" + event["id"])
+    findings = []
+
+    def walk(value, path, initial=False):
+        if isinstance(value, list):
+            for index, child in enumerate(value):
+                walk(child, f"{path}[{index}]", initial)
+        elif isinstance(value, dict) and set(value) != {"literal"}:
+            for kind in ("lookup", "aggregate"):
+                query = value.get(kind)
+                if isinstance(query, dict) and query.get("table") in mutable and not initial:
+                    findings.append({
+                        "code": "REWARD_CURRENT_MUTABLE_QUERY", "path": path,
+                        "table": query["table"], "query": copy.deepcopy(query),
+                        "mutators": sorted(set(mutable[query["table"]])),
+                        "message": "This reward query reads current state, including inherited filters; "
+                            "it is not a saved tool response. Check whether writes invalidate selection "
+                            "or change a decision condition. Use initial only for episode-start facts; "
+                            "current-state outcome checks should remain current. External events may "
+                            "make an observed pre-write fact differ from the initial snapshot.",
+                    })
+            for key, child in value.items():
+                walk(child, f"{path}.{key}", initial or key in {"initial", "at_tool"})
+
+    walk(source.get("metric_implementations", []), "metric_implementations")
+    walk(source.get("semantic_goal", {}), "semantic_goal")
+    return findings
+
 
 def validate_reward_observability(source: dict) -> None:
     """A private answer fact must be exposed by a tool in the reference flow.
@@ -65,12 +108,15 @@ def validate_reward_observability(source: dict) -> None:
 
     for rule in source["metric_implementations"]:
         if rule.get("operator") == "state_predicates":
-            rule["expected"] = lower(rule["expected"])
+            # This pass audits visibility; query lowering belongs to
+            # bind_reward_queries, where the reference bindings are available.
+            for predicate in rule["expected"]:
+                walk(predicate.get("value_expressions", {}))
         if rule.get("operator") in {"value_targets", "numeric_targets"}:
             walk(rule["expected"])
 
 
-def bind_reward_queries(source: dict) -> dict:
+def bind_reward_queries(source: dict, *, reference_details: list | None = None) -> dict:
     implementations = {item["tool_name"]: item for item in source["tool_implementations"]}
     successes = [item for item in source["scenarios"] if item.get("kind") == "goal_success"]
     bindings, captures = {}, {}
@@ -95,13 +141,26 @@ def bind_reward_queries(source: dict) -> dict:
             return {"if": {key: lower_argument_expression(arg, depth + 1)
                 for key, arg in expression["if"].items()}}
         raise ValueError("REWARD_QUERY_BINDING: capture expressions require captures, literals and finite operators")
-    if len(successes) == 1:
-        for step in successes[0]["steps"]:
+    reference_bindings = []
+    for scenario in successes:
+        # Captures belong to one execution. A later reference must never inherit
+        # a value or an ambiguity from an earlier reference.
+        bindings, captures = {}, {}
+        steps = scenario["steps"]
+        group_for_step = {position: group for group, positions in enumerate(
+            idempotent_call_groups(steps)) for position in positions}
+        from ..contracts.trajectory_probes import optional_observation_positions
+        optional = optional_observation_positions(steps, source['tool_implementations'])
+        binding_groups = {}
+        for position, step in enumerate(steps):
+            if position in optional:
+                continue
             if step.get("operation") != "tool_call":
                 continue
             name = step["tool_name"]
-            if name in bindings:
-                # A tool name is not an unambiguous reference to repeated calls.
+            if name in bindings and (bindings[name] is None or
+                    binding_groups[name] != group_for_step[position]):
+                # Separate logical requests remain ambiguous; cached retries do not.
                 bindings[name] = None
                 for alias in step.get("capture", {}):
                     captures.pop(alias, None)
@@ -109,6 +168,7 @@ def bind_reward_queries(source: dict) -> dict:
             impl = implementations[name]
             if impl["operation"] != "select":
                 continue
+            binding_groups[name] = group_for_step[position]
             where = {}
             unbound = False
             for rule in impl.get("filters", []):
@@ -138,13 +198,70 @@ def bind_reward_queries(source: dict) -> dict:
             bindings[name] = {"table": impl["table"], "where": where,
                               "projection": impl.get("projection", []),
                               "aliases": impl.get("projection_aliases", {})}
-            result_field = re.escape(impl.get("result_field", "records"))
+            from env_factory.sandbox_runtime import DeclarativeMetricEvaluator, SandboxError
             for alias, path in step.get("capture", {}).items():
-                match = re.fullmatch(r"(?:\$\.)?" + result_field + r"\[0\]\.([A-Za-z_][A-Za-z_0-9]*)", path)
-                if match:
-                    field = bindings[name]["aliases"].get(match[1], match[1])
-                    captures[alias] = {"lookup": {"table": impl["table"], "field": field,
-                                                "where": copy.deepcopy(where)}}
+                captures.pop(alias, None)
+                try:
+                    tokens = DeclarativeMetricEvaluator.path_tokens(path)
+                except SandboxError:
+                    continue
+                if (len(tokens) != 3 or tokens[0] != ('field', impl.get('result_field', 'records'))
+                        or tokens[2][0] != 'field'
+                        or not (tokens[1] == ('index', 0) or tokens[1][0] == 'filter')):
+                    continue
+                aliases = bindings[name]['aliases']
+                projection = set(bindings[name]['projection'])
+                def visible(field):
+                    return not projection or field in projection or field in aliases
+                if not visible(tokens[2][1]):
+                    continue
+                field = aliases.get(tokens[2][1], tokens[2][1])
+                selected_where = copy.deepcopy(where)
+                if tokens[1][0] == 'filter':
+                    selector, expected = tokens[1][1]
+                    if not visible(selector):
+                        continue
+                    column = aliases.get(selector, selector)
+                    predicates = selected_where.setdefault(column, {})
+                    if ('eq' in predicates and json.dumps(predicates['eq'], sort_keys=True) !=
+                            json.dumps(expected, sort_keys=True)):
+                        continue
+                    predicates['eq'] = copy.deepcopy(expected)
+                # Lookup retains the producer's entire query scope and resolves
+                # only one matching row, just like the runtime equality capture.
+                captures[alias] = {'lookup': {'table': impl['table'], 'field': field,
+                                              'where': selected_where}}
+        reference_bindings.append(bindings)
+        if reference_details is not None:
+            reference_details.append({'scenario_id': scenario.get('scenario_id'),
+                'called_tools': sorted({step['tool_name'] for step in steps if step.get('operation') == 'tool_call'}),
+                'bindings': copy.deepcopy(bindings)})
+
+    # from_tool describes a shared query, without a reference selector. It can
+    # therefore be lowered only when every applicable successful execution
+    # agrees on the entire query and its transitive capture chain. A declared
+    # user-refusal route may omit an inapplicable query, but a missing required
+    # call or an unresolved capture is still an error. Route validity and actual
+    # refusal evidence are checked by the compiler and execution preflight.
+    routes = {route['id']: route for route in source.get('execution_routes', [])}
+
+    def inactive_refusal_query(scenario, name):
+        route = routes.get(scenario.get('execution_route'), {})
+        return (set(route.get('when', {})) == {'user_rejection'}
+                and name not in route.get('required_tools', []))
+
+    bindings = {}
+    if reference_bindings:
+        for name in sorted({name for reference in reference_bindings for name in reference}):
+            applicable = [reference.get(name) for scenario, reference in zip(successes, reference_bindings)
+                          if name in reference or not inactive_refusal_query(scenario, name)]
+            binding = applicable[0]
+            if binding is None:
+                continue
+            encoded = json.dumps(binding, sort_keys=True, allow_nan=False)
+            if all(json.dumps(other, sort_keys=True, allow_nan=False) == encoded
+                   for other in applicable[1:]):
+                bindings[name] = binding
 
     def lower(value):
         if isinstance(value, list):
@@ -193,6 +310,17 @@ def bind_reward_queries(source: dict) -> dict:
         if "value_expressions" in predicate:
             predicate["value_expressions"] = {field: lower(expression)
                 for field, expression in predicate["value_expressions"].items()}
+    for route in source.get("execution_routes", []):
+        route["when"] = lower(route["when"])
+    for implementation in source.get('tool_implementations', []):
+        if 'derived_changes' in implementation:
+            implementation['derived_changes'] = lower(implementation['derived_changes'])
+    for policy in source.get('business_lifecycle', {}).get('tools', {}).values():
+        for guard in policy.get('guards', []):
+            for operand in list(guard.get('selector', {}).values()) + [
+                    value for predicates in guard.get('conditions', {}).values() for value in predicates.values()]:
+                if isinstance(operand, dict) and set(operand) == {'expression'}:
+                    operand['expression'] = lower(operand['expression'])
     return {name: binding for name, binding in bindings.items() if binding is not None}
 
 
@@ -215,14 +343,15 @@ def reject_private_identifier_constants(source: dict, *, validated_scripts=(), p
     for script in validated_scripts:
         origins = set()
         for stage in script["interaction_protocol"]["stages"]:
-            binding = stage.get("bind_to", {})
-            impl = implementations.get(binding.get("tool"), {})
-            if impl.get("operation") != "select" or "private_fact" not in stage:
-                continue
-            for rule in impl.get("filters", []):
-                if (rule.get("argument") == binding.get("argument")
-                        and rule.get("operator") == "eq" and not rule.get("resolve")):
-                    origins.add((impl["table"], rule["column"], json.dumps(stage["private_fact"], ensure_ascii=False)))
+            from .interaction_contract import stage_bindings
+            for binding in stage_bindings(stage):
+                impl = implementations.get(binding.get("tool"), {})
+                if impl.get("operation") != "select" or "private_fact" not in stage:
+                    continue
+                for rule in impl.get("filters", []):
+                    if (rule.get("argument") == binding.get("argument")
+                            and rule.get("operator") == "eq" and not rule.get("resolve")):
+                        origins.add((impl["table"], rule["column"], json.dumps(stage["private_fact"], ensure_ascii=False)))
         per_script.append(origins)
     user_origins = set.intersection(*per_script) if per_script else set()
 

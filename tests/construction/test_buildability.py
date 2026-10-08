@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from env_factory.task_pipeline import TaskGenerationPipeline
+from env_factory.generation.contract_compiler import ContractCompiler
 from env_factory.contracts.runtime_contract import missing_system_endpoints
 from env_factory.contracts.reward_contract import ambiguous_metric_captures, reward_contract_issues, terminal_outcome_weight
 
@@ -70,7 +70,7 @@ class BuildabilityTest(unittest.TestCase):
         self.assertEqual(buildability._tool_chain_issues(task), [])
 
     def test_generator_runtime_interface_covers_builder_minimum(self):
-        interface = TaskGenerationPipeline._build_runtime_interface([], {})
+        interface = ContractCompiler._build_runtime_interface([], {})
         self.assertEqual(missing_system_endpoints(interface), set())
 
     def test_reward_contract_rejects_literal_process_and_missing_terminal(self):
@@ -105,7 +105,7 @@ class BuildabilityTest(unittest.TestCase):
             "task": "整理公开输入",
             "environment_plan": {"mode": mode},
             "task_spec": {},
-            "requirements": {"runtime_interface": TaskGenerationPipeline._build_runtime_interface([], {})},
+            "requirements": {"runtime_interface": ContractCompiler._build_runtime_interface([], {})},
             "tools": [], "noise_tools": [], "tool_implementations": [],
             "metrics": [{"id": "outcome_answer", "category": "outcome",
                          "type": "model-based", "evaluation_inputs": ["final_agent_response"]}],
@@ -190,7 +190,7 @@ class BuildabilityTest(unittest.TestCase):
             with (
                 patch.object(buildability, "score_file", return_value=quality),
                 patch.object(buildability, "validate_task_spec"),
-                patch.object(TaskGenerationPipeline, "_validate_business_tool_semantics"),
+                patch.object(ContractCompiler, "_validate_business_tool_semantics"),
             ):
                 report = buildability.assess(root)
             self.assertIn("TASK_ACCEPTANCE_FIXTURE", {
@@ -228,7 +228,7 @@ class BuildabilityTest(unittest.TestCase):
                 patch.object(buildability, "score_file", return_value=quality),
                 patch.object(buildability, "validate_task_spec"),
                 patch.object(buildability, "ManifestDataStore", return_value=data),
-                patch.object(TaskGenerationPipeline, "_validate_business_tool_semantics"),
+                patch.object(ContractCompiler, "_validate_business_tool_semantics"),
             ):
                 report = buildability.assess(root)
             self.assertIn("SUCCESS_TOOL_PREVIEW_INVALID", {

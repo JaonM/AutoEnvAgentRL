@@ -36,8 +36,9 @@ def free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def request(base_url: str, method: str, path: str, body: object | None = None, *, key: str | None = None) -> tuple[int, object]:
-    headers = {"Accept": "application/json"}
+def request(base_url: str, method: str, path: str, body: object | None = None, *, key: str | None = None,
+            headers: dict | None = None) -> tuple[int, object]:
+    headers = {"Accept": "application/json", **(headers or {})}
     if key:
         headers["Authorization"] = f"Bearer {key}"
     data = None
@@ -173,7 +174,35 @@ def direct_mutation_probe(task: dict, base_url: str, key: str, mode: str) -> boo
         name, arguments = valid_call
         request(base_url, "POST", "/v1/reset", {"episode_id": "direct-mutation-probe", "seed": 17}, key=key)
         status, body = request(base_url, "POST", f"/v1/tools/{name}", arguments)
-        return status == 200 and isinstance(body, dict) and body.get("mutation") == mode
+        if status == 200 and isinstance(body, dict) and body.get("mutation") == mode:
+            return True
+        # Protected business tools may require user disclosure/approval first.
+        # Execute the trusted contract's reference prefix, including captures and
+        # idempotency headers. A generic execution failure is never a kill witness.
+        from env_factory.sandbox_runtime import AcceptanceScenarioRunner, SandboxError
+        class MutationObserved(Exception):
+            pass
+        def call(method, path, body, headers):
+            status, response = request(base_url, method, path, body, headers=headers)
+            if path.startswith('/v1/tools/') and status == 200 and isinstance(response, dict) and response.get('mutation') == mode:
+                raise MutationObserved()
+            return status, response, {}
+        runner = AcceptanceScenarioRunner(call, trainer_headers={'Authorization': f'Bearer {key}'})
+        for scenario in task.get('acceptance_contract', {}).get('executable_scenarios', []):
+            if scenario.get('kind') != 'goal_success':
+                continue
+            # Internal snapshots and final reward assertions are unnecessary for
+            # observing a tool seam and cannot be delegated to untrusted code.
+            steps = [step for step in scenario.get('steps', []) if step.get('operation') in
+                     {'reset', 'dialogue_turn', 'tool_call'}]
+            try:
+                call('POST', '/v1/reset', {}, runner.trainer_headers)
+                runner.run({'steps': steps, 'assertions': []})
+            except MutationObserved:
+                return True
+            except SandboxError:
+                continue
+        return False
     if mode == "ignore_tool_arguments":
         tools = task.get("tools", [])
         if tools:

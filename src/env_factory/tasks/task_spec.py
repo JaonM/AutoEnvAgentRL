@@ -137,6 +137,8 @@ def _capability_edges(scenarios: Sequence[Mapping[str, Any]]) -> list[dict[str, 
         if scenario.get("kind") != "goal_success":
             continue
         producers: dict[str, tuple[str, str]] = {}
+        producer_steps: dict[str, int] = {}
+        calls = []
         for step in _objects(scenario.get("steps")):
             if step.get("operation") != "tool_call":
                 continue
@@ -153,12 +155,32 @@ def _capability_edges(scenarios: Sequence[Mapping[str, Any]]) -> list[dict[str, 
                         edge["argument_expression"] = expression
                         edge["expression_captures"] = [{"name": name, "tool_name": producers[name][0],
                             "path": producers[name][1]} for name in refs]
+                    # Preserve call provenance, including the inputs that distinguish
+                    # repeated uses of one tool. Ancestors provide those inputs.
+                    needed = set()
+                    def require_capture(name):
+                        position = producer_steps.get(name)
+                        if position is None or position in needed:
+                            return
+                        needed.add(position)
+                        for parent in _refs(calls[position].get("arguments", {})):
+                            require_capture(parent)
+                    for name in _refs(step.get("arguments", {})):
+                        require_capture(name)
+                    edge["capture_plan"] = [
+                        {key: calls[position].get(key, {}) for key in ("tool_name", "arguments", "capture")}
+                        for position in sorted(needed)]
+                    edge["consumer_arguments"] = step.get("arguments", {})
+                    if 'user_script_indices' in scenario:
+                        edge['user_script_ids'] = [f'script-{index + 1}' for index in scenario['user_script_indices']]
                     if edge not in edges:
                         edges.append(edge)
             capture = step.get("capture")
             if isinstance(capture, Mapping):
                 for name in capture:
                     producers[str(name)] = (tool_name, str(capture[name]))
+                    producer_steps[str(name)] = len(calls)
+            calls.append(step)
     return edges
 
 
@@ -211,6 +233,7 @@ def _declarative_output_schema(implementation: Mapping[str, Any]) -> dict[str, A
         if fields:
             item_schema["properties"] = {field: {} for field in fields}
             item_schema["required"] = fields
+            item_schema["additionalProperties"] = False
         return {
             "type": "object",
             "properties": {
@@ -218,11 +241,13 @@ def _declarative_output_schema(implementation: Mapping[str, Any]) -> dict[str, A
                 "count": {"type": "integer"},
             },
             "required": [result_field, "count"],
+            "additionalProperties": False,
         }
     if operation == "aggregate_count" and isinstance(result_field, str) and result_field:
         return {
             "type": "object", "properties": {result_field: {"type": "integer"}},
             "required": [result_field],
+            "additionalProperties": False,
         }
     field = {"insert": "record", "update": "updated_count", "delete": "deleted_count"}.get(str(operation))
     if field:
@@ -232,7 +257,8 @@ def _declarative_output_schema(implementation: Mapping[str, Any]) -> dict[str, A
         if operation == "insert":
             properties["count"] = {"type": "integer"}
             required.append("count")
-        return {"type": "object", "properties": properties, "required": required}
+        return {"type": "object", "properties": properties, "required": required,
+                "additionalProperties": False}
     return None
 
 

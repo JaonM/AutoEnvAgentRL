@@ -46,6 +46,23 @@ def test_authored_interactions_execute_all_branches_and_cannot_be_skipped(tmp_pa
     assert any(s['operation'] == 'dialogue_turn' for case in result['acceptance_contract']['executable_scenarios'] for s in case['steps'])
 
 
+def test_structured_interactions_execute_without_fixed_phrases(tmp_path):
+    source, request = interactive_source()
+    request['require_structured_interactions'] = True
+    for variant in source['interaction_contract']['variants']:
+        for stage in variant['stages']:
+            stage.pop('assistant_contains_all')
+    result = compile_source(source, root=tmp_path, request=request)
+    scripts = json.loads((tmp_path / 'data/user_simulation/user_scripts.json').read_text())
+    assert result['generation_pipeline']['verification']
+    for script in scripts:
+        assert script['interaction_protocol']['request_mode'] == 'structured_v1'
+        for stage in script['interaction_protocol']['stages']:
+            event = json.loads(stage['reference_response'])
+            assert event['request']['tool'] == stage['before_tool']
+            assert event['request']['arguments'] == [stage['bind_to']['argument']]
+
+
 def test_private_fact_diagnostic_identifies_published_metadata(tmp_path):
     source, request = interactive_source()
     source['description']['public_input']['semantic_answer_criteria'] = [
@@ -61,7 +78,7 @@ def test_private_fact_diagnostic_identifies_published_metadata(tmp_path):
 
 @pytest.mark.parametrize('change, message', [
     ('missing','requires task-specific'), ('duplicate','differ beyond'), ('leak','already appears'),
-    ('binding','does not match'), ('confirmation','actual tool')])
+    ('binding','QUERY_INPUT_UNDISCOVERABLE'), ('confirmation','actual tool')])
 def test_interaction_authoring_rejects_unexecutable_or_cosmetic_complexity(tmp_path, change, message):
     source, request = interactive_source()
     if change == 'missing': source.pop('interaction_contract')
@@ -158,15 +175,29 @@ def test_stateful_confirmation_is_required_before_write(tmp_path):
     assert checks['passed']
 
 
-def test_skipped_tool_counterfactual_can_remain_before_confirmation(tmp_path):
+@pytest.mark.parametrize('conditional_branch', [False, True])
+def test_skipped_tool_counterfactual_can_remain_before_confirmation(tmp_path, conditional_branch):
     from env_factory.generation.delivery_preflight import verify_delivery
     from env_factory.tasks.task_routing import training_contract
     source = json.loads((Path(__file__).parents[1] / 'fixtures/generation/audit_confirmation_source.json').read_text())
+    if conditional_branch:
+        for variant in source['interaction_contract']['variants']:
+            variant['variables'] = {'choose_followup': True}
+            stage = variant['stages'][1]
+            stage['branches'] = [{'id': 'followup', 'when': [
+                {'source': 'user_state', 'path': '$.choose_followup', 'operator': 'eq', 'expected': True}],
+                'user_reply': stage['user_reply'], 'outcome': 'information_required', 'advance': True}]
     request = {'task_type':'Event', 'training_category':'multi_step_agentic', 'training_contract':training_contract('multi_step_agentic'),
                'available_environment_modes':['stateful'], 'require_interaction_contract':True,
                'graph_context': {'source':'neo4j_scene_path', 'hops':2, 'nodes':['义和团','围攻','使馆'],
                                  'keywords':['义和团','围攻','使馆'], 'relation':'SAME_EVENT_ELEMENT'}}
     artifacts = compile_source(source, root=tmp_path, request=request)
+    if conditional_branch:
+        for scenario in artifacts['acceptance_contract']['executable_scenarios']:
+            if scenario.get('kind') == 'goal_success':
+                for step in scenario['steps']:
+                    if step.get('expected_stage') == 'disposition_choice':
+                        step['expected_branch'] = 'followup'
     assert verify_delivery(artifacts, tmp_path)['passed']
     report = json.loads((tmp_path/'prebuild_agentic_value.json').read_text())
     skipped = report['evidence']['counterfactuals']['skipped_tool_2']
@@ -180,5 +211,44 @@ def test_positive_dialogue_stage_assertions_are_still_enforced():
     runner = AcceptanceScenarioRunner(call)
     with pytest.raises(SandboxError, match='interaction branch'):
         runner.run({'steps':[{'operation':'dialogue_turn', 'content':'确认吗', 'expected_stage':'approval'}]})
+    with pytest.raises(SandboxError, match='wrong conditional user branch'):
+        runner.run({'steps':[{'operation':'dialogue_turn', 'content':'确认吗', 'expected_branch':'followup'}]})
     # Counterfactual dialogue deliberately omits the positive-stage assertion.
     assert runner.run({'steps':[{'operation':'dialogue_turn', 'content':'确认吗'}]})['history']
+
+
+def test_lexical_matches_require_independent_review_before_readiness(tmp_path):
+    from env_factory.generation.semantic_review import resolve_privacy_review, SemanticReviewUnavailable
+    from tests.generation.test_semantic_review import passing_report
+    source, request = interactive_source()
+    source['description']['public_input']['initial_user_message'] += '候选库区有青松库、白杨库，请询问用户选择。'
+    # Direct compilation remains strict; the parent explicitly owns the deferral.
+    with pytest.raises(ValueError, match='already appears'):
+        compile_source(source, root=tmp_path / 'strict', request=request)
+    artifacts = compile_source(source, root=tmp_path / 'pending', request=request, defer_privacy_review=True)
+    assert not artifacts['task_readiness']['ready']
+    assert 'INTERACTION_PRIVACY_REVIEW_PENDING' in artifacts['task_readiness']['errors']
+    assert artifacts['generation_pipeline']['privacy_review_obligations']
+    incomplete = passing_report()
+    incomplete['checks'].pop('interaction_information_privacy')
+    with pytest.raises(SemanticReviewUnavailable):
+        resolve_privacy_review(artifacts, incomplete)
+    assert not artifacts['task_readiness']['ready']
+    rejected = passing_report()
+    rejected['status'] = 'fail'
+    rejected['checks']['interaction_information_privacy']['passed'] = False
+    rejected['findings'] = [{'code': 'private_choice_leaked', 'source_paths': ['compiled_public_input'],
+        'reason': 'The initial text explicitly states the chosen option.', 'repair': 'Remove the chosen value.'}]
+    with pytest.raises(ValueError, match='privacy obligations remain unresolved'):
+        resolve_privacy_review(artifacts, rejected)
+    assert not artifacts['task_readiness']['ready']
+    resolve_privacy_review(artifacts, passing_report())
+    assert artifacts['task_readiness']['ready']
+    assert artifacts['generation_pipeline']['privacy_review_resolution']['passed']
+
+
+def test_bound_singleton_choice_is_rejected_before_model_review(tmp_path):
+    source, request = interactive_source()
+    source['tools'][0]['function']['parameters']['properties']['name']['enum'] = ['青松库']
+    with pytest.raises(ValueError, match='INTERACTION_SINGLETON_DISCLOSURE'):
+        compile_source(source, root=tmp_path, request=request, defer_privacy_review=True)

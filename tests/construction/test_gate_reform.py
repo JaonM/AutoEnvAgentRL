@@ -19,6 +19,92 @@ def script(name):
 
 
 class GateReformTest(unittest.TestCase):
+    def test_determinism_ignores_only_failed_http_envelope_request_id(self):
+        checker = script('sandbox/validate_training_readiness.py')
+        body = {'error': {'code': 'RESPONSE_LOST', 'message': 'lost', 'details': None, 'request_id': 'a'}}
+        a = {'history': [{'operation': 'tool_call', 'status': 504, 'body': body}],
+             'step_results': {'write': body}, 'variables': {}}
+        b = copy.deepcopy(a)
+        b['history'][0]['body']['error']['request_id'] = 'b'
+        self.assertEqual(checker.canonical(a), checker.canonical(b))
+        b['history'][0]['body']['error']['code'] = 'OTHER_FAILURE'
+        self.assertNotEqual(checker.canonical(a), checker.canonical(b))
+        self.assertNotEqual(checker.canonical({'request_id': 'business-a'}),
+                            checker.canonical({'request_id': 'business-b'}))
+
+    def test_readiness_goal_uses_decision_checkpoint_not_initial_or_final_stock(self):
+        from types import SimpleNamespace
+        import env_factory.sandbox_runtime as runtime
+        baseline = {'stock': [{'name': 'target', 'available': 20, 'reserved': 0}]}
+        checkpoint = {'stock': [{'name': 'target', 'available': 16, 'reserved': 0}]}
+        current = {'stock': [{'name': 'target', 'available': 4, 'reserved': 12}]}
+        store = SimpleNamespace(get_state=lambda key, default: {'read_stock': checkpoint})
+        app = SimpleNamespace(episode_store=store, business_snapshot=lambda: current)
+        predicate = {'table': 'stock', 'where': {'name': 'target'}, 'count': 1,
+            'value_expressions': {'available': {'op': 'sub', 'args': [
+                {'at_tool': {'name': 'read_stock', 'expression': {'lookup': {
+                    'table': 'stock', 'field': 'available', 'where': {'name': 'target'}}}}}, {'literal': 12}]}}}
+        with patch.dict('sys.modules', {'sandbox_runtime': runtime}):
+            checker = script('sandbox/validate_training_readiness.py')
+            state = checker.goal_evaluation_state(app, baseline)
+            self.assertTrue(runtime.BusinessGoalEvaluator.evaluate([predicate], state, baseline))
+            current['stock'][0]['available'] = 5
+            self.assertFalse(runtime.BusinessGoalEvaluator.evaluate([predicate],
+                checker.goal_evaluation_state(app, baseline), baseline))
+
+    def test_reset_evidence_allows_only_clean_protocol_initialization(self):
+        from env_factory.contracts.episode_evidence import initial_replay_events
+        event = {'sequence': 1, 'event': 'user_protocol', 'timestamp': 1,
+                 'payload': {'script_id': 'script-1', 'required_stages': ['approval']}, 'result': {}}
+        self.assertEqual(initial_replay_events([event]), initial_replay_events([{**event, 'timestamp': 2}]))
+        self.assertEqual(initial_replay_events([]), [])
+        for invalid in ([event, event], [{**event, 'event': 'agent_response'}],
+                        [{**event, 'result': {'stale': True}}],
+                        [{**event, 'payload': {**event['payload'], 'previous_episode': 'A'}}]):
+            self.assertIsNone(initial_replay_events(invalid))
+
+    def test_mutation_probe_completes_dialogue_and_preserves_idempotency(self):
+        mutation = script('sandbox/run_mutation_tests.py')
+        task = {'acceptance_contract': {'executable_scenarios': [{'kind': 'goal_success', 'steps': [
+            {'operation': 'dialogue_turn', 'content': 'Authorize writing?'},
+            {'operation': 'tool_call', 'tool_name': 'write', 'arguments': {}, 'idempotency_key': 'write-1'}]}]}}
+        approved = False
+        def request(base, method, path, body=None, *, key=None, headers=None):
+            nonlocal approved
+            if path == '/v1/reset':
+                approved = False
+                return 200, {}
+            if path == '/v1/user_simulator':
+                self.assertEqual(headers['Authorization'], 'Bearer trainer')
+                approved = True
+                return 200, {'user_query': 'Approved'}
+            if path.startswith('/v1/tools/'):
+                if not approved:
+                    return 403, {}
+                self.assertEqual(headers, {'Idempotency-Key': 'write-1'})
+                return 200, {'mutation': 'skip_business_write'}
+            return 200, {}
+        with patch.object(mutation, 'request', side_effect=request):
+            self.assertTrue(mutation.direct_mutation_probe(task, 'http://sandbox', 'trainer', 'skip_business_write'))
+        with patch.object(mutation, 'request', return_value=(403, {})):
+            self.assertFalse(mutation.direct_mutation_probe(task, 'http://sandbox', 'trainer', 'skip_business_write'))
+
+    def test_outer_acceptance_accepts_executed_interactive_reference(self):
+        from tests.generation.test_interaction_contract import interactive_source
+        from env_factory.generation.agent_authoring import compile_source
+        source, request = interactive_source()
+        with tempfile.TemporaryDirectory() as directory:
+            task = compile_source(source, root=Path(directory), request=request)
+        outer = script('sandbox/generate_outer_conformance.py')
+        names = [item['function']['name'] for item in task['tools']]
+        accepted = outer.check_acceptance_contract(task, names, task['metrics'])
+        self.assertTrue(any(step['operation'] == 'dialogue_turn'
+            for scenario in accepted['executable_scenarios'] for step in scenario['steps']))
+        malformed = copy.deepcopy(task)
+        malformed['acceptance_contract']['executable_scenarios'][0]['steps'][0]['operation'] = 'invented_operation'
+        with self.assertRaises(SystemExit):
+            outer.check_acceptance_contract(malformed, names, task['metrics'])
+
     def test_stateful_final_answer_has_its_declared_weight(self):
         from env_factory.contracts.reward_contract import terminal_outcome_weight
         task = {"environment_plan": {"mode": "stateful"},
