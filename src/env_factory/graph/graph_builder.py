@@ -228,6 +228,23 @@ class Neo4jGraphStore:
                         )
                         for item in random_source.choice(records)["path"]
                     )
+            # Sparse graphs can exhaust random starts even when this exact
+            # hop length exists. Search a bounded candidate set before treating
+            # the requested path as unavailable; never substitute fewer hops.
+            if hops:
+                records = list(session.run(Query(
+                    f"MATCH p=(start:Scene)-[:SAME_EVENT_ELEMENT*{hops}]-(end:Scene) "
+                    "WHERE all(node IN nodes(p) WHERE single(other IN nodes(p) WHERE other = node)) "
+                    "RETURN DISTINCT [node IN nodes(p) | {name: node.name, words: node.words}] AS path "
+                    "LIMIT 100",
+                    timeout=self.path_query_timeout,
+                )))
+                if records:
+                    logger.info("随机起点未命中，使用同跳数全图候选：跳数=%d，候选数=%d", hops, len(records))
+                    return tuple(SceneNode(
+                        name=str(item["name"]),
+                        words=tuple(str(word) for word in (item.get("words") or [])),
+                    ) for item in random_source.choice(records)["path"])
         logger.info("未找到 Scene 路径：跳数=%d，尝试次数=%d", hops, attempts)
         return ()
 

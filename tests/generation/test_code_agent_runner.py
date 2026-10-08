@@ -34,6 +34,8 @@ class CodeAgentRunnerTest(unittest.TestCase):
             self.assertEqual(self.review.call_args.kwargs["goal_anchor"], descriptions[0])
             defect = json.loads((root / "authoring/parent_validation.json").read_text())
             self.assertEqual(defect["original_goal"], descriptions[0])
+            self.assertIn('Do not run the full execution compiler', launches[0])
+            self.assertIn('parent repeats the full execution checks', launches[0])
 
     def setUp(self):
         self.review_patch = patch("env_factory.generation.code_agent.review_source", return_value={
@@ -60,7 +62,7 @@ class CodeAgentRunnerTest(unittest.TestCase):
                     "env_factory.generation.code_agent.time.monotonic", side_effect=lambda: clock[0]), patch(
                     "env_factory.generation.code_agent.compile_source", return_value={"generation_pipeline": {}}) as compiler, patch(
                     "env_factory.generation.code_agent.verify_delivery"):
-                result = generate(request={"training_category": "multi_step_agentic", "code_agent_model": "test-model", "language": "en"}, artifact_dir=root)
+                result = generate(request={"training_category": "simple_agentic", "code_agent_model": "test-model", "language": "en"}, artifact_dir=root)
             self.assertEqual(budgets, [600, 400])
             self.assertIn("parent_validation.json", prompts[1])
             compiler.assert_called_once()
@@ -81,7 +83,7 @@ class CodeAgentRunnerTest(unittest.TestCase):
             root = Path(directory)
             def launch(command, **kwargs):
                 def finish(prompt, timeout):
-                    (root / "authoring/source.json").write_text('{"version":"1.0"}')
+                    (root / "authoring/source.json").write_text(json.dumps({'version':'1.0', 'revision':popen.call_count}))
                     kwargs["stdout"].write('{"type":"turn.completed"}\n')
                 return Mock(returncode=0, communicate=Mock(side_effect=finish))
             with patch("env_factory.generation.code_agent.subprocess.Popen", side_effect=launch) as popen, patch(
@@ -104,7 +106,7 @@ class CodeAgentRunnerTest(unittest.TestCase):
             root = Path(directory)
             def launch(command, **kwargs):
                 def finish(prompt, timeout):
-                    (root / "authoring/source.json").write_text('{"version":"1.0"}')
+                    (root / "authoring/source.json").write_text(json.dumps({'version':'1.0', 'revision':popen.call_count}))
                     kwargs["stdout"].write('{"type":"turn.completed"}\n')
                 return Mock(returncode=0, communicate=Mock(side_effect=finish))
             with patch("env_factory.generation.code_agent.subprocess.Popen", side_effect=launch) as popen, patch(
@@ -126,7 +128,7 @@ class CodeAgentRunnerTest(unittest.TestCase):
             def launch(command, **kwargs):
                 def finish(prompt, timeout):
                     launches.append(prompt)
-                    (root / "authoring/source.json").write_text('{"broken":' if len(launches) == 1 else '{"version":"1.0"}')
+                    (root / "authoring/source.json").write_text('{"broken":' if len(launches) == 1 else json.dumps({'version':'1.0', 'revision':len(launches)}))
                     kwargs["stdout"].write('{"type":"turn.completed"}\n')
                 return Mock(returncode=0, communicate=Mock(side_effect=finish))
             with patch("env_factory.generation.code_agent.subprocess.Popen", side_effect=launch), patch(
@@ -143,7 +145,7 @@ class CodeAgentRunnerTest(unittest.TestCase):
             root = Path(directory)
             def launch(command, **kwargs):
                 def finish(prompt, timeout):
-                    (root / "authoring/source.json").write_text('{"version":"1.0"}')
+                    (root / "authoring/source.json").write_text(json.dumps({'version':'1.0', 'revision':popen.call_count}))
                     kwargs["stdout"].write('{"type":"turn.completed"}\n')
                 return Mock(returncode=0, communicate=Mock(side_effect=finish))
             with patch("env_factory.generation.code_agent.subprocess.Popen", side_effect=launch) as popen, patch(
@@ -187,7 +189,7 @@ class CodeAgentRunnerTest(unittest.TestCase):
                 result = generate(request={"training_category": "direct_response"}, artifact_dir=root)
             self.assertEqual(compiler.call_args.args[0], {"version": "1.0"})
             self.assertEqual(compiler.call_args.kwargs["root"], root.resolve())
-            self.assertIn("gpt-6-luna", popen.call_args.args[0])
+            self.assertIn("gpt-6.1-sol", popen.call_args.args[0])
             self.assertEqual(result["generation_pipeline"]["completed_turns"], 2)
             self.assertIsNone(result["generation_pipeline"]["llm_calls"])
             delivery.assert_called_once()

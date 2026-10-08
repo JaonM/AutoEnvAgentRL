@@ -7,70 +7,9 @@ from env_factory import (
     TaskGenerator,
     TaskType,
 )
-from env_factory.task_pipeline import TaskGenerationPipeline
-
-
-class FakeStore:
-    def random_scene_event_path(self, hops, *, attempts=8, rng=None):
-        self.hops = hops
-        if hops == 0:
-            return (SceneNode("买衣服", ("购买服装",)),)
-        return (
-            SceneNode("买衣服", ("购买服装",)),
-            SceneNode("尺寸", ("尺码",)),
-        )
-
-
-class FakeLLM:
-    def complete(self, prompt, **kwargs):
-        if prompt.startswith("{"):
-            payload = json.loads(prompt)
-            self.keywords = payload["keywords"]
-            self.task_type = payload["task_type"]
-        if "输出 JSON 对象" in kwargs.get("system_prompt", ""):
-            class Response:
-                content = '{"goal":"购买合适的衣服","actions":["选择尺码"]}'
-
-            return Response()
-
-        class Response:
-            content = (
-                '{"task":"帮我买一件合适尺码的衣服"}'
-                if "任务描述" not in prompt
-                else (
-                    '[{"type":"state","field":"order_status","description":"当前订单状态","value":"pending","visibility":"observable"},'
-                    '{"type":"action","field":"place_order","description":"提交订单","value":{"params":{}},"visibility":"observable"},'
-                    '{"type":"transition_rule","field":"submit_order","description":"提交订单后的状态变化","value":{"when":"place_order is called","effect":"order_status becomes submitted"},"visibility":"hidden"},'
-                    '{"type":"termination","field":"success","description":"任务成功条件","value":["order_status == submitted"],"visibility":"hidden"}]'
-                    if "奖励规则" not in prompt
-                    else '[{"id":"check_order","type":"rule-based","scope":"terminal","condition":"order_status == submitted","reward":1,"penalty":0,"once":true,"rubric":"检查工具调用结果","weight":1}]'
-                )
-            )
-
-        return Response()
 
 
 class TaskGeneratorTest(unittest.TestCase):
-    @staticmethod
-    def _pipeline_artifacts():
-        return {
-            "task": "帮我买一件合适尺码的衣服",
-            "requirements": {"input_modalities": ["text"]},
-            "complexity": "standard",
-            "environment": [
-                {"type": "state", "field": "order_status", "description": "订单状态", "value": "pending"},
-                {"type": "action", "field": "place_order", "description": "提交订单", "value": "place_order"},
-            ],
-            "metrics": [{
-                "id": "check_order", "type": "rule-based", "scope": "terminal",
-                "condition": "order_status == submitted", "reward": 1.0,
-                "penalty": 0.0, "once": True, "rubric": "检查工具调用结果", "weight": 1.0,
-            }],
-            "data_models": [], "media_fixtures": [], "truth_bindings": [],
-            "user_profiles": [], "user_scripts": [],
-            "actions": [], "tools": [], "tool_bindings": [],
-            "observation_schema": {}, "reward_formula": {}, "termination": [],
-        }
     def test_task_type_accepts_comma_separated_values(self):
         with patch("env_factory.generation.task_generator.random.choice", return_value=TaskType.RESEARCH):
             self.assertEqual(
@@ -82,88 +21,9 @@ class TaskGeneratorTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsupported task_type"):
             TaskGenerator._select_task_type("Coding")
 
-    def test_zero_hops_uses_one_scene(self):
-        store = FakeStore()
-        llm = FakeLLM()
-        captured = {}
-        def generate(**kwargs):
-            captured.update(kwargs)
-            return self._pipeline_artifacts()
-        with patch("env_factory.generation.task_generator.random.choice", side_effect=lambda items: items[0]):
-            with patch.object(TaskGenerationPipeline, "generate", side_effect=generate):
-                task = TaskGenerator(store, llm, generation_backend="legacy").generate(0, TaskType.EVENT)
 
-        self.assertEqual(store.hops, 0)
-        self.assertEqual(captured["keywords"], ["买衣服"])
-        self.assertIsNone(captured["available_environment_modes"])
-        self.assertEqual(task.desc, "帮我买一件合适尺码的衣服")
 
-    def test_unsourced_domain_path_is_resampled_before_model_calls(self):
-        class Store:
-            calls = 0
-            def random_scene_event_path(self, hops, *, attempts=8, rng=None):
-                self.calls += 1
-                return ((SceneNode("中华人民共和国宪法", ("宪法",)),)
-                        if self.calls == 1 else
-                        (SceneNode("竹编工坊", ("竹编",)),))
 
-        store = Store()
-        generator = TaskGenerator(store, FakeLLM(), generation_backend="legacy")
-        path, hops, keywords = generator._sample_graph_path(0, __import__("random").Random(1))
-        self.assertEqual(store.calls, 2)
-        self.assertEqual(path[0].name, "竹编工坊")
-        self.assertTrue(keywords)
-        self.assertNotIn("宪法", " ".join(keywords))
-
-    def test_available_environment_modes_are_forwarded_to_pipeline(self):
-        captured = {}
-        with patch.object(
-            TaskGenerationPipeline, "generate",
-            side_effect=lambda **kwargs: captured.update(kwargs) or self._pipeline_artifacts(),
-        ):
-            TaskGenerator(
-                FakeStore(), FakeLLM(), generation_backend="legacy",
-                available_environment_modes=("stateless", "reference_data", "stateful"),
-            ).generate(0, TaskType.EVENT, seed=7)
-        self.assertEqual(
-            captured["available_environment_modes"],
-            ("stateless", "reference_data", "stateful"),
-        )
-
-    def test_generate_uses_path_keywords(self):
-        store = FakeStore()
-        llm = FakeLLM()
-        captured = {}
-        def generate(**kwargs):
-            captured.update(kwargs)
-            return self._pipeline_artifacts()
-        with (
-            patch("env_factory.generation.task_generator.random.randint", return_value=2),
-            patch("env_factory.generation.task_generator.random.choice", side_effect=lambda items: items[0]),
-        ):
-            with patch.object(TaskGenerationPipeline, "generate", side_effect=generate):
-                task = TaskGenerator(store, llm, generation_backend="legacy").generate(3, TaskType.EVENT)
-
-        self.assertEqual(store.hops, 2)
-        self.assertEqual(captured["keywords"], ["买衣服", "尺寸"])
-        self.assertEqual(captured["task_type"], "Event")
-        self.assertEqual(task.desc, "帮我买一件合适尺码的衣服")
-        self.assertEqual(task.task_type, TaskType.EVENT)
-        self.assertIn("action", {item["type"] for item in task.env})
-        self.assertEqual(
-            task.metrics,
-            [{
-                "id": "check_order",
-                "type": "rule-based",
-                "scope": "terminal",
-                "condition": "order_status == submitted",
-                "reward": 1.0,
-                "penalty": 0.0,
-                "once": True,
-                "rubric": "检查工具调用结果",
-                "weight": 1.0,
-            }],
-        )
 
     def test_keywords_filter_generic_unsafe_and_malformed_candidates(self):
         path = (
@@ -189,29 +49,53 @@ class TaskGeneratorTest(unittest.TestCase):
         self.assertIsNone(TaskGenerator._normalize_keyword("甲基叔丁基醚"))
         self.assertIsNone(TaskGenerator._normalize_keyword("格氏试剂"))
 
-    def test_generate_resamples_path_when_all_keywords_are_filtered(self):
-        class ResamplingStore:
-            calls = 0
-
-            def random_scene_event_path(self, hops, attempts=8, rng=None):
-                self.calls += 1
-                if self.calls == 1:
-                    return (SceneNode("数据"),)
-                return (SceneNode("服装出口"),)
-
-        captured = {}
-        with (
-            patch("env_factory.generation.task_generator.random.randint", return_value=0),
-            patch("env_factory.generation.task_generator.random.choice", side_effect=lambda items: items[0]),
-            patch.object(
-                TaskGenerationPipeline,
-                "generate",
-                side_effect=lambda **kwargs: captured.update(kwargs) or self._pipeline_artifacts(),
-            ),
-        ):
-            TaskGenerator(ResamplingStore(), FakeLLM(), generation_backend="legacy").generate(0, TaskType.EVENT)
-        self.assertEqual(captured["keywords"], ["服装出口"])
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_generator_calls_code_agent_with_graph_request(tmp_path):
+    from unittest.mock import Mock
+    from env_factory.generation import code_agent
+    store = Mock()
+    store.random_scene_event_path.side_effect = lambda hops, **_: tuple(SceneNode('仓储', ('仓储',)) for _ in range(hops + 1))
+    artifacts = {'task': '核对库存', 'environment': [], 'metrics': [],
+                 'task_intent': 'query', 'complexity': 'standard'}
+    with patch.object(code_agent, 'generate', return_value=artifacts) as author:
+        result = TaskGenerator(store, code_agent_model='author-model', language='en').generate(
+            2, TaskType.EVENT, artifact_dir=tmp_path, seed=12)
+    assert result.desc == '核对库存'
+    request = author.call_args.kwargs['request']
+    assert request['graph_context']['hops'] == __import__('random').Random(12).randint(0, 2)
+    assert request['graph_context']['max_hops'] == 2
+    assert len(request['graph_context']['nodes']) == request['graph_context']['hops'] + 1
+    assert request['code_agent_model'] == 'author-model'
+    assert request['language'] == 'en'
+    assert request['seed'] == 12
+    assert author.call_count == 1
+
+
+def test_generator_does_not_accept_retired_backends():
+    import pytest
+    for backend in ('legacy', 'spec'):
+        with pytest.raises(TypeError):
+            TaskGenerator(None, generation_backend=backend)
+
+
+def test_random_hops_covers_zero_and_upper_bound(tmp_path):
+    from unittest.mock import Mock
+    from env_factory.generation import code_agent
+    store = Mock()
+    store.random_scene_event_path.side_effect = lambda hops, **_: tuple(
+        SceneNode('仓储', ('仓储',)) for _ in range(hops + 1))
+    artifacts = {'task': '查询仓储', 'environment': [], 'metrics': [],
+                 'task_intent': 'query', 'complexity': 'standard'}
+    with patch.object(code_agent, 'generate', return_value=artifacts) as author:
+        generator = TaskGenerator(store)
+        for seed in range(30):
+            generator.generate(2, artifact_dir=tmp_path, seed=seed)
+        assert {call.kwargs['request']['graph_context']['hops'] for call in author.call_args_list} == {0, 1, 2}
+        generator.generate(0, artifact_dir=tmp_path, seed=1)
+        assert author.call_args.kwargs['request']['graph_context']['hops'] == 0
+        assert len(author.call_args.kwargs['request']['graph_context']['nodes']) == 1

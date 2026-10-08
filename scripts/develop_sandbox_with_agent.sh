@@ -49,8 +49,8 @@ usage() {
   --output DIR       单任务工作目录；输入为 list 时作为输出根目录，默认沿用 task-N 编号
   --agent NAME       开发 Agent：codex、claude 或 opencode，默认：codex
   --review-agent NAME 独立语义审查 Agent：codex、claude 或 opencode，默认：codex
-  --model NAME       开发模型；Codex 默认 gpt-6-luna
-  --review-model NAME 审查模型；主链路沿用 --code-agent-model
+  --model NAME       开发模型；Codex 默认 gpt-6.1-sol
+  --review-model NAME 审查模型；主链路沿用 --sandbox-model
   --runtime NAME     none 或 docker，默认：none
   --tag NAME         镜像名称，默认：env-factory-agent-sandbox
   --max-concurrency N 并发任务数，默认：2
@@ -118,8 +118,8 @@ if ! [[ "$sandbox_port" =~ ^[1-9][0-9]*$ ]] || (( sandbox_port > 65535 )); then
 fi
 case "$agent" in codex|claude|opencode) ;; *) echo "不支持的开发 Agent：$agent" >&2; exit 2 ;; esac
 case "$review_agent" in codex|claude|opencode) ;; *) echo "不支持的审查 Agent：$review_agent" >&2; exit 2 ;; esac
-if [[ -z "$model" && "$agent" == "codex" ]]; then model="gpt-6-luna"; fi
-if [[ -z "$review_model" && "$review_agent" == "codex" ]]; then review_model="${model:-gpt-6-luna}"; fi
+if [[ -z "$model" && "$agent" == "codex" ]]; then model="gpt-6.1-sol"; fi
+if [[ -z "$review_model" && "$review_agent" == "codex" ]]; then review_model="${model:-gpt-6.1-sol}"; fi
 model_args=()
 review_model_args=()
 if [[ -n "$model" ]]; then model_args=(--model "$model"); fi
@@ -394,7 +394,7 @@ run_code_agent() {
         if [[ -n "$model" ]]; then codex_args+=(--model "$model"); fi
         codex_args+=("$phase_prompt")
         capture="$(mktemp "${TMPDIR:-/tmp}/envfactory-agent-start.XXXXXX")"
-        (cd "$output_path" && codex "${codex_args[@]}") </dev/null 2>&1 | tee "$capture"
+        (cd "$output_path" && python3 -m env_factory.generation.codex_transport "${codex_args[@]}") </dev/null 2>&1 | tee "$capture"
         code="${PIPESTATUS[0]}"
         if [[ "$code" -eq 0 ]]; then
           rm -f "$capture"
@@ -623,8 +623,17 @@ Use exactly these checked_modules identifiers after inspecting all four areas:
 business_tools, reward, user_simulator, runtime_contract.
 For each high/critical reward finding, supply reproduction as
 {"kind":"invalid_goal_reward" or "no_tool_reward", "steps":[declarative scenario steps]}.
-The outer runner resets the episode; do not include reset steps or executable
-code. A finding without supported executable evidence is quarantined for
+Steps must be JSON objects using the acceptance runner operation/body/arguments schema,
+never prose strings. For a static reference_data reward false negative after extra
+read-only exploration, use {"kind":"reference_recovery", "scenario_id":"<existing
+kind=goal_success scenario_id>", "before_step":2, "steps":[{"operation":"tool_call",
+"tool_name":"<read-only tool>", "arguments":{...}, "expected_status":200}]}.
+before_step is a zero-based insertion index after the reference reset. The runner
+replays the unchanged successful reference with and without 1..5 added read-only
+calls, requiring identical final business state. It supports only deterministic
+non-penalty metrics without lifecycle events/faults; other claims remain unresolved.
+Do not use invalid_goal_reward for a false negative. The outer runner owns reset;
+do not include reset steps or executable code. A finding without supported executable evidence is quarantined for
 review, never sent to automatic code repair. Inspect ContractRewardGate and
 the actual event recording in ContractToolRegistry, not only per-metric evaluators.
 
@@ -699,6 +708,22 @@ not require simultaneous request routing to older episodes unless the
 contract declares an episode-selection header. The runtime must retain
 script/profile identity and declared state/variable transitions.
 
+First resolve the declared user decision engine. If
+ task_spec.interaction_complexity.runtime is deterministic_task_protocol,
+ the platform executes interaction_protocol scripts through structured request
+ validation and a deterministic FSM. This production mode does not call an LLM
+ to choose transitions or rewrite scripted replies. Verify that all supplied
+ scripts implement the declared protocol, choices follow current tool evidence,
+ private disclosures remain private until the required stage, and rejected or
+ malformed requests cannot advance state. Profile identity remains persisted;
+ scripted replies need not vary by profile unless the contract explicitly requires
+ profile-dependent behavior. Do not invent a mandatory external user-model call
+ from the shared llm_runtime connection configuration, which may serve reward
+ evaluators. Missing or inconsistent mode declarations still require investigation.
+ This exception never applies to an external semantic reward evaluator.
+
+For user scripts without that deterministic mode, inspect the external model
+ boundary and profile-driven decision behavior. In that model-driven path,
 External-LLM failure cannot establish a normal user decision. A conservative
 fallback that emits unrecognized, selects no normal transition, preserves
 normal state/variables, and terminates only after the recovery bound is the
@@ -1274,20 +1299,16 @@ run_agent_and_finalize_impl() {
   fi
   echo "Code Agent 模块化开发阶段开始：agent=$agent output=$output_path"
 
-  if [[ "$resume" != "true" ]]; then
-    set_build_phase "planning" "" 1 "" "正在生成确定性模块开发拓扑"
-    python3 "$project_dir/scripts/sandbox/generate_development_plan.py" \
-      --contract "$output_path/BUILD_CONTRACT.json" \
-      --output "$output_path/development_plan.json"
-    validate_development_plan
-  else
-    echo "增量续建：保留已有实现并恢复未完成的模块节点"
-    validate_development_plan
-  fi
+  # Recompute the platform-owned plan on resume so historical zero-node plans
+  # cannot bypass the mandatory Code Agent integration validation.
+  set_build_phase "planning" "" 1 "" "正在生成确定性模块开发拓扑"
+  python3 "$project_dir/scripts/sandbox/generate_development_plan.py" \
+    --contract "$output_path/BUILD_CONTRACT.json" \
+    --output "$output_path/development_plan.json"
+  validate_development_plan
   mkdir -p "$output_path/.node_checkpoints"
     # Bash 3.2 with `set -u` treats expansion of a declared-but-empty array as
-    # an unbound variable.  Keep an inert sentinel so fully declarative tasks
-    # can legitimately have a zero-node development plan.
+    # an unbound variable. Keep an inert sentinel while reading validated IDs.
     node_ids=("")
     while IFS= read -r node_id; do
       [[ -n "$node_id" ]] && node_ids+=("$node_id")
@@ -1386,12 +1407,12 @@ PY
       --error-log "$output_path/last_delivery_error.txt"; then
       if [[ "$reward_timeout_retried" == "false" ]]; then
         reward_timeout_retried="true"
-        echo "零扩展节点沙箱的 reward 接口超时；先重试一次验证，不调用任务修复 Agent" >&2
+        echo "仅含集成验证节点的沙箱的 reward 接口超时；先重试一次验证，不调用任务修复 Agent" >&2
         continue
       fi
       current_failure_code="BUILD_RUNTIME_TIMEOUT"
       set_build_phase "runtime_timeout_rejected" "" "$repair_attempt" "" \
-        "零扩展节点沙箱的 reward 接口重复超时，转交运行时或任务契约排查"
+        "仅含集成验证节点的沙箱的 reward 接口重复超时，转交运行时或任务契约排查"
       return 5
     fi
     extract_structured_defects >/dev/null

@@ -18,7 +18,7 @@ class Usage:
 class ProductionPreflightTest(unittest.TestCase):
     def project(self, root: Path) -> Path:
         for relative in (
-            "pyproject.toml", "uv.lock", "scripts/loop_experiment.py",
+            "pyproject.toml", "uv.lock", "src/env_factory/task_pipeline.py",
             "scripts/develop_sandbox_with_agent.sh",
         ):
             path = root / relative

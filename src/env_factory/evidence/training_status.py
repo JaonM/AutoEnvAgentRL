@@ -9,11 +9,15 @@ from typing import Any, Mapping
 
 
 def training_ready(result: Mapping[str, Any]) -> bool:
-    """Only the complete live qualification path can certify a delivery."""
-    return all(result.get(key) is True for key in (
-        "passed", "live_rollout_verified", "live_reward_calibration_verified",
-        "data_governance_verified", "trajectory_privacy_verified",
-    )) and result.get("sandbox_score", {}).get("passed") is True
+    """Executable qualification permits training; live evidence is not implied."""
+    if result.get("qualification_basis") == "executable_v1":
+        required = ("passed", "executable_validation_verified", "data_governance_verified")
+    else:
+        # Keep the stronger requirements of previously issued live certificates.
+        required = ("passed", "live_rollout_verified", "live_reward_calibration_verified",
+                    "data_governance_verified", "trajectory_privacy_verified")
+    return (all(result.get(key) is True for key in required)
+            and result.get("sandbox_score", {}).get("passed") is True)
 
 
 def write_training_status(output: Path, result: dict[str, Any] | None = None) -> None:
@@ -42,6 +46,9 @@ def write_training_status(output: Path, result: dict[str, Any] | None = None) ->
     if result is not None:
         result["training_ready"] = ready
     status["training_ready"] = ready
+    if result is not None and result.get("qualification_basis") == "executable_v1":
+        status["qualification_basis"] = result["qualification_basis"]
+        status["validation_checks"] = result.get("validation_checks", {})
     descriptor, temporary = tempfile.mkstemp(prefix=".training-status-", dir=path.parent)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:

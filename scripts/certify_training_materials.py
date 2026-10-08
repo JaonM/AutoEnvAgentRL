@@ -23,6 +23,8 @@ import tempfile
 import uuid
 from typing import Any, Callable, Iterable, Mapping
 
+from env_factory.contracts.episode_evidence import initial_replay_events
+
 from env_factory.evidence.material_artifacts import (
     MATERIAL_MANIFEST_VERSION,
     digest_json,
@@ -32,6 +34,7 @@ from env_factory.evidence.material_artifacts import (
 )
 from env_factory.evidence.material_privacy import audit_rollout_privacy
 from env_factory.evidence.trajectory_schema import complete_episode
+from env_factory.contracts.trajectory_probes import bind_success_steps, idempotent_call_groups, logical_trace_matches, optional_observation_positions
 from env_factory.evidence.data_governance import (
     FORBIDDEN_OUTBOUND,
     OUTBOUND_SURFACES,
@@ -383,22 +386,26 @@ def valid_reward_calibration(
         scenarios = acceptance.get("executable_scenarios") if isinstance(acceptance, Mapping) else None
         success = next((item for item in scenarios if isinstance(item, Mapping)
                         and item.get("kind") == "goal_success"), None) if isinstance(scenarios, list) else None
-        expected_tools = [
-            step.get("tool_name") for step in success.get("steps", [])
-            if isinstance(step, Mapping) and step.get("operation") == "tool_call"
-        ] if isinstance(success, Mapping) else []
+        expected_steps = success.get('steps', []) if isinstance(success, Mapping) else []
+        if 'success_history' in evidence:
+            try:
+                expected_steps = bind_success_steps(expected_steps, evidence['success_history'])
+            except (ValueError, TypeError, KeyError):
+                return False
+        required_trace_length = len(idempotent_call_groups(expected_steps))
         if (
-            not expected_tools
+            not required_trace_length
             or not isinstance(tool_reads, list)
-            or len(tool_reads) < len(expected_tools)
+            or len(tool_reads) < required_trace_length
             or any(
                 not isinstance(item, Mapping)
-                or item.get("tool_name") != expected_tools[index]
                 or not isinstance(item.get("tables_read"), list)
                 or not item["tables_read"]
                 or any(name not in declared for name in item["tables_read"])
-                for index, item in enumerate(tool_reads[:len(expected_tools)])
+                for item in tool_reads[:required_trace_length]
             )
+            or not logical_trace_matches(expected_steps,
+                [item.get('tool_name') for item in tool_reads[:required_trace_length]], task.get('business_lifecycle'))
         ):
             return False
         if mode == "reference_data":
@@ -487,7 +494,24 @@ def valid_reward_calibration(
         for item in task.get("tools", [])
         if isinstance(item, Mapping) and isinstance(item.get("function"), Mapping)
     }
-    for index, step in enumerate(tool_steps, start=1):
+    positions = [index for index, step in enumerate(steps)
+                 if isinstance(step, Mapping) and step.get('operation') == 'tool_call']
+    ordinals = {position: index + 1 for index, position in enumerate(positions)}
+    grouping_steps = steps
+    if 'success_history' in evidence:
+        try:
+            grouping_steps = bind_success_steps(steps, evidence['success_history'])
+        except (ValueError, TypeError, KeyError):
+            return False
+    groups = idempotent_call_groups(grouping_steps)
+    try:
+        optional = optional_observation_positions(steps, task.get('tool_implementations', []))
+    except (ValueError, KeyError, TypeError):
+        return False
+    for group in groups:
+        if set(group) <= optional:
+            continue
+        index, step = ordinals[group[0]], steps[group[0]]
         arguments = step.get("arguments")
         if not isinstance(arguments, Mapping) or not arguments:
             continue
@@ -500,7 +524,7 @@ def valid_reward_calibration(
             required.add(f"corrupted_arguments_{index}{suffix}")
     if dependency_required and len(tool_steps) >= 2:
         required.update(
-            f"skipped_tool_{index}" for index in range(1, len(tool_steps) + 1)
+            (f"optional_observation_{ordinals[group[0]]}" if set(group) <= optional else f"skipped_tool_{ordinals[group[0]]}") for group in groups
         )
         required.add("reordered_tools")
     if task.get("noise_tools") and "noise_selection" in by_kind:
@@ -518,6 +542,11 @@ def valid_reward_calibration(
         return False
     for name in required - {"goal_success"}:
         case = cases.get(name)
+        if name.startswith('optional_observation_'):
+            if (not isinstance(case, Mapping) or case.get('status') != 'completed'
+                    or not _valid_reward_number(case.get('reward')) or case['reward'] < 1 - 1e-9):
+                return False
+            continue
         if (name in MUST_COMPLETE_NEGATIVE_COUNTERFACTUALS
                 and (not isinstance(case, Mapping) or case.get("status") != "completed")):
             return False
@@ -629,7 +658,9 @@ def valid_training_readiness(report: Mapping[str, Any]) -> bool:
         and isinstance(runtime.get("episode_a_event_count"), int)
         and not isinstance(runtime.get("episode_a_event_count"), bool)
         and runtime["episode_a_event_count"] >= 1
-        and runtime.get("episode_b_event_count") == 0
+        and type(runtime.get("episode_b_event_count")) is int
+        and initial_replay_events(runtime.get('episode_b_initial_events', [])) is not None
+        and runtime['episode_b_event_count'] == len(runtime.get('episode_b_initial_events', []))
     )
 
 

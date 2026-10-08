@@ -8,9 +8,9 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
-import examples.generate_task as generator_cli
+import env_factory.generate_task as generator_cli
 
-from examples.generate_task import (
+from env_factory.generate_task import (
     _existing_task_numbers,
     _generation_failure_class,
     _reserve_task_directories,
@@ -19,7 +19,7 @@ from examples.generate_task import (
     _validate_generated_candidate,
     _write_task_artifact,
 )
-from env_factory.task_pipeline import PipelineGenerationError
+from env_factory.generation.contract_compiler import PipelineGenerationError
 from env_factory.tasks.task_routing import (
     allocate_training_routes,
     compatible_training_categories,
@@ -29,6 +29,55 @@ from env_factory.tasks.task_routing import (
 
 
 class IncrementalTaskDirectoryTest(unittest.TestCase):
+    def test_timeout_continues_checkpoint_without_resampling_or_erasing_failure(self):
+        from contextlib import nullcontext
+        from env_factory.generation.authoring_checkpoint import save_checkpoint
+        from tests.generation.test_business_blueprint import blueprint, request
+        calls = []
+        class Generator:
+            STYLES = ('plain',)
+            INTENTS = ('query',)
+            def __init__(self, *args, **kwargs):
+                pass
+            def generate(self, *args, artifact_dir, seed, **kwargs):
+                calls.append('generate')
+                (artifact_dir / 'original_failure.txt').write_text('timeout evidence')
+                (artifact_dir / 'data').mkdir()
+                (artifact_dir / 'data/old.json').write_text('{}')
+                save_checkpoint(artifact_dir, request=dict(request(), seed=seed), blueprint=blueprint(),
+                    source=None, evidence={'status': 'failed', 'author_seconds': 600,
+                        'attempts': [{'phase': 'implementation'}]})
+                raise PipelineGenerationError('CODE_AGENT_TIMEOUT: fixed task interrupted')
+            def resume(self, checkpoint, *, artifact_dir):
+                calls.append('resume')
+                self_checkpoint = json.loads(Path(checkpoint).read_text())
+                assert self_checkpoint['previous_status'] == 'failed'
+                artifact_dir.mkdir(parents=True)
+                (artifact_dir / 'data').mkdir()
+                (artifact_dir / 'data/resumed.json').write_text('{}')
+                (artifact_dir / 'tools.json').write_text('[]')
+                return SimpleNamespace(desc='Fixed task', task_type=SimpleNamespace(value='Chat'),
+                    task_intent='query', complexity='standard', env={}, metrics=[], artifacts={})
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            argv = ['generate_task.py', '--count', '1', '--route-attempts', '2',
+                    '--training-category', 'multi_step_agentic', '--output', str(root),
+                    '--log-file', str(root / 'generation.log')]
+            with patch.object(sys, 'argv', argv), \
+                 patch.object(generator_cli, 'Neo4jGraphStore', return_value=nullcontext(None)), \
+                 patch.object(generator_cli, 'TaskGenerator', Generator), \
+                 patch.object(generator_cli, '_validate_generated_candidate'):
+                self.assertEqual(generator_cli.main(), 0)
+            task_dir = root / 'artifacts/artifact-1/task'
+            manifest = json.loads((task_dir / 'sample_manifest.json').read_text())
+            self.assertEqual(calls, ['generate', 'resume'])
+            self.assertEqual([a['status'] for a in manifest['attempts']], ['rejected', 'completed'])
+            self.assertEqual(manifest['attempts'][0]['seed'], manifest['attempts'][1]['seed'])
+            self.assertTrue(manifest['attempts'][1]['continued_fixed_design'])
+            self.assertTrue((task_dir / 'original_failure.txt').exists())
+            self.assertTrue((task_dir / 'data/resumed.json').exists())
+            self.assertTrue((task_dir / 'generation_retries/attempt-2/previous_delivery/data/old.json').exists())
+
     def test_batch_deliverables_are_all_under_task_directory(self):
         class FakeStore:
             def __init__(self, **_kwargs):
@@ -59,20 +108,15 @@ class IncrementalTaskDirectoryTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            provider = SimpleNamespace(
-                base_url="https://example.invalid", model="test-model",
-                timeout=10, network_retries=0,
-            )
             argv = ["generate_task.py", "--count", "1", "--route-attempts", "1",
                     "--training-category", "simple_agentic", "--output", str(root),
                     "--log-file", str(root / "generation.log")]
             with patch.object(sys, "argv", argv), \
                     patch.object(generator_cli, "Neo4jGraphStore", FakeStore), \
                     patch.object(generator_cli, "TaskGenerator", FakeTaskGenerator), \
-                    patch.object(generator_cli.LLMClient, "from_env", return_value=provider), \
                     patch.object(generator_cli, "_validate_generated_candidate"):
                 self.assertEqual(generator_cli.main(), 0)
-            sample = root / "task" / "task-1"
+            sample = root / "artifacts" / "artifact-1" / "task"
             task_path = sample / "task.json"
             self.assertTrue(task_path.is_file())
             self.assertTrue((sample / "tools.json").is_file())
@@ -127,16 +171,16 @@ class IncrementalTaskDirectoryTest(unittest.TestCase):
     def test_reservation_appends_after_highest_existing_task(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            (root / "task-1").mkdir()
-            (root / "task-3").mkdir()
-            (root / "task-draft").mkdir()
+            (root / "artifact-1").mkdir()
+            (root / "artifact-3").mkdir()
+            (root / "artifact-draft").mkdir()
 
             reserved = _reserve_task_directories(root, 2)
 
             self.assertEqual([number for number, _ in reserved], [4, 5])
             self.assertEqual(_existing_task_numbers(root), [1, 3, 4, 5])
-            self.assertTrue((root / "task-1").is_dir())
-            self.assertTrue((root / "task-3").is_dir())
+            self.assertTrue((root / "artifact-1").is_dir())
+            self.assertTrue((root / "artifact-3").is_dir())
 
     def test_sequential_runs_never_reuse_previous_directories(self):
         with tempfile.TemporaryDirectory() as temporary:

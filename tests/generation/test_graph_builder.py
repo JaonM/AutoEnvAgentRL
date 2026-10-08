@@ -125,3 +125,50 @@ class KnowledgeGraphBuilderTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def sparse_store(paths, *, total=10):
+    from unittest.mock import MagicMock
+    driver = MagicMock()
+    session = driver.session.return_value.__enter__.return_value
+    queries = []
+    def run(query, **parameters):
+        text = query.text if hasattr(query, 'text') else query
+        queries.append((query, parameters))
+        result = MagicMock()
+        if 'count(scene)' in text:
+            result.single.return_value = {'total': total}
+        elif 'RETURN selected.id' in text:
+            result.single.return_value = {'id': 'isolated'}
+        elif '$start_id' in text:
+            result.__iter__.return_value = iter([])
+        else:
+            result.__iter__.return_value = iter(paths)
+        return result
+    session.run.side_effect = run
+    return Neo4jGraphStore(driver=driver, path_query_timeout=2.5), queries
+
+
+def test_sparse_graph_falls_back_to_same_length_without_replacing_task():
+    path = [{'name': name, 'words': []} for name in ['甲', '乙', '丙']]
+    store, queries = sparse_store([{'path': path}])
+    selected = store.random_scene_event_path(2, attempts=3, rng=random.Random(7))
+    assert [node.name for node in selected] == ['甲', '乙', '丙']
+    fallback, parameters = queries[-1]
+    assert '*2]' in fallback.text and 'LIMIT 100' in fallback.text
+    assert 'single(other IN nodes(p)' in fallback.text
+    assert fallback.timeout == 2.5
+    assert parameters == {}
+    assert sum('RETURN selected.id' in (q.text if hasattr(q, 'text') else q) for q, _ in queries) == 3
+
+
+def test_absent_exact_path_stays_absent_after_bounded_fallback():
+    store, queries = sparse_store([])
+    assert store.random_scene_event_path(2, attempts=1, rng=random.Random(7)) == ()
+    assert len(queries) == 4
+
+
+def test_empty_graph_does_not_attempt_path_fallback():
+    store, queries = sparse_store([], total=0)
+    assert store.random_scene_event_path(2) == ()
+    assert len(queries) == 1

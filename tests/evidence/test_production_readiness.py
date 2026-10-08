@@ -14,7 +14,7 @@ from env_factory.sandbox_scoring import (
     valid_score_report,
 )
 from env_factory.tasks.task_quality import score_file
-from env_factory.task_pipeline import TaskGenerationPipeline
+from env_factory.generation.contract_compiler import ContractCompiler
 from env_factory.evidence.material_artifacts import (
     DOCKERIGNORE_SOURCE,
     MATERIAL_MANIFEST_VERSION,
@@ -176,7 +176,7 @@ class ProductionReadinessTest(unittest.TestCase):
             "complexity": "standard",
             "requirements": {
                 "output_format": "markdown",
-                "runtime_interface": TaskGenerationPipeline._build_runtime_interface([], {}),
+                "runtime_interface": ContractCompiler._build_runtime_interface([], {}),
             },
             "environment_plan": {"mode": "reference_data"},
             "actions": [

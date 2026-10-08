@@ -73,6 +73,10 @@ class SemanticReviewTest(unittest.TestCase):
                     self.assertIn("A substring match alone is not semantic evidence", prompt)
                     self.assertIn("<candidate_json>", prompt)
                     self.assertIn('"compiled_reward_rules"', prompt)
+                    self.assertIn('"compiled_tool_implementations"', prompt)
+                    self.assertIn("compiler expands source.business_conditions", prompt)
+                    self.assertIn('"compiled_reference_scenarios"', prompt)
+                    self.assertIn("superseded value", prompt)
                     (root / "response.json").write_text(json.dumps(passing_report()))
                     kwargs["stdout"].write('{"type":"turn.completed","usage":{"output_tokens":32}}\n')
                 return Mock(returncode=0, communicate=Mock(side_effect=finish))
@@ -103,3 +107,52 @@ class SemanticReviewTest(unittest.TestCase):
                 review_source(source={}, request={}, artifacts={"public_input": {}, "tools": [],
                     "metrics": [], "metric_implementations": []}, root=Path(directory), model="gpt-6-luna", timeout=1)
             kill.assert_called_once()
+
+
+def test_invalid_report_gets_one_repair_with_shared_budget(tmp_path, monkeypatch):
+    import types
+    from env_factory.generation import semantic_review as module
+    clock=[0.];calls=[]
+    monkeypatch.setattr(module,'time',types.SimpleNamespace(monotonic=lambda:clock[0]))
+    def once(**kwargs):
+        calls.append(kwargs)
+        if len(calls)==1:
+            (tmp_path/'events.jsonl').write_text('{"type":"turn.completed","usage":{"output_tokens":7}}\n')
+            (tmp_path/'response.json').write_text('{}')
+            clock[0]+=40
+            raise SemanticReviewUnavailable('SOURCE_REVIEW_INVALID: verdict contradicts checks/findings')
+        result=passing_report()
+        result['provenance']={'agent_invocations':1,'completed_turns':1,'usage':{'output_tokens':3},'events_sha256':'b'*64}
+        return result
+    monkeypatch.setattr(module,'_review_source_once',once)
+    result=module.review_source(source={},artifacts={},request={},root=tmp_path,model='test',timeout=60)
+    assert calls[1]['timeout']==20
+    assert calls[1]['report_repair_reason'].startswith('SOURCE_REVIEW_INVALID:')
+    assert result['provenance']['agent_invocations']==2
+    assert result['provenance']['usage']['output_tokens']==10
+
+
+def test_valid_business_failure_is_not_retried(tmp_path, monkeypatch):
+    from env_factory.generation import semantic_review as module
+    report=passing_report();report['status']='fail'
+    report['checks']['answerability']['passed']=False
+    report['findings']=[{'code':'missing','source_paths':['source.tools'],'reason':'Required input absent','repair':'Expose input'}]
+    mocked=Mock(return_value=report);monkeypatch.setattr(module,'_review_source_once',mocked)
+    assert module.review_source(source={},artifacts={},request={},root=tmp_path,model='test',timeout=60)==report
+    assert mocked.call_count==1
+
+
+def test_invalid_report_retry_limit_and_deadline(tmp_path, monkeypatch):
+    import types
+    import pytest
+    from env_factory.generation import semantic_review as module
+    for duration,expected_calls in [(1,2),(60,1)]:
+        clock=[0.];calls=[]
+        monkeypatch.setattr(module,'time',types.SimpleNamespace(monotonic=lambda:clock[0]))
+        def once(**kwargs):
+            calls.append(kwargs);clock[0]+=duration
+            raise SemanticReviewUnavailable('SOURCE_REVIEW_INVALID: inconsistent')
+        monkeypatch.setattr(module,'_review_source_once',once)
+        with pytest.raises(SemanticReviewUnavailable):
+            module.review_source(source={},artifacts={},request={},root=tmp_path,model='test',timeout=60)
+        assert len(calls)==expected_calls

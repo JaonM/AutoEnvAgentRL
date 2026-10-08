@@ -49,7 +49,7 @@ def run_production_preflight(
         checks.append({"name": name, "passed": bool(passed), "evidence": evidence})
 
     required_files = (
-        "pyproject.toml", "uv.lock", "scripts/loop_experiment.py",
+        "pyproject.toml", "uv.lock", "src/env_factory/task_pipeline.py",
         "scripts/develop_sandbox_with_agent.sh",
     )
     missing_files = [name for name in required_files if not (project / name).is_file()]

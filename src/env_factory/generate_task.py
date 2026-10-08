@@ -1,7 +1,6 @@
-"""Generate tasks through multi-hop Scene paths."""
+"""Generate tasks through Scene paths with randomly sampled hop counts."""
 
 import argparse
-from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
@@ -19,7 +18,6 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from env_factory import (
-    LLMClient,
     Neo4jGraphStore,
     PipelineGenerationError,
     TaskGenerationError,
@@ -35,10 +33,10 @@ from env_factory.tasks.task_routing import (
 )
 from env_factory.evidence.data_governance import provider_identity
 from env_factory.llm import capture_llm_trace, summarize_llm_trace
-from env_factory.generation.pipeline_stage import is_transient_llm_error
+from env_factory.generation.pipeline_errors import is_transient_llm_error
 
 
-_TASK_DIR_PATTERN = re.compile(r"task-(\d+)")
+_TASK_DIR_PATTERN = re.compile(r"artifact-(\d+)")
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -73,7 +71,7 @@ def _retry_seed_blocks(rng: random.Random, count: int, attempts: int) -> list[in
 
 def _validate_generated_candidate(task_dir: Path) -> None:
     """Reject a generated candidate before it consumes a production sample slot."""
-    project_root = str(Path(__file__).resolve().parents[1])
+    project_root = str(Path(__file__).resolve().parents[2])
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
     from scripts.sandbox.assess_task_buildability import assess
@@ -88,6 +86,20 @@ def _validate_generated_candidate(task_dir: Path) -> None:
     raise TaskGenerationError(
         "task buildability gate failed: " + ", ".join(codes or ["UNKNOWN"])
     )
+
+
+def _generation_failure_history(task_dir: Path) -> list[dict]:
+    """Retain validation causes when a later timeout becomes the terminal error."""
+    try:
+        evidence = json.loads((task_dir / "code_agent_generation.json").read_text())
+    except (OSError, ValueError):
+        return []
+    if not isinstance(evidence, dict):
+        return []
+    return [{key: attempt[key] for key in
+             ("index", "status", "error", "issue_ids", "repair_stop_reason") if key in attempt}
+            for attempt in evidence.get("attempts", [])
+            if isinstance(attempt, dict) and attempt.get("error")]
 
 
 def _generation_failure_class(exc: BaseException) -> str:
@@ -139,12 +151,14 @@ def _reserve_task_directories(artifact_root: Path, count: int) -> list[tuple[int
     candidate = max(_existing_task_numbers(artifact_root), default=0) + 1
     reserved: list[tuple[int, Path]] = []
     while len(reserved) < count:
-        task_dir = artifact_root / f"task-{candidate}"
+        artifact_dir = artifact_root / f"artifact-{candidate}"
+        task_dir = artifact_dir / "task"
         try:
-            task_dir.mkdir()
+            artifact_dir.mkdir()
         except FileExistsError:
             candidate += 1
             continue
+        task_dir.mkdir()
         reserved.append((candidate, task_dir))
         candidate += 1
     return reserved
@@ -152,7 +166,7 @@ def _reserve_task_directories(artifact_root: Path, count: int) -> list[tuple[int
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="从多跳 Scene 图谱生成 Agentic RL 任务")
-    parser.add_argument("--hops", type=int, default=3, help="Scene 路径最大跳数，实际范围为 0 到该值，默认 3")
+    parser.add_argument("--hops", type=int, default=3, help="Scene 随机跳数上限 N，从 0..N 均匀抽取；N 范围 0..20，默认 3")
     parser.add_argument("--count", type=int, default=1, help="生成任务数量，默认 1")
     parser.add_argument("--max-workers", type=int, default=4, help="任务生成并发数，默认 4")
     parser.add_argument(
@@ -165,7 +179,7 @@ def main() -> int:
         "--output",
         type=Path,
         default=Path("output"),
-        help="任务输出根路径；每次运行在 task 下追加新的 task-N，默认 output",
+        help="任务输出根路径；每次运行在 artifacts/artifact-N/task 下追加新任务，默认 output",
     )
     parser.add_argument(
         "--log-file",
@@ -193,49 +207,36 @@ def main() -> int:
         default=3,
         help="每个任务生成的用户 FSM 数量，默认 3",
     )
-    parser.add_argument(
-        "--noise-tool-max",
-        type=int,
-        default=3,
-        help="每个任务最多生成的噪声工具数量，实际数量随机为 0..N；噪声工具由共享运行时安全执行，默认 3",
-    )
     parser.add_argument("--training-category", choices=TRAINING_CATEGORIES, help="固定全部任务的训练路由类别")
     parser.add_argument("--environment-mode", choices=("stateless", "reference_data", "stateful", "external_capability"),
                         help="要求实际环境模式；验证写入任务时使用 stateful，不能仅依赖 modify 意图标签")
-    parser.add_argument("--generation-backend", choices=("code_agent", "spec", "legacy"), default="code_agent",
-                        help="生成引擎（默认 code_agent）：code_agent 使用 Luna 编写业务规格；spec 使用原型；legacy 使用模型阶段流水线")
     parser.add_argument("--code-agent", choices=("codex", "claude", "opencode"), default="codex")
     parser.add_argument("--code-agent-model", default=None)
     parser.add_argument("--language", default="zh-CN")
     parser.add_argument("--code-agent-timeout", type=float, default=600,
                         help="单样本 Code Agent 防卡死超时（秒），默认 600；5 分钟不是质量淘汰线")
-    parser.add_argument("--task-prototype", choices=("lookup_join_sum", "lookup_update", "constraint_create"),
-                        help="固定规格原型；省略时按多步样本序号轮换三类原型")
     parser.add_argument(
         "--training-mix",
         default="direct_response=0.20,simple_agentic=0.30,multi_step_agentic=0.50",
         help="批次训练类别比例，默认 20/30/50",
     )
     parser.add_argument("--route-attempts", type=int, default=3, help="每个训练路由候选最多重采样次数，默认 3")
-    parser.add_argument("--seed", type=int, help="实验随机种子；省略时生成并记录一个随机种子")
-    parser.add_argument("--stage-cache-dir", type=Path, help="可选的阶段检查点目录；相同模型、代码、提示和输入复用结果，并重新执行语义校验")
+    parser.add_argument("--seed", type=int, help="随机种子；省略时生成并记录一个随机种子")
     args = parser.parse_args()
     if not args.code_agent_model:
         if args.code_agent != "codex":
             parser.error("--code-agent-model is required for claude/opencode")
-        args.code_agent_model = "gpt-6-luna"
+        args.code_agent_model = "gpt-6.1-sol"
     if args.count <= 0:
         parser.error("--count 必须大于 0")
     if args.max_workers <= 0:
         parser.error("--max-workers 必须大于 0")
     if args.path_query_timeout <= 0:
         parser.error("--path-query-timeout 必须大于 0")
-    if args.noise_tool_max < 0:
-        parser.error("--noise-tool-max 不能小于 0")
     if args.route_attempts <= 0:
         parser.error("--route-attempts 必须大于 0")
     if not 0 <= args.hops <= 20:
-        parser.error("--hops 必须在 0 到 20 之间")
+        parser.error("--hops 上限必须在 0 到 20 之间")
     if args.task_type:
         try:
             TaskGenerator._select_task_type(args.task_type)
@@ -256,8 +257,6 @@ def main() -> int:
         except ValueError as exc:
             parser.error(str(exc))
     load_dotenv()
-    if args.stage_cache_dir:
-        os.environ["ENVFACTORY_STAGE_CACHE_DIR"] = str(args.stage_cache_dir.resolve())
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.log_file.parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
@@ -265,14 +264,6 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(threadName)s %(name)s - %(message)s",
         handlers=[logging.StreamHandler(), logging.FileHandler(args.log_file, encoding="utf-8")],
     )
-    spec_only = args.generation_backend == "spec" and (
-        args.training_category == "multi_step_agentic" or (
-            args.training_category is None and all(
-                category == "multi_step_agentic" or weight == 0 for category, weight in training_mix.items()
-            )
-        )
-    )
-    llm = None if spec_only or args.generation_backend == "code_agent" else LLMClient.from_env("LLM", timeout=float(os.getenv("LLM_TIMEOUT", "60")))
     external_fixture = os.getenv("SANDBOX_EXTERNAL_FIXTURES", "").strip()
     external_available = bool(os.getenv("SANDBOX_EXTERNAL_CAPABILITY_URL", "").strip()) or bool(
         external_fixture and Path(external_fixture).is_file()
@@ -290,17 +281,15 @@ def main() -> int:
     )
     task_root = args.output if args.output.suffix == "" else args.output.parent
     task_root.mkdir(parents=True, exist_ok=True)
-    artifact_root = task_root / "task"
-    store_context = nullcontext(None) if spec_only else Neo4jGraphStore(
+    artifact_root = task_root / "artifacts"
+    store_context = Neo4jGraphStore(
         database=os.getenv("NEO4J_DATABASE", "neo4j"),
         path_query_timeout=args.path_query_timeout,
     )
     with store_context as store:
         generator = TaskGenerator(
-            store, llm, user_script_count=args.user_script_count,
-            noise_tool_max=args.noise_tool_max,
+            store, user_script_count=args.user_script_count,
             available_environment_modes=available_environment_modes,
-            generation_backend=args.generation_backend,
             code_agent_timeout=args.code_agent_timeout,
             code_agent_model=args.code_agent_model, language=args.language, code_agent=args.code_agent,
         )
@@ -319,11 +308,12 @@ def main() -> int:
                 rng=run_rng,
             )
         )
+        from env_factory.generation.realism_requirements import allocate_realism_requirements
+        realism = allocate_realism_requirements(routes, available_modes=available_environment_modes, rng=run_rng)
         sample_seeds = _retry_seed_blocks(
             run_rng, len(reserved_tasks), args.route_attempts,
         )
-        generation_provider = (provider_identity(f"{args.code_agent}://cli", args.code_agent_model)
-            if args.generation_backend == "code_agent" else provider_identity(llm.base_url, llm.model) if llm else None)
+        generation_provider = provider_identity(f"{args.code_agent}://cli", args.code_agent_model)
         for batch_index, ((task_number, task_dir), training_category, sample_seed) in enumerate(
             zip(reserved_tasks, routes, sample_seeds), start=1
         ):
@@ -334,18 +324,19 @@ def main() -> int:
                 "run_seed": run_seed,
                 "sample_seed": sample_seed,
                 "training_category": training_category,
+                "realism_requirements": realism[batch_index - 1],
                 "requested_task_intent": args.task_intent,
                 "requested_task_style": args.task_style,
                 "requested_task_type": args.task_type,
-                "generation_source": "executable_spec" if args.generation_backend == "spec" and training_category == "multi_step_agentic" else "graph_scene_path",
-                "generation_backend": args.generation_backend,
-                "hops": args.hops,
+                "generation_source": "graph_scene_path",
+                "generation_backend": "code_agent",
+                "max_hops": args.hops,
                 "available_environment_modes": list(available_environment_modes),
-                "generator_provider": None if args.generation_backend == "spec" and training_category == "multi_step_agentic" else generation_provider,
+                "generator_provider": generation_provider,
                 "generation_settings": {
                     "route_attempt_limit": args.route_attempts,
-                    "timeout_seconds": args.code_agent_timeout if args.generation_backend == "code_agent" else getattr(llm, "timeout", 0),
-                    "network_retries": getattr(llm, "network_retries", 0),
+                    "timeout_seconds": args.code_agent_timeout,
+                    "network_retries": 0,
                 },
                 "status": "reserved",
                 "reserved_at": datetime.now(timezone.utc).isoformat(),
@@ -366,33 +357,51 @@ def main() -> int:
                 )
                 sample_started = time.monotonic()
                 last_error = None
+                resume_checkpoint = None
                 for route_attempt in range(1, args.route_attempts + 1):
                     attempt_started = time.monotonic()
                     manifest_path = task_dir / "sample_manifest.json"
                     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                     attempt_seed = sample_seed + route_attempt - 1
+                    if resume_checkpoint:
+                        from env_factory.generation.authoring_checkpoint import load_checkpoint
+                        attempt_seed = load_checkpoint(resume_checkpoint)['request'].get('seed', sample_seed)
                     llm_trace = []
+                    author_root = task_dir if resume_checkpoint is None else task_dir / 'generation_retries' / f'attempt-{route_attempt}'
                     try:
                         with capture_llm_trace() as llm_trace:
-                            task = generator.generate(
+                            task = generator.resume(resume_checkpoint, artifact_dir=author_root) if resume_checkpoint else generator.generate(
                                 args.hops,
                                 args.task_type,
                                 args.task_style,
-                                artifact_dir=task_dir,
+                                artifact_dir=author_root,
                                 task_intent=args.task_intent,
                                 training_category=training_category,
                                 seed=attempt_seed,
-                                **({"prototype": args.task_prototype or (
-                                    ("lookup_join_sum", "lookup_update", "constraint_create")[(routes[:batch_index].count("multi_step_agentic") - 1) % 3]
-                                    if args.task_intent is None else None
-                                )} if args.generation_backend == "spec" and training_category == "multi_step_agentic" else {}),
+                                realism_requirements=realism[batch_index - 1],
                             )
+                        if resume_checkpoint:
+                            # Manifest paths stay relative to task.json. Keep the
+                            # old data as evidence before publishing resumed data.
+                            import shutil
+                            previous = author_root / 'previous_delivery'
+                            for name in ('data', 'tools.json'):
+                                incoming, target = author_root / name, task_dir / name
+                                if incoming.exists():
+                                    if target.exists():
+                                        previous.mkdir(exist_ok=True)
+                                        target.rename(previous / name)
+                                    if incoming.is_dir():
+                                        shutil.copytree(incoming, target)
+                                    else:
+                                        shutil.copy2(incoming, target)
                         _write_task_artifact(task_dir, task, training_category)
                         _validate_generated_candidate(task_dir)
                         manifest["attempts"].append({
                             "attempt": route_attempt,
                             "seed": attempt_seed,
                             "status": "completed",
+                            "continued_fixed_design": resume_checkpoint is not None,
                             "llm_trace": summarize_llm_trace(llm_trace),
                             "duration_seconds": round(time.monotonic() - attempt_started, 3),
                         })
@@ -407,6 +416,7 @@ def main() -> int:
                             "attempt": route_attempt,
                             "seed": attempt_seed,
                             "status": "rejected",
+                            "continued_fixed_design": resume_checkpoint is not None,
                             "failure_class": _generation_failure_class(exc),
                             "error_type": type(exc).__name__,
                             "message": str(exc)[:2000],
@@ -414,13 +424,24 @@ def main() -> int:
                             "duration_seconds": round(time.monotonic() - attempt_started, 3),
                         })
                         structural_failure = str(exc).startswith(("SPEC_", "CODE_AGENT_"))
-                        manifest["status"] = "retrying" if route_attempt < args.route_attempts and not structural_failure else "failed"
+                        checkpoint_path = author_root / 'authoring_checkpoint' / 'manifest.json'
+                        resumable = (checkpoint_path.is_file() and any(code in str(exc) for code in (
+                            'CODE_AGENT_TIMEOUT:', 'CODE_AGENT_EXEC_FAILED:', 'CODE_AGENT_NO_COMPLETION:')))
+                        if resumable:
+                            from env_factory.generation.authoring_checkpoint import load_checkpoint
+                            saved = load_checkpoint(checkpoint_path)
+                            resumable = saved['manifest']['source_attempts'] < 3
+                        manifest['attempts'][-1]['resume_checkpoint'] = str(checkpoint_path) if resumable else None
+                        manifest["status"] = "retrying" if route_attempt < args.route_attempts and (resumable or not structural_failure) else "failed"
                         manifest["generation_seconds"] = round(time.monotonic() - sample_started, 3)
                         _write_json(manifest_path, manifest)
                         logging.getLogger(__name__).warning(
                             "training route candidate rejected: task_id=task-%d category=%s attempt=%d/%d reason=%s",
                             task_number, training_category, route_attempt, args.route_attempts, exc,
                         )
+                        if resumable and route_attempt < args.route_attempts:
+                            resume_checkpoint = checkpoint_path
+                            continue
                         if structural_failure:
                             raise TaskGenerationError(str(exc)) from exc
                         _reset_reserved_directory(task_dir)
@@ -429,8 +450,8 @@ def main() -> int:
                 )
 
             # Preserve reserved IDs and seeds while giving the scarce model
-            # workers to the Agentic curriculum first. The loop experiment
-            # can still build completed samples as soon as they materialize.
+            # workers to the Agentic curriculum first. The main pipeline
+            # consumes completed samples as soon as they materialize.
             generation_order = sorted(
                 enumerate(reserved_tasks, start=1),
                 key=lambda item: ({"multi_step_agentic": 0, "simple_agentic": 1,
@@ -456,6 +477,7 @@ def main() -> int:
                         "failure_class": _generation_failure_class(exc),
                         "error_type": type(exc).__name__,
                         "message": str(exc)[:4000],
+                        "failure_history": _generation_failure_history(task_dir),
                         "training_category": training_category,
                         "batch_index": batch_index,
                     }
@@ -482,6 +504,7 @@ def main() -> int:
                         "failure_class": _generation_failure_class(exc),
                         "error_type": type(exc).__name__,
                         "message": str(exc)[:4000],
+                        "failure_history": _generation_failure_history(task_dir),
                         "training_category": training_category,
                         "batch_index": batch_index,
                     })
@@ -501,11 +524,7 @@ def main() -> int:
                     "completed_at": datetime.now(timezone.utc).isoformat(),
                 })
                 pipeline = (task.artifacts or {}).get("generation_pipeline", {})
-                if pipeline.get("backend") == "spec":
-                    manifest["compiler_provenance"] = {key: pipeline[key] for key in (
-                        "prototype", "spec_sha256", "compiler_sha256",
-                    )}
-                elif pipeline.get("backend") == "code_agent":
+                if pipeline.get("backend") == "code_agent":
                     manifest["code_agent_provenance"] = {key: pipeline[key] for key in (
                         "model", "agent_invocations", "completed_turns", "events_sha256",
                         "source_sha256", "request_sha256", "compiler_sha256",

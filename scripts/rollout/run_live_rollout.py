@@ -17,7 +17,8 @@ from env_factory.evidence.model_roles import resolve_model_roles
 from env_factory.evidence.material_artifacts import portable_artifact_digest
 from env_factory.runtime_llm import RuntimeLLMConfig
 from env_factory.sandbox_http import HTTPSandboxClient, evaluator_http_timeout
-from env_factory.sandbox_runtime import BusinessGoalEvaluator
+from env_factory.sandbox_runtime import BusinessGoalEvaluator, ExpressionBusinessState, ExecutionRoutes
+from rl.tool_transport import is_authored_tool_fault
 
 
 def write_json(path: Path, value: dict) -> None:
@@ -34,11 +35,18 @@ def episode(app, task, client, seed, max_steps):
     headers = {"Authorization": "Bearer " + os.environ["SANDBOX_TRAINER_API_KEY"],
                "X-Episode-ID": f"live-{seed}"}
     trace, transitions, usage = [], [], []
+    pending_requests = {}
 
-    def request(method, path, body=None):
-        status, value, _ = app.handle(method, path, body, headers)
-        trace.append({"method": method, "path": path, "status": status, "body": body, "result": value})
-        if status >= 500 or (status >= 400 and not path.startswith("/v1/tools/")):
+    def request(method, path, body=None, *, idempotency_key=None):
+        call_headers = dict(headers)
+        if idempotency_key is not None:
+            call_headers['Idempotency-Key'] = idempotency_key
+        recorded_body = copy.deepcopy(body)
+        status, value, _ = app.handle(method, path, body, call_headers)
+        trace.append({"method": method, "path": path, "status": status,
+                      "body": recorded_body, "result": copy.deepcopy(value)})
+        if ((status >= 500 and not is_authored_tool_fault(task, path, status, value))
+                or (status >= 400 and not path.startswith("/v1/tools/"))):
             raise RuntimeError(f"runtime endpoint failed: {path} status={status}")
         return status, value
 
@@ -66,6 +74,9 @@ def episode(app, task, client, seed, max_steps):
         'Complete the user task using only available tools and public observations. Return JSON only: '
         '{"kind":"tool","name":"...","arguments":{...}} or '
         '{"kind":"respond","content":"..."}. Respond to ask the user a question or deliver your answer. '
+        'The transport supplies Idempotency-Key headers and reuses them for retries after uncertain tool errors. '
+        'Do not put idempotency_key in tool arguments. For an intentionally new operation you may set '
+        'a fresh top-level idempotency_key on the tool action. '
         'Never invent a tool result. Tool schemas: ' + json.dumps(tools, ensure_ascii=False))}, *conversation,
         {"role": "user", "content": json.dumps({"observation": observation}, ensure_ascii=False)}]
     termination = "step_budget"
@@ -103,7 +114,17 @@ def episode(app, task, client, seed, max_steps):
             if action.get("kind") == "tool":
                 if action.get("name") not in names or not isinstance(action.get("arguments"), dict):
                     raise ValueError("unknown tool or invalid arguments")
-                status, result = request("POST", "/v1/tools/" + action["name"], action["arguments"])
+                fingerprint = json.dumps([action['name'], action['arguments']], sort_keys=True)
+                key = action.get('idempotency_key')
+                if key is not None and (not isinstance(key, str) or not key):
+                    raise ValueError('idempotency_key must be a nonempty string')
+                key = key or pending_requests.get(fingerprint) or uuid.uuid4().hex
+                status, result = request("POST", "/v1/tools/" + action["name"], action["arguments"],
+                                         idempotency_key=key)
+                if status >= 500:
+                    pending_requests[fingerprint] = key
+                else:
+                    pending_requests.pop(fingerprint, None)
                 messages.append({"role": "user", "content": json.dumps({"tool_result": result, "status": status}, ensure_ascii=False)})
                 transition["result"] = {"status": status, "tool_result": copy.deepcopy(result)}
             elif action.get("kind") == "respond" and isinstance(action.get("content"), str) and action["content"].strip():
@@ -159,9 +180,18 @@ def episode(app, task, client, seed, max_steps):
     goal = task.get("task_spec", {}).get("goal_contract", {})
     state_success = None
     if goal.get("row_predicates"):
-        state_success = (BusinessGoalEvaluator.evaluate(goal["row_predicates"], state, baseline)
-                         and BusinessGoalEvaluator.preserves_unrelated(goal, baseline, state)
-                         and (not goal.get("requires_state_change") or baseline != state))
+        context = {'business_state': state, 'initial_business_state': baseline,
+                   'reward_state_snapshots': state_payload.get('reward_state_snapshots', {})}
+        evaluated_state = ExpressionBusinessState.from_context(context)
+        external_baseline = BusinessGoalEvaluator.external_baseline(baseline, replay.get('events', []))
+        routes = ExecutionRoutes(task.get('task_spec', {}))
+        route = routes.select(context)
+        change_valid = (state == external_baseline if route and route['writes'] == 'forbidden'
+                        else state != external_baseline if route and route['writes'] == 'required'
+                        else not goal.get('requires_state_change') or baseline != state)
+        state_success = (BusinessGoalEvaluator.evaluate(goal["row_predicates"], evaluated_state, baseline)
+                         and BusinessGoalEvaluator.preserves_unrelated(goal, external_baseline, evaluated_state)
+                         and (not routes.routes or route is not None) and change_valid)
     fallbacks = [event for event in replay.get("events", []) if event.get("payload", {}).get("used_fallback")]
     issues = []
     if initial_reward >= 0.8:

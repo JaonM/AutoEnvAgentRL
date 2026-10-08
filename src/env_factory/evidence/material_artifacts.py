@@ -39,6 +39,9 @@ __pycache__
 .outer_conformance/**
 .node_checkpoints
 .node_checkpoints/**
+.reward_calibration_runtime
+**/.reward_calibration_runtime
+.reward_calibration_runtime/**
 *.pyc
 *.pyo
 *.sqlite
@@ -80,7 +83,7 @@ IGNORED_CONTEXT_NAMES = EVIDENCE_NAMES | {
 }
 IGNORED_CONTEXT_PARTS = {
     ".git", "__pycache__", ".pytest_cache", ".runtime", ".outer_conformance",
-    ".node_checkpoints",
+    ".node_checkpoints", ".reward_calibration_runtime",
 }
 PORTABLE_POST_BUILD_NAMES = {"docker_image_metadata.json", "python_packages.json"}
 IGNORED_CONTEXT_GLOBS = {"*.stdout", "*.stderr", "defect_*_review.json"}

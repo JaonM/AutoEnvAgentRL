@@ -10,6 +10,21 @@ from env_factory.evidence.material_artifacts import (
 
 
 class MaterialArtifactsTest(unittest.TestCase):
+    def test_calibration_runtime_does_not_contaminate_rebuild_context(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / '.dockerignore').write_text(DOCKERIGNORE_SOURCE)
+            (root / 'app.py').write_text('pass\n')
+            before = portable_artifact_digests(root)
+            runtime = root / '.reward_calibration_runtime'
+            runtime.mkdir()
+            (runtime / 'live_container_inspect.log').write_text('transient output')
+            self.assertEqual(docker_context_errors(root), [])
+            self.assertEqual(before, portable_artifact_digests(root))
+            (runtime / 'credentials.json').write_text('{}')
+            self.assertIn('sensitive_context_file:.reward_calibration_runtime/credentials.json',
+                          docker_context_errors(root))
+
     def test_portable_inventory_covers_nested_rebuild_inputs(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

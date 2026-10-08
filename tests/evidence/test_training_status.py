@@ -45,3 +45,19 @@ def test_missing_build_status_cannot_claim_ready(tmp_path):
     write_training_status(tmp_path, result)
     assert result['training_ready'] is False
     assert not (tmp_path / 'status.json').exists()
+
+
+def test_executable_qualification_does_not_invent_live_evidence(tmp_path):
+    path = tmp_path / 'status.json'
+    path.write_text(json.dumps({'status': 'success', 'success': True, 'exit_code': 0}))
+    result = {'qualification_basis': 'executable_v1', 'passed': True,
+              'executable_validation_verified': True, 'data_governance_verified': True,
+              'sandbox_score': {'passed': True}, 'live_rollout_verified': False}
+    write_training_status(tmp_path, result)
+    assert result['training_ready'] is True
+    assert result['live_rollout_verified'] is False
+    for field in ('passed', 'executable_validation_verified', 'data_governance_verified', 'sandbox_score'):
+        invalid = dict(result)
+        del invalid[field]
+        write_training_status(tmp_path, invalid)
+        assert invalid['training_ready'] is False

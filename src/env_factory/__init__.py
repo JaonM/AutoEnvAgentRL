@@ -28,7 +28,7 @@ from .graph.wikipedia_dump import LocalWikipediaClient, WikipediaDumpIndexer
 from .tasks.task import Task
 from .tasks.task_spec import TaskSpecError, compile_task_spec, validate_task_spec
 from .generation.task_generator import TaskGenerationError, TaskGenerator
-from .task_pipeline import PipelineGenerationError, TaskGenerationPipeline
+from .generation.pipeline_errors import PipelineGenerationError
 
 __all__ = [
     "DEFAULT_KNOWLEDGE_GRAPH_SCHEMA",
@@ -65,7 +65,6 @@ __all__ = [
     "TaskGenerator",
     "TaskGenerationError",
     "PipelineGenerationError",
-    "TaskGenerationPipeline",
     "TaskType",
     "TaskTypeNode",
 ]
