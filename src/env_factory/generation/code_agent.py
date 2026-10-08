@@ -32,12 +32,20 @@ def _canonical_source_digest(source):
 def _timed_call(attempt, phase, function, *args, _progress=None, **kwargs):
     """Keep elapsed evidence on failed calls too; timings do not alter budgets."""
     started = time.monotonic()
+    window = {'phase': phase, 'started_at': time.time(), 'status': 'running'}
+    attempt.setdefault('phase_events', []).append(window)
     attempt["active_phase"] = phase
     if _progress:
         _progress()
     try:
-        return function(*args, **kwargs)
+        result = function(*args, **kwargs)
+        window['status'] = 'completed'
+        return result
+    except BaseException:
+        window['status'] = 'failed'
+        raise
     finally:
+        window.update(completed_at=time.time(), seconds=time.monotonic() - started)
         durations = attempt.setdefault('phase_seconds', {})
         durations[phase] = durations.get(phase, 0.0) + time.monotonic() - started
         attempt.pop('active_phase', None)
@@ -52,6 +60,8 @@ def generate(*, request: dict, artifact_dir: Path, script_count: int = 3,
     agent = request.get("code_agent", "codex")
     model = request.get("code_agent_model", MODEL)
     started = time.monotonic()
+    from env_factory.sandbox_runtime import ValidationJudgmentCache
+    judgment_cache = ValidationJudgmentCache()
     root = artifact_dir.resolve()
     request = {**request, 'user_script_count':script_count, 'require_bound_authorization': True, 'require_interaction_contract':request.get('training_category') == 'multi_step_agentic', 'require_business_requirements':request.get('training_category') == 'multi_step_agentic', 'require_structured_interactions':request.get('training_category') == 'multi_step_agentic'}
     if resume_from is None:
@@ -224,6 +234,12 @@ array_order: [] accepts any permutation but still checks every typed value and d
 Omitting array_order means exact sequence, including ties, and the compiler publishes that rule.
 Use only the keys/directions required by the business goal; never invent hidden secondary ordering
 constraints. Check every array field, not only the first one mentioned in repair feedback.
+For fixed category order, order by the actual category meaning, not an independently
+mutable rank field. If the DSL cannot express it, retain exact record membership
+and explicitly verify the required presentation order in a semantic criterion.
+For missing/empty markers, align the answer schema, normalization and reward target:
+an enum containing a public unknown label cannot simultaneously require an empty raw
+value. Exercise the declared missing-data branch with its actual schema-valid values.
 Use returned count or the complete returned array to distinguish no rows from existing rows.
 Never use a first record's nonempty identifier as an existence proxy: empty text may be valid
 under the declared schema and must not discard other returned records or change coverage.
@@ -257,6 +273,11 @@ State targets must remain resolvable in each declared no-write route and its mut
 fixtures. A preservation target that looks up an absent public identity is undefined,
 even when the agent correctly made no writes. The platform already checks unrelated
 state preservation; avoid redundant per-row targets that assume missing identities exist.
+Never synthesize a target identity by summing or combining unrelated row identifiers
+on a stop branch. Cover each materially different stop reason (absent, ambiguous,
+ineligible, refused) that the public contract actually declares, not just one probe
+per route name. If a choice must be disclosed after a menu, ensure a missing-choice
+stop can actually reach that disclosure under the real menu membership contract.
 Do not weaken a recommendation/explanation task into copying a stored answer.
 Use from_tool for an unambiguous query shared by every successful reference,
 including the same upstream capture chain. Distinct downstream user choices can
@@ -463,6 +484,7 @@ checks to pass. Finish by reporting the source file and checks actually executed
             if index > 1:
                 prompt = f"Remaining author subprocess budget: {remaining:g} seconds.\n" + prompt
             attempt = {"index": index, "status": "running", "budget_seconds": remaining,
+                       "started_at": time.time(), "is_repair": validation_feedback is not None,
                        "phase": "business_blueprint" if planning else "implementation"}
             evidence["attempts"].append(attempt)
             attempt_started = time.monotonic()
@@ -490,6 +512,7 @@ checks to pass. Finish by reporting the source file and checks actually executed
                         raise PipelineGenerationError("CODE_AGENT_TIMEOUT: task authoring deadline exceeded")
                     finally:
                         attempt["author_seconds"] = time.monotonic() - author_started
+                        attempt['candidate_ready_at'] = time.time()
                         evidence["author_seconds"] = evidence.get("author_seconds", 0.0) + attempt["author_seconds"]
                 evidence["exit_code"] = attempt["exit_code"] = process.returncode
                 events_digest.update(events_path.read_bytes())
@@ -567,7 +590,7 @@ checks to pass. Finish by reporting the source file and checks actually executed
                         goal_anchor = json.loads(json.dumps(description))
                     artifacts = timed_call(attempt, 'compile_and_execution', compile_source,
                                                source, root=root, request=request, script_count=script_count,
-                                               defer_privacy_review=True, blueprint=blueprint)
+                                               defer_privacy_review=True, blueprint=blueprint, judgment_cache=judgment_cache)
                     privacy_pending = bool(artifacts['generation_pipeline'].get('privacy_review_obligations'))
                     if not privacy_pending:
                         timed_call(attempt, 'delivery_verification', verify_delivery, artifacts, root)
@@ -599,6 +622,7 @@ checks to pass. Finish by reporting the source file and checks actually executed
                     artifacts["generation_pipeline"].setdefault("verification", {})["source_semantics"] = review
                 except (ValueError, TypeError, KeyError, AssertionError, SandboxError, PipelineGenerationError) as exc:
                     attempt.update(status="validation_failed", error=str(exc))
+                    attempt.setdefault('actionable_feedback_at', time.time())
                     if attempt.get('repair_stop_reason') == 'unchanged_rejected_source':
                         raise
                     rejected_source_digest = source_digest

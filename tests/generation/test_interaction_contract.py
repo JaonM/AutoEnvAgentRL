@@ -170,6 +170,7 @@ def test_stateful_confirmation_is_required_before_write(tmp_path):
          'before_tool':'read_temperature', 'requires_tools':['lookup_zone'],
          'assistant_contains_all':['19','确认'], 'reference_response':'已查到库区，是否确认将温度改为19？',
          'user_reply':'确认改为19。', 'retry_reply':'请先查询库区并明确要修改的温度，再让我确认。'}]}]
+    source = json.loads(json.dumps(source).replace('"read_temperature"', '"update_temperature"'))
     artifacts = compile_source(source, root=tmp_path, request=request, script_count=1)
     checks = artifacts['generation_pipeline']['verification']
     assert checks['passed']

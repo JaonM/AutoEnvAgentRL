@@ -10,6 +10,15 @@ class ExecutionProgress:
     def __init__(self, root):
         self.path = Path(root) / "execution_progress.jsonl"
         self.run_id = uuid.uuid4().hex
+        self.started = time.monotonic()
+
+    def feedback(self, phase, **identity):
+        """Timestamp each actionable finding as soon as it is available."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open('a') as stream:
+            stream.write(json.dumps({'run_id': self.run_id, 'timestamp': time.time(),
+                'elapsed_seconds': time.monotonic() - self.started,
+                'phase': phase, 'status': 'actionable_feedback', **identity}) + '\n')
 
     @contextmanager
     def measure(self, phase, **identity):

@@ -289,7 +289,8 @@ def expand_source(source: dict, request: dict) -> dict:
 
 
 def compile_source(source: dict, *, root: Path, request: dict, script_count: int = 3,
-                   structural_preview: bool = False, defer_privacy_review: bool = False, blueprint: dict | None = None) -> dict:
+                   structural_preview: bool = False, defer_privacy_review: bool = False, blueprint: dict | None = None,
+                   judgment_cache=None) -> dict:
     """Compile a complete business design against runner-owned graph/route input."""
     source = expand_source(source, request)
     from .scenario_assertions import validate_scenario_fixture_scope
@@ -634,6 +635,11 @@ def compile_source(source: dict, *, root: Path, request: dict, script_count: int
                 if isinstance(value, dict) and set(value) == {'argument'} and (value['argument'] not in by_name[name].get('required', [])
                         or value['argument'] not in by_name[name].get('properties', {})):
                     raise ValueError('lifecycle selectors and guards must bind required tool arguments')
+    # Use the same API-consumption check as final buildability, while the
+    # candidate can still be repaired before execution or a model review.
+    P._validate_business_tool_semantics(tools=tools, implementations=implementations,
+        interaction_scripts=scripts, metrics=metrics, metric_implementations=metric_impl,
+        business_lifecycle=source.get('business_lifecycle'))
     if structural_preview:
         # Reuse runtime initial-data checks while the author can still repair
         # cheaply. No episodes, trajectories or model evaluators are run here.
@@ -668,8 +674,10 @@ def compile_source(source: dict, *, root: Path, request: dict, script_count: int
                     "reference_execution", "policy_ablations", "semantic_calibration",
                     "delivery_preflight", "independent_semantic_review"]}}
         return result
+    from .deterministic_preflight import check_all_routes
+    check_all_routes(result, root, verify_execution, prepare_route_probe)
     checks = verify_execution(result, root, calibration=source.get("semantic_calibration", {}),
-                              condition_probes=condition_probes)
+                              condition_probes=condition_probes, judgment_cache=judgment_cache)
     result["task_readiness"] = {"ready": not privacy_findings,
         "errors": ["INTERACTION_PRIVACY_REVIEW_PENDING"] if privacy_findings else [], "warnings": [],
         "training_profile": P._derive_training_profile(business_tool_count=len(bindings),
@@ -809,9 +817,46 @@ def _bind_reference_for_ablations(steps: list[dict], execution: dict) -> list[di
     return bound_steps
 
 
-def verify_execution(artifacts: dict, root: Path, *, calibration: dict | None = None,
+def prepare_route_probe(artifacts, root, probe):
+    """Materialize one isolated probe with the exact production overrides."""
+    import shutil
+    probe_root = root / 'route_probes' / probe['route_id']
+    for field in ('data_manifest', 'user_simulation_manifest'):
+        relative = artifacts[field]['root']
+        shutil.copytree(root / relative, probe_root / relative, dirs_exist_ok=True)
+    candidate = copy.deepcopy(artifacts)
+    probe_rules = {rule['metric_id']: rule for rule in probe.get('process_rules', [])}
+    candidate['metric_implementations'] = [copy.deepcopy(probe_rules.get(rule['metric_id'], rule))
+                                           for rule in candidate['metric_implementations']]
+    if probe.get('user_variables'):
+        from .execution_routes import validate_probe_user_variables
+        users = candidate['user_simulation_manifest']
+        script_path = probe_root / users['root'] / users['scripts_file']
+        probe_scripts = json.loads(script_path.read_text())
+        validate_probe_user_variables(probe['user_variables'], probe_scripts)
+        for script in probe_scripts:
+            script['variables'].update(probe['user_variables'])
+        script_path.write_text(json.dumps(probe_scripts, ensure_ascii=False, indent=2) + '\n')
+    candidate['execution_route_probes'] = []
+    candidate['acceptance_contract']['executable_scenarios'] = probe['scenarios']
+    return candidate, probe_root
+
+
+def verify_execution(artifacts: dict, root: Path, *, calibration=None, condition_probes=None,
+                     initial_changes=None, verify_route_probes=True, deterministic_only=False, judgment_cache=None):
+    if deterministic_only or not verify_route_probes:
+        return _verify_execution(artifacts, root, calibration=calibration,
+            condition_probes=condition_probes, initial_changes=initial_changes,
+            verify_route_probes=verify_route_probes, deterministic_only=deterministic_only, judgment_cache=judgment_cache)
+    from .validation_batch import verify_independent_routes
+    return verify_independent_routes(artifacts, root, _verify_execution, prepare_route_probe,
+        calibration=calibration, condition_probes=condition_probes, initial_changes=initial_changes, judgment_cache=judgment_cache)
+
+
+def _verify_execution(artifacts: dict, root: Path, *, calibration: dict | None = None,
                      condition_probes: dict | None = None, initial_changes: list | None = None,
-                     verify_route_probes: bool = True) -> dict:
+                     verify_route_probes: bool = True, deterministic_only: bool = False,
+                     external_routes: bool = False, judgment_cache=None) -> dict:
     """Run actual tools/reward and independent ablations without trusting assertions."""
     from .execution_progress import ExecutionProgress
     progress = ExecutionProgress(root)
@@ -844,13 +889,25 @@ def verify_execution(artifacts: dict, root: Path, *, calibration: dict | None = 
         evaluator = DeclarativeMetricEvaluator()
         from env_factory.sandbox_runtime import ContractModelMetricEvaluator
         from env_factory.generation.semantic_reward import calibrate_semantic_outcomes, SemanticCalibrationUnavailable
-        model_evaluator = ContractModelMetricEvaluator(artifacts, store, reuse_across_resets=True)
+        model_evaluator = ContractModelMetricEvaluator(artifacts, store, reuse_across_resets=True, judgment_cache=judgment_cache)
         last_evaluated_scores = {}
         proof_limit = None
         latest_proof = {}
+        class DeferredSemanticEvidence(Exception):
+            """The cheap pass cannot decide this trajectory without a judge."""
+
         def evaluate_scores(context):
             scores = evaluator.evaluate_all(artifacts["metric_implementations"], context)
             latest_proof.clear()
+            if deterministic_only:
+                from .reward_proofs import reward_upper_bound
+                proof = reward_upper_bound(artifacts['metrics'], scores, gate, context)
+                if proof is None:
+                    raise DeferredSemanticEvidence('unsupported reward bound')
+                latest_proof.update(proof)
+                last_evaluated_scores.clear()
+                last_evaluated_scores.update(scores)
+                return {**scores, **dict.fromkeys(proof['assumed_full_credit'], 1.0)}
             if proof_limit is not None:
                 from .reward_proofs import reward_upper_bound
                 proof = reward_upper_bound(artifacts['metrics'], scores, gate, context)
@@ -925,6 +982,18 @@ def verify_execution(artifacts: dict, root: Path, *, calibration: dict | None = 
                                           if event.get('event') == 'injected_fault')
                 return exc.status, exc.body("authoring-check"), {}
         user.completion_check = lambda: call("GET", "/v1/reward", None, {})[1]["reward"] >= 1 - 1e-9
+        if deterministic_only:
+            def deterministic_completion():
+                bound = call('GET', '/v1/reward', None, {})[1]['reward']
+                if bound < 1 - 1e-9:
+                    return False
+                if latest_proof.get('assumed_full_credit'):
+                    raise DeferredSemanticEvidence('completion requires semantic judgment')
+                return True
+            def defer_renderer(payload):
+                raise DeferredSemanticEvidence('user rendering requires model')
+            user.completion_check = deterministic_completion
+            user.renderer = defer_renderer
         runner = AcceptanceScenarioRunner(call,
             business_snapshot=lambda: {name: data.table(name) for name in data.baseline},
             injected_fault_check=lambda name, status:
@@ -1061,6 +1130,11 @@ def verify_execution(artifacts: dict, root: Path, *, calibration: dict | None = 
         executed_interaction_behaviors = set()
         validated_runs = {}
         requirement_observations = {}
+        if deterministic_only:
+            from .deterministic_preflight import run_scenarios
+            return run_scenarios(successes + failures, artifacts['metrics'], runner, call,
+                                 latest_proof, diagnostic, progress, root, DeferredSemanticEvidence)
+        reference_failures = []
         for scenario in successes + failures:
             call("POST", "/v1/reset", {}, {})
             try:
@@ -1087,10 +1161,11 @@ def verify_execution(artifacts: dict, root: Path, *, calibration: dict | None = 
                     raise TypeError(f"unsupported diagnostic value: {type(value).__name__}")
                 encoded = json.dumps(detail, ensure_ascii=False, indent=2, default=diagnostic_json)
                 (root / "preflight_failure.json").write_text(encoded + "\n")
-                raise ValueError("AGENT_SCENARIO_FAILED: " + encoded) from exc
+                reference_failures.append(detail)
+                progress.feedback('reference_scenario', scenario_id=scenario.get('scenario_id'), code=exc.code)
         coverage = artifacts.get('requirement_coverage', {'status': 'not_declared'})
         paired = None
-        if coverage.get('status') == 'structurally_valid':
+        if not reference_failures and coverage.get('status') == 'structurally_valid':
             from .requirement_coverage import score_requirement_pairs
             paired = score_requirement_pairs(coverage, artifacts['metrics'], requirement_observations)
         if paired is not None and verify_route_probes:
@@ -1101,7 +1176,7 @@ def verify_execution(artifacts: dict, root: Path, *, calibration: dict | None = 
             if not paired['passed']:
                 raise ValueError('REQUIREMENT_REWARD_MISMATCH: ' + json.dumps(
                     [p for p in paired['pairs'] if p['passed'] is not True], ensure_ascii=False))
-        if calibration:
+        if calibration and not reference_failures:
             from .semantic_reward import scope_calibration_references
             calibration, selected_references = scope_calibration_references(calibration, successes)
             contexts, executed_contexts = {}, {}
@@ -1122,13 +1197,21 @@ def verify_execution(artifacts: dict, root: Path, *, calibration: dict | None = 
             calibration_store.reset(episode_id="semantic-calibration", seed=17)
             report = calibrate_semantic_outcomes(artifacts, calibration, context=contexts[None],
                                                 reference_contexts=contexts,
-                                                store=calibration_store, progress=progress)
+                                                store=calibration_store, progress=progress, judgment_cache=judgment_cache)
             report['reference_scenarios'] = {str(name): scenario['scenario_id']
                                              for name, scenario in selected_references.items()}
             (root / "semantic_calibration.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
             (root / "semantic_calibration_replay.json").write_text(json.dumps(calibration_store.replay(), ensure_ascii=False, indent=2) + "\n")
+            if report.get('conflicting_judgments'):
+                raise SemanticCalibrationUnavailable('SEMANTIC_JUDGMENT_CONFLICT: ' + json.dumps(
+                    report['conflicting_judgments'], ensure_ascii=False))
             if not report["passed"]:
                 raise ValueError("SEMANTIC_CALIBRATION_FAILED: " + json.dumps(report, ensure_ascii=False))
+        if reference_failures:
+            from .report_values import report_value
+            encoded = json.dumps(report_value(reference_failures), ensure_ascii=False)
+            (root / 'preflight_failures.json').write_text(encoded + '\n')
+            raise ValueError('AGENT_SCENARIO_FAILED: ' + encoded)
         for i, scenario in enumerate(successes):
             steps = scenario["steps"]
             checks[f"reference_{i}"] = reward(steps) >= 1 - 1e-9
@@ -1276,45 +1359,8 @@ def verify_execution(artifacts: dict, root: Path, *, calibration: dict | None = 
             raise ValueError("AGENT_PREFLIGHT_FAILED: " + ", ".join(k for k, v in checks.items() if not v))
         route_coverage = {'references': sorted({s.get('execution_route') for s in successes if s.get('execution_route')}),
                           'probes': []}
-        if verify_route_probes and gate.routes.routes:
-            import shutil
-            for probe in artifacts.get('execution_route_probes', []):
-                probe_root = root / 'route_probes' / probe['route_id']
-                for field in ('data_manifest', 'user_simulation_manifest'):
-                    relative = artifacts[field]['root']
-                    shutil.copytree(root / relative, probe_root / relative, dirs_exist_ok=True)
-                candidate = copy.deepcopy(artifacts)
-                probe_rules = {rule['metric_id']: rule for rule in probe.get('process_rules', [])}
-                candidate['metric_implementations'] = [copy.deepcopy(probe_rules.get(rule['metric_id'], rule))
-                                                       for rule in candidate['metric_implementations']]
-                if probe.get('user_variables'):
-                    from .execution_routes import validate_probe_user_variables
-                    users = candidate['user_simulation_manifest']
-                    script_path = probe_root / users['root'] / users['scripts_file']
-                    probe_scripts = json.loads(script_path.read_text())
-                    validate_probe_user_variables(probe['user_variables'], probe_scripts)
-                    for script in probe_scripts:
-                        script['variables'].update(probe['user_variables'])
-                    script_path.write_text(json.dumps(probe_scripts, ensure_ascii=False, indent=2) + '\n')
-                candidate['execution_route_probes'] = []
-                candidate['acceptance_contract']['executable_scenarios'] = probe['scenarios']
-                report = verify_execution(candidate, probe_root, initial_changes=probe['initial_changes'],
-                                          verify_route_probes=False)
-                realism_observations.extend(report.get('realism_observations', []))
-                (probe_root / 'verification.json').write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
-                route_coverage['probes'].append({'route_id': probe['route_id'], 'initial_changes': probe['initial_changes'],
-                                                  'user_variables': probe.get('user_variables', {}),
-                                                  'passed': report['passed'], 'checks': report['checks']})
-            covered = set(route_coverage['references']) | {p['route_id'] for p in route_coverage['probes'] if p['passed']}
-            if covered != {r['id'] for r in gate.routes.routes}:
-                raise ValueError('EXECUTION_ROUTE_UNCOVERED: every declared route needs a passing reference/probe')
-        if verify_route_probes:
-            from .realism_requirements import require_realism_coverage
-            require_realism_coverage(artifacts, realism_observations)
-            complexity = artifacts['task_spec'].get('interaction_complexity', {})
-            if (complexity.get('require_behavioral_diversity') and complexity.get('variants', 0) > 1
-                    and len(executed_interaction_behaviors) < 2):
-                raise ValueError('INTERACTION_BEHAVIOR_DIVERSITY: successful references execute only one user behavior')
+        if verify_route_probes and not external_routes:
+            raise RuntimeError('full validation must use verify_execution orchestration')
         return {"passed": True, "checks": checks, "scope": "reference_and_policy_ablations",
                 "semantic_judgment_reuse": model_evaluator.runtime.validation_cache_report(),
                 "distinct_executed_interaction_behaviors": len(executed_interaction_behaviors),

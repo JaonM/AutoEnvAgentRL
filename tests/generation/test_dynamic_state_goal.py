@@ -117,7 +117,7 @@ class DynamicStateGoalTest(unittest.TestCase):
         scenario["assertions"] = [{"source": "step:reward", "path": "$.reward", "operator": "gte", "expected": 1}]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            with self.assertRaisesRegex(ValueError, "AGENT_SCENARIO_FAILED"):
+            with self.assertRaisesRegex(ValueError, "DETERMINISTIC_PREFLIGHT_FAILED"):
                 compile_source(source, root=root, request=request)
             diagnostic = json.loads((root / "preflight_failure.json").read_text())["diagnostic"]
             self.assertEqual(diagnostic["state_predicates"][0]["expected_values"], {"temperature": 30})
@@ -131,7 +131,7 @@ class DynamicStateGoalTest(unittest.TestCase):
         scenario["assertions"] = [{"source": "step:reward", "path": "$.reward", "operator": "gte", "expected": 1}]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            with self.assertRaisesRegex(ValueError, "AGENT_SCENARIO_FAILED"):
+            with self.assertRaisesRegex(ValueError, "DETERMINISTIC_PREFLIGHT_FAILED"):
                 compile_source(source, root=root, request=request)
             report = json.loads((root / "preflight_failure.json").read_text())["diagnostic"]
             self.assertEqual(report["ungated_components"]["temperature_answer"], 1)

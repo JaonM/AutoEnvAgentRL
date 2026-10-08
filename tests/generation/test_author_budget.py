@@ -7,7 +7,7 @@ PROJECT=Path(__file__).resolve().parents[2]
 def candidate():
     spec=importlib.util.spec_from_file_location('env_factory.generation.budget_candidate',PROJECT/'src/env_factory/generation/code_agent.py')
     module=importlib.util.module_from_spec(spec);module.__file__=str(PROJECT/'src/env_factory/generation/code_agent.py');spec.loader.exec_module(module)
-    clock=[0.];module.time=types.SimpleNamespace(monotonic=lambda:clock[0])
+    clock=[0.];module.time=types.SimpleNamespace(monotonic=lambda:clock[0], time=lambda:1_700_000_000 + clock[0])
     return module,clock
 
 def test_exhausted_author_budget_prevents_another_model_invocation(tmp_path):

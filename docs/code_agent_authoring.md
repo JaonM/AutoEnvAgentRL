@@ -1904,3 +1904,38 @@ programmatic. Equal models do not establish semantic consistency: authors and
 judges retain separate sessions, observed evidence, and positive/negative checks.
 The live RL policy is outside this production-pipeline migration; existing live
 certification requirements for rollout/evaluator separation remain in force.
+
+## Feedback and validation scheduling
+
+Compilation first checks executable parameter consumption, then runs a model-free
+pass over reference and isolated stop-route scenarios. Disclosed parameters count
+as used only when the compiled process binding enforces the actual user value;
+lifecycle guard operands also count. The cheap execution pass uses conservative
+reward upper bounds. Unknown semantic evidence is deferred, and its report always
+has `training_ready: false`. Structural preview remains a structure/data check.
+
+Full reference and route validation uses at most two independent workers per task,
+with separate episode databases and probe directories. The runtime bridge bounds
+model concurrency across tasks. Independent branch failures are collected into
+`validation_findings.json` and one repair feedback package. Dependent ablations are
+not attempted on broken reference trajectories. Final delivery and independent
+source review remain required after these checks.
+
+Semantic judgments return criterion IDs, satisfaction flags and brief observable
+evidence. Full credit conflicting with a failed criterion is rejected. These are
+assessment evidence, not hidden reasoning. Calibration includes this evidence in
+its failed-case feedback.
+
+One runner-owned in-memory cache can span author repair attempts. Reuse requires
+identical metric ownership, rubric, criteria, answer schema, normalized observed
+context, runtime code and provider configuration. Author-writable files are never
+loaded as cache authority. Calibration still requests fresh judgments; independent
+final delivery receives no repair cache. Opposite labels for the same dependency
+key invalidate reuse, retain both judgments and prevent acceptance for that key.
+A resumed author process starts with an empty cache.
+
+`execution_progress.jsonl` timestamps actionable findings as they appear;
+`code_agent_generation.json` records author/repair and validation phase windows.
+Compare full-cohort yield together with first-feedback latency, total elapsed time
+and training-ready tasks per hour. Historical diagnostic controls do not enter a
+fresh cohort's yield denominator.

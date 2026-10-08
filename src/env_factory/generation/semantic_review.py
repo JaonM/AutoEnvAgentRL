@@ -193,6 +193,16 @@ may be a bad test case, not a runtime bug; never weaken rewards to accept a wron
 Check both sides of conditional business decisions, including successful refusal
 or abstention when the public condition forbids a write. A declared decision table
 proves finite coverage only, not that it captures every public business condition.
+Audit every materially distinct declared stop reason, not merely each route name.
+For no-write branches, verify preservation targets remain meaningful when the
+selected entity is absent, ambiguous or ineligible; combining unrelated identifiers
+does not identify a real preservation target. For missing-data outputs compare the
+public answer enum, actual raw value, declared normalization and reward target together.
+For menu-dependent stops, execute the disclosure order: a private choice absent from
+the observed menu may prevent advancement and leave user_value unresolved.
+Report all independently evidenced defects across these checks in one findings list,
+including defects outside the most recent repair. Do not invent hypothetical user
+choices or new obligations; counterexamples must obey the declared public contract.
 reward_temporal_diagnostics are advisory: mutable-table queries can be valid final-state
 checks. Reject only a demonstrated mismatch with business semantics, not the presence
 of a diagnostic. Check decision-time facts and inherited filters after writes.

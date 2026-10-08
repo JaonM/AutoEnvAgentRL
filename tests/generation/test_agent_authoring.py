@@ -1,9 +1,11 @@
 import copy
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from env_factory.generation.contract_compiler import PipelineGenerationError
 from env_factory.generation.agent_authoring import compile_source
 from env_factory.generation.task_generator import TaskGenerator, TaskGenerationError
 from env_factory.graph.knowledge_graph import SceneNode
@@ -65,6 +67,16 @@ def fixture(category):
 
 
 class AgentAuthoringTest(unittest.TestCase):
+    def test_unused_parameter_is_rejected_before_execution(self):
+        source, request = fixture('simple_agentic')
+        source['tools'][0]['function']['parameters']['properties']['ignored'] = {
+            'type': 'string', 'description': 'Ignored optional input'}
+        with tempfile.TemporaryDirectory() as directory, patch(
+                'env_factory.generation.agent_authoring.verify_execution') as execution:
+            with self.assertRaisesRegex(PipelineGenerationError, 'ignored by its implementation'):
+                compile_source(source, root=Path(directory), request=request)
+            execution.assert_not_called()
+
     def test_graph_relation_metadata_is_rejected_before_data_materialization(self):
         from env_factory.generation.contract_compiler import PipelineGenerationError
         source, request = fixture("direct_response")
@@ -185,6 +197,9 @@ class AgentAuthoringTest(unittest.TestCase):
         source["semantic_goal"] = {"row_predicates": [{"table": "zones", "where": {"name": "青松库"},
             "values": {"temperature": 19}, "count": 1}], "expected_delta": [{"table": "zones", "where": {"name": "青松库"},
             "field": "temperature", "before": 18, "after": 19}]}
+        # The shared API check now runs before execution, as well as delivery.
+        # This mutation fixture must advertise its actual write behavior.
+        source = json.loads(json.dumps(source).replace('"read_temperature"', '"update_temperature"'))
         with tempfile.TemporaryDirectory() as directory:
             result = compile_source(source, root=Path(directory), request=request)
             self.assertTrue(result["generation_pipeline"]["verification"]["passed"])
@@ -220,7 +235,7 @@ class AgentAuthoringTest(unittest.TestCase):
     def test_self_reported_success_cannot_override_actual_reward(self):
         source, request = fixture("direct_response")
         source["scenarios"][0]["steps"][0]["content"] = "999"
-        with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(ValueError, "reference_0"):
+        with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(ValueError, "DETERMINISTIC_REWARD_UNREACHABLE"):
             compile_source(source, root=Path(directory), request=request)
 
     def test_final_scenario_assertions_are_executed_in_preflight(self):

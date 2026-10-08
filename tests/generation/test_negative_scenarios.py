@@ -83,7 +83,7 @@ def test_compact_negative_keeps_dialogue_and_reaches_reward(tmp_path, monkeypatc
     monkeypatch.setattr(AcceptanceScenarioRunner,'run',observed)
     result=compile_source(compact,root=tmp_path,request=request)
     assert result['generation_pipeline']['verification']['passed']
-    assert len(runs)==3
+    assert len(runs)==6  # model-free diagnostics plus full acceptance execution
     for run in runs:
         assert all(step['status']==200 for step in run['history'])
         assert sum(step['operation']=='dialogue_turn' for step in run['history'])==2

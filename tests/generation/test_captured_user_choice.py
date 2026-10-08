@@ -51,7 +51,7 @@ def test_wrong_captured_choice_for_one_script_fails_execution(tmp_path):
     stage.update(private_fact=547, previous_fact=821, user_reply='最终选择547。',
                  reference_response='是否仍按此前821号库区查询？')
     source['interaction_contract']['variants'][1]['stages'][0]['user_reply'] += '编号曾考虑821。'
-    with pytest.raises(ValueError, match='AGENT_PREFLIGHT_FAILED: reference_1'):
+    with pytest.raises(ValueError, match='DETERMINISTIC_PREFLIGHT_FAILED:.*success-script-2'):
         compile_source(source, root=tmp_path, request=request)
 
 

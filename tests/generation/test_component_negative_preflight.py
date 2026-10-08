@@ -60,7 +60,7 @@ def test_partial_failure_without_valid_final_component_evidence_is_rejected(tmp_
     else:
         # A zero component before the answer cannot certify the final bad answer.
         negative['steps'].insert(0, negative['steps'].pop())
-    with pytest.raises(ValueError, match='AGENT_SCENARIO_FAILED|AGENT_PREFLIGHT_FAILED'):
+    with pytest.raises(ValueError, match='AGENT_SCENARIO_FAILED|AGENT_PREFLIGHT_FAILED|DETERMINISTIC_PREFLIGHT_FAILED'):
         compile_source(source, root=tmp_path, request=request)
 
 

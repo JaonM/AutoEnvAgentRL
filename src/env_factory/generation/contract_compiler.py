@@ -2027,8 +2027,11 @@ class ContractCompiler(UserSimulationContractMixin):
     @staticmethod
     def _validate_business_tool_semantics(
         *, tools: list[dict[str, Any]], implementations: list[dict[str, Any]],
+        interaction_scripts=(), metrics=(), metric_implementations=(), business_lifecycle=None,
     ) -> None:
         """Reject declarative tools whose public API overclaims their behavior."""
+        from .parameter_consumption import disclosed_parameter_uses, lifecycle_parameter_uses
+        disclosed = disclosed_parameter_uses(interaction_scripts, metrics, metric_implementations)
         by_name = {
             item.get("tool_name"): item for item in implementations
             if isinstance(item, dict) and isinstance(item.get("tool_name"), str)
@@ -2058,6 +2061,8 @@ class ContractCompiler(UserSimulationContractMixin):
                 mapping = spec.get(field, {})
                 if isinstance(mapping, dict):
                     consumed.update(mapping)
+            consumed.update(argument for tool_name, argument in disclosed if tool_name == name)
+            consumed.update(lifecycle_parameter_uses((business_lifecycle or {}).get('tools', {}).get(name, {})))
             unused = sorted(parameter_names - consumed)
             if unused:
                 raise PipelineGenerationError(

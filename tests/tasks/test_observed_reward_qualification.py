@@ -145,6 +145,7 @@ def test_observed_zero_count_is_sensitive_to_query_membership(tmp_path):
     target = source['metric_implementations'][0]['expected']['targets'][0]
     target.update(label='数量', unit='条', expression={
         'tool_result': {'name': 'read_temperature', 'path': '$.count'}})
+    source = json.loads(json.dumps(source).replace('"read_temperature"', '"count_zones"'))
     artifacts = compile_source(source, root=tmp_path, request=request)
     path = write_task_artifact(tmp_path, Task(artifacts['task'], artifacts['environment'], artifacts['metrics'],
         task_type=TaskType(artifacts['task_type']), task_intent=artifacts['task_intent'],

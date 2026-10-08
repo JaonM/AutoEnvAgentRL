@@ -63,7 +63,17 @@ def repair_feedback(error: Exception, *, root: Path, attempt_root: Path) -> dict
     if not candidate:
         candidate = {'source': source}
     issues = []
-    if prefix == 'SOURCE_SEMANTIC_REVIEW_FAILED' and isinstance(parsed, list):
+    if prefix == 'VALIDATION_BATCH_FAILED' and isinstance(parsed, list):
+        for branch in parsed:
+            nested = repair_feedback(ValueError(branch['error']), root=root, attempt_root=attempt_root)
+            issues.extend({**issue, 'route_id': branch['route_id']} for issue in nested['issues'])
+    elif prefix in {'AGENT_SCENARIO_FAILED', 'DETERMINISTIC_PREFLIGHT_FAILED'} and isinstance(parsed, list):
+        for finding in parsed:
+            nested = repair_feedback(ValueError('AGENT_SCENARIO_FAILED: ' + json.dumps(finding)),
+                                     root=root, attempt_root=attempt_root)
+            issues.extend({**issue, **({'route_id': finding['route_id']} if 'route_id' in finding else {})}
+                          for issue in nested['issues'])
+    elif prefix == 'SOURCE_SEMANTIC_REVIEW_FAILED' and isinstance(parsed, list):
         for finding in parsed:
             if not isinstance(finding, dict):
                 continue
@@ -131,6 +141,7 @@ def repair_feedback(error: Exception, *, root: Path, attempt_root: Path) -> dict
                 'failed_case_evidence': case.get('failed_case_evidence', {}),
                 'expected_label': case.get('expected_label'), 'actual_score': case.get('actual_score'),
                 'judgment_context_hashes': case.get('judgment_context_hashes', []),
+                'criterion_evidence': case.get('criterion_evidence', []),
                 'suggested_change': 'Check case facts and rubric against tool evidence. A judge label alone does not explain the cause; do not relabel a case merely to match it.',
                 'closure': 'Correct positives and genuine negatives pass calibration under an unchanged business requirement.'})
     if not issues:
@@ -139,7 +150,7 @@ def repair_feedback(error: Exception, *, root: Path, attempt_root: Path) -> dict
                        'suggested_change': 'Locate the violated contract from this diagnostic and reproduce it before editing.',
                        'closure': 'Original validator passes and dependent execution checks remain valid.'})
     for issue in issues:
-        identity = {key:issue[key] for key in ('code','scenario_id','metric_id','case_index','check') if key in issue}
+        identity = {key:issue[key] for key in ('code','route_id','scenario_id','metric_id','case_index','check') if key in issue}
         identity['paths'] = [loc['path'] for loc in issue.get('locations', [])]
         issue['issue_id'] = hashlib.sha256(json.dumps(identity,sort_keys=True).encode()).hexdigest()[:16]
     return {'version':'1.0', 'source_sha256':hashlib.sha256(source_path.read_bytes()).hexdigest() if source_path.exists() else None,

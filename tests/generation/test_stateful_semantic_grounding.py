@@ -39,6 +39,7 @@ def stateful_source():
     source['answer_contract'] = {'format': 'json_object', 'schema': schema}
     for index, scene in enumerate(source['scenarios']):
         scene['steps'][-1]['content'] = json.dumps(cases[0 if index == 0 else 2]['answer'])
+    source = json.loads(json.dumps(source).replace('"read_temperature"', '"update_temperature"'))
     return source, request
 
 

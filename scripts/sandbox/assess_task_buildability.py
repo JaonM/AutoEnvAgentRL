@@ -230,14 +230,25 @@ def assess(root: Path, *, threshold: float = 8.0) -> dict[str, Any]:
     issues.extend(_tool_chain_issues(task))
     issues.extend(reward_contract_issues(task))
     try:
+        user_manifest = task.get('artifacts', {}).get('user_simulation_manifest', {})
+        interaction_scripts = []
+        if user_manifest.get('root') and user_manifest.get('scripts_file'):
+            scripts_path = _manifest_root(root, user_manifest) / user_manifest['scripts_file']
+            interaction_scripts = json.loads(scripts_path.read_text())
+            for index, script in enumerate(interaction_scripts):
+                ContractCompiler._validate_user_script_state_machine(script, index)
         ContractCompiler._validate_business_tool_semantics(
             tools=business_tools,
             implementations=[
                 item for item in task.get("tool_implementations", [])
                 if isinstance(item, dict)
             ],
+            interaction_scripts=interaction_scripts,
+            metrics=task.get('metrics', []),
+            metric_implementations=task.get('metric_implementations', []),
+            business_lifecycle=task.get('business_lifecycle'),
         )
-    except PipelineGenerationError as exc:
+    except (PipelineGenerationError, OSError, ValueError, TypeError, KeyError) as exc:
         issues.append(_issue(
             "BUSINESS_TOOL_SEMANTICS_INVALID", "task_generation", str(exc),
         ))
