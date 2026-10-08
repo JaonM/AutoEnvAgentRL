@@ -99,10 +99,13 @@ def docker_check(artifacts, compiled_root, trial, tag, probe_path):
     with (trial/'docker_build.log').open('w') as log:
         subprocess.run(['docker','build','-t',tag,str(root)],stdout=log,stderr=subprocess.STDOUT,check=True,timeout=300)
     env=dict(os.environ);env['SANDBOX_TRAINER_API_KEY']='paired-synthetic-trial'
+    if env.get('SANDBOX_LLM_CONTAINER_BASE_URL'):
+        env['SANDBOX_LLM_BASE_URL']=env['SANDBOX_LLM_CONTAINER_BASE_URL']
     cmd=['docker','run','--rm','-i','--read-only','--cap-drop=ALL','--security-opt=no-new-privileges:true',
          '--cpus=1','--memory=512m','--pids-limit=128','--tmpfs','/tmp:rw,nosuid,size=64m',
          '--tmpfs','/app/.runtime:rw,nosuid,uid=10001,gid=10001,size=64m']
-    for name in ['SANDBOX_LLM_API_KEY','SANDBOX_LLM_BASE_URL','SANDBOX_LLM_MODEL','SANDBOX_EVALUATOR_MOCK','SANDBOX_TRAINER_API_KEY']:
+    for name in ['SANDBOX_LLM_API_KEY','SANDBOX_LLM_BASE_URL','SANDBOX_LLM_MODEL','SANDBOX_LLM_BACKEND',
+                 'SANDBOX_LLM_TIMEOUT_SECONDS','SANDBOX_LLM_MAX_RETRIES','SANDBOX_EVALUATOR_MOCK','SANDBOX_TRAINER_API_KEY']:
         cmd+=['--env',name]
     cmd+=['--entrypoint','python3',tag,'-']
     done=subprocess.run(cmd,input=probe_path.read_text(),env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=300)
@@ -265,9 +268,9 @@ def main():
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--http-probe',type=Path,required=True)
     parser.add_argument('--cases',nargs='+',help='Subset of frozen cases; original order is preserved')
-    parser.add_argument('--models',nargs=2,default=['gpt-6-luna','gpt-6-astra'])
+    parser.add_argument('--models',nargs=2,required=True,help='Two explicitly selected Code Agent models to compare')
     parser.add_argument('--author-seconds',type=float,default=600)
-    parser.add_argument('--reviewer',default='gpt-6-astra')
+    parser.add_argument('--reviewer',default='gpt-6.1-sol')
     parser.add_argument('--review-seconds',type=float,default=240)
     args=parser.parse_args();args.fixed=args.fixed.resolve();args.output=args.output.resolve();args.http_probe=args.http_probe.resolve()
     args.output.mkdir(parents=True,exist_ok=True)
@@ -275,10 +278,12 @@ def main():
     lock=(args.output/'controller.lock').open('a+')
     fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
     lock.seek(0);lock.truncate();lock.write(str(os.getpid()));lock.flush()
-    from dotenv import dotenv_values
-    env=dotenv_values(PROJECT/'.env')
-    os.environ.update(SANDBOX_LLM_API_KEY=env.get('SANDBOX_LLM_API_KEY') or env.get('LLM_API_KEY') or '',
-        SANDBOX_LLM_BASE_URL='https://api.deepseek.com',SANDBOX_LLM_MODEL='deepseek-flash',SANDBOX_EVALUATOR_MOCK='0')
+    from dotenv import load_dotenv
+    from env_factory.runtime_llm import RuntimeLLMConfig
+    load_dotenv(PROJECT/'.env')
+    runtime=RuntimeLLMConfig.from_env()
+    if runtime.backend != 'codex' or runtime.mock:
+        raise ValueError('Fixed repair experiments require the configured live Code Agent runtime bridge')
     cases=json.loads((args.fixed/'manifest.json').read_text())['cases'];frozen=platform_hash()
     if args.cases and set(args.cases)-{c['id'] for c in cases}:raise ValueError('unknown frozen case')
     plan={'models':args.models,'cases':cases,'author_seconds':args.author_seconds,
