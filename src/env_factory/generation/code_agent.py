@@ -19,9 +19,14 @@ from .pipeline_errors import PipelineGenerationError
 from env_factory.sandbox_runtime import SandboxError
 
 from .agent_cli import command as agent_command, completed_events
+from .author_startup import NoAuthorActivity, workspace_signature, communicate as communicate_startup
 
 MODEL = "gpt-6.1-sol"
 PROJECT = Path(__file__).resolve().parents[3]
+
+
+class _StartupStall(PipelineGenerationError):
+    pass
 
 
 def _canonical_source_digest(source):
@@ -448,7 +453,7 @@ checks to pass. Finish by reporting the source file and checks actually executed
     blueprint = None
     validation_feedback = None
     blueprint_text = None
-    blueprint_attempts = source_attempts = 0
+    blueprint_attempts = source_attempts = startup_recoveries = 0
     if resumed:
         validation_feedback = resumed.get('validation_feedback')
         if validation_feedback is not None:
@@ -487,7 +492,7 @@ checks to pass. Finish by reporting the source file and checks actually executed
     else:
         evidence['authoring_stages'] = ['implementation']
     try:
-        for index in range(1, 6 if staged else 4):
+        for index in range(1, 7 if staged else 4):
             remaining = timeout - evidence.get("author_seconds", 0.0)
             # Conservative restart threshold after observed reconnect notices;
             # this is scheduling policy, not a measurement of network duration.
@@ -523,6 +528,8 @@ checks to pass. Finish by reporting the source file and checks actually executed
             (attempt_root / "prompt.txt").write_text(prompt)
             events_path = attempt_root / "events.jsonl"
             try:
+                watch_startup = agent == 'codex' and planning and blueprint_attempts == 1 and remaining >= 240
+                startup_before = workspace_signature(workspace) if watch_startup else None
                 with events_path.open("w") as stdout, (attempt_root / "stderr.log").open("w") as stderr:
                     process = subprocess.Popen(command, cwd=workspace, stdin=subprocess.PIPE,
                         stdout=stdout, stderr=stderr, text=True, start_new_session=True)
@@ -530,14 +537,26 @@ checks to pass. Finish by reporting the source file and checks actually executed
                     evidence_path.write_text(json.dumps(evidence, ensure_ascii=False, indent=2) + "\n")
                     author_started = time.monotonic()
                     try:
-                        process.communicate(None if agent == "opencode" else prompt, timeout=remaining)
-                    except subprocess.TimeoutExpired:
-                        os.killpg(process.pid, signal.SIGTERM)
+                        if watch_startup:
+                            communicate_startup(process, prompt, budget=remaining, events=events_path,
+                                stdout=stdout, workspace=workspace, before=startup_before, attempt=attempt)
+                        else:
+                            process.communicate(None if agent == "opencode" else prompt, timeout=remaining)
+                    except subprocess.TimeoutExpired as exc:
+                        try:
+                            os.killpg(process.pid, signal.SIGTERM)
+                        except ProcessLookupError:
+                            pass
                         try:
                             process.wait(timeout=5)
                         except subprocess.TimeoutExpired:
-                            os.killpg(process.pid, signal.SIGKILL)
+                            try:
+                                os.killpg(process.pid, signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
                             process.wait()
+                        if isinstance(exc, NoAuthorActivity):
+                            raise _StartupStall('CODE_AGENT_STARTUP_STALLED: initial blueprint invocation produced no substantive activity') from exc
                         raise PipelineGenerationError("CODE_AGENT_TIMEOUT: task authoring deadline exceeded")
                     finally:
                         attempt["author_seconds"] = time.monotonic() - author_started
@@ -689,6 +708,20 @@ checks to pass. Finish by reporting the source file and checks actually executed
                 artifacts["generation_pipeline"].update(evidence)
                 artifacts["generation_pipeline"]["seconds"] = time.monotonic() - started
                 return artifacts
+            except _StartupStall as exc:
+                attempt.update(status='startup_stalled', error=str(exc))
+                recorded = events_path.read_bytes()
+                events_digest.update(recorded)
+                attempt['events_sha256'] = hashlib.sha256(recorded).hexdigest()
+                evidence['events_sha256'] = events_digest.hexdigest()
+                attempt['exit_code'] = process.returncode
+                if startup_recoveries or timeout - evidence['author_seconds'] < 120:
+                    raise
+                startup_recoveries += 1
+                blueprint_attempts -= 1  # No candidate was received or rejected.
+                evidence['startup_recoveries'] = startup_recoveries
+                attempt['recovery'] = 'retry_same_request_with_remaining_author_budget'
+                continue
             except (OSError, ValueError, TypeError, KeyError, AssertionError, SandboxError, PipelineGenerationError, SemanticReviewUnavailable, SemanticCalibrationUnavailable) as exc:
                 attempt.update(status="failed", error=str(exc))
                 raise

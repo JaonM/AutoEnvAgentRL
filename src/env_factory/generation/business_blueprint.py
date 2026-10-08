@@ -15,6 +15,14 @@ Schema:
   explanation. meaning states the public business meaning, not fixture answers.
   Observed fields copy actual response values; ambiguity cannot turn a true
   observed flag into false. Give uniqueness/eligibility their own derived fields.
+  Every observed field must also declare observation: {tool, path}, using one
+  declared business tool and a supported response JSON path, e.g. $.records,
+  $.count, $.records[0].id or $ for the full response. The implementation must
+  preserve this binding. There is no observation.tools, user_stage or trajectory
+  observation form. Split separately observed responses into named fields within
+  the field limit; use supported derived expressions for decisions and explanation
+  fields for reasoning about actual user replies and tool statuses. Keep every
+  original business obligation; never label inferred eligibility as an observed fact.
   Explanation obligations describe reasoning beyond facts already reported in
   structured fields; identify any genuinely required cross-field inference.
   Explanation entries may add context_fields: a list of observed/derived field
@@ -155,15 +163,22 @@ def validate_blueprint(blueprint, request):
         raise ValueError('BLUEPRINT: stateful requires a write operation')
     answer_fields = blueprint.get('answer_fields')
     if answer_fields is not None or request.get('require_answer_fields'):
-        from .answer_fields import KINDS as FIELD_KINDS
+        from .answer_fields import KINDS as FIELD_KINDS, validate_observation
         if (not isinstance(answer_fields, dict) or not 1 <= len(answer_fields) <= 16
                 or any(not isinstance(name, str) or not name or not isinstance(field, dict)
                     or not {'kind', 'meaning'} <= set(field)
-                    or set(field) - {'kind', 'meaning', 'context_fields', 'evidence_mode'} or field['kind'] not in FIELD_KINDS
+                    or set(field) - {'kind', 'meaning', 'observation', 'context_fields', 'evidence_mode'} or field['kind'] not in FIELD_KINDS
                     or not isinstance(field['meaning'], str) or not field['meaning'].strip()
                     for name, field in answer_fields.items())):
             raise ValueError('BLUEPRINT: answer_fields must freeze kind and public meaning for every field')
-        for field in answer_fields.values():
+        for name, field in answer_fields.items():
+            if field['kind'] == 'observed':
+                try:
+                    validate_observation(field.get('observation'), tools, name)
+                except ValueError as exc:
+                    raise ValueError('BLUEPRINT: ' + str(exc)) from exc
+            elif 'observation' in field:
+                raise ValueError('BLUEPRINT: observation binding belongs only to observed fields: ' + name)
             context = field.get('context_fields', [])
             if (('context_fields' in field and field['kind'] != 'explanation')
                     or not isinstance(context, list) or any(not isinstance(key, str)

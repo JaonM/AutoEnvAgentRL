@@ -14,7 +14,8 @@ def blueprint():
         'requirements': {'input_modalities': ['text'], 'output_modalities': ['text']},
         'public_input': {'initial_user_message': 'Find an option in the catalogue', 'materials': []}},
         'environment_mode': 'reference_data', 'requirements': [{'id': 'fit', 'statement': 'Respect the user limit'}],
-        'answer_fields': {'option': {'kind': 'observed', 'meaning': 'Returned option identity'}},
+        'answer_fields': {'option': {'kind': 'observed', 'meaning': 'Returned option identity',
+                                   'observation': {'tool': 'quote', 'path': '$.records[0].id'}}},
         'tools': [{'name': 'lookup', 'purpose': 'Find collection identity', 'operation': 'select',
                    'inputs': {'name': {'kind': 'user', 'stage': 'collection'}}},
                   {'name': 'quote', 'purpose': 'Read option terms', 'operation': 'select',
@@ -67,6 +68,28 @@ def test_cycles_fail_early():
     plan['tools'][0]['inputs']['name'] = {'kind': 'tool', 'tool': 'quote', 'field': 'name'}
     with pytest.raises(ValueError, match='cyclic'):
         validate_blueprint(plan, request())
+
+
+@pytest.mark.parametrize('binding', [None, {'tools': [{'tool': 'quote', 'path': '$'}]},
+    {'user_stage': 'collection', 'path': '$.user_reply'}, {'trajectory': 'tool_attempts'},
+    {'tool': 'absent', 'path': '$'}, {'tool': 'quote', 'path': '$.'}])
+def test_unrepresentable_observations_fail_before_freezing_the_blueprint(binding):
+    plan = blueprint()
+    plan['answer_fields']['option']['observation'] = binding
+    with pytest.raises(ValueError, match='BLUEPRINT: ANSWER_FIELDS_INVALID.*option'):
+        validate_blueprint(plan, request())
+
+
+def test_supported_whole_response_binding_is_frozen_through_implementation():
+    plan, value = blueprint(), implementation()
+    plan['answer_fields']['option']['observation']['path'] = '$'
+    value['answer_fields']['option']['observation']['path'] = '$'
+    validate_blueprint(plan, request())
+    validate_implementation(plan, value, request())
+    for binding in [{'tool': 'lookup', 'path': '$'}, {'tool': 'quote', 'path': '$.records'}]:
+        value['answer_fields']['option']['observation'] = binding
+        with pytest.raises(ValueError, match='BLUEPRINT_DRIFT: answer field'):
+            validate_implementation(plan, value, request())
 
 
 def test_blueprint_rejects_interaction_kind_conflict_before_freezing():

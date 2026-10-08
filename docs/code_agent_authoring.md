@@ -1756,6 +1756,17 @@ Such answer normalization never satisfies a required process or retrieval gate.
 The path refers to the existing first successful process-matching read checkpoint;
 use a separate tool/checkpoint when the business goal requires a distinct later read.
 All origin and missing rules are public. Never put a private fixture answer in missing.
+At the blueprint stage, every observed field must already declare the same
+`observation: {tool, path}` binding to one declared business tool. The planner and
+compiler use the same observation grammar; missing bindings, pseudo-tools, malformed
+paths, multi-tool `observation.tools` and invented user/trajectory observation forms
+fail before the blueprint is frozen. Implementation must preserve the chosen binding
+as well as the field meaning and kind. Use separate fields for distinct observed
+responses, supported derived expressions for decisions, and semantic explanations
+for obligations grounded in actual user replies/tool statuses. This checks that a
+binding can be represented; execution and independent business-meaning review still
+establish whether it is the right evidence. Old unfinished blueprints without these
+bindings require replanning; completed task artifacts do not depend on blueprint validation.
 
 `derived` uses one `expression` and may reference other deterministic fields with
 `{"answer_field":"name"}`. References are expanded from the same definitions;
@@ -2065,6 +2076,20 @@ source for each question. Reference rendering supplies actual observed context a
 may be combined with observed option templates; live agent messages are never repaired.
 
 ### Repair budget after observed transport retries
+
+Fresh Codex blueprint invocations with at least 240 seconds of remaining author
+budget receive a 120-second startup activity check. Thread/turn start events and
+transport error notices alone do not count as substantive activity. A CLI item,
+completed turn or changed candidate/protected workspace file keeps the same process
+running against its original deadline. If there is still no such activity, the
+runner stops that process group and retries the same request at most once, using
+only the remaining author budget. No blueprint rejection or business repair is
+charged for that silent invocation; its elapsed time, log digest, activity check
+and invocation still remain in evidence. A second silent startup fails explicitly
+as `GEN_STARTUP_STALL`, without launching another task or inferring a network cause.
+Short-budget calls, implementation work and resumed fixed-blueprint work retain
+their normal deadlines. This bounds unproductive startup waiting; it is not proof
+of a provider outage or a guarantee that restarting improves a particular task.
 
 For author budgets of at least 120 seconds, if an earlier invocation emitted a reconnect
 notice and fewer than 120 positive seconds remain, the runner defers the next author

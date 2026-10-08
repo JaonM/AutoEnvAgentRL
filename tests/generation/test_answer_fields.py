@@ -95,9 +95,11 @@ def test_blueprint_freezes_meaning_and_role_before_implementation():
     from env_factory.generation.business_blueprint import validate_blueprint, validate_implementation
     plan, materialized, req = blueprint(), implementation(), request()
     req['require_answer_fields'] = True
-    plan['answer_fields'] = {'current': {'kind': 'observed', 'meaning': 'Observed current flag'}}
+    plan['answer_fields'] = {'current': {'kind': 'observed', 'meaning': 'Observed current flag',
+                                        'observation': {'tool': 'quote', 'path': '$.records[0].current'}}}
     materialized['answer_fields'] = {'current': {'kind': 'observed', 'schema': {
-        'type': 'boolean', 'description': 'Observed current flag'}}}
+        'type': 'boolean', 'description': 'Observed current flag'},
+        'observation': {'tool': 'quote', 'path': '$.records[0].current'}}}
     validate_blueprint(plan, req)
     validate_implementation(plan, materialized, req)
     materialized['answer_fields']['current']['kind'] = 'derived'

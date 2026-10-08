@@ -8,8 +8,21 @@ from env_factory.sandbox_runtime import validate_json_schema, SandboxError, Decl
 KINDS = {'observed', 'derived', 'explanation'}
 
 
+def validate_observation(ref, tools, name):
+    """One observation grammar for planning, compilation and runtime paths."""
+    if (not isinstance(ref, dict) or set(ref) != {'tool', 'path'}
+            or not isinstance(ref['tool'], str) or ref['tool'] not in tools
+            or not isinstance(ref['path'], str) or not ref['path'].startswith('$')):
+        raise ValueError('ANSWER_FIELDS_INVALID: ' + name + ' observation requires one declared tool and response JSON path')
+    try:
+        DeclarativeMetricEvaluator.path_tokens(ref['path'])
+    except SandboxError as exc:
+        raise ValueError('ANSWER_FIELDS_INVALID: ' + name + ' observation has unsupported JSON path') from exc
+
+
 def field_meanings(fields):
     return {name: {'kind': field['kind'], 'meaning': field['schema']['description'],
+                   **({'observation': copy.deepcopy(field['observation'])} if field['kind'] == 'observed' else {}),
                    **({'evidence_mode': field['evidence_mode']} if field.get('evidence_mode', 'runtime') != 'runtime' else {}),
                    **({'context_fields': field['context_fields']} if field.get('context_fields') else {})}
             for name, field in fields.items()}
@@ -45,14 +58,7 @@ def expand_answer_fields(source, *, required=False):
         public[name] = {'kind': kind, 'meaning': schema['description']}
         if kind == 'observed':
             ref = field['observation']
-            if (not isinstance(ref, dict) or set(ref) != {'tool', 'path'}
-                    or not isinstance(ref['tool'], str) or ref['tool'] not in tools
-                    or not isinstance(ref['path'], str) or not ref['path'].startswith('$')):
-                raise ValueError('ANSWER_FIELDS_INVALID: ' + name + ' observation requires declared tool and response JSON path')
-            try:
-                DeclarativeMetricEvaluator.path_tokens(ref['path'])
-            except SandboxError as exc:
-                raise ValueError('ANSWER_FIELDS_INVALID: ' + name + ' observation has unsupported JSON path') from exc
+            validate_observation(ref, tools, name)
             try:
                 validate_json_schema(schema, field['missing'])
             except SandboxError as exc:
