@@ -300,6 +300,17 @@ reset 恢复固定基准，快照恢复对应 episode 的 tick；绝不回退到
 模型生成的工具调用解析为 `assistant.tool_calls`，工具执行结果使用 `role="tool"`，
 并用 `tool_call_id` 对应调用。默认 Qwen 模板将其编码成 `<tool_call>` / `<tool_response>`。
 同一轮的多个工具调用按输出顺序执行，每个调用返回独立的 tool 消息。
+业务工具响应还包含 `retry_request_id`，可传给平台提供的 `retry_tool_call`
+（命名冲突时添加 `_` 前缀）。该工具重用原业务工具、参数和幂等键，原生调用 ID
+仍须保持唯一。提交后丢失响应的请求返回已提交结果，不重复写入；提交前失败的请求
+会重新执行，并检查当前授权和业务条件。要修改参数应重新调用业务工具，不能通过
+重试入口替换原参数。请求标识仅在当前 episode 有效，随本地和 HTTP 快照保存及恢复；
+reset 清空旧标识。时间查询和用户交互不提供此重试入口。重试仍消耗正常的 action/token
+预算，不自动重试、不读取 trainer-only 状态，也不会把基础设施错误当作业务故障。
+原生 `request_user_input` 也支持 `context` 和 `proposal`：前者保留公开交互约定要求
+展示的查询结果及原 JSON 类型；后者携带 `approval_proposal_tools` 指定的全部实际审批参数。
+这些已知值不属于 `requested_fields`。平台仍核对上下文是否来自真实查询，并将用户同意的
+参数冻结为后续写入约束；缺失、过期或伪造的上下文不会因适配层传递而获得授权。
 普通 assistant 文本直接提交给用户模拟器，不再使用 `kind=tool/respond` JSON 外层协议。
 初始 observation 和用户模拟器回复仍为 user 消息；无效调用格式返回协议错误，未知工具返回对应的 tool 错误。
 

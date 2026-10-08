@@ -8,11 +8,13 @@ from rl.environment import SandboxEpisode
 from rl.parallel_rollout import EnvironmentPool, parallel_rollouts
 from rl.rollout_worker import rollout
 from rl.environments.virtual_time import clock_tool
+from rl.environments.tool_transport import retry_tool
 
 
 TOOLS = [{'type': 'function', 'function': {'name': 'lookup', 'description': '查询数量',
     'parameters': {'type': 'object', 'properties': {'key': {'type': 'string'}}, 'required': ['key']}}}]
 CALL = '<tool_call>\n{"name":"lookup","arguments":{"key":"甲"}}\n</tool_call>'
+NATIVE_TOOLS = [*TOOLS, clock_tool(TOOLS), retry_tool([*TOOLS, clock_tool(TOOLS)])]
 
 
 def tokenizer(text):
@@ -68,13 +70,13 @@ def test_system_prompt_uses_sandbox_clock(sandbox_time):
     expected = SYSTEM_PROMPT if sandbox_time is None else SYSTEM_PROMPT.replace('{{current_time}}', sandbox_time)
     assert env.messages[0] == {'role': 'system', 'content': expected}
     assert calls == ['sandbox clock']
-    assert env.tools == [*TOOLS, env.time_tool]
+    assert env.tools == NATIVE_TOOLS
 
 
 def test_native_call_result_and_plain_user_response():
     env = NativeRuntime(None)
     env.reset(42)
-    assert env.tools == [*TOOLS, env.time_tool]
+    assert env.tools == NATIVE_TOOLS
     assert 'lookup' not in env.messages[0]['content']  # schemas travel separately
     original = [1, 2]
     sample = completion(tokenizer(CALL), original, TOOLS)
@@ -85,7 +87,10 @@ def test_native_call_result_and_plain_user_response():
     assert assistant['tool_calls'][0]['function']['name'] == 'lookup'
     assert result['role'] == 'tool' and result['name'] == 'lookup'
     assert result['tool_call_id'] == assistant['tool_calls'][0]['id']
-    assert json.loads(result['content']) == {'status': 200, 'tool_result': {'quantity': 7}}
+    response = json.loads(result['content'])
+    assert response == {'status': 200, 'tool_result': {'quantity': 7},
+                        'retry_request_id': next(iter(env.retry_requests))}
+    assert env.retry_requests[response['retry_request_id']]['arguments'] == {'key': '甲'}
     assert env.step(completion(tokenizer('7件'), [1, 2], TOOLS)['action']) == (0., True)
     assert env.messages[-1] == {'role': 'user', 'content': '收到'}
 
@@ -143,11 +148,11 @@ def test_reasoning_is_separate_from_user_submission():
 
 class NativePolicy:
     def encode(self, messages, *, tools):
-        assert tools == [*TOOLS, clock_tool(TOOLS)]
+        assert tools == NATIVE_TOOLS
         return [10]
 
     def sample(self, messages, max_tokens, max_context, *, tools, greedy=False):
-        assert tools == [*TOOLS, clock_tool(TOOLS)]
+        assert tools == NATIVE_TOOLS
         text = '7件' if messages[-1]['role'] == 'tool' else CALL
         return {'prompt': self.encode(messages, tools=tools), 'tokens': [1, 2], 'old_logp': [-.1, -.2],
                 **completion(tokenizer(text), [1, 2], tools)}

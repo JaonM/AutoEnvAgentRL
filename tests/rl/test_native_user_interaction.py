@@ -92,3 +92,58 @@ def test_native_tool_survives_snapshot_restore(tmp_path, runtime):
     state['tools'] = [state['tools'][0]]
     env.restore(state)
     assert env.user_interaction_tool is None
+
+
+def test_native_proposal_and_observed_context_reach_real_user_consent_and_write(tmp_path, monkeypatch):
+    from env_factory.sandbox_runtime import ApprovalTerms, ContractToolRegistry, ContractUserSimulator, SandboxApplication
+    from tests.runtime.test_proposal_approval import proposal_booking
+    store, data, stage, lifecycle, book, script, _ = proposal_booking(tmp_path)
+    stage['context_from'] = {'tool': 'quote', 'path': '$.records'}
+    stage['requires_tools'] = ['quote']
+    user = ContractUserSimulator(store, profiles=[{'profile_id': 'p'}], scripts=[script])
+    user.completion_check = lambda: False
+    quote = {'type': 'function', 'function': {'name': 'quote', 'parameters': {
+        'type': 'object', 'properties': {}, 'additionalProperties': False}}}
+    records = [{'id': 1, 'fee': 950}]
+    registry = ContractToolRegistry([quote, book], {'quote': lambda args: {'records': records},
+        'book': lambda args: {'updated': data.update('bookings', {'id': args['id']}, {'daily_fee': args['fee']})}},
+        event_recorder=store.event, lifecycle=lifecycle)
+    def reset(_):
+        data.reset()
+        user.reset()
+    app = SandboxApplication(episode_store=store, tool_registry=registry, observation=lambda: {},
+        reward=lambda: {}, user_turn=user.turn, reset_hook=reset)
+    monkeypatch.setenv('SANDBOX_TRAINER_API_KEY', 'native-proposal-test')
+    env = SandboxEpisode.__new__(SandboxEpisode)
+    env.app, env.headers = app, {'Authorization': 'Bearer native-proposal-test'}
+    env.task = {'task': '请确认报价后预订。', 'public_input': {'materials': [
+        {'name': 'user_interaction_format', 'content': 'structured_v1'}]}}
+    env.reset(17)
+    def call(name, params):
+        env.step({'role': 'assistant', 'tool_calls': [{'type': 'function', 'function': {
+            'name': name, 'arguments': params}}]})
+        return json.loads(env.messages[-1]['content'])
+    assert call('quote', {})['status'] == 200
+    consent = {'question': '请确认当前950报价。', 'business_tool': 'book', 'requested_fields': [],
+               'intent': 'confirm_execution', 'context': records, 'proposal': {'id': 1, 'fee': 950}}
+    # A stale or partial context must still fail at the actual user protocol.
+    call(env.user_interaction_tool['function']['name'], {**consent, 'context': []})
+    assert store.get_state('business_grants', []) == []
+    result = call(env.user_interaction_tool['function']['name'], consent)
+    assert result['status'] == 200
+    assert '950' in result['tool_result']['user_query']
+    assert store.get_state(ApprovalTerms.KEY)['book']['arguments'] == {'id': 1, 'fee': 950}
+    assert call('book', {'id': 1, 'fee': 1000})['status'] == 403
+    assert data.table('bookings')[0]['daily_fee'] == 0
+    assert call('book', {'id': 1, 'fee': 950})['status'] == 200
+    assert data.table('bookings')[0]['daily_fee'] == 950
+
+
+@pytest.mark.parametrize('value', [None, [], {}, {'$ref': 'hidden'}, float('nan')])
+def test_native_proposals_require_actual_scalar_values(value):
+    from env_factory.sandbox_runtime import SandboxError
+    from rl.environments.user_interaction import interaction_content
+    native = interaction_tool({'materials': [{'name': 'user_interaction_format'}]}, [{'function': {'name': 'book'}}])
+    with pytest.raises(SandboxError):
+        interaction_content({'question': 'Approve?', 'business_tool': 'book', 'requested_fields': [],
+                             'proposal': {'price': value}}, native['function']['parameters'])

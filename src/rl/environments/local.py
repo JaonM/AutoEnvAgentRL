@@ -90,6 +90,11 @@ class SandboxEpisode:
         from .virtual_time import clock_tool
         self.time_tool = clock_tool(self.tools)
         self.tools = [*self.tools, self.time_tool]
+        from .tool_transport import retry_tool
+        self.retry_tool = retry_tool(self.tools) if self.names else None
+        self.retry_requests = {}
+        if self.retry_tool is not None:
+            self.tools = [*self.tools, self.retry_tool]
         user = public.get('initial_user_message') or self.task['task']
         if public.get('materials'):
             user += '\nPublic materials: ' + json.dumps(public['materials'], ensure_ascii=False)
@@ -157,11 +162,23 @@ class SandboxEpisode:
                     name = call['function']['name']
                     interaction = getattr(self, 'user_interaction_tool', None)
                     clock = getattr(self, 'time_tool', None)
+                    retry = getattr(self, 'retry_tool', None)
+                    transport = {}
                     if getattr(self, 'terminated', False):
                         status, value = 409, {'error': 'episode already terminated'}
                     elif clock is not None and name == clock['function']['name']:
                         status, value = ((400, {'error': 'time query takes no arguments'}) if params
                                          else self.request('GET', '/v1/time'))
+                    elif retry is not None and name == retry['function']['name']:
+                        request_id = params.get('request_id')
+                        if set(params) != {'request_id'} or not isinstance(request_id, str) or not request_id:
+                            status, value = 400, {'error': 'retry requires only a nonempty request_id'}
+                        elif request_id not in self.retry_requests:
+                            status, value = 404, {'error': 'request_id is not from this episode'}
+                        else:
+                            original = self.retry_requests[request_id]
+                            status, value = self._business_request(original['tool_name'], original['arguments'], original['idempotency_key'])
+                            transport = {'retry_request_id': request_id, 'retried_tool': original['tool_name']}
                     elif interaction is not None and name == interaction['function']['name']:
                         from .user_interaction import interaction_content
                         from env_factory.sandbox_runtime import SandboxError
@@ -174,20 +191,28 @@ class SandboxEpisode:
                             status, value = 200, {'user_query': user['user_query'],
                                                 'should_end': self.terminated}
                     elif name in self.names:
-                        previous_headers = getattr(self, 'headers', {})
-                        self.headers = {**previous_headers, 'Idempotency-Key': call['id']}
-                        try:
-                            status, value = self.request('POST', '/v1/tools/' + name, params)
-                        finally:
-                            self.headers = previous_headers
+                        if retry is not None:
+                            request_id = 'request-' + uuid.uuid4().hex
+                            self.retry_requests[request_id] = {'tool_name': name, 'arguments': copy.deepcopy(params),
+                                                               'idempotency_key': call['id']}
+                            transport = {'retry_request_id': request_id}
+                        status, value = self._business_request(name, params, call['id'])
                     else:
                         status, value = 400, {'error': 'unknown tool', 'name': name}
                     self.messages.append({'role': 'tool', 'name': name, 'tool_call_id': call['id'],
-                        'content': json.dumps({'status': status, 'tool_result': value}, ensure_ascii=False)})
+                        'content': json.dumps({'status': status, 'tool_result': value, **transport}, ensure_ascii=False)})
             else:
                 user = self._user_turn(message['content'])
                 self.messages.append({'role': 'user', 'content': user['user_query']})
         return 0.0, self.terminated
+
+    def _business_request(self, name, arguments, idempotency_key):
+        previous_headers = getattr(self, 'headers', {})
+        self.headers = {**previous_headers, 'Idempotency-Key': idempotency_key}
+        try:
+            return self.request('POST', '/v1/tools/' + name, copy.deepcopy(arguments))
+        finally:
+            self.headers = previous_headers
 
     def _user_turn(self, content):
         self.request('POST', '/v1/agent_response', {'content': content})
@@ -214,6 +239,8 @@ class SandboxEpisode:
         payload = snapshot_database(self.app.episode_store.db_path)
         return {'database': payload, 'user_interaction_tool': copy.deepcopy(getattr(self, 'user_interaction_tool', None)),
                 'time_tool': copy.deepcopy(getattr(self, 'time_tool', None)),
+                'retry_tool': copy.deepcopy(getattr(self, 'retry_tool', None)),
+                'retry_requests': copy.deepcopy(getattr(self, 'retry_requests', {})),
                 **{name: copy.deepcopy(getattr(self, name)) for name in
             ('messages', 'conversation', 'reward', 'terminated', 'trace', 'tools')}, 'names': sorted(self.names)}
 
@@ -227,6 +254,8 @@ class SandboxEpisode:
 
     def _restore_interaction_tool(self, state):
         self.time_tool = copy.deepcopy(state.get('time_tool'))
+        self.retry_tool = copy.deepcopy(state.get('retry_tool'))
+        self.retry_requests = copy.deepcopy(state.get('retry_requests', {}))
         self.user_interaction_tool = copy.deepcopy(state.get('user_interaction_tool'))
         if 'user_interaction_tool' not in state:
             from .user_interaction import interaction_tool
