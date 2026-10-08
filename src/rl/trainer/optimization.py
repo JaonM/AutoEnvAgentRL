@@ -298,6 +298,12 @@ def prepared_records(session: TrainingSession, *, only_untrained=False):
 def validate_actor_group(session: TrainingSession, group):
     from rl.data.replay import validate_group
 
+    if group.get("quarantined") is True:
+        task = next((t for t in session.tasks if t.id == group.get("task_id")), None)
+        if (task is None or task.identity != group.get("task_identity")
+                or group.get("episodes") != [] or not group.get("reason")):
+            raise ValueError("invalid sandbox quarantine evidence")
+        return
     validate_group(group, session.tasks)
     if group.get("policy_identity") != session.policy_identity:
         raise ValueError("trajectory policy identity mismatch")

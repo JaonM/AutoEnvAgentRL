@@ -2,7 +2,7 @@
 # Single-host Docker sandbox manager (default); no Kubernetes/registry required.
 # start: detach manager, asynchronously prewarm and publish services.json.
 # status: show readiness; stop: ask manager to reclaim its containers and save logs.
-# Example: ./scripts/sandbox_services.sh start --sandbox output/sandbox/task-1 \
+# Example: ./scripts/sandbox_services.sh start --sandbox output/artifacts/artifact-1/sandbox \
 #   --output output/services --max-active 4 --startup-workers 2
 # Requires Docker and SANDBOX_TRAINER_API_KEY (same key for standalone training).
 # --images optionally maps task IDs to images; default uses qualified image metadata.

@@ -63,14 +63,35 @@ class TrainingSession:
                         self.state.groups += 1
                         index = group["dataset_index"]
                         path = self.output / f"group-{self.state.groups:04d}.json"
+                        if group.get("quarantined") is True:
+                            write_json(path, group)
+                            self.state.consumed_jobs.add(index)
+                            self.state.skipped_jobs[str(index)] = "environment_quarantined"
+                            self.state.inflight["records"].append({
+                                "dataset_index": index, "path": str(path),
+                                "sha256": sha256(path), "eligible": False, "trained": True,
+                                "quarantined": True,
+                            })
+                            remaining -= 1
+                            wanted = min(self.config.mini_batch_size, remaining)
+                            self.monitor.runtime.emit("task/quarantined", text=group["reason"],
+                                                      dataset_index=index, task_id=group["task_id"])
+                            self.metrics.append({"event": "environment_quarantined",
+                                "task_id": group["task_id"], "dataset_index": index,
+                                "rollout_attempt": group.get("rollout_attempt", 0), "reason": group["reason"]})
+                            self.commit()
+                            continue
                         attach_contract(group)
                         with self.times.measure("actor_rollout_io"):
                             write_json(path, group)
                         self.times.ingest_rollout(group)
                         self.monitor.group(group, self.state.groups, self.state.updates)
+                        from rl.observability.telemetry import group_metrics
                         self.metrics.append(
                             {
                                 "event": "rollout_received",
+                                "rollout_attempt": group.get("rollout_attempt", 0),
+                                "learning_signal": group_metrics(group),
                                 "task_id": group["task_id"],
                                 "dataset_index": index,
                                 "group": self.state.groups,
@@ -193,7 +214,9 @@ class TrainingSession:
                             self.schedule.jobs[record["dataset_index"]]["task_id"]
                             for record in self.state.inflight["records"]
                         ],
-                        "fresh_rollouts": len(jobs) * self.config.rollout_group,
+                        "fresh_rollouts": sum(not record.get("quarantined", False)
+                                              for record in self.state.inflight["records"])
+                                          * self.config.rollout_group,
                         "group_paths": [
                             record["path"] for record in self.state.inflight["records"]
                         ],
@@ -215,6 +238,8 @@ class TrainingSession:
                 keep=self.config.checkpoint_keep,
                 group_keep=self.config.group_artifacts_keep,
             )
+            from rl.observability.learning_signals import summarize_learning_signals
+            write_json(self.output / "learning_signals.json", summarize_learning_signals(self.metrics))
             self.metrics.export()
             self.optimizer_metrics.export()
         return self.finalize()

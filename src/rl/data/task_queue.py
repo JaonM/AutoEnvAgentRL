@@ -2,6 +2,8 @@
 from contextlib import contextmanager
 import fcntl
 import json
+import hashlib
+import time
 from pathlib import Path
 
 from rl.checkpointing.checkpoint import atomic_json
@@ -11,6 +13,23 @@ class TaskQueue:
     def __init__(self, root, jobs, capacity):
         self.root, self.jobs, self.capacity = Path(root), jobs, capacity
         self.root.mkdir(parents=True, exist_ok=True)
+
+    def quarantine_path(self, task_id):
+        identity = hashlib.sha256(task_id.encode()).hexdigest()
+        return self.root / 'quarantine' / f'{identity}.json'
+
+    def quarantine(self, task_id, task_identity, error):
+        """Persist run-local exclusion; never fabricate an episode or reward."""
+        atomic_json(self.quarantine_path(task_id), {
+            'task_id': task_id, 'task_identity': task_identity,
+            'reason': str(error), 'recorded_at': time.time(),
+        })
+
+    def publish_quarantine(self, job, record):
+        self.publish({**job, 'quarantined': True, 'shared_task': True,
+                      'task_identity': record['task_identity'],
+                      'reason': record['reason'], 'episodes': [],
+                      'finished_at': time.time()})
 
     def commit_consumed(self, indices, attempts=None):
         atomic_json(self.root / 'consumed.json', {'consumed':sorted(indices),
@@ -55,6 +74,12 @@ class TaskQueue:
                     lock.close()
                     continue
                 try:
+                    quarantine = self.quarantine_path(job['task_id'])
+                    if quarantine.exists():
+                        self.publish_quarantine(job, json.loads(quarantine.read_text()))
+                        lock.close()
+                        outstanding += 1
+                        continue
                     eligible = ready is None or ready(job)
                 except BaseException:
                     lock.close()

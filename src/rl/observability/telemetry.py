@@ -73,7 +73,17 @@ def group_metrics(group):
     tokens = sum(len(a['tokens']) for a in actions)
     compute = sum(a.get('generation_compute_seconds', 0.) for a in actions)
     tools = [t for e in episodes for t in e.get('trace', []) if t['path'].startswith('/v1/tools/')]
+    from rl.algorithms.advantages import group_advantages
+    successes = sum(e['terminated'] and e['final_reward'] >= 1.-1e-9 for e in episodes)
     values = {
+        'reward_successes': successes,
+        'reward_non_success_rate': 1 - successes / len(episodes),
+        'all_success_group': int(successes == len(episodes)),
+        'all_failure_group': int(all(reward <= 0 for reward in rewards)),
+        'grpo_group_eligible': int(len(rewards) >= 2),
+        'grpo_zero_advantage_group': int(len(rewards) >= 2 and all(abs(a) < 1e-8 for a in group_advantages(rewards))),
+        'high_reward_unterminated': sum(not e['terminated'] and e['final_reward'] >= 1.-1e-9 for e in episodes),
+        'reward_range': max(rewards) - min(rewards),
         'reward_mean': statistics.mean(rewards), 'reward_std': statistics.pstdev(rewards),
         'reward_min': min(rewards), 'reward_max': max(rewards),
         'zero_reward_variance': int(max(rewards) == min(rewards)),

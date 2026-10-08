@@ -8,7 +8,7 @@ import traceback
 
 from rl.checkpointing.checkpoint import atomic_json
 from rl.rollout.process_control import pin_policy
-from rl.errors import InfrastructureError, ContextBudgetExceeded
+from rl.errors import InfrastructureError, ContextBudgetExceeded, EnvironmentProtocolError
 from rl.data.contracts import attach_contract
 from rl.data.tasks import TaskSpec, load_tasks
 from rl.data.task_queue import TaskQueue
@@ -147,8 +147,17 @@ def rollout_worker_main(index, config, shared_version, results, stop):
                         'dataset_index': count, 'attempt': attempt, 'task_id': task.id,
                         'policy_version': version, 'seed': seed},
                         samples=config.get('rollout_trace_samples', 1), max_chars=config.get('rollout_trace_max_chars', 16000))
-                    episodes = parallel_rollouts(policy,env,config,seed,stop=stop,notify=notify,
-                                                 continuation=continuation, observe=observer)
+                    try:
+                        episodes = parallel_rollouts(policy,env,config,seed,stop=stop,notify=notify,
+                                                     continuation=continuation, observe=observer)
+                    except EnvironmentProtocolError as error:
+                        task_queue.quarantine(task.id, task.identity, error)
+                        logger.emit('task/quarantined', text=str(error), task_id=task.id,
+                                    dataset_index=count)
+                        env.close()
+                        env = None
+                        current_task = None
+                        continue
                     for episode in episodes:
                         episode['task_id'] = task.id
                     group = {**job, 'schema_version':2, 'rollout_worker':index, 'group_id':f'{config.get("_run_id", "local")}/job-{count}-attempt-{attempt}', 'group_index':count,

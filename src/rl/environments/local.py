@@ -87,6 +87,11 @@ class SandboxEpisode:
         self.tools = self.request('GET', '/v1/tools')[1]['tools']
         self.names = {tool['function']['name'] for tool in self.tools}
         public = self.task.get('public_input', {})
+        from .user_interaction import interaction_tool, policy_public_input
+        self.user_interaction_tool = interaction_tool(public, self.tools)
+        if self.user_interaction_tool is not None:
+            self.tools = [*self.tools, self.user_interaction_tool]
+            public = policy_public_input(public, self.user_interaction_tool)
         user = public.get('initial_user_message') or self.task['task']
         if public.get('materials'):
             user += '\nPublic materials: ' + json.dumps(public['materials'], ensure_ascii=False)
@@ -94,8 +99,13 @@ class SandboxEpisode:
         self.messages = [{'role': 'system', 'content': render_system_prompt(self.get_current_time())},
             *self.conversation]
         # Observation endpoint is policy-visible by the sandbox contract.
+        observation = copy.deepcopy(self.request('GET', '/v1/observation')[1])
+        if self.user_interaction_tool is not None:
+            visible = observation.get('public_observation', {})
+            if isinstance(visible, dict) and isinstance(visible.get('task_input'), dict):
+                visible['task_input'] = policy_public_input(visible['task_input'], self.user_interaction_tool)
         self.messages.append({'role': 'user', 'content': json.dumps(
-            {'observation': self.request('GET', '/v1/observation')[1]}, ensure_ascii=False)})
+            {'observation': observation}, ensure_ascii=False)})
         self.reward = None
         self.terminated = False
         return self.messages
@@ -147,7 +157,21 @@ class SandboxEpisode:
             if calls:
                 for call, params in zip(calls, arguments):
                     name = call['function']['name']
-                    if name in self.names:
+                    interaction = getattr(self, 'user_interaction_tool', None)
+                    if getattr(self, 'terminated', False):
+                        status, value = 409, {'error': 'episode already terminated'}
+                    elif interaction is not None and name == interaction['function']['name']:
+                        from .user_interaction import interaction_content
+                        from env_factory.sandbox_runtime import SandboxError
+                        try:
+                            content = interaction_content(params, interaction['function']['parameters'])
+                        except SandboxError as error:
+                            status, value = 400, {'error': str(error)}
+                        else:
+                            user = self._user_turn(content)
+                            status, value = 200, {'user_query': user['user_query'],
+                                                'should_end': self.terminated}
+                    elif name in self.names:
                         previous_headers = getattr(self, 'headers', {})
                         self.headers = {**previous_headers, 'Idempotency-Key': call['id']}
                         try:
@@ -159,13 +183,17 @@ class SandboxEpisode:
                     self.messages.append({'role': 'tool', 'name': name, 'tool_call_id': call['id'],
                         'content': json.dumps({'status': status, 'tool_result': value}, ensure_ascii=False)})
             else:
-                self.request('POST', '/v1/agent_response', {'content': message['content']})
-                self.conversation.append({'role': 'assistant', 'content': message['content']})
-                user = self.request('POST', '/v1/user_simulator', {'messages': self.conversation})[1]
-                self.conversation.append({'role': 'user', 'content': user['user_query']})
+                user = self._user_turn(message['content'])
                 self.messages.append({'role': 'user', 'content': user['user_query']})
-                self.terminated = bool(user.get('should_end'))
         return 0.0, self.terminated
+
+    def _user_turn(self, content):
+        self.request('POST', '/v1/agent_response', {'content': content})
+        self.conversation.append({'role': 'assistant', 'content': content})
+        user = self.request('POST', '/v1/user_simulator', {'messages': self.conversation})[1]
+        self.conversation.append({'role': 'user', 'content': user['user_query']})
+        self.terminated = bool(user.get('should_end'))
+        return user
 
     def finish(self):
         if self.reward is None:
@@ -175,7 +203,7 @@ class SandboxEpisode:
             self.reward = reward
         replay = self.request('GET', '/v1/replay')[1]
         if any(e.get('payload', {}).get('used_fallback') for e in replay.get('events', [])):
-            raise ValueError('sandbox runtime used fallback')
+            raise InfrastructureError('sandbox runtime used fallback')
         return {'final_reward': self.reward, 'terminated': self.terminated, 'trace': self.trace}
 
     def snapshot(self):
@@ -188,7 +216,8 @@ class SandboxEpisode:
         finally:
             memory.close()
             database.close()
-        return {'database': payload, **{name: copy.deepcopy(getattr(self, name)) for name in
+        return {'database': payload, 'user_interaction_tool': copy.deepcopy(getattr(self, 'user_interaction_tool', None)),
+                **{name: copy.deepcopy(getattr(self, name)) for name in
             ('messages', 'conversation', 'reward', 'terminated', 'trace', 'tools')}, 'names': sorted(self.names)}
 
     def restore(self, state):
@@ -203,6 +232,17 @@ class SandboxEpisode:
         for name in ('messages', 'conversation', 'reward', 'terminated', 'trace', 'tools'):
             setattr(self, name, copy.deepcopy(state[name]))
         self.names = set(state['names'])
+        self._restore_interaction_tool(state)
+
+    def _restore_interaction_tool(self, state):
+        self.user_interaction_tool = copy.deepcopy(state.get('user_interaction_tool'))
+        if 'user_interaction_tool' not in state:
+            from .user_interaction import interaction_tool
+            business = [tool for tool in self.tools if tool['function']['name'] in self.names]
+            expected = interaction_tool(self.task.get('public_input', {}), business)
+            if expected is not None:
+                self.user_interaction_tool = next((copy.deepcopy(tool) for tool in self.tools
+                    if tool['function']['name'] == expected['function']['name']), None)
 
     def close(self):
         if self._closed:

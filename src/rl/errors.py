@@ -6,3 +6,7 @@ class InfrastructureError(RuntimeError):
 
 class ContextBudgetExceeded(ValueError):
     pass
+
+
+class EnvironmentProtocolError(RuntimeError):
+    """Non-retryable environment RPC failure; never a policy failure reward."""

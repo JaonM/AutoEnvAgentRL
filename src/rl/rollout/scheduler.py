@@ -14,7 +14,7 @@ import threading
 import time
 import traceback
 
-from rl.errors import InfrastructureError, ContextBudgetExceeded
+from rl.errors import InfrastructureError, ContextBudgetExceeded, EnvironmentProtocolError
 from rl.data.trajectory import assign_episode_reward
 
 
@@ -217,7 +217,7 @@ def parallel_rollouts(policy, pool, config, seed, *, stop=None, notify=None, con
             except EOFError as error:
                 raise InfrastructureError('environment worker disconnected') from error
             if 'error' in reply:
-                error_type = InfrastructureError if reply['retryable'] else RuntimeError
+                error_type = InfrastructureError if reply['retryable'] else EnvironmentProtocolError
                 raise error_type(reply['error'])
             operation = state['operation']
             state['rpc_intervals'].append({'operation':operation,

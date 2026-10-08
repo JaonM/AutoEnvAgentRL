@@ -111,6 +111,7 @@ class RemoteSandboxEpisode(SandboxEpisode):
         if status != 200:
             raise InfrastructureError('remote snapshot failed')
         return {'database': payload['database'], 'artifact_identity': self.identity,
+                'user_interaction_tool': copy.deepcopy(getattr(self, 'user_interaction_tool', None)),
                 **{name: copy.deepcopy(getattr(self, name)) for name in
                    ('messages', 'conversation', 'reward', 'terminated', 'trace', 'tools')}, 'names': sorted(self.names)}
 
@@ -123,6 +124,7 @@ class RemoteSandboxEpisode(SandboxEpisode):
         for name in ('messages', 'conversation', 'reward', 'terminated', 'trace', 'tools'):
             setattr(self, name, copy.deepcopy(state[name]))
         self.names = set(state['names'])
+        self._restore_interaction_tool(state)
 
     def close(self):
         if self._closed:
