@@ -2601,8 +2601,10 @@ class ContractRewardGate:
                                 edge["consumer_arguments"], variables)
                         except SandboxError:
                             return False
+                        transport = edge.get('consumer_transport_arguments', [])
                         return any(item["payload"].get("tool_name") == edge.get("to_tool")
-                                   and item["payload"].get("arguments", {}) == expected
+                                   and {key: value for key, value in item['payload'].get('arguments', {}).items()
+                                        if key not in transport} == expected
                                    for item in calls[start:])
                     producer = plan[position]
                     try:

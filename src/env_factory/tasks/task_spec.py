@@ -131,8 +131,11 @@ def _explicit_changes(task_description: Mapping[str, Any]) -> list[dict[str, str
     ]
 
 
-def _capability_edges(scenarios: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+def _capability_edges(scenarios: Sequence[Mapping[str, Any]],
+                      implementations: Sequence[Mapping[str, Any]] = ()) -> list[dict[str, Any]]:
     edges: list[dict[str, Any]] = []
+    cursors = {item['tool_name']: item['pagination']['cursor_argument']
+               for item in implementations if item.get('operation') == 'select' and item.get('pagination')}
     for scenario in scenarios:
         if scenario.get("kind") != "goal_success":
             continue
@@ -143,7 +146,12 @@ def _capability_edges(scenarios: Sequence[Mapping[str, Any]]) -> list[dict[str, 
             if step.get("operation") != "tool_call":
                 continue
             tool_name = str(step.get("tool_name", ""))
-            for reference, argument_path, expression in _ref_paths(step.get("arguments", {})):
+            # A transport cursor advances this same query; it is not another
+            # business dependency. CompleteRetrieval checks actual exhaustion,
+            # including zero/one-page queries and queries longer than references.
+            arguments = {key: value for key, value in step.get('arguments', {}).items()
+                         if key != cursors.get(tool_name)}
+            for reference, argument_path, expression in _ref_paths(arguments):
                 producer = producers.get(reference)
                 if producer and producer[0] != tool_name:
                     edge = {"from_tool": producer[0], "to_tool": tool_name, "via": reference,
@@ -157,20 +165,24 @@ def _capability_edges(scenarios: Sequence[Mapping[str, Any]]) -> list[dict[str, 
                             "path": producers[name][1]} for name in refs]
                     # Preserve call provenance, including the inputs that distinguish
                     # repeated uses of one tool. Ancestors provide those inputs.
-                    needed = set()
+                    needed: dict[int, set[str]] = {}
                     def require_capture(name):
                         position = producer_steps.get(name)
-                        if position is None or position in needed:
+                        if position is None or name in needed.get(position, set()):
                             return
-                        needed.add(position)
+                        needed.setdefault(position, set()).add(name)
                         for parent in _refs(calls[position].get("arguments", {})):
                             require_capture(parent)
-                    for name in _refs(step.get("arguments", {})):
+                    for name in _refs(arguments):
                         require_capture(name)
                     edge["capture_plan"] = [
-                        {key: calls[position].get(key, {}) for key in ("tool_name", "arguments", "capture")}
+                        {**{key: calls[position].get(key, {}) for key in ('tool_name', 'arguments')},
+                         'capture': {name: path for name, path in calls[position].get('capture', {}).items()
+                                     if name in needed[position]}}
                         for position in sorted(needed)]
-                    edge["consumer_arguments"] = step.get("arguments", {})
+                    edge["consumer_arguments"] = arguments
+                    if tool_name in cursors:
+                        edge['consumer_transport_arguments'] = [cursors[tool_name]]
                     if 'user_script_indices' in scenario:
                         edge['user_script_ids'] = [f'script-{index + 1}' for index in scenario['user_script_indices']]
                     if edge not in edges:
@@ -314,7 +326,7 @@ def compile_task_spec(
             source = action_tools.get(dependency)
             if source and target and source != target:
                 edges.append({"from_tool": source, "to_tool": target, "via": "capability_dependency"})
-    for edge in _capability_edges(scenarios):
+    for edge in _capability_edges(scenarios, tool_implementations):
         if edge not in edges:
             edges.append(edge)
     spec = {

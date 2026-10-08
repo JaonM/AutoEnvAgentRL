@@ -1552,6 +1552,14 @@ rows. Obtain required identities from a real read, an inserted record, or the
 original disclosed input. Impossible paths must be replanned before freezing;
 downstream provenance and transaction requirements remain enforced.
 
+Pagination cursors are transport dependencies within one query. Compiled business
+edges compare the actual business arguments and retain the producer captures they
+need; they do not require the reference's fixed number of pages. Complete-retrieval
+contracts still require an actual matching query, every intervening cursor and
+exhaustion at the observed total, including an empty result's single page. When a
+later business action consumes a record from a later page, its witness retains the
+cursor ancestors needed to obtain that record.
+
 Stages declare a primary `kind`. Optional `allowed_kinds` permits variations such as
 option selection versus correction while preserving the same tool argument and business
 obligation. It must include the primary kind and cannot mix execution confirmation with
