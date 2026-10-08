@@ -9,7 +9,8 @@ KINDS = {'observed', 'derived', 'explanation'}
 
 
 def field_meanings(fields):
-    return {name: {'kind': field['kind'], 'meaning': field['schema']['description']}
+    return {name: {'kind': field['kind'], 'meaning': field['schema']['description'],
+                   **({'context_fields': field['context_fields']} if field.get('context_fields') else {})}
             for name, field in fields.items()}
 
 
@@ -34,7 +35,8 @@ def expand_answer_fields(source, *, required=False):
         kind = field['kind']
         expected = {'kind', 'schema'} | ({'observation', 'missing'} if kind == 'observed'
             else {'expression'} if kind == 'derived' else set())
-        if set(field) - expected - {'tolerance', 'array_order'} or not expected <= set(field):
+        optional = {'context_fields'} if kind == 'explanation' else {'tolerance', 'array_order'}
+        if set(field) - expected - optional or not expected <= set(field):
             raise ValueError('ANSWER_FIELDS_INVALID: invalid definition for ' + name)
         schema = field['schema']
         if not isinstance(schema, dict) or not isinstance(schema.get('description'), str) or not schema['description'].strip():
@@ -57,8 +59,17 @@ def expand_answer_fields(source, *, required=False):
                 rule='Copy the observed value even when several records exist; use missing only when this path has no value. Uniqueness and eligibility are separate derived fields.')
         elif kind == 'derived':
             expressions[name] = copy.deepcopy(field['expression'])
-        elif schema.get('type') != 'string' or 'enum' in schema or set(field) != expected:
-            raise ValueError('ANSWER_FIELDS_INVALID: explanation must be an open string without deterministic comparison options')
+        else:
+            if schema.get('type') != 'string' or 'enum' in schema:
+                raise ValueError('ANSWER_FIELDS_INVALID: explanation must be an open string without deterministic comparison options')
+            context = field.get('context_fields', [])
+            if (not isinstance(context, list) or any(not isinstance(key, str)
+                    or not isinstance(fields.get(key), dict)
+                    or fields[key].get('kind') not in {'observed', 'derived'} for key in context)
+                    or len(set(context)) != len(context)):
+                raise ValueError('ANSWER_FIELDS_INVALID: explanation context must uniquely select observed or derived fields')
+            if context:
+                public[name]['context_fields'] = list(context)
 
     remaining_nodes = 20000
     def resolve(value, stack=(), depth=0):
@@ -96,6 +107,12 @@ def expand_answer_fields(source, *, required=False):
         elif 'semantic' in outcome:
             if any(fields.get(name, {}).get('kind') != 'explanation' for name in outcome['semantic'].get('fields', [])):
                 raise ValueError('ANSWER_FIELDS_INVALID: semantic outcomes may own only explanation fields')
+            if 'context_fields' in outcome['semantic']:
+                raise ValueError('ANSWER_FIELDS_DUPLICATE: explanation context is derived from answer_fields')
+            context = list(dict.fromkeys(key for name in outcome['semantic'].get('fields', [])
+                for key in fields[name].get('context_fields', [])))
+            if context:
+                outcome['semantic']['context_fields'] = context
         elif outcome.get('rule', {}).get('source') == 'final_agent_response':
             raise ValueError('ANSWER_FIELDS_DUPLICATE: select field IDs instead of restating answer reward expressions')
     result['answer_contract'] = {'format': 'json_object', 'schema': {'type': 'object',

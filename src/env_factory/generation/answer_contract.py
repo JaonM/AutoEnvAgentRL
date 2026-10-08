@@ -207,6 +207,7 @@ def bind_answer_contract(source: dict) -> dict | None:
     if len(structured) != len(rules) or any(rule.get("path") != "$" for rule in structured):
         raise ValueError("ANSWER_CONTRACT_INVALID: use value_targets at $ for every JSON answer metric")
     keys = [target["key"] for rule in structured for target in rule["expected"]["targets"]]
+    deterministic_keys = set(keys)
     for metric in semantic:
         fields = metric["semantic_fields"]
         if not isinstance(fields, list) or not fields or any(not isinstance(key, str) for key in fields):
@@ -216,6 +217,11 @@ def bind_answer_contract(source: dict) -> dict | None:
             if field.get("type") != "string" or "enum" in field:
                 raise ValueError("ANSWER_CONTRACT_SEMANTIC: semantic fields must be open strings")
         keys.extend(fields)
+        context = metric.get('semantic_context_fields', [])
+        if (not isinstance(context, list) or any(not isinstance(key, str)
+                or key not in deterministic_keys for key in context)
+                or len(set(context)) != len(context)):
+            raise ValueError('ANSWER_CONTRACT_SEMANTIC: context fields require deterministic value_targets ownership')
     if len(keys) != len(set(keys)) or set(keys) != set(schema["properties"]):
         raise ValueError("ANSWER_CONTRACT_COVERAGE: public fields must each have exactly one reward target")
     private_values = {
@@ -319,10 +325,15 @@ def bind_answer_contract(source: dict) -> dict | None:
             + json.dumps(array_comparisons, ensure_ascii=False, sort_keys=True))
     if semantic:
         public_criteria = [{"fields": metric["semantic_fields"], "rubric": metric["rubric"],
-                            "criteria": metric["criteria"]} for metric in semantic]
+                            "criteria": metric["criteria"],
+                            **({'context_fields': metric['semantic_context_fields']}
+                               if metric.get('semantic_context_fields') else {})} for metric in semantic]
         public["semantic_answer_criteria"] = copy.deepcopy(public_criteria)
         public["initial_user_message"] += (
             "\n\nFor the following explanation fields, faithful paraphrases are accepted. "
-            "Their meaning is evaluated against these public criteria, not exact wording:\n"
+            "Their meaning is evaluated against these public criteria, not exact wording. "
+            "Declared context_fields supply separately checked structured facts: explanations may refer "
+            "to those facts without copying them again. Still explain every required inference; "
+            "contradictions and unsupported claims fail. This does not remove any explicit business obligation:\n"
             + json.dumps(public_criteria, ensure_ascii=False, sort_keys=True))
     return copy.deepcopy(contract)

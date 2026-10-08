@@ -1703,6 +1703,29 @@ required. `explanation` has an open string schema and remains owned by an ordina
 semantic outcome, with explicit criteria and positive/negative calibration cases.
 Stateful `business_contract.report_outcomes` also accepts `fields` references.
 
+An explanation field may declare `context_fields: ["count", "unique"]`. Freeze
+the same list in its blueprint entry. These must uniquely name observed or derived
+fields, never another explanation. The compiler derives the semantic outcome's
+context from its owned explanation fields; do not repeat `context_fields` in a
+shared-field outcome. Legacy semantic outcomes may declare the list directly.
+Each supporting field must have exactly one deterministic value target.
+
+The runtime independently checks each supporting value against that target using
+the actual executed state/read checkpoints and the same tolerance/array rules.
+The judge receives only successful checks in `verified_answer_context`, alongside
+the projected explanation and actual evidence. Failed checks are listed by name,
+without their submitted values, and retain their deterministic penalty. A failed
+unrelated fact does not automatically fail the explanation. Neither aggregate
+metric scores nor submitted claims of verification establish a supporting fact.
+Context is part of judgment cache identity and is rebuilt in calibration cases.
+
+Criteria should state the inference still required, such as why multiple current
+records prevent a unique selection. Correct structured facts can be referenced
+without copying them into prose; they do not substitute for that inference. Include
+two faithful paraphrases and negatives for contradiction and missing/incorrect
+reasoning. Independent review must still check the original goal and reject a
+wrong business rule shared consistently across generated artifacts.
+
 The compiler derives the final answer schema, publishes `answer_field_semantics`
 and binds each field to exactly one outcome. Do not repeat a structured fact as a
 separate prose obligation unless the original goal requires it; preserve actual

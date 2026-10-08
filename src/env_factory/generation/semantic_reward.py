@@ -19,7 +19,9 @@ def compile_semantic_outcome(item: dict, *, schema: dict, weight: float,
     The caller must run them with the actual evaluator before accepting the task.
     """
     semantic = item.get("semantic")
-    if "rule" in item or not isinstance(semantic, dict) or set(semantic) != {"fields", "criteria", "cases"}:
+    if ("rule" in item or not isinstance(semantic, dict)
+            or not {"fields", "criteria", "cases"} <= set(semantic)
+            or set(semantic) - {"fields", "criteria", "cases", "context_fields"}):
         raise ValueError("SEMANTIC_REWARD_CONTRACT: declare semantic fields, criteria and cases, without rule")
     fields, criteria, cases = (semantic[key] for key in ("fields", "criteria", "cases"))
     properties = schema.get("properties", {})
@@ -29,6 +31,11 @@ def compile_semantic_outcome(item: dict, *, schema: dict, weight: float,
     for field in fields:
         if properties[field].get("type") != "string" or "enum" in properties[field]:
             raise ValueError("SEMANTIC_REWARD_FIELDS: open explanation fields require strings without an enum")
+    context_fields = semantic.get('context_fields', [])
+    if (not isinstance(context_fields, list) or any(not isinstance(key, str)
+            or key not in properties or key in fields for key in context_fields)
+            or len(set(context_fields)) != len(context_fields)):
+        raise ValueError('SEMANTIC_REWARD_CONTEXT: context must uniquely name separate public answer fields')
     if (not isinstance(criteria, list) or not criteria or len(criteria) > 16
             or any(not isinstance(x, str) or not x.strip() for x in criteria)):
         raise ValueError("SEMANTIC_REWARD_CRITERIA: provide explicit public meaning-based criteria")
@@ -92,7 +99,8 @@ def compile_semantic_outcome(item: dict, *, schema: dict, weight: float,
                      *criteria],
         "evaluator": {"kind": "external_llm_judge", "source": "external_llm",
                       "score_mapping": {"pass": 1, "fail": 0}},
-        "semantic_fields": list(fields)}
+        "semantic_fields": list(fields),
+        **({'semantic_context_fields': list(context_fields)} if context_fields else {})}
     return metric, copy.deepcopy(cases)
 
 

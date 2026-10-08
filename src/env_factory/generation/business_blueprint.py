@@ -17,6 +17,8 @@ Schema:
   observed flag into false. Give uniqueness/eligibility their own derived fields.
   Explanation obligations describe reasoning beyond facts already reported in
   structured fields; identify any genuinely required cross-field inference.
+  Explanation entries may add context_fields: a list of observed/derived field
+  names supplying facts for that inference. Freeze these dependencies too.
   Freeze these meanings and roles now; source.answer_fields must preserve them.
 - requirements: nonempty list of {id, statement}, one per actual business obligation.
 - tools: list of {name, purpose, operation, inputs: {argument_name: origin}}.
@@ -141,10 +143,18 @@ def validate_blueprint(blueprint, request):
         from .answer_fields import KINDS as FIELD_KINDS
         if (not isinstance(answer_fields, dict) or not 1 <= len(answer_fields) <= 16
                 or any(not isinstance(name, str) or not name or not isinstance(field, dict)
-                    or set(field) != {'kind', 'meaning'} or field['kind'] not in FIELD_KINDS
+                    or not {'kind', 'meaning'} <= set(field)
+                    or set(field) - {'kind', 'meaning', 'context_fields'} or field['kind'] not in FIELD_KINDS
                     or not isinstance(field['meaning'], str) or not field['meaning'].strip()
                     for name, field in answer_fields.items())):
             raise ValueError('BLUEPRINT: answer_fields must freeze kind and public meaning for every field')
+        for field in answer_fields.values():
+            context = field.get('context_fields', [])
+            if (('context_fields' in field and field['kind'] != 'explanation')
+                    or not isinstance(context, list) or any(not isinstance(key, str)
+                        or key not in answer_fields or answer_fields[key]['kind'] == 'explanation' for key in context)
+                    or len(set(context)) != len(context)):
+                raise ValueError('BLUEPRINT: explanation context must uniquely select observed or derived fields')
     for stage in stages.values():
         if (not isinstance(stage.get('kind'), str) or stage['kind'] not in KINDS
                 or not isinstance(stage.get('before_tool'), str) or stage['before_tool'] not in tools
@@ -250,7 +260,9 @@ def validate_implementation(blueprint, source, request):
             actual_meanings = field_meanings(source.get('answer_fields', {}))
         except (KeyError, TypeError, AttributeError) as exc:
             raise ValueError('BLUEPRINT_DRIFT: invalid answer field definitions') from exc
-        if actual_meanings != blueprint['answer_fields']:
+        expected_meanings = {name: {key: value for key, value in field.items()
+            if key != 'context_fields' or value} for name, field in blueprint['answer_fields'].items()}
+        if actual_meanings != expected_meanings:
             raise ValueError('BLUEPRINT_DRIFT: answer field business meanings or roles changed')
     if source.get('description') != blueprint['description']:
         raise ValueError('BLUEPRINT_DRIFT: original description changed')

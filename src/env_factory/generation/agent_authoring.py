@@ -448,6 +448,7 @@ def compile_source(source: dict, *, root: Path, request: dict, script_count: int
                 raise ValueError("SEMANTIC_REWARD_CONTRACT: only field-scoped calibrated model metrics are supported")
             compile_semantic_outcome({"id": metric["id"], "rubric": metric["rubric"], "semantic": {
                 "fields": metric["semantic_fields"], "criteria": metric["criteria"],
+                "context_fields": metric.get("semantic_context_fields", []),
                 "cases": calibration[metric["id"]]}},
                 schema=source["answer_contract"]["schema"], weight=metric["weight"])
     if not metrics or len({m["id"] for m in metrics}) != len(metrics):
