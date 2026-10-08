@@ -653,7 +653,12 @@ def run_pipeline(project, root, config):
         summary = summarize_realism(attempted_dirs, root / 'sandbox',
                                     requested=config['generate_count'] or len(paths))
         write_json(root / 'realism_summary.json', summary)
-        event("pipeline_finished", exit_code=exit_code, built=built_count, realism_summary=str(root / 'realism_summary.json'))
+        from env_factory.generation.difficulty_reporting import summarize_difficulty
+        difficulty = summarize_difficulty(attempted_dirs, root / 'sandbox',
+            requested=config['generate_count'] or len(paths), wall_seconds=time.monotonic() - started)
+        write_json(root / 'difficulty_summary.json', difficulty)
+        event("pipeline_finished", exit_code=exit_code, built=built_count,
+              realism_summary=str(root / 'realism_summary.json'), difficulty_summary=str(root / 'difficulty_summary.json'))
         return exit_code
 
 

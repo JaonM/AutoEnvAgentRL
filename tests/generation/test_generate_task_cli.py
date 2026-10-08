@@ -76,6 +76,8 @@ def test_buildability_rejection_after_resume_starts_fresh_and_keeps_evidence(tmp
     assert calls[2][1] == calls[0][1] + 2
     assert manifest['attempts'][-1]['continued_fixed_design'] is False
     assert manifest['status'] == ('failed' if last_rejected else 'completed')
+    from datetime import datetime
+    assert datetime.fromisoformat(manifest['completed_at']) >= datetime.fromisoformat(manifest['reserved_at'])
     archive = task_dir.parent / 'rejected_generations/attempt-2'
     assert (archive / 'original_failure.txt').read_text() == 'timeout evidence'
     assert (archive / 'authoring_checkpoint/manifest.json').is_file()

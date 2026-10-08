@@ -1863,6 +1863,18 @@ Profile coverage is execution evidence, not a proof of business-rule semantics.
 Rollout-budget compatibility remains a prerequisite before running the mixed
 high-difficulty yield cohort.
 
+Each pipeline invocation writes `difficulty_summary.json` alongside
+`realism_summary.json`. Difficulty groups are disjoint and use the runner's frozen
+sample assignments, including failed generation requests. The overall denominator
+includes untracked planned requests. Historical samples without an assignment stay
+`unassigned`; free-text complexity labels cannot retroactively assign difficulty.
+The report includes readiness, terminal/pending counts, reservation-to-terminal
+latency and first recorded actionable validation feedback, each with observed
+sample count, median and maximum. Failed generation now records its terminal
+timestamp too. Missing historical timestamps remain missing rather than becoming
+zero latency. Per-profile throughput is its ready-task contribution per shared
+cohort wall hour, not a claim about isolated profile execution speed.
+
 ### Generation timing evidence
 
 Business-condition counterfactuals preserve scheduled task events. If an event

@@ -448,6 +448,8 @@ def main() -> int:
                             resumable = saved['manifest']['source_attempts'] < 3
                         manifest['attempts'][-1]['resume_checkpoint'] = str(checkpoint_path) if resumable else None
                         manifest["status"] = "retrying" if route_attempt < args.route_attempts and (resumable or not structural_failure) else "failed"
+                        if manifest['status'] == 'failed':
+                            manifest['completed_at'] = datetime.now(timezone.utc).isoformat()
                         manifest["generation_seconds"] = round(time.monotonic() - sample_started, 3)
                         _write_json(manifest_path, manifest)
                         logging.getLogger(__name__).warning(
@@ -490,6 +492,11 @@ def main() -> int:
                     task = future.result()
                 except TaskGenerationError as exc:
                     failed += 1
+                    manifest_path = task_dir / 'sample_manifest.json'
+                    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+                    manifest['status'] = 'failed'
+                    manifest.setdefault('completed_at', datetime.now(timezone.utc).isoformat())
+                    _write_json(manifest_path, manifest)
                     failure = {
                         "failure_class": _generation_failure_class(exc),
                         "error_type": type(exc).__name__,
@@ -509,6 +516,7 @@ def main() -> int:
                     manifest_path = task_dir / "sample_manifest.json"
                     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                     manifest["status"] = "failed"
+                    manifest['completed_at'] = datetime.now(timezone.utc).isoformat()
                     manifest["attempts"].append({
                         "attempt": len(manifest.get("attempts", [])) + 1,
                         "status": "failed",

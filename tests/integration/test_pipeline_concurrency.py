@@ -75,6 +75,11 @@ def test_bounded_parallel_builds_commit_order_and_failure_accounting(tmp_path, m
     events = [json.loads(line) for line in (tmp_path / 'pipeline_events.jsonl').read_text().splitlines()]
     assert events[-1]['stage'] == 'pipeline_finished'
     assert events[-1]['built'] == 3
+    difficulty = json.loads((tmp_path / 'difficulty_summary.json').read_text())
+    assert difficulty['requested'] == difficulty['groups']['all']['requested'] == 4
+    assert difficulty['groups']['all']['terminal'] == 4
+    assert difficulty['groups']['all']['reservation_to_terminal_seconds']['observed'] == 0
+    assert events[-1]['difficulty_summary'] == str(tmp_path / 'difficulty_summary.json')
     assert len([e for e in events if e['stage'] == 'sandbox_finished']) == 3
     for number in (1, 2, 3):
         result = json.loads((tmp_path / f'artifacts/artifact-{number}/sandbox/pipeline_result.json').read_text())
