@@ -2359,6 +2359,11 @@ actually execute and complete a valid stop or recovery route with full reward.
 Empty menus, a refusal while the preference remains available, a stale menu, or an
 unexecuted branch declaration cannot establish coverage. Use legitimate fixture
 changes and user behavior; never invent a choice or override menu membership.
+Keep the selected original script, private facts, `user_variables` and decision
+rules unchanged. The validator records the executed policy digest and compares
+it with the original compiled script. Changing `user_variables` to force refusal
+can test that separate refusal route, but cannot cover a menu-only change for
+the original user. Evidence without original-policy provenance is incomplete.
 The deterministic pass detects missing cases before model grading; the full pass
 counts only passing scenarios. Model-dependent unresolved trajectories defer this
 check to full execution. This is finite coverage, not proof over all possible menus.
