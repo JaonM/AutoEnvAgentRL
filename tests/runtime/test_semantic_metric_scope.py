@@ -44,3 +44,22 @@ def test_field_scope_is_part_of_judgment_cache_identity(tmp_path):
         unscoped = copy.deepcopy(metric); unscoped.pop('semantic_fields')
         evaluator.json_judge(unscoped, context, fallback={'label': 'fail'})
     assert call.call_count == 2
+
+
+def test_criterion_feedback_uses_contract_ids_and_rejects_contradictory_full_credit(tmp_path):
+    store = EpisodeStore(tmp_path / 'criteria.sqlite3'); store.reset(seed=17)
+    evaluator = ContractEvaluatorRuntime(store)
+    metric = {'id': 'quality', 'criteria': ['Explain the observed result'], 'semantic_fields': ['analysis'],
+              'evaluator': {'score_mapping': {'pass': 1, 'fail': 0}}}
+    def judge(messages, *, response_schema):
+        instruction = json.loads(messages[0]['content'].split('schema. ', 1)[1])
+        identity = next(iter(instruction['criterion_contract']))
+        assert response_schema['properties']['criterion_results']['required'] == [identity]
+        return {'label': 'pass', 'criterion_results': {
+            identity: {'satisfied': False, 'evidence': 'analysis contains no explanation'}}}
+    with patch('env_factory.sandbox_runtime.RuntimeLLMClient.json_chat', side_effect=judge):
+        result = evaluator.json_judge(metric, {'final_agent_response': '{}'}, fallback={'label': 'fail'},
+            response_schema={'type': 'object', 'required': ['label'],
+                             'properties': {'label': {'type': 'string'}}})
+    assert result == {'label': 'fail'}
+    assert store.replay()['events'][-1]['payload']['used_fallback'] is True

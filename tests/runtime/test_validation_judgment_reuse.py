@@ -100,3 +100,33 @@ def test_calibration_still_requests_fresh_judgments_for_each_case(store):
     assert report['passed']
     assert judge.call_count == 4
     assert all(not event['payload']['cached'] for event in store.replay()['events'])
+
+
+def test_runner_cache_reuses_unchanged_repairs_and_invalidates_conflicting_fresh_judgments(store):
+    from env_factory.sandbox_runtime import ValidationJudgmentCache
+    shared = ValidationJudgmentCache()
+    def evaluate(reuse):
+        store.reset(seed=17)
+        evaluator = ContractEvaluatorRuntime(store, reuse_across_resets=reuse, judgment_cache=shared)
+        return evaluator.json_judge(METRIC, CONTEXT, fallback={'label': 'fail'}), evaluator
+    with patch('env_factory.sandbox_runtime.RuntimeLLMClient.json_chat', side_effect=[
+            {'label': 'pass'}, {'label': 'fail'}, {'label': 'pass'}, {'label': 'fail'}]) as judge:
+        assert evaluate(True)[0]['label'] == 'pass'
+        assert evaluate(True)[0]['label'] == 'pass'
+        assert judge.call_count == 1
+        result, fresh = evaluate(False)
+        assert result['label'] == 'fail'
+        assert fresh.validation_cache_report()['conflicting_judgments']
+        assert evaluate(True)[0]['label'] == 'pass'
+        assert evaluate(True)[0]['label'] == 'fail'
+    assert judge.call_count == 4
+    assert len(shared) == 0
+
+
+def test_provider_change_invalidates_episode_cache_without_reset(store, monkeypatch):
+    evaluator = ContractEvaluatorRuntime(store, reuse_across_resets=True)
+    with patch('env_factory.sandbox_runtime.RuntimeLLMClient.json_chat', return_value={'label': 'pass'}) as judge:
+        evaluator.json_judge(METRIC, CONTEXT, fallback={})
+        monkeypatch.setenv('SANDBOX_LLM_MODEL', 'another-model')
+        evaluator.json_judge(METRIC, CONTEXT, fallback={})
+    assert judge.call_count == 2

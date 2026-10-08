@@ -2323,23 +2323,65 @@ class ContractRewardGate:
         return result
 
 
+class ValidationJudgmentCache(dict):
+    """Runner-owned memory only; never deserialize author-writable cache files."""
+
+    def __init__(self):
+        super().__init__()
+        self.lock = threading.RLock()
+        self.conflicts = {}
+
+    def get(self, key, default=None):
+        with self.lock:
+            return copy.deepcopy(super().get(key, default))
+
+    def record(self, key, value):
+        with self.lock:
+            previous = super().get(key)
+            if key in self.conflicts:
+                self.conflicts[key].append(copy.deepcopy(value))
+            elif previous and previous['result'].get('label') != value['result'].get('label'):
+                self.conflicts[key] = [copy.deepcopy(previous), copy.deepcopy(value)]
+                del self[key]
+            else:
+                self[key] = copy.deepcopy(value)
+
+    def snapshot(self):
+        with self.lock:
+            return copy.deepcopy(list(self.values())), copy.deepcopy(self.conflicts)
+
+    def conflicted(self, key):
+        with self.lock:
+            return key in self.conflicts
+
+
 class ContractEvaluatorRuntime:
     """Cached, trace-visible boundary for contract-declared LLM evaluators."""
 
     STATE_KEY = "evaluator_cache"
 
-    def __init__(self, episode_store: EpisodeStore, *, reuse_across_resets: bool = False) -> None:
+    def __init__(self, episode_store: EpisodeStore, *, reuse_across_resets: bool = False,
+                 judgment_cache: ValidationJudgmentCache | None = None) -> None:
         self.episode_store = episode_store
         # Opt-in, in-memory reuse for one validation run. Live episodes and
         # semantic calibration retain the default episode-isolated behavior.
-        self._validation_cache = {} if reuse_across_resets else None
+        self._validation_cache = (judgment_cache if judgment_cache is not None else
+                                  ValidationJudgmentCache() if reuse_across_resets else None)
+        self._allow_validation_reuse = reuse_across_resets
         self._validation_cache_hits = 0
+        self._validation_keys = set()
+        self._runtime_digest = sha256_json({path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in (Path(__file__), Path(__file__).with_name('runtime_llm.py'))})
 
     def validation_cache_report(self) -> dict[str, Any]:
-        return {'scope': 'one_validation_invocation_not_independent_judgments',
+        originals, conflicts = self._validation_cache.snapshot() if self._validation_cache is not None else ([], {})
+        originals = [item for item in originals if item['context_hash'] in self._validation_keys]
+        conflicts = {key: value for key, value in conflicts.items() if key in self._validation_keys}
+        return {'scope': 'runner_validation_dependencies_not_independent_judgments',
                 'enabled': self._validation_cache is not None,
+                'dependency_keys': sorted(self._validation_keys),
                 'reused_judgments': self._validation_cache_hits,
-                'original_judgments': copy.deepcopy(list((self._validation_cache or {}).values()))}
+                'original_judgments': originals, 'conflicting_judgments': conflicts}
 
     def json_judge(
         self,
@@ -2380,7 +2422,29 @@ class ContractEvaluatorRuntime:
         field_scope = ({'version': 1, 'fields': list(metric['semantic_fields']),
                         'response_is_projected': True, 'other_fields': 'assessed_by_separate_metrics'}
                        if metric.get('semantic_fields') else None)
+        criterion_contract = {}
+        if metric.get('semantic_fields'):
+            for index, criterion in enumerate(metric.get('criteria', [])):
+                identity = f"criterion_{index + 1}_{sha256_json(criterion)[:8]}"
+                criterion_contract[identity] = str(criterion)
+            if metric.get('rubric'):
+                criterion_contract['rubric_' + sha256_json(metric['rubric'])[:8]] = metric['rubric']
+        if criterion_contract and response_schema and 'label' in response_schema.get('properties', {}):
+            response_schema = copy.deepcopy(response_schema)
+            response_schema['required'] = [*response_schema.get('required', []), 'criterion_results']
+            response_schema['properties']['criterion_results'] = {
+                'type': 'object', 'additionalProperties': False, 'required': list(criterion_contract),
+                'properties': {key: {'type': 'object', 'additionalProperties': False,
+                    'required': ['satisfied', 'evidence'], 'properties': {
+                        'satisfied': {'type': 'boolean'},
+                        'evidence': {'type': 'string', 'minLength': 1, 'maxLength': 800}}}
+                    for key in criterion_contract}}
         context_hash = sha256_json({
+            'runtime_digest': self._runtime_digest,
+            'provider_digest': sha256_json({name: os.getenv(name) for name in (
+                'SANDBOX_LLM_BACKEND', 'SANDBOX_LLM_API_KEY', 'LLM_API_KEY', 'SANDBOX_LLM_BASE_URL', 'LLM_BASE_URL',
+                'SANDBOX_LLM_MODEL', 'LLM_MODEL', 'KIMI_K3_REASONING_EFFORT',
+                'SANDBOX_LLM_TIMEOUT_SECONDS', 'LLM_TIMEOUT', 'SANDBOX_LLM_MAX_RETRIES')}),
             "metric_id": metric.get("id"), "evaluator": metric.get("evaluator"),
             "rubric": metric.get("rubric"), "criteria": metric.get("criteria"),
             "evaluation_inputs": metric.get("evaluation_inputs"),
@@ -2389,18 +2453,16 @@ class ContractEvaluatorRuntime:
             **({'metric_field_scope': field_scope} if field_scope else {}),
         })
         cache = self.episode_store.get_state(self.STATE_KEY, {})
-        if isinstance(cache, Mapping) and context_hash in cache:
+        conflicted = self._validation_cache is not None and self._validation_cache.conflicted(context_hash)
+        if isinstance(cache, Mapping) and context_hash in cache and not conflicted:
             return dict(cache[context_hash])
         validation_key = None
         if self._validation_cache is not None and os.getenv('SANDBOX_EVALUATOR_MOCK', '').lower() not in {'1', 'true', 'yes'}:
             # Provider changes invalidate reuse too. Only a digest is retained;
             # credentials and configuration values never enter replay events.
-            validation_key = sha256_json({'context_hash': context_hash, 'configuration': {
-                name: os.getenv(name) for name in (
-                    'SANDBOX_LLM_BACKEND', 'SANDBOX_LLM_API_KEY', 'LLM_API_KEY', 'SANDBOX_LLM_BASE_URL', 'LLM_BASE_URL',
-                    'SANDBOX_LLM_MODEL', 'LLM_MODEL', 'KIMI_K3_REASONING_EFFORT',
-                    'SANDBOX_LLM_TIMEOUT_SECONDS', 'LLM_TIMEOUT', 'SANDBOX_LLM_MAX_RETRIES')}})
-            cached = self._validation_cache.get(validation_key)
+            validation_key = context_hash
+            self._validation_keys.add(validation_key)
+            cached = self._validation_cache.get(validation_key) if self._allow_validation_reuse else None
             if cached is not None:
                 self._validation_cache_hits += 1
                 result = copy.deepcopy(cached['result'])
@@ -2437,6 +2499,13 @@ class ContractEvaluatorRuntime:
                 "criteria": [str(item) for item in criteria if str(item).strip()],
                 "label_scores": mapping,
             }
+            if criterion_contract:
+                judge_instructions['criterion_contract'] = criterion_contract
+                judge_instructions['rules'].append(
+                    'For every criterion_contract ID return satisfied and brief observable evidence '
+                    '(a field, tool result, quoted claim, or the exact missing required fact). '
+                    'Do not provide hidden reasoning or invent evidence. Do not add criteria. '
+                    'The highest score requires every listed criterion and rubric to be satisfied.')
             if field_scope:
                 judge_instructions['metric_field_scope'] = field_scope
                 judge_instructions['rules'].insert(0,
@@ -2463,6 +2532,13 @@ class ContractEvaluatorRuntime:
             )
             if not isinstance(result, Mapping):
                 raise RuntimeLLMError("evaluator returned a non-object")
+            if criterion_contract and 'criterion_results' in result:
+                observations = result['criterion_results']
+                if set(observations) != set(criterion_contract):
+                    raise RuntimeLLMError('evaluator criterion IDs do not match contract')
+                if (mapping.get(result.get('label')) == max(mapping.values())
+                        and not all(item.get('satisfied') is True for item in observations.values())):
+                    raise RuntimeLLMError('full-credit label contradicts criterion evidence')
         except (RuntimeLLMError, OSError, ValueError, TypeError):
             result, used_fallback = dict(fallback), True
         judgment_id = None
@@ -2472,9 +2548,9 @@ class ContractEvaluatorRuntime:
             self.episode_store.set_state(self.STATE_KEY, updated)
             if validation_key is not None:
                 judgment_id = uuid.uuid4().hex
-                self._validation_cache[validation_key] = {
+                self._validation_cache.record(validation_key, {
                     'result': copy.deepcopy(dict(result)), 'judgment_id': judgment_id,
-                    'context_hash': context_hash}
+                    'context_hash': context_hash})
         self.episode_store.event("evaluator_call", {
             "metric_id": metric.get("id"), "context_hash": context_hash,
             "cached": False, "used_fallback": used_fallback,
@@ -2487,9 +2563,11 @@ class ContractEvaluatorRuntime:
 class ContractModelMetricEvaluator:
     """Platform-owned semantic outcome evaluator and explicitly limited fixture mode."""
 
-    def __init__(self, contract: Mapping[str, Any], store: EpisodeStore, *, reuse_across_resets: bool = False) -> None:
+    def __init__(self, contract: Mapping[str, Any], store: EpisodeStore, *, reuse_across_resets: bool = False,
+                 judgment_cache: ValidationJudgmentCache | None = None) -> None:
         self.contract, self.store = contract, store
-        self.runtime = ContractEvaluatorRuntime(store, reuse_across_resets=reuse_across_resets)
+        self.runtime = ContractEvaluatorRuntime(store, reuse_across_resets=reuse_across_resets,
+                                                judgment_cache=judgment_cache)
 
     @staticmethod
     def _contains_fact(value: Any, fact: Any) -> bool:

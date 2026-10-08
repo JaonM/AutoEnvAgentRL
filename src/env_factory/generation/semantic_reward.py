@@ -130,7 +130,7 @@ def scope_calibration_references(calibration, successes):
 
 
 def calibrate_semantic_outcomes(contract: dict, calibration: dict, *, context: dict, store,
-                                progress=None, reference_contexts: dict | None = None) -> dict:
+                                progress=None, reference_contexts: dict | None = None, judgment_cache=None) -> dict:
     """Run real runtime judges against declared paraphrase and error cases.
 
     A failed negative judged through an infrastructure fallback is not evidence
@@ -152,7 +152,7 @@ def calibrate_semantic_outcomes(contract: dict, calibration: dict, *, context: d
     report = {"passed": True, "semantic_verification": True, "cases": []}
     for metric in metrics:
         judge_contract = {**contract, "metrics": [metric]}
-        judge = ContractModelMetricEvaluator(judge_contract, store)
+        judge = ContractModelMetricEvaluator(judge_contract, store, judgment_cache=judgment_cache)
         for index, case in enumerate(calibration[metric["id"]]):
             # Calibration requires a fresh recorded judgment, not a prior cached label.
             store.set_state(ContractEvaluatorRuntime.STATE_KEY, {})
@@ -174,6 +174,7 @@ def calibrate_semantic_outcomes(contract: dict, calibration: dict, *, context: d
                 "expected_label": case["expected"], "actual_score": actual,
                 "passed": actual == wanted,
                 "reference_id": case.get('reference_id'),
+                "criterion_evidence": [call.get('result', {}).get('criterion_results', {}) for call in calls],
                 "judgment_context_hashes": [call["payload"]["context_hash"] for call in calls]})
             if actual != wanted:
                 report['cases'][-1]['failed_case_evidence'] = {
@@ -181,6 +182,10 @@ def calibrate_semantic_outcomes(contract: dict, calibration: dict, *, context: d
                     'rubric': metric.get('rubric'), 'criteria': metric.get('criteria', []),
                 }
             report["passed"] &= actual == wanted
+            conflicts = judge.runtime.validation_cache_report()['conflicting_judgments']
+            if conflicts:
+                report.setdefault('conflicting_judgments', {}).update(conflicts)
+                report['passed'] = False
     return report
 
 
