@@ -28,6 +28,8 @@ def _location(bundle, path):
             return current
         key, index = remaining[0]
         if key:
+            if isinstance(current, list) and re.fullmatch(r'0|[1-9][0-9]*', key):
+                return resolve(current[int(key)], remaining[1:])
             if not isinstance(current, dict) or key not in current:
                 raise KeyError(key)
             return resolve(current[key], remaining[1:])

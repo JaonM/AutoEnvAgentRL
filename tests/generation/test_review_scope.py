@@ -49,6 +49,24 @@ def test_public_conflict_requires_resolving_public_evidence():
     with pytest.raises(SemanticReviewUnavailable,match='public evidence'):check(value)
 
 
+def test_dotted_list_index_resolves_same_real_evidence_without_aliasing_missing_fields():
+    from env_factory.generation.repair_feedback import _location
+    context = bundle()
+    context['original_goal'] = {'public_input': {'materials': [{'text': 'Existing public rule'}]}}
+    value = example()
+    value.update(basis='public_contract', script_assumptions=[],
+                 public_paths=['original_goal.public_input.materials.0.text'])
+    check(value, context)
+    assert _location(context, value['public_paths'][0])['value'] == 'Existing public rule'
+    assert _location({'keys': {'0': 'dictionary value'}}, 'keys.0')['value'] == 'dictionary value'
+    for path in ['original_goal.public_input.materials.1.text',
+                 'original_goal.public_input.materials.-1.text',
+                 'original_goal.public_input.materials.0.content']:
+        value['public_paths'] = [path]
+        with pytest.raises(SemanticReviewUnavailable, match='does not resolve'):
+            check(value, context)
+
+
 def test_original_public_goal_is_valid_evidence_but_not_private_goal_fields():
     context = bundle()
     context['original_goal'] = {'public_input': {'materials': [{'text': 'Stock must be positive.'}]},
