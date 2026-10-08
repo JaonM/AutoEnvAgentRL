@@ -21,6 +21,7 @@ class ModelRolesTest(unittest.TestCase):
             "allowed_response_models": ["policy-model"],
         })
         self.assertEqual(roles["runtime"], {
+            "backend": "api",
             "api_key": "generation-key",
             "base_url": "https://runtime.example/v1",
             "model": "generation-model",

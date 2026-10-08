@@ -62,6 +62,7 @@ def resolve_model_roles(
         agent_allowlist, agent["model"]
     )
     runtime = {
+        "backend": _first(env, "SANDBOX_LLM_BACKEND", default="api"),
         "api_key": _first(env, "SANDBOX_LLM_API_KEY", "LLM_API_KEY"),
         "base_url": _first(
             env, "SANDBOX_LLM_BASE_URL", "LLM_BASE_URL",

@@ -22,6 +22,24 @@ class Engine:
         self.removed.append(cid)
 
 
+def test_code_agent_container_endpoint_and_token_not_in_argv(tmp_path, monkeypatch):
+    monkeypatch.setenv('SANDBOX_LLM_BACKEND', 'codex')
+    monkeypatch.setenv('SANDBOX_LLM_API_KEY', 'private-bridge-token')
+    monkeypatch.setenv('SANDBOX_LLM_BASE_URL', 'http://127.0.0.1:55794/v1')
+    monkeypatch.setenv('SANDBOX_LLM_CONTAINER_BASE_URL', 'http://host.docker.internal:55794/v1')
+    calls = []
+    def run(args):
+        calls.append(args)
+        return {'image': 'sha256:local', 'run': 'container', 'port': '127.0.0.1:1234'}[args[0]]
+    engine = DockerEngine(tmp_path, 'owner')
+    monkeypatch.setattr(engine, 'run', run)
+    assert engine.start('task', {'image': 'image'})['url']=='http://127.0.0.1:1234'
+    command = calls[1]
+    assert 'SANDBOX_LLM_BASE_URL=http://host.docker.internal:55794/v1' in command
+    assert 'SANDBOX_LLM_API_KEY' in command
+    assert 'private-bridge-token' not in ' '.join(command)
+
+
 def tasks(tmp_path, count=2):
     result = []
     for index in range(count):

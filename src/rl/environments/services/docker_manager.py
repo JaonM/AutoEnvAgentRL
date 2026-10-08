@@ -46,7 +46,14 @@ class DockerEngine:
         # Pass names only; credentials stay out of argv, manifests and manager logs.
         for name_env in os.environ:
             if name_env == 'SANDBOX_TRAINER_API_KEY' or name_env.startswith(('SANDBOX_LLM_', 'LLM_')):
-                args += ['--env', name_env]
+                if (name_env == 'SANDBOX_LLM_BASE_URL'
+                        and os.getenv('SANDBOX_LLM_BACKEND') == 'codex'
+                        and os.getenv('SANDBOX_LLM_CONTAINER_BASE_URL')):
+                    args += ['--env', name_env+'='+os.environ['SANDBOX_LLM_CONTAINER_BASE_URL']]
+                else:
+                    args += ['--env', name_env]
+        if os.getenv('SANDBOX_LLM_BACKEND') == 'codex' and sys.platform == 'linux':
+            args += ['--add-host', 'host.docker.internal:host-gateway']
         args += ['--entrypoint', 'python3', image, '/opt/envfactory/serve.py']
         try:
             cid = self.run(args)

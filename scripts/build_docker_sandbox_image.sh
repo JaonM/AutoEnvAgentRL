@@ -316,10 +316,16 @@ if [[ "$start" == "true" ]]; then
     --tmpfs /tmp:rw,noexec,nosuid,size=64m
     --tmpfs /app/.runtime:rw,nosuid,size=64m,uid=10001,gid=10001,mode=0700
   )
-  for env_name in SANDBOX_TRAINER_API_KEY SANDBOX_LLM_API_KEY SANDBOX_LLM_BASE_URL SANDBOX_LLM_MODEL SANDBOX_LLM_TIMEOUT_SECONDS SANDBOX_LLM_MAX_RETRIES KIMI_K3_REASONING_EFFORT SANDBOX_EVALUATOR_MOCK; do
+  for env_name in SANDBOX_TRAINER_API_KEY SANDBOX_LLM_API_KEY SANDBOX_LLM_BACKEND SANDBOX_LLM_BASE_URL SANDBOX_LLM_MODEL SANDBOX_LLM_TIMEOUT_SECONDS SANDBOX_LLM_MAX_RETRIES KIMI_K3_REASONING_EFFORT SANDBOX_EVALUATOR_MOCK; do
     if [[ -n "${!env_name:-}" ]]; then run_args+=(--env "$env_name"); fi
   done
   if [[ -n "$env_file" ]]; then run_args+=(--env-file "$env_file"); fi
+  if [[ "${SANDBOX_LLM_BACKEND:-}" == "codex" && -n "${SANDBOX_LLM_CONTAINER_BASE_URL:-}" ]]; then
+    run_args+=(-e "SANDBOX_LLM_BASE_URL=$SANDBOX_LLM_CONTAINER_BASE_URL")
+    if [[ "$(uname -s)" == "Linux" ]]; then
+      run_args+=(--add-host host.docker.internal:host-gateway)
+    fi
+  fi
   container_id="$(docker run -d "${run_args[@]}" --publish "$port:8000" \
     --mount "type=bind,source=$(cd "$context/data" && pwd),target=/workspace/data" \
     "$tag")"

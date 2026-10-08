@@ -2322,7 +2322,7 @@ class ContractEvaluatorRuntime:
             # credentials and configuration values never enter replay events.
             validation_key = sha256_json({'context_hash': context_hash, 'configuration': {
                 name: os.getenv(name) for name in (
-                    'SANDBOX_LLM_API_KEY', 'LLM_API_KEY', 'SANDBOX_LLM_BASE_URL', 'LLM_BASE_URL',
+                    'SANDBOX_LLM_BACKEND', 'SANDBOX_LLM_API_KEY', 'LLM_API_KEY', 'SANDBOX_LLM_BASE_URL', 'LLM_BASE_URL',
                     'SANDBOX_LLM_MODEL', 'LLM_MODEL', 'KIMI_K3_REASONING_EFFORT',
                     'SANDBOX_LLM_TIMEOUT_SECONDS', 'LLM_TIMEOUT', 'SANDBOX_LLM_MAX_RETRIES')}})
             cached = self._validation_cache.get(validation_key)

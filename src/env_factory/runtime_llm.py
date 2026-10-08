@@ -45,11 +45,15 @@ def summarize_runtime_llm_trace(
     records: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
     models: dict[str, int] = {}
+    backends: dict[str, int] = {}
     usage: dict[str, float | int] = {}
     for record in records:
         model = str(record.get("model", ""))
         if model:
             models[model] = models.get(model, 0) + 1
+        backend = str(record.get("backend", ""))
+        if backend:
+            backends[backend] = backends.get(backend, 0) + 1
         values = record.get("usage")
         if isinstance(values, Mapping):
             for name, value in values.items():
@@ -60,6 +64,7 @@ def summarize_runtime_llm_trace(
         "responses": len(records),
         "mock_responses": sum(record.get("mock") is True for record in records),
         "models": dict(sorted(models.items())),
+        "backends": dict(sorted(backends.items())),
         "usage": dict(sorted(usage.items())),
         "response_id_sha256": sorted(
             str(record["response_id_sha256"])
@@ -77,6 +82,7 @@ class RuntimeLLMConfig:
     timeout_seconds: float = 60.0
     max_retries: int = 3
     mock: bool = False
+    backend: str = 'api'
 
     @classmethod
     def from_env(cls) -> "RuntimeLLMConfig":
@@ -88,13 +94,20 @@ class RuntimeLLMConfig:
         timeout = float(os.getenv("SANDBOX_LLM_TIMEOUT_SECONDS") or os.getenv("LLM_TIMEOUT") or "60")
         retries = int(os.getenv("SANDBOX_LLM_MAX_RETRIES") or "3")
         mock = os.getenv("SANDBOX_EVALUATOR_MOCK", "").lower() in {"1", "true", "yes"}
+        backend = os.getenv('SANDBOX_LLM_BACKEND', 'api').strip()
+        if backend not in {'api', 'codex'}:
+            raise RuntimeLLMError('unsupported runtime model backend')
+        if backend == 'codex' and not mock:
+            for name in ('SANDBOX_LLM_API_KEY', 'SANDBOX_LLM_BASE_URL', 'SANDBOX_LLM_MODEL'):
+                if not os.getenv(name, '').strip():
+                    raise RuntimeLLMError(f'Code Agent backend requires explicit {name}')
         if not api_key and not mock:
             raise RuntimeLLMError("neither SANDBOX_LLM_API_KEY nor LLM_API_KEY is configured")
         if not model and not mock:
             raise RuntimeLLMError("neither SANDBOX_LLM_MODEL nor LLM_MODEL is configured")
         if timeout <= 0 or retries < 0:
             raise RuntimeLLMError("invalid runtime LLM timeout or retry configuration")
-        return cls(api_key, base_url, model, timeout, retries, mock)
+        return cls(api_key, base_url, model, timeout, retries, mock, backend)
 
 
 class RuntimeLLMClient:
@@ -130,6 +143,9 @@ class RuntimeLLMClient:
             "stream": False,
             "response_format": {"type": "json_object"},
         }
+        if self.config.backend == 'codex':
+            body['response_format'] = {'type':'json_schema', 'json_schema':{
+                'name':'runtime_response', 'strict':True, 'schema':dict(response_schema)}}
         if self.config.model == "kimi-k3":
             effort = os.getenv("KIMI_K3_REASONING_EFFORT", "").strip()
             if effort:
@@ -149,6 +165,9 @@ class RuntimeLLMClient:
                 request = Request(f"{self.config.base_url}/chat/completions", data=encoded, headers=headers, method="POST")
                 with urlopen(request, timeout=self.config.timeout_seconds) as response:
                     payload = json.load(response)
+                if self.config.backend == 'codex' and (
+                        payload.get('backend') != 'codex_cli' or payload.get('model') != self.config.model):
+                    raise RuntimeLLMError('runtime Code Agent identity mismatch')
                 trace = _TRACE.get()
                 if trace is not None:
                     response_id = payload.get("id")
@@ -161,6 +180,7 @@ class RuntimeLLMClient:
                             ).hexdigest(),
                         } if isinstance(response_id, str) and response_id else {}),
                         "mock": False,
+                        "backend": self.config.backend,
                     })
                 content = payload["choices"][0]["message"]["content"]
                 value = json.loads(content)
