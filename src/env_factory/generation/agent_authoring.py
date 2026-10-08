@@ -893,6 +893,11 @@ def prepare_route_probe(artifacts, root, probe):
         script_path.write_text(json.dumps(probe_scripts, ensure_ascii=False, indent=2) + '\n')
     candidate['execution_route_probes'] = []
     candidate['acceptance_contract']['executable_scenarios'] = probe['scenarios']
+    if 'reward_pair_probes' in candidate:
+        # Primary variants belong to their original references/data. Generate
+        # equivalent variants from this route's own successful trajectories.
+        from .reward_pairs import derive_reward_pairs
+        candidate['reward_pair_probes'] = derive_reward_pairs(candidate)
     return candidate, probe_root
 
 
@@ -1451,7 +1456,7 @@ def _verify_execution(artifacts: dict, root: Path, *, calibration: dict | None =
         if component_failures:
             (root / 'component_negative_validation.json').write_text(
                 json.dumps(component_failures, ensure_ascii=False, indent=2) + '\n')
-        if verify_route_probes and 'reward_pair_probes' in artifacts:
+        if 'reward_pair_probes' in artifacts:
             from .reward_pairs import run_reward_pairs
             def execute_pair(steps):
                 value = reward(steps)
