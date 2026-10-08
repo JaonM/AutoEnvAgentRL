@@ -108,6 +108,8 @@ def _generation_failure_class(exc: BaseException) -> str:
     """Observability taxonomy only; it never changes generation behavior."""
     name = type(exc).__name__
     text = str(exc).lower()
+    if 'code_agent_capacity' in text:
+        return 'INFRA'
     if 'code_agent_startup_stalled' in text:
         return 'GEN_STARTUP_STALL'  # No candidate evidence; provider cause is unknown.
     if "code_agent_timeout" in text:

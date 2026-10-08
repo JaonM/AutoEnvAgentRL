@@ -71,7 +71,9 @@ def summarize_difficulty(task_dirs, sandbox_root, *, requested, wall_seconds):
                         continue
                     if not isinstance(event, dict):
                         continue
-                    if event.get('status') == 'actionable_feedback':
+                    if (event.get('status') == 'actionable_feedback'
+                            and event.get('error_type') not in {'SemanticCalibrationUnavailable', 'SemanticReviewUnavailable'}
+                            and event.get('code') not in {'SEMANTIC_CALIBRATION_UNAVAILABLE', 'CODE_AGENT_CAPACITY'}):
                         record(event.get('timestamp'), path, 'execution_validation')
             reports = [directory / 'code_agent_generation.json',
                        *sorted(directory.glob('generation_retries/*/code_agent_generation.json'))]

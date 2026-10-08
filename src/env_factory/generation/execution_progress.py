@@ -14,11 +14,13 @@ class ExecutionProgress:
 
     def feedback(self, phase, **identity):
         """Timestamp each actionable finding as soon as it is available."""
+        availability = (identity.get('error_type') in {'SemanticCalibrationUnavailable', 'SemanticReviewUnavailable'}
+                        or identity.get('code') in {'SEMANTIC_CALIBRATION_UNAVAILABLE', 'CODE_AGENT_CAPACITY'})
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open('a') as stream:
             stream.write(json.dumps({'run_id': self.run_id, 'timestamp': time.time(),
                 'elapsed_seconds': time.monotonic() - self.started,
-                'phase': phase, 'status': 'actionable_feedback', **identity}) + '\n')
+                'phase': phase, 'status': 'availability_feedback' if availability else 'actionable_feedback', **identity}) + '\n')
 
     @contextmanager
     def measure(self, phase, **identity):

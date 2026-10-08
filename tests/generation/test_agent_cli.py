@@ -2,6 +2,20 @@ import json
 import pytest
 from env_factory.generation.agent_cli import command, completed_events
 
+
+def test_only_native_failed_capacity_notices_are_provider_evidence():
+    from env_factory.generation.agent_cli import native_failure
+    message = 'Selected model is at capacity. Please try a different model.'
+    for event in ({'type': 'error', 'message': message},
+                  {'type': 'turn.failed', 'error': {'message': message}}):
+        assert native_failure(json.dumps(event)) == 'CODE_AGENT_CAPACITY'
+        assert native_failure(json.dumps(event) + '\n{"type":"turn.completed"}') is None
+    for event in ({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': message}},
+                  {'type': 'item.completed', 'item': {'type': 'command_execution', 'aggregated_output': message}},
+                  {'type': 'error', 'message': 'Reconnecting...'}, {'type': 'error', 'message': None}):
+        assert native_failure(json.dumps(event)) is None
+    assert native_failure(message) is None
+
 @pytest.mark.parametrize('agent', ['codex', 'claude', 'opencode'])
 def test_command_selects_cli_model(agent, tmp_path):
     args = command(agent, 'provider/model', 'hello', tmp_path / 'response')

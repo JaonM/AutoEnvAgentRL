@@ -217,7 +217,10 @@ Raw transport keys and untriggered fault schedules are not included.
   string, boolean, integer, number, array (`items` required), or nested object.
   Every public field must have exactly one reward target. Objects require all
   declared keys and reject extras. Arrays optionally use minItems/maxItems up to
-  64. Public categorical enums may give 2..64 possible choices, never just the
+  64. Numeric fields may use finite `minimum`/`maximum` bounds (minimum must not
+  exceed maximum); nullable numeric fields retain these bounds for non-null
+  values. Bounds are published and enforced, not silently discarded.
+  Public categorical enums may give 2..64 possible choices, never just the
   reference answer. The compiler validates reference answers and appends this schema to the
   actual initial user message. Do not duplicate format instructions in the prose
   or place a second answer_contract in public_input. The schema owns output
@@ -1691,7 +1694,12 @@ scalar generators are:
 Bounds are 100,000 total expanded rows, 32 columns per recipe, 2,000,000 generated
 cells and 64 MiB of generated row JSON. Choice lists contain 1..100 scalars.
 All expanded rows still undergo type, primary key, foreign key, unique and CHECK
-validation. Explicit business rows may supplement generated distractors; they
+validation. Supported CHECK predicates accept either the expression alone or
+its SQL `CHECK (...)` wrapper, with identical planning and runtime enforcement.
+An explicit `rows: []` is valid for an empty initial table, including an insertion
+destination. Omitted rows are invalid; primary/foreign keys, CHECK predicates and
+the actual final-state goal still apply to all inserted or existing rows.
+Explicit business rows may supplement generated distractors; they
 must have distinct keys. The compiled manifest records the recipe, seed, algorithm,
 expanded count and content digest. Runtime loading rejects a changed row file
 that no longer matches that digest. Recipe metadata is private construction
@@ -2123,6 +2131,18 @@ network delay. The checkpoint retains the failed validation evidence and consume
 budget. The main generator can resume it within its existing route-attempt limit; a
 standalone `generate` caller receives `CODE_AGENT_TIMEOUT` and must explicitly resume.
 No acceptance gate or retry ceiling is waived.
+
+Native CLI `error`/`turn.failed` events that explicitly report selected-model
+capacity are classified as `CODE_AGENT_CAPACITY` infrastructure failures. Authoring
+and scoring each permit at most one same-model retry after a five-second wait,
+inside the original request budget; authoring charges that wait but no business
+repair for an invocation without a completed candidate. Completed turns and text
+inside assistant/tool items cannot trigger this classification. Exhaustion stays
+a failure in the original denominator; no model fallback or verdict is invented.
+Scoring writes provenance for failed attempts too, links retry request IDs and
+returns only a sanitized failure code/request ID through the local bridge. Those
+IDs allow correlation with native evidence without exposing prompts or credentials.
+Availability feedback is reported separately from actionable business defects.
 
 ### Delivery checks with semantic rewards
 

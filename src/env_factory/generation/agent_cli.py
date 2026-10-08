@@ -6,6 +6,30 @@ from .codex_transport import transport_args
 AGENTS = ("codex", "claude", "opencode")
 
 
+def native_failure(text):
+    """Classify terminal provider notices, never assistant/tool output text."""
+    events = []
+    for line in text.splitlines():
+        try:
+            value = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(value, dict):
+            events.append(value)
+    if any(event.get('type') == 'turn.completed' for event in events):
+        return None
+    for event in events:
+        if event.get('type') == 'error':
+            message = event.get('message')
+        elif event.get('type') == 'turn.failed' and isinstance(event.get('error'), dict):
+            message = event['error'].get('message')
+        else:
+            continue
+        if isinstance(message, str) and message.strip().startswith('Selected model is at capacity.'):
+            return 'CODE_AGENT_CAPACITY'
+    return None
+
+
 def transport_diagnostics(text):
     """Count explicit CLI transport notices, never infer network time from them."""
     reconnects = fallbacks = malformed = 0

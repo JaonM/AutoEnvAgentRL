@@ -22,7 +22,10 @@ from urllib.request import Request, urlopen
 
 
 class RuntimeLLMError(RuntimeError):
-    pass
+    def __init__(self, message, *, failure_code=None, request_id=None):
+        super().__init__(message)
+        self.failure_code = failure_code
+        self.request_id = request_id
 
 
 _TRACE: ContextVar[list[dict[str, Any]] | None] = ContextVar(
@@ -191,10 +194,24 @@ class RuntimeLLMClient:
                     semantic_validator(value)
                 return value
             except HTTPError as exc:
+                failure_code = request_id = None
+                if self.config.backend == 'codex':
+                    try:
+                        detail = json.loads(exc.read(4096))
+                        if isinstance(detail, dict):
+                            code, identity = detail.get('failure_code'), detail.get('request_id')
+                            if code in {'CODE_AGENT_CAPACITY', 'CODE_AGENT_EVALUATION_UNAVAILABLE', 'CODE_AGENT_DEADLINE'}:
+                                failure_code = code
+                            if isinstance(identity, str) and len(identity) == 32 and all(c in '0123456789abcdef' for c in identity):
+                                request_id = identity
+                    except (OSError, ValueError):
+                        pass
                 if exc.code in {408, 409, 425, 429, 500, 502, 503, 504} and attempt < self.config.max_retries:
                     time.sleep(0.5 * (2 ** attempt))
                     continue
-                raise RuntimeLLMError(f"runtime LLM HTTP failure: {exc.code}") from exc
+                details = ''.join((f' {failure_code}' if failure_code else '', f' request_id={request_id}' if request_id else ''))
+                raise RuntimeLLMError(f"runtime LLM HTTP failure: {exc.code}{details}",
+                    failure_code=failure_code, request_id=request_id) from exc
             except RuntimeLLMError as exc:
                 if attempt >= self.config.max_retries:
                     raise

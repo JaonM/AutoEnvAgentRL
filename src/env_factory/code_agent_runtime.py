@@ -22,7 +22,7 @@ import threading
 import time
 import uuid
 
-from env_factory.generation.agent_cli import command
+from env_factory.generation.agent_cli import command, native_failure
 from env_factory.runtime_llm import RuntimeLLMClient, RuntimeLLMError
 
 _ACTIVE = set()
@@ -61,6 +61,31 @@ def restore_optional_fields(value, schema):
 
 
 def run_codex(messages, schema, *, model, timeout, evidence_root):
+    """At most one capacity retry, using the same model and original deadline."""
+    started, identities = time.monotonic(), []
+    for attempt in range(2):
+        try:
+            response = _run_codex_once(messages, schema, model=model,
+                timeout=max(0.001, timeout - (time.monotonic() - started)), evidence_root=evidence_root)
+        except RuntimeLLMError as exc:
+            if exc.request_id:
+                identities.append(exc.request_id)
+                path = Path(evidence_root) / exc.request_id / 'request_attempts.json'
+                path.write_text(json.dumps({'attempt_ids': identities, 'seconds': time.monotonic() - started}) + '\n')
+            if exc.failure_code != 'CODE_AGENT_CAPACITY' or attempt or timeout - (time.monotonic() - started) <= 6:
+                raise
+            time.sleep(5)
+            if time.monotonic() - started >= timeout:
+                raise
+        else:
+            identities.append(response['id'])
+            response['attempt_ids'] = identities
+            (Path(evidence_root) / response['id'] / 'request_attempts.json').write_text(json.dumps({
+                'attempt_ids': identities, 'seconds': time.monotonic() - started}) + '\n')
+            return response
+
+
+def _run_codex_once(messages, schema, *, model, timeout, evidence_root):
     """Require native completion and schema-valid output, not merely exit zero."""
     identity = uuid.uuid4().hex
     folder = Path(evidence_root).resolve() / identity
@@ -88,6 +113,7 @@ def run_codex(messages, schema, *, model, timeout, evidence_root):
                  if not k.startswith(('SANDBOX_', 'LLM_', 'ROLLOUT_LLM_'))}
     started = time.monotonic()
     process = None
+    events, failure_code, passed = [], None, False
     try:
         # A fresh empty cwd avoids loading generated task code or project AGENTS.
         with tempfile.TemporaryDirectory(prefix='envfactory-judge-') as cwd:
@@ -99,6 +125,7 @@ def run_codex(messages, schema, *, model, timeout, evidence_root):
                 try:
                     process.communicate(prompt, timeout=timeout)
                 except subprocess.TimeoutExpired as exc:
+                    failure_code = 'CODE_AGENT_DEADLINE'
                     raise RuntimeLLMError('Code Agent deadline exceeded') from exc
                 finally:
                     try:
@@ -112,15 +139,16 @@ def run_codex(messages, schema, *, model, timeout, evidence_root):
                     finally:
                         with _ACTIVE_LOCK:
                             _ACTIVE.discard(process.pid)
-        if process.returncode:
-            raise RuntimeLLMError('Code Agent process failed')
         events = [json.loads(line) for line in (folder / 'events.jsonl').read_text().splitlines() if line.strip()]
-        completed = [e for e in events if e.get('type') == 'turn.completed']
-        if len(completed) != 1 or any(e.get('type') == 'turn.failed' for e in events):
-            raise RuntimeLLMError('Code Agent did not complete one isolated turn')
         tools = {'command_execution', 'file_change', 'mcp_tool_call', 'web_search', 'collab_tool_call'}
         if any(e.get('item', {}).get('type') in tools for e in events):
             raise RuntimeLLMError('Code Agent evaluation attempted an out-of-scope tool')
+        failure_code = native_failure((folder / 'events.jsonl').read_text())
+        if process.returncode or failure_code:
+            raise RuntimeLLMError('Code Agent process failed')
+        completed = [e for e in events if e.get('type') == 'turn.completed']
+        if len(completed) != 1 or any(e.get('type') == 'turn.failed' for e in events):
+            raise RuntimeLLMError('Code Agent did not complete one isolated turn')
         value = restore_optional_fields(json.loads(answer.read_text()), schema)
         if not isinstance(value, dict):
             raise RuntimeLLMError('Code Agent response is not an object')
@@ -128,17 +156,25 @@ def run_codex(messages, schema, *, model, timeout, evidence_root):
         response = {'id': identity, 'model': model, 'backend': 'codex_cli',
                     'usage': completed[0].get('usage', {}),
                     'choices': [{'message': {'role': 'assistant', 'content': json.dumps(value, ensure_ascii=False)}}]}
+        passed = True
+        return response
+    except (OSError, ValueError, TypeError, AttributeError, RuntimeLLMError) as exc:
+        failure_code = failure_code or 'CODE_AGENT_EVALUATION_UNAVAILABLE'
+        raise RuntimeLLMError('Code Agent evaluation unavailable: ' + failure_code,
+                              failure_code=failure_code, request_id=identity) from exc
+    finally:
+        event_path = folder / 'events.jsonl'
+        completed = [e for e in events if isinstance(e, dict) and e.get('type') == 'turn.completed']
         (folder / 'provenance.json').write_text(json.dumps({
             'id': identity, 'backend': 'codex_cli', 'requested_model': model,
             'model_evidence': 'explicit CLI --model argument; provider model revision is not exposed by CLI completion',
-            'completed_turns': 1, 'seconds': time.monotonic()-started,
+            'status': 'passed' if passed else 'failed', 'failure_code': failure_code,
+            'exit_code': process.returncode if process is not None else None,
+            'completed_turns': len(completed), 'seconds': time.monotonic()-started,
             'request_sha256': hashlib.sha256(prompt.encode()).hexdigest(),
             'schema_sha256': hashlib.sha256(schema_path.read_bytes()).hexdigest(),
-            'events_sha256': hashlib.sha256((folder/'events.jsonl').read_bytes()).hexdigest(),
-            'usage': response['usage']}, ensure_ascii=False, indent=2)+'\n')
-        return response
-    except (OSError, ValueError, TypeError) as exc:
-        raise RuntimeLLMError('Invalid Code Agent process response') from exc
+            'events_sha256': hashlib.sha256(event_path.read_bytes()).hexdigest() if event_path.exists() else None,
+            'usage': completed[0].get('usage', {}) if len(completed) == 1 else {}}, ensure_ascii=False, indent=2)+'\n')
 
 
 class CodeAgentServer(ThreadingHTTPServer):
@@ -208,6 +244,11 @@ class Handler(BaseHTTPRequestHandler):
             response = self.server.runner(messages, schema, model=self.server.model,
                 timeout=self.server.timeout, evidence_root=self.server.evidence_root)
             self.reply(200, response)
+        except RuntimeLLMError as exc:
+            self.reply(503 if exc.failure_code == 'CODE_AGENT_CAPACITY' else 502, {
+                'error': 'code_agent_evaluation_unavailable',
+                'failure_code': exc.failure_code or 'CODE_AGENT_EVALUATION_UNAVAILABLE',
+                'request_id': exc.request_id})
         except Exception:
             self.reply(502, {'error': 'code_agent_evaluation_unavailable'})
         finally:

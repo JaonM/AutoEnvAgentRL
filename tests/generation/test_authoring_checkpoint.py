@@ -26,6 +26,19 @@ def test_fixed_design_roundtrip_preserves_retry_evidence_without_certifying(tmp_
         load_checkpoint(path, expected_request=dict(request(), user_script_count=2))
 
 
+def test_capacity_invocations_preserve_budget_evidence_without_consuming_candidate_slots(tmp_path):
+    path = save_checkpoint(tmp_path, request=request(), blueprint=blueprint(), source=implementation(),
+        evidence={'status': 'failed', 'previous_source_attempts': 1, 'previous_author_seconds': 30,
+                  'author_seconds': 15, 'repair_budget': {'used': {'structural': 1, 'semantic': 0}},
+                  'attempts': [{'phase': 'implementation', 'status': 'validation_failed'},
+                               {'phase': 'implementation', 'status': 'capacity_unavailable',
+                                'business_attempt_consumed': False, 'failure_code': 'CODE_AGENT_CAPACITY'}]})
+    manifest = load_checkpoint(path)['manifest']
+    assert manifest['source_attempts'] == 2
+    assert manifest['author_seconds'] == 45
+    assert manifest['repair_budget']['used'] == {'structural': 1, 'semantic': 0}
+
+
 def test_publishing_new_candidate_preserves_old_content_addressed_snapshot(tmp_path):
     path = save(tmp_path)
     old = path.read_text()

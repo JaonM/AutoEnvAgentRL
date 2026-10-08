@@ -4,6 +4,15 @@ import pytest
 from env_factory.generation.execution_progress import ExecutionProgress
 
 
+def test_availability_feedback_does_not_claim_an_actionable_business_defect(tmp_path):
+    progress = ExecutionProgress(tmp_path)
+    progress.feedback('validation_branch', error_type='SemanticCalibrationUnavailable')
+    progress.feedback('semantic_calibration', code='SEMANTIC_CALIBRATION_UNAVAILABLE')
+    progress.feedback('reference', code='DETERMINISTIC_REWARD_UNREACHABLE')
+    rows = [json.loads(line) for line in progress.path.read_text().splitlines()]
+    assert [row['status'] for row in rows] == ['availability_feedback', 'availability_feedback', 'actionable_feedback']
+
+
 def test_progress_is_visible_during_work_and_preserves_failed_attempt(tmp_path):
     progress = ExecutionProgress(tmp_path)
     with pytest.raises(RuntimeError, match="private payload"):

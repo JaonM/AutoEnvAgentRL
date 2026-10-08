@@ -18,7 +18,7 @@ from .semantic_reward import SemanticCalibrationUnavailable
 from .pipeline_errors import PipelineGenerationError
 from env_factory.sandbox_runtime import SandboxError
 
-from .agent_cli import command as agent_command, completed_events
+from .agent_cli import command as agent_command, completed_events, native_failure
 from .author_startup import NoAuthorActivity, workspace_signature, communicate as communicate_startup
 
 MODEL = "gpt-6.1-sol"
@@ -26,6 +26,10 @@ PROJECT = Path(__file__).resolve().parents[3]
 
 
 class _StartupStall(PipelineGenerationError):
+    pass
+
+
+class _CapacityUnavailable(PipelineGenerationError):
     pass
 
 
@@ -453,7 +457,7 @@ checks to pass. Finish by reporting the source file and checks actually executed
     blueprint = None
     validation_feedback = None
     blueprint_text = None
-    blueprint_attempts = source_attempts = startup_recoveries = 0
+    blueprint_attempts = source_attempts = startup_recoveries = capacity_recoveries = 0
     if resumed:
         validation_feedback = resumed.get('validation_feedback')
         if validation_feedback is not None:
@@ -492,7 +496,7 @@ checks to pass. Finish by reporting the source file and checks actually executed
     else:
         evidence['authoring_stages'] = ['implementation']
     try:
-        for index in range(1, 7 if staged else 4):
+        for index in range(1, 8 if staged else 5):
             remaining = timeout - evidence.get("author_seconds", 0.0)
             # Conservative restart threshold after observed reconnect notices;
             # this is scheduling policy, not a measurement of network duration.
@@ -566,6 +570,9 @@ checks to pass. Finish by reporting the source file and checks actually executed
                 events_digest.update(events_path.read_bytes())
                 evidence["events_sha256"] = events_digest.hexdigest()
                 attempt["events_sha256"] = hashlib.sha256(events_path.read_bytes()).hexdigest()
+                if agent == 'codex' and native_failure(events_path.read_text()) == 'CODE_AGENT_CAPACITY':
+                    attempt['failure_code'] = 'CODE_AGENT_CAPACITY'
+                    raise _CapacityUnavailable('CODE_AGENT_CAPACITY: selected model unavailable; native CLI error recorded')
                 if process.returncode:
                     raise PipelineGenerationError(f"CODE_AGENT_EXEC_FAILED: exit {process.returncode}; see {attempt_root.name}/stderr.log")
                 completed = completed_events(agent, events_path.read_text(), workspace / "response.txt")
@@ -708,6 +715,25 @@ checks to pass. Finish by reporting the source file and checks actually executed
                 artifacts["generation_pipeline"].update(evidence)
                 artifacts["generation_pipeline"]["seconds"] = time.monotonic() - started
                 return artifacts
+            except _CapacityUnavailable as exc:
+                attempt.update(status='capacity_unavailable', error=str(exc),
+                               business_attempt_consumed=False, completed_turns=0)
+                if planning:
+                    blueprint_attempts -= 1
+                else:
+                    source_attempts -= 1
+                if capacity_recoveries or timeout - evidence['author_seconds'] <= 6:
+                    raise
+                capacity_recoveries += 1
+                evidence['capacity_recoveries'] = capacity_recoveries
+                attempt['recovery'] = 'retry_same_model_with_remaining_author_budget'
+                waiting = time.monotonic()
+                time.sleep(5)
+                attempt['recovery_wait_seconds'] = time.monotonic() - waiting
+                evidence['author_seconds'] += attempt['recovery_wait_seconds']
+                if evidence['author_seconds'] >= timeout:
+                    raise
+                continue
             except _StartupStall as exc:
                 attempt.update(status='startup_stalled', error=str(exc))
                 recorded = events_path.read_bytes()

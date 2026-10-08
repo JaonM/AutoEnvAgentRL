@@ -8,6 +8,17 @@ def stamp(seconds):
     return datetime.fromtimestamp(seconds, timezone.utc).isoformat()
 
 
+def test_unavailable_feedback_is_separate_from_business_defects_in_old_and_new_logs(tmp_path):
+    directory = sample(tmp_path, 1, 'standard', failed=True, seconds=100)
+    (directory / 'execution_progress.jsonl').write_text('\n'.join(json.dumps(event) for event in [
+        {'status': 'actionable_feedback', 'timestamp': 1002, 'error_type': 'SemanticCalibrationUnavailable'},
+        {'status': 'availability_feedback', 'timestamp': 1003, 'code': 'CODE_AGENT_CAPACITY'},
+        {'status': 'actionable_feedback', 'timestamp': 1004, 'code': 'SEMANTIC_CALIBRATION_UNAVAILABLE'},
+        {'status': 'actionable_feedback', 'timestamp': 1040, 'code': 'DETERMINISTIC_REWARD_UNREACHABLE'}]))
+    row = summarize_difficulty([directory], tmp_path, requested=1, wall_seconds=100)['samples'][0]
+    assert row['reservation_to_first_recorded_feedback_seconds'] == 40
+
+
 def test_parent_and_blueprint_feedback_include_retries_without_guessing_provider_failure(tmp_path):
     directory = sample(tmp_path, 1, 'standard', failed=True, seconds=100)
     (directory / 'execution_progress.jsonl').unlink()

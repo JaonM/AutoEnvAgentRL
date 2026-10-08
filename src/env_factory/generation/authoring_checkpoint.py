@@ -61,7 +61,9 @@ def save_checkpoint(root: Path, *, request: dict, blueprint: dict,
                 'files': files, 'previous_status': evidence.get('status'),
                 'author_seconds': evidence.get('previous_author_seconds', 0) + evidence.get('author_seconds', 0),
                 'repair_budget': evidence.get('repair_budget', {}),
-                'source_attempts': evidence.get('previous_source_attempts', 0) + sum(a.get('phase') == 'implementation' for a in evidence.get('attempts', [])),
+                'source_attempts': evidence.get('previous_source_attempts', 0) + sum(
+                    a.get('phase') == 'implementation' and a.get('business_attempt_consumed', True)
+                    for a in evidence.get('attempts', [])),
                 'previous_issue_ids': sorted(set(evidence.get('previous_issue_ids', [])) |
                     {issue for a in evidence.get('attempts', []) for issue in a.get('issue_ids', [])})}
     _publish(directory / 'manifest.json', _encoded(manifest))
