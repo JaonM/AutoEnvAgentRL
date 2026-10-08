@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 
 from env_factory.sandbox_runtime import SandboxError, validate_json_schema, normalize_record_order
 
@@ -157,6 +158,13 @@ def _schema(schema: object, depth: int = 0) -> None:
                 raise ValueError("ANSWER_CONTRACT_INVALID: array bounds must be integers within 0..64")
         if schema.get("minItems", 0) > schema.get("maxItems", 64):
             raise ValueError("ANSWER_CONTRACT_INVALID: invalid array bounds")
+    if kinds & {'integer', 'number'}:
+        allowed |= {'minimum', 'maximum'}
+        for key in ('minimum', 'maximum'):
+            if key in schema and (type(schema[key]) not in (int, float) or not math.isfinite(schema[key])):
+                raise ValueError('ANSWER_CONTRACT_INVALID: numeric bounds must be finite numbers')
+        if schema.get('minimum', -math.inf) > schema.get('maximum', math.inf):
+            raise ValueError('ANSWER_CONTRACT_INVALID: invalid numeric bounds')
     if set(schema) - allowed:
         raise ValueError("ANSWER_CONTRACT_INVALID: unsupported schema keywords: " +
                          ", ".join(sorted(set(schema) - allowed)))

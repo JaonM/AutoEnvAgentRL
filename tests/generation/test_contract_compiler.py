@@ -27,14 +27,15 @@ class StageRetryTest(unittest.TestCase):
 
 
 
-    def test_table_rows_reject_empty_and_duplicate_keys(self):
+    def test_table_rows_allow_explicit_empty_but_reject_missing_rows_and_duplicate_keys(self):
         table = {
             "table_name": "item", "columns": [
                 {"name": "id", "type": "INTEGER", "nullable": False},
             ], "primary_key": ["id"],
         }
-        with self.assertRaisesRegex(PipelineGenerationError, "non-empty rows"):
-            ContractCompiler._validate_generated_table_rows(table, [])
+        ContractCompiler._validate_generated_table_rows(table, [])
+        with self.assertRaisesRegex(PipelineGenerationError, "explicit rows list"):
+            ContractCompiler._validate_generated_table_rows(table, None)
         with self.assertRaisesRegex(PipelineGenerationError, "duplicate primary keys"):
             ContractCompiler._validate_generated_table_rows(
                 table, [{"id": 1}, {"id": 1}],

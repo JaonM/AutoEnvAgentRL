@@ -521,8 +521,14 @@ class ManifestDataStore:
             ) from exc
 
     @classmethod
+    def check_expression(cls, expression: str) -> str:
+        """Accept SQL CHECK wrappers without broadening the supported predicates."""
+        wrapped = re.fullmatch(r'CHECK\s*\((.*)\)', expression.strip(), flags=re.I | re.S)
+        return wrapped[1].strip() if wrapped else expression.strip()
+
+    @classmethod
     def _check_constraint(cls, row: Mapping[str, Any], expression: str) -> bool:
-        clauses = re.split(r"\s+AND\s+", expression.strip(), flags=re.I)
+        clauses = re.split(r"\s+AND\s+", cls.check_expression(expression), flags=re.I)
         for clause in clauses:
             nullable_comparison = re.fullmatch(
                 r"\s*([A-Za-z_][A-Za-z0-9_]*)\s+IS\s+NULL\s+OR\s+\1\s*"

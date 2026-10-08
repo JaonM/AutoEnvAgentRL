@@ -6204,8 +6204,8 @@ class ContractCompiler(UserSimulationContractMixin):
         from ..sandbox_runtime import ManifestDataStore, SandboxError
 
         name = str(table["table_name"])
-        if not isinstance(rows, list) or not rows:
-            raise PipelineGenerationError(f"data table {name} requires complete non-empty rows")
+        if not isinstance(rows, list):
+            raise PipelineGenerationError(f"data table {name} requires an explicit rows list")
         columns = {str(column["name"]): column for column in table["columns"]}
         primary = table["primary_key"]
         keys: set[tuple[Any, ...]] = set()
@@ -6362,7 +6362,8 @@ class ContractCompiler(UserSimulationContractMixin):
                     raise PipelineGenerationError(
                         f"table definitions[{index}] contains an invalid CHECK constraint"
                     )
-                for clause in re.split(r"\s+AND\s+", expression.strip(), flags=re.I):
+                from env_factory.sandbox_runtime import ManifestDataStore
+                for clause in re.split(r"\s+AND\s+", ManifestDataStore.check_expression(expression), flags=re.I):
                     nullable_comparison = re.fullmatch(
                         r"\s*([A-Za-z_][A-Za-z0-9_]*)\s+IS\s+NULL\s+OR\s+\1\s*"
                         r"(>=|<=|<>|!=|=|>|<)\s*(.*?)\s*",
