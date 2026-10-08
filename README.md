@@ -59,7 +59,6 @@ cp .env.example .env
 | --- | --- |
 | `NEO4J_URI`、`NEO4J_USER`、`NEO4J_PASSWORD`、`NEO4J_DATABASE` | Scene 图谱数据库 |
 | `LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL` | 通用模型服务及角色配置的回退值 |
-| `ROLLOUT_LLM_*` | 独立诊断工具的 Agent 模型，构建主链路不使用 |
 | `SANDBOX_LLM_*` | 沙箱用户模拟器与模型评分器 |
 | `GRAPH_SEEDS_FILE` | 图谱种子词文件，每行一个词语 |
 | `WIKIPEDIA_DUMP_DB` | 可选的本地 Wikipedia 索引；未配置时使用在线来源 |

@@ -168,15 +168,6 @@ class GateReformTest(unittest.TestCase):
             save(root,project,results);app.write_text('x=1\n');self.assertIsNone(load(root,project))
             save(root,project,results);code.write_text('x=2\n');self.assertIsNone(load(root,project))
 
-    def test_live_environment_and_agent_outcomes_are_separate(self):
-        live=script('rollout/run_live_rollout.py')
-        report=live.summarize_episodes([{'agent_success':False,'issues':[]}],2/3)
-        self.assertTrue(report['environment_qualified'])
-        self.assertFalse(report['agent_policy_qualified'])
-        self.assertFalse(report['task_solvability_witness'])
-        self.assertIsNone(report['failure_owner'])
-        self.assertTrue(report['passed'])
-        self.assertEqual(report['agent_failure_owner'],'agent')
 
     def test_clean_review_is_not_blocked_by_bare_subjective_score(self):
         review = script("sandbox/adjudicate_review.py")
@@ -186,15 +177,6 @@ class GateReformTest(unittest.TestCase):
             result = review.adjudicate(Path(directory), report)
             self.assertEqual(result["status"], "resolved")
 
-    def test_one_success_in_three_is_environment_evidence_not_policy_threshold(self):
-        live = script("rollout/run_live_rollout.py")
-        episodes = [{"agent_success": value, "issues": []} for value in (True, False, False)]
-        report = live.summarize_episodes(episodes, 2 / 3)
-        self.assertTrue(report["passed"])
-        self.assertTrue(report["task_solvability_witness"])
-        self.assertFalse(report["agent_policy_qualified"])
-        episodes[1]["issues"] = ["unstable_reward_read"]
-        self.assertFalse(live.summarize_episodes(episodes, 2 / 3)["passed"])
 
     def test_fixed_goal_uses_verified_completion_and_incomplete_goal_still_calls_model(self):
         from env_factory.sandbox_runtime import ContractUserSimulator, EpisodeStore

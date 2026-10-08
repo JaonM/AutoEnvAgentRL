@@ -16,9 +16,9 @@ uv sync --extra rl
 ```
 
 需要 Python ≥ 3.14、Apple Silicon/Metal，以及运行中的 Docker Engine（脚本默认使用 Docker 沙箱）。
-模型驱动的用户模拟器与语义评分器使用外部模型服务，按项目 `.env.example` 配置 `SANDBOX_LLM_*` 等变量；
+模型驱动的用户模拟器与语义评分器通过 `SANDBOX_LLM_*` 选择后端；当前使用本机 Code Agent 桥接服务（GPT-6.1-Sol），配置见 [Code Agent 说明](code_agent_authoring.md#code-agent-runtime-evaluator)。
 声明 `deterministic_task_protocol` 的用户剧本由平台状态机执行，不要求外部用户模型调用。
-训练 policy 本身由 `--model` 指向本地模型。仅运行 RL 不要求重新执行图谱生成流程。
+训练 policy 本身由 `--model` 指向本地模型。独立外部 LLM 策略 rollout 验证入口已移除；训练与策略评估均由本地策略路径执行。仅运行 RL 不要求重新执行图谱生成流程。
 本地开发可显式传 `--sandbox-backend local`，已有独立 HTTP 服务使用 `--sandbox-services`，
 详见[沙箱服务管理](#单机-docker-engine--沙箱管理器默认)。
 

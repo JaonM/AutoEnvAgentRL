@@ -266,9 +266,8 @@ provenance，并重新读取 `data_governance.json` 复核 Agent、User Simulato
 provider 摘要授权，并校验 `task_lineage.json`。Bundle v17 还从每次 Agent 响应和 trainer-only runtime
 replay 重算 provider 实际返回的模型分布与响应 ID 摘要；配置的模型别名不能再替代实际响应 provenance，
 原始 provider response ID 不会落盘。实际模型还必须分别属于冻结的 generation、Agent、runtime allowlist；
-allowlist 默认仅含各角色配置模型，也可通过 `LLM_ALLOWED_RESPONSE_MODELS`、
-`ROLLOUT_LLM_ALLOWED_RESPONSE_MODELS`、`SANDBOX_LLM_ALLOWED_RESPONSE_MODELS` 以逗号分隔显式声明 provider
-可能返回的版本化模型名。v15 包记录实际响应模型但没有冻结授权门禁；v14 包仅保留轨迹用途隔离；v13 包只验证完整
+历史 allowlist 以冻结实验配置中的角色模型及其获准响应模型为准。独立外部策略 rollout
+执行入口已移除；这些字段仅用于校验已有证据，不再提供外部策略运行配置。v15 包记录实际响应模型但没有冻结授权门禁；v14 包仅保留轨迹用途隔离；v13 包只验证完整
 冻结实验配置绑定；v12 包仅按原有 production preflight 契约验证；
 v11 包缺少 production preflight
 语义，v10 包仍按其

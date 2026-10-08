@@ -239,9 +239,8 @@ def test_sol_defaults_and_independent_sandbox_override():
     assert command('--sandbox-model=build-model')[-2:] == ['--sandbox-model', 'build-model']
 
 
-def test_python_entrypoint_owns_defaults_and_model_roles(tmp_path, monkeypatch):
+def test_python_entrypoint_owns_pipeline_defaults(tmp_path, monkeypatch):
     from env_factory import task_pipeline as pipeline
-    from env_factory.evidence import model_roles
     captured = {}
     def run(project, root, config):
         captured.update(config)
@@ -249,7 +248,6 @@ def test_python_entrypoint_owns_defaults_and_model_roles(tmp_path, monkeypatch):
         return 0
     monkeypatch.setattr(pipeline, 'run_pipeline', run)
     monkeypatch.setattr(pipeline.signal, 'signal', lambda *_: None)
-    monkeypatch.setattr(model_roles, 'resolve_model_roles', lambda _: {'agent': {'model': 'actor', 'api_key': 'test'}})
     assert pipeline.main(['--project', str(tmp_path)]) == 0
     assert captured['generation_hops'] == 2
     assert captured['user_script_count'] == 3

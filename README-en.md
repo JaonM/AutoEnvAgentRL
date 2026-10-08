@@ -59,7 +59,6 @@ Edit `.env` with your Neo4j connection and model service configuration. Do not c
 | --- | --- |
 | `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`, `NEO4J_DATABASE` | Scene graph database |
 | `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` | General model service and fallback values for role-specific settings |
-| `ROLLOUT_LLM_*` | Agent model for standalone diagnostics; unused by the construction pipeline |
 | `SANDBOX_LLM_*` | Sandbox user simulator and model-based evaluator |
 | `GRAPH_SEEDS_FILE` | Graph seed file, one term per line |
 | `WIKIPEDIA_DUMP_DB` | Optional local Wikipedia index; online sources are used when unset |

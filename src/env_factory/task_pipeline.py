@@ -102,15 +102,11 @@ def failure(stage, detail, **extra):
     targets = {"generation": "task_pipeline", "task_quality": "task_contract",
                "build": "sandbox_builder", "offline_validation": "runtime_or_contract",
                "data_governance": "inspect_outbound_payload",
-               "trajectory_privacy": "inspect_policy_visible_trajectory",
-               "infrastructure": "runner_or_provider", "live_rollout": "inspect_live_trajectory",
-               "live_reward_calibration": "inspect_reward_evaluator"}
+               "infrastructure": "runner_or_provider"}
     codes = {"generation": "GEN_SEMANTIC", "task_quality": "TASK_BUILDABILITY",
              "build": "BUILD_BUSINESS", "offline_validation": "REWARD_OR_RUNTIME",
              "data_governance": "DATA_GOVERNANCE",
-             "trajectory_privacy": "TRAJECTORY_PRIVACY",
-             "infrastructure": "INFRA", "live_rollout": "ROLLOUT_ENVIRONMENT",
-             "live_reward_calibration": "LIVE_REWARD_CALIBRATION"}
+             "infrastructure": "INFRA"}
     return {"passed": False, "failure_class": stage, "repair_target": targets.get(stage, "inspect"),
             "failure_code": codes.get(stage, "UNKNOWN"), "detail": detail,
             "live_rollout_verified": False, **extra}
@@ -237,9 +233,7 @@ def _build_one_unfinalized(project, task_path, output, config):
                 )
             except (OSError, ValueError, json.JSONDecodeError):
                 pass
-        if built.get("budget_exhausted") or (
-            not built.get("timed_out") and not infrastructure_status
-        ):
+        if not built["timed_out"] and not infrastructure_status:
             break
     assert built is not None
     common["build"] = built
@@ -314,7 +308,7 @@ def _build_one_unfinalized(project, task_path, output, config):
             "failure_class": None if passed else "offline_validation",
             "repair_target": None if passed else "runtime_or_contract",
             "detail": report.get("failed_critical_gates", []),
-            "elapsed_seconds": time.monotonic() - started, "live_rollout_verified": False}
+            "elapsed_seconds": time.monotonic() - started}
     result.update(
         qualification_basis="executable_v1",
         executable_validation_verified=passed and config.get("sandbox_runtime") == "docker",

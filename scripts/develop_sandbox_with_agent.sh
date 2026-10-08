@@ -738,8 +738,9 @@ the same shortcut is reachable when mock mode is disabled.
 
 Offline construction must not contact a real external evaluator or mark a
 sandbox defective merely because training_readiness says offline_mock or
-live_rollout_verified=false. The post-build live rollout stage owns real-model
-User Simulator and evaluator verification. During this build review, verify
+live_rollout_verified=false. The parent delivery checks own real User Simulator
+and evaluator verification; no external-policy live rollout stage follows this build.
+During this build review, verify
 that the production default routes through RuntimeLLMClient, validates its
 structured response, records trace evidence, and fails conservatively; do not
 require external network evidence before the sandbox can reach that stage.

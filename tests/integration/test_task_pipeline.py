@@ -1,16 +1,12 @@
-import importlib.util
-import hashlib
-import itertools
 import json
-import os
 from pathlib import Path
 import sys
 import tempfile
-import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+from env_factory.sandbox_http import HTTPSandboxClient
 from env_factory.tasks.task_portability import prepare_sandbox_task
 from env_factory.sandbox_scoring import SCORE_RUBRIC, evidence_fingerprint
 
@@ -18,18 +14,7 @@ from env_factory.sandbox_scoring import SCORE_RUBRIC, evidence_fingerprint
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def load(name):
-    path = ROOT / "scripts" / f"{name}.py"
-    if not path.is_file():
-        path = ROOT / "scripts" / "rollout" / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 from env_factory import task_pipeline as loop
-rollout = load("run_live_rollout")
 
 
 class PipelineBuildTest(unittest.TestCase):
@@ -122,7 +107,6 @@ class PipelineBuildTest(unittest.TestCase):
         self.assertRegex(first, r"^envfactory-sandbox-[0-9a-f]{20}$")
 
 
-
     def test_timeout_and_nonzero_exit_are_recorded(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -132,15 +116,6 @@ class PipelineBuildTest(unittest.TestCase):
             result = loop.run_process([sys.executable, "-c", "raise SystemExit(7)"], root, root / "exit.log", 5)
             self.assertEqual(result["exit_code"], 7)
             self.assertFalse(loop.ACTIVE_PROCESSES)
-
-
-
-
-
-
-
-
-
 
 
     def test_failed_manifest_waits_for_failure_report_before_classification(self):
@@ -160,8 +135,6 @@ class PipelineBuildTest(unittest.TestCase):
                 1, (manifest_path, sample), generation_done=False,
             )
             self.assertEqual(resolved["result"]["failure_code"], "GEN_SCHEMA")
-
-
 
 
     def test_buildability_failure_is_not_mislabeled_as_luna_failure(self):
@@ -341,7 +314,7 @@ class PipelineBuildTest(unittest.TestCase):
                 self.assertEqual(result["validation_checks"][name], "not_run")
             self.assertFalse(any("run_live_rollout.py" in " ".join(c) for c in commands))
 
-    def test_data_governance_failure_prevents_live_rollout(self):
+    def test_data_governance_failure_prevents_training_readiness(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             task_path = root / "task.json"
@@ -390,92 +363,10 @@ class PipelineBuildTest(unittest.TestCase):
             ))
 
 
-
-
-
-
-class FakeApp:
-    def __init__(self, *, correct=True, fallback=False):
-        self.correct, self.fallback = correct, fallback
-        self.changed = False
-
-    def business_snapshot(self):
-        return {"items": [{"id": 1, "done": self.changed}]}
-
-    def handle(self, method, path, body=None, headers=None):
-        if path == "/v1/reset":
-            self.changed = False
-            value = {}
-        elif path == "/v1/tools":
-            value = {"tools": [{"type": "function", "function": {"name": "finish", "parameters": {"type": "object"}}}]}
-        elif path == "/v1/state":
-            value = {"business_state": self.business_snapshot()}
-        elif path == "/v1/tools/finish":
-            self.changed = self.correct
-            value = {"updated": 1}
-        elif path == "/v1/reward":
-            value = {"reward": 1 if getattr(self, "answered", False) else 0}
-        elif path == "/v1/agent_response":
-            self.answered = True
-            value = {"accepted": True}
-        elif path == "/v1/user_simulator":
-            value = {"user_query": "accepted", "should_end": True, "termination_reason": "completed"}
-        elif path == "/v1/replay":
-            value = {"events": [{"payload": {"used_fallback": self.fallback}}]}
-        else:
-            value = {}
-        return 200, value, {}
-
-
-class RolloutTest(unittest.TestCase):
-    def test_live_transport_reuses_key_after_declared_response_loss(self):
-        class FaultApp(FakeApp):
-            keys = None
-            def handle(self, method, path, body=None, headers=None):
-                if path == '/v1/tools/finish':
-                    if self.keys is None:
-                        self.keys = []
-                    self.keys.append(headers.get('Idempotency-Key'))
-                    self.changed = True
-                    if len(self.keys) == 1:
-                        return 504, {'error': {'code': 'RESPONSE_LOST'}}, {}
-                return super().handle(method, path, body, headers)
-        app = FaultApp()
-        actions = iter([{'kind': 'tool', 'name': 'finish', 'arguments': {}}] * 2
-                       + [{'kind': 'respond', 'content': 'done'}])
-        client = SimpleNamespace(chat=lambda *a, **k: SimpleNamespace(
-            content=json.dumps(next(actions)), model='test', id='test', finish_reason='stop', usage={}))
-        task = {'task': 'finish', 'business_lifecycle': {'dynamics': {'faults': [
-            {'tool': 'finish', 'status': 504, 'phase': 'after_commit'}]}}}
-        with patch.dict(os.environ, {'SANDBOX_TRAINER_API_KEY': 'test'}):
-            result = rollout.episode(app, task, client, 0, 4)
-        self.assertTrue(result['agent_success'])
-        self.assertTrue(app.keys[0])
-        self.assertEqual(app.keys[0], app.keys[1])
-        self.assertEqual(result['transitions'][0]['result']['status'], 504)
-        user_request = next(step for step in result['trajectory']
-                            if step['path'] == '/v1/user_simulator')
-        self.assertEqual(user_request['body']['messages'][-1],
-                         {'role': 'assistant', 'content': 'done'})
-        self.assertNotIn({'role': 'user', 'content': 'accepted'},
-                         user_request['body']['messages'])
-
-    def test_live_transport_does_not_hide_undeclared_server_errors(self):
-        class BrokenApp(FakeApp):
-            def handle(self, method, path, body=None, headers=None):
-                if path == '/v1/tools/finish':
-                    return 500, {'error': {'code': 'INTERNAL_ERROR'}}, {}
-                return super().handle(method, path, body, headers)
-        client = SimpleNamespace(chat=lambda *a, **k: SimpleNamespace(
-            content=json.dumps({'kind': 'tool', 'name': 'finish', 'arguments': {}}),
-            model='test', id='test', finish_reason='stop', usage={}))
-        with patch.dict(os.environ, {'SANDBOX_TRAINER_API_KEY': 'test'}):
-            with self.assertRaisesRegex(RuntimeError, 'status=500'):
-                rollout.episode(BrokenApp(), {'task': 'finish'}, client, 0, 2)
-
+class RuntimeBoundaryTest(unittest.TestCase):
     def test_http_sandbox_client_only_accepts_loopback_origins(self):
         self.assertEqual(
-            rollout.HTTPSandboxClient("http://127.0.0.1:8000").base_url,
+            HTTPSandboxClient("http://127.0.0.1:8000").base_url,
             "http://127.0.0.1:8000",
         )
         for value in (
@@ -485,84 +376,4 @@ class RolloutTest(unittest.TestCase):
             "http://127.0.0.1:8000/path",
         ):
             with self.subTest(value=value), self.assertRaises(ValueError):
-                rollout.HTTPSandboxClient(value)
-
-    def test_release_gate_requires_two_of_three_clean_successes(self):
-        episodes = [
-            {"agent_success": True, "issues": []},
-            {"agent_success": True, "issues": []},
-            {"agent_success": False, "issues": []},
-        ]
-        report = rollout.summarize_episodes(episodes, 2 / 3)
-        self.assertTrue(report["passed"])
-        self.assertEqual(report["quality_score"], 1.0)
-        episodes[1]["agent_success"] = False
-        report = rollout.summarize_episodes(episodes, 2 / 3)
-        self.assertTrue(report["passed"])
-        self.assertTrue(report["environment_qualified"])
-        self.assertFalse(report["agent_policy_qualified"])
-        self.assertIsNone(report["failure_owner"])
-        episodes[1]["issues"] = ["runtime_llm_fallback"]
-        report = rollout.summarize_episodes(episodes, 0)
-        self.assertFalse(report["all_episodes_fallback_free"])
-        self.assertEqual(report["failure_owner"], "environment")
-
-    def run_episode(self, app):
-        task = {"task": "finish item", "acceptance_contract": {"secret": "do not show"},
-                "public_input": {"initial_user_message": "finish the supplied item", "materials": [{
-                    "name": "item", "mime_type": "application/json", "content": '{"id": 1}'
-                }]},
-                "task_spec": {"goal_contract": {"row_predicates": [{"table": "items", "where": {"id": 1},
-                       "values": {"done": True}, "count": 1}], "requires_state_change": True}}}
-        calls = []
-        actions = iter([{"kind": "tool", "name": "finish", "arguments": {}}, {"kind": "respond", "content": "done"}])
-        def chat(messages, **kwargs):
-            calls.append(json.dumps(messages))
-            return SimpleNamespace(
-                content=json.dumps(next(actions)),
-                model="actual-policy-snapshot",
-                id="response-id",
-                finish_reason="stop",
-                usage={"total_tokens": 10},
-            )
-        with patch.dict(os.environ, {"SANDBOX_TRAINER_API_KEY": "test"}):
-            result = rollout.episode(app, task, SimpleNamespace(chat=chat), 0, 4)
-        self.assertTrue(all("do not show" not in call for call in calls))
-        self.assertTrue(any("Public materials" in call and "application/json" in call for call in calls))
-        return result
-
-    def test_live_agent_uses_only_public_inputs_and_records_usage(self):
-        result = self.run_episode(FakeApp())
-        self.assertTrue(result["agent_success"])
-        self.assertEqual(
-            sum(item["token_usage"]["total_tokens"] for item in result["usage"]),
-            20,
-        )
-        self.assertEqual(
-            {item["response_model"] for item in result["usage"]},
-            {"actual-policy-snapshot"},
-        )
-        self.assertEqual(result["schema_version"], "2.0")
-        self.assertEqual(len(result["transitions"]), 2)
-        self.assertEqual(result["transitions"][0]["action"]["kind"], "tool")
-        self.assertIsInstance(result["transitions"][0]["next_observation"], dict)
-        self.assertTrue(result["transitions"][-1]["terminated"])
-        self.assertEqual(
-            result["transitions"][-1]["result"],
-            {"status": 200, "user_query": "accepted"},
-        )
-        self.assertTrue(
-            result["transitions"][-1]["trainer_metadata"]["user_simulator"][
-                "should_end"
-            ]
-        )
-
-    def test_high_reward_with_wrong_state_is_rejected(self):
-        result = self.run_episode(FakeApp(correct=False))
-        self.assertFalse(result["agent_success"])
-        self.assertIn("reward_state_disagreement", result["issues"])
-
-    def test_runtime_fallback_is_not_live_success(self):
-        result = self.run_episode(FakeApp(fallback=True))
-        self.assertFalse(result["agent_success"])
-        self.assertIn("runtime_llm_fallback", result["issues"])
+                HTTPSandboxClient(value)

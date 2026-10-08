@@ -3,7 +3,6 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from env_factory.contracts.reward_contract import REFERENCE_FACTUALITY_CRITERION
@@ -20,7 +19,6 @@ from env_factory.evidence.material_artifacts import (
     MATERIAL_MANIFEST_VERSION,
     docker_build_context_digest,
 )
-from env_factory.evidence.trajectory_schema import episode_errors
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -37,7 +35,6 @@ def load_script(name="certify_training_materials"):
 
 certifier = load_script()
 verifier = load_script("verify_training_materials")
-rollout_runner = load_script("run_live_rollout")
 
 
 class ProductionReadinessTest(unittest.TestCase):
@@ -1298,25 +1295,6 @@ class ProductionReadinessTest(unittest.TestCase):
             calibration_path.write_text(json.dumps(calibration))
             self.assertFalse(certifier.valid_provider_binding(result))
 
-    def test_rollout_uses_governance_provider_identity_algorithm(self):
-        class Provider:
-            def __init__(self, base_url, model):
-                self.base_url = base_url
-                self.model = model
-
-        agent = Provider("https://agent.example/v1/", "policy-model")
-        runtime = Provider("https://runtime.example/v1", "simulator-model")
-        attestation = rollout_runner.rollout_provider_attestation(agent, runtime)
-        from env_factory.evidence.data_governance import provider_identity
-
-        self.assertEqual(
-            attestation["agent_provider_sha256"],
-            provider_identity(agent.base_url, agent.model)["identity_sha256"],
-        )
-        self.assertEqual(
-            attestation["runtime_provider_sha256"],
-            provider_identity(runtime.base_url, runtime.model)["identity_sha256"],
-        )
 
     def test_rollout_provider_digest_must_be_canonical_hex(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -2061,63 +2039,6 @@ class ProductionReadinessTest(unittest.TestCase):
             episode["trajectory"][-2]["result"] = {"events": []}
             self.assertFalse(certifier.complete_episode(episode))
 
-    def test_real_rollout_emitter_matches_episode_http_schema(self):
-        class App:
-            reward = 0.0
-
-            def __init__(self, with_tool=False):
-                self.with_tool = with_tool
-
-            def handle(self, method, path, body, headers):
-                if path == "/v1/reset":
-                    self.reward = 0.0
-                    result = {}
-                elif path == "/v1/state":
-                    result = {"business_state": {}}
-                elif path == "/v1/reward":
-                    result = {"reward": self.reward}
-                elif path == "/v1/tools":
-                    result = {"tools": ([{
-                        "type": "function",
-                        "function": {"name": "lookup", "parameters": {"type": "object"}},
-                    }] if self.with_tool else [])}
-                elif path == "/v1/tools/lookup":
-                    result = {"value": 1}
-                elif path == "/v1/observation":
-                    result = {}
-                elif path == "/v1/agent_response":
-                    self.reward = 1.0
-                    result = {}
-                elif path == "/v1/user_simulator":
-                    result = {
-                        "user_query": "accepted", "should_end": True,
-                        "termination_reason": "completed",
-                    }
-                elif path == "/v1/replay":
-                    result = {"events": []}
-                else:
-                    raise AssertionError(path)
-                return 200, result, {}
-
-        class Client:
-            def __init__(self, actions):
-                self.actions = iter(actions)
-
-            def chat(self, messages, **kwargs):
-                return SimpleNamespace(
-                    content=json.dumps(next(self.actions)),
-                    model="policy", id="response-1", finish_reason="stop", usage={},
-                )
-
-        with patch.dict("os.environ", {"SANDBOX_TRAINER_API_KEY": "test-key"}):
-            for with_tool in (False, True):
-                actions = ([{"kind": "tool", "name": "lookup", "arguments": {"key": 1}}]
-                           if with_tool else [])
-                actions.append({"kind": "respond", "content": "done"})
-                episode = rollout_runner.episode(
-                    App(with_tool), {"task": "hello"}, Client(actions), 7, 3,
-                )
-                self.assertTrue(certifier.complete_episode(episode), episode_errors(episode))
 
     def test_material_manifest_detects_post_certification_changes(self):
         with tempfile.TemporaryDirectory() as directory:
