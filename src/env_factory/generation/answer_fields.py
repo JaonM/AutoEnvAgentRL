@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import copy
 
-from env_factory.sandbox_runtime import validate_json_schema, SandboxError, DeclarativeMetricEvaluator
+from env_factory.sandbox_runtime import validate_json_schema, SandboxError, DeclarativeToolCompiler
 
 KINDS = {'observed', 'derived', 'explanation'}
 
@@ -15,9 +15,9 @@ def validate_observation(ref, tools, name):
             or not isinstance(ref['path'], str) or not ref['path'].startswith('$')):
         raise ValueError('ANSWER_FIELDS_INVALID: ' + name + ' observation requires one declared tool and response JSON path')
     try:
-        DeclarativeMetricEvaluator.path_tokens(ref['path'])
+        DeclarativeToolCompiler.validate_result_path(tools[ref['tool']], ref['path'])
     except SandboxError as exc:
-        raise ValueError('ANSWER_FIELDS_INVALID: ' + name + ' observation has unsupported JSON path') from exc
+        raise ValueError('ANSWER_FIELDS_INVALID: ' + name + ' observation has unsupported JSON path or result envelope: ' + str(exc)) from exc
 
 
 def field_meanings(fields):
@@ -41,7 +41,7 @@ def expand_answer_fields(source, *, required=False):
         raise ValueError('ANSWER_FIELDS_DUPLICATE: answer_contract and field semantics are compiler-owned')
     if 'business_tools' not in source:
         raise ValueError('ANSWER_FIELDS_INVALID: shared fields require compact business_tools/outcomes authoring')
-    tools = {tool['name'] for tool in source['business_tools']}
+    tools = {tool['name']: tool['implementation'] for tool in source['business_tools']}
     expressions, public = {}, {}
     for name, field in fields.items():
         if not isinstance(field, dict) or field.get('kind') not in KINDS:

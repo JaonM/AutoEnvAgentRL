@@ -649,6 +649,13 @@ declared reference selection, now against that snapshot. Only `select` and
 different decision time. Missing checkpoints yield unresolved evidence, never an
 implicit fallback to current or initial data.
 
+`tool_result` and `tool_argument` observations can also refer to declared write
+tools. They capture the first successful matching call's validated result and
+arguments in the same transaction as the write. Rolled-back calls leave no
+observation; committed calls with a lost response retain it, and idempotent
+replays do not replace it. A write observation cannot establish an `at_tool`
+state checkpoint or substitute for the final persisted business-state goal.
+
 For example, with reset stock 20, an external reservation leaving 16, and the
 Agent reserving 12, the three values are `initial = 20`, `at_tool = 16`, and current
 stock `4`. The success/shortage branch condition must use the decision checkpoint;
@@ -1535,6 +1542,15 @@ records/count envelope, not arbitrary root-level request arguments. Ambiguous
 producer fields named like request arguments must use an explicit returned-column
 path (for example `$.records[0].id`) or cite the original disclosure. An optional
 blueprint `result_field` declares a custom read envelope and must match the source.
+
+Blueprint producer paths and observed answer fields are checked against the
+runtime primitive's response envelope before freezing. Select defaults to
+`records` plus `count`; aggregate_count defaults to `count`. Insert returns
+`record` plus `count`; update returns only `updated_count`, and delete returns
+only `deleted_count`. These writes do not echo request IDs or return updated
+rows. Obtain required identities from a real read, an inserted record, or the
+original disclosed input. Impossible paths must be replanned before freezing;
+downstream provenance and transaction requirements remain enforced.
 
 Stages declare a primary `kind`. Optional `allowed_kinds` permits variations such as
 option selection versus correction while preserving the same tool argument and business

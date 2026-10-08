@@ -324,8 +324,8 @@ def compile_source(source: dict, *, root: Path, request: dict, script_count: int
     for scenario in source["scenarios"]:
         expand_capture_fields([step for step in scenario["steps"] if step.get("operation") == "tool_call"])
     # Return envelope names are platform plumbing, not business decisions.
-    result_fields = {"select": "records", "aggregate_count": "count",
-                     "insert": "record", "update": "updated_count", "delete": "deleted_count"}
+    from env_factory.sandbox_runtime import DeclarativeToolCompiler
+    result_fields = DeclarativeToolCompiler.DEFAULT_RESULT_FIELDS
     for implementation in source["tool_implementations"]:
         if implementation.get("operation") in result_fields:
             implementation.setdefault("result_field", result_fields[implementation["operation"]])

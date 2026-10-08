@@ -92,6 +92,40 @@ def test_supported_whole_response_binding_is_frozen_through_implementation():
             validate_implementation(plan, value, request())
 
 
+@pytest.mark.parametrize('operation,path', [
+    ('update', '$.allocation_id'), ('update', 'reservation_id'),
+    ('update', '$.updated_count.id'), ('delete', '$.record.id'),
+    ('insert', '$.id'), ('aggregate_count', '$.records[0].id')])
+@pytest.mark.parametrize('binding', ['input', 'observation'])
+def test_impossible_primitive_result_is_rejected_before_blueprint_freeze(operation, path, binding):
+    plan = blueprint()
+    plan['tools'][0]['operation'] = operation
+    req = request()
+    if operation in {'insert', 'update', 'delete'}:
+        plan['environment_mode'] = 'stateful'
+        req['available_environment_modes'] = ['stateful']
+    if binding == 'input':
+        plan['tools'][1]['inputs']['id']['field'] = path
+    else:
+        plan['answer_fields']['option']['observation'] = {'tool': 'lookup', 'path': path}
+    with pytest.raises(ValueError, match='BLUEPRINT:.*(output path|observation)'):
+        validate_blueprint(plan, req)
+
+
+@pytest.mark.parametrize('operation,path', [
+    ('insert', '$.record.id'), ('update', '$.updated_count'),
+    ('delete', '$.deleted_count'), ('aggregate_count', '$.count')])
+def test_real_primitive_result_origins_and_observations_can_be_planned(operation, path):
+    plan, req = blueprint(), request()
+    plan['tools'][0]['operation'] = operation
+    plan['tools'][1]['inputs']['id']['field'] = path
+    plan['answer_fields']['option']['observation'] = {'tool': 'lookup', 'path': path}
+    if operation in {'insert', 'update', 'delete'}:
+        plan['environment_mode'] = 'stateful'
+        req['available_environment_modes'] = ['stateful']
+    assert validate_blueprint(plan, req)['dependencies']['quote'] == ['lookup']
+
+
 def test_blueprint_rejects_interaction_kind_conflict_before_freezing():
     plan = blueprint()
     plan['interactions'][1]['kind'] = 'information_required'
@@ -319,7 +353,7 @@ def test_blueprint_rejects_impossible_or_ambiguous_select_echo_before_freeze():
     with pytest.raises(ValueError, match='does not echo'):
         validate_blueprint(plan, request())
     plan['tools'][1]['inputs']['id']['field'] = '$.id'
-    with pytest.raises(ValueError, match='arbitrary root fields'):
+    with pytest.raises(ValueError, match='output path.*impossible'):
         validate_blueprint(plan, request())
     plan['tools'][1]['inputs']['id']['field'] = '$.records[0].id'
     validate_blueprint(plan, request())

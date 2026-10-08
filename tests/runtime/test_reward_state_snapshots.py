@@ -259,11 +259,101 @@ def test_query_argument_survives_empty_result_and_preserves_active_script(tmp_pa
     assert E._value_expression(expression,context(store,data))=='west'
 
 
-def test_arguments_require_read_tool_and_valid_reference():
+def test_arguments_require_declared_business_tool_and_valid_reference():
     expression={'tool_argument':{'name':'write','path':'$.quantity'}}
-    with pytest.raises(SandboxError,match='read-only'):
-        RewardStateSnapshots.validate_tools([{'tool_name':'write','operation':'update'}],expression)
+    assert RewardStateSnapshots.validate_tools(
+        [{'tool_name':'write','operation':'update'}],expression) == {'write'}
+    for implementations in ([], [{'tool_name':'write','operation':'unknown'}]):
+        with pytest.raises(SandboxError,match='declared business tools'):
+            RewardStateSnapshots.validate_tools(implementations,expression)
     with pytest.raises(SandboxError,match='tool_argument'):
         RewardStateSnapshots.requested({'tool_argument':{'name':'read','path':''}})
     state=ExpressionBusinessState({},snapshots={'$tool_arguments':{'read':{'quantity':7}}})
     assert E._numeric_expression({'tool_argument':{'name':'read','path':'$.quantity'}},state)==7
+
+
+def write_runtime(tmp_path, operation, *, fault=None):
+    from tests.runtime.test_nested_transactions import business_data
+    store, data = business_data(tmp_path)
+    implementation = {'tool_name': 'write', 'operation': operation, 'table': 'inventory',
+                      'selector': {'id': 'id'}, 'changes': {'quantity': 'quantity'},
+                      'values': {'id': 'id', 'quantity': 'quantity'}}
+    schema = {'type': 'object', 'properties': {'id': {'type': 'integer'},
+              'quantity': {'type': 'integer'}}, 'required': ['id', 'quantity'],
+              'additionalProperties': False}
+    expressions = [{'tool_result': {'name': 'write', 'path': '$'}},
+                   {'tool_argument': {'name': 'write', 'path': '$'}}]
+    config = {'version': '1.0'}
+    if fault:
+        config['dynamics'] = {'faults': [{'id': 'write_failure', 'tool': 'write',
+            'call_index': 1, 'phase': fault, 'status': 504}]}
+    registry = ContractToolRegistry(
+        [{'type': 'function', 'function': {'name': 'write', 'parameters': schema}}],
+        DeclarativeToolCompiler(data).compile_all([implementation]),
+        event_recorder=store.event,
+        lifecycle=BusinessLifecycle(config, data, store, ['write']),
+        reward_snapshots=RewardStateSnapshots(data, [implementation], expressions))
+    return store, data, registry, expressions
+
+
+@pytest.mark.parametrize('operation', ['insert', 'update', 'delete'])
+def test_committed_write_observations_are_first_actual_result_not_state_checkpoint(tmp_path, operation):
+    store, data, registry, (result_ref, args_ref) = write_runtime(tmp_path, operation)
+    args = {'id': 2 if operation == 'insert' else 1, 'quantity': 4}
+    assert E.value_resolution(result_ref, context(store, data))['resolved'] is False
+    actual = registry.execute('write', args, idem_key='write-once')
+    expected = {'insert': {'record': args, 'count': 1},
+                'update': {'updated_count': 1}, 'delete': {'deleted_count': 1}}[operation]
+    assert actual == expected
+    assert E.value_resolution(result_ref, context(store, data)) == {'resolved': True, 'value': expected}
+    assert E._value_expression(args_ref, context(store, data)) == args
+    assert 'write' not in store.get_state(RewardStateSnapshots.KEY)
+    assert registry.execute('write', args, idem_key='write-once') == expected
+    registry.execute('write', {'id': 3, 'quantity': 99})
+    assert E._value_expression(result_ref, context(store, data)) == expected
+    assert E._value_expression(args_ref, context(store, data)) == args
+    assert len([e for e in store.replay()['events'] if e['event'] == 'reward_tool_observation']) == 1
+    with pytest.raises(SandboxError, match='read-only'):
+        RewardStateSnapshots.validate_tools(registry.reward_snapshots.implementations,
+            {'at_tool': {'name': 'write', 'expression': {'literal': 1}}})
+
+
+@pytest.mark.parametrize('operation', ['insert', 'update', 'delete'])
+@pytest.mark.parametrize('phase', ['before', 'after_commit'])
+def test_write_observation_transport_fault_preserves_only_committed_evidence(tmp_path, operation, phase):
+    store, data, registry, (result_ref, args_ref) = write_runtime(tmp_path, operation, fault=phase)
+    args = {'id': 2 if operation == 'insert' else 1, 'quantity': 4}
+    before = copy.deepcopy(data._all())
+    with pytest.raises(SandboxError):
+        registry.execute('write', args, idem_key='retry')
+    assert E.value_resolution(result_ref, context(store, data))['resolved'] == (phase == 'after_commit')
+    assert E.value_resolution(args_ref, context(store, data))['resolved'] == (phase == 'after_commit')
+    assert (data._all() != before) == (phase == 'after_commit')
+    actual = registry.execute('write', args, idem_key='retry')
+    assert E._value_expression(result_ref, context(store, data)) == actual
+    assert len([e for e in store.replay()['events'] if e['event'] == 'reward_tool_observation']) == 1
+
+
+@pytest.mark.parametrize('operation', ['insert', 'update', 'delete'])
+@pytest.mark.parametrize('failure', ['invalid_result', 'outer_rollback'])
+def test_write_and_observation_roll_back_together(tmp_path, operation, failure):
+    store, data, registry, expressions = write_runtime(tmp_path, operation)
+    args = {'id': 2 if operation == 'insert' else 1, 'quantity': 4}
+    before = copy.deepcopy(data._all())
+    if failure == 'invalid_result':
+        registry.output_schemas['write'] = {'type': 'object', 'required': ['missing']}
+        with pytest.raises(SandboxError, match='tool_result'):
+            registry.execute('write', args, idem_key='retry')
+        registry.output_schemas.clear()
+    else:
+        with pytest.raises(RuntimeError, match='rollback'):
+            with store.transaction():
+                registry.execute('write', args, idem_key='retry')
+                assert E.value_resolution(expressions[0], context(store, data))['resolved']
+                raise RuntimeError('rollback')
+    assert data._all() == before
+    for expression in expressions:
+        assert E.value_resolution(expression, context(store, data))['resolved'] is False
+    assert not [e for e in store.replay()['events'] if e['event'] == 'reward_tool_observation']
+    actual = registry.execute('write', args, idem_key='retry')
+    assert E._value_expression(expressions[0], context(store, data)) == actual

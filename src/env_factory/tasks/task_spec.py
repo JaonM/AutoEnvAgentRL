@@ -220,65 +220,8 @@ def _key_step_edges(
 
 
 def _declarative_output_schema(implementation: Mapping[str, Any], table: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
-    operation = implementation.get("operation")
-    result_field = implementation.get("result_field")
-    if operation == "select" and isinstance(result_field, str) and result_field:
-        projection = implementation.get("projection", [])
-        aliases = implementation.get("projection_aliases", {})
-        columns = {column['name']: column for column in (table or {}).get('columns', [])}
-        # Runtime returns the entire record only when neither an explicit
-        # projection nor aliases are present. Alias-only selects stay narrow.
-        if not projection and not aliases:
-            projection = list(columns)
-        fields = [field for field in projection if isinstance(field, str) and field] if isinstance(projection, list) else []
-        if isinstance(aliases, Mapping):
-            fields.extend(alias for alias in aliases if isinstance(alias, str) and alias)
-        fields = list(dict.fromkeys(fields))
-        item_schema: dict[str, Any] = {"type": "object"}
-        if fields:
-            from ..sandbox_runtime import ManifestDataStore
-            properties = {}
-            for field in fields:
-                column_name = aliases.get(field, field)
-                column = columns.get(column_name, {})
-                kind = ManifestDataStore._column_json_type(column.get('type'))
-                shape = {'type': kind} if kind else {}
-                if kind and column.get('nullable') is True and column_name not in (table or {}).get('primary_key', []):
-                    shape = {'anyOf': [shape, {'type': 'null'}]}
-                properties[field] = shape
-            item_schema["properties"] = properties
-            item_schema["required"] = fields
-            item_schema["additionalProperties"] = False
-        pagination = implementation.get('pagination')
-        page_properties = ({'total_count': {'type': 'integer', 'minimum': 0},
-                            'next_cursor': {'type': 'string'}, 'has_more': {'type': 'boolean'}} if pagination else {})
-        return {
-            "type": "object",
-            "properties": {
-                result_field: {"type": "array", "items": item_schema,
-                               **({'maxItems': pagination['page_size']} if pagination else {})},
-                "count": {"type": "integer"}, **page_properties,
-            },
-            "required": [result_field, "count", *page_properties],
-            "additionalProperties": False,
-        }
-    if operation == "aggregate_count" and isinstance(result_field, str) and result_field:
-        return {
-            "type": "object", "properties": {result_field: {"type": "integer"}},
-            "required": [result_field],
-            "additionalProperties": False,
-        }
-    field = {"insert": "record", "update": "updated_count", "delete": "deleted_count"}.get(str(operation))
-    if field:
-        value_schema = {"type": "object"} if operation == "insert" else {"type": "integer"}
-        properties = {field: value_schema}
-        required = [field]
-        if operation == "insert":
-            properties["count"] = {"type": "integer"}
-            required.append("count")
-        return {"type": "object", "properties": properties, "required": required,
-                "additionalProperties": False}
-    return None
+    from ..sandbox_runtime import DeclarativeToolCompiler
+    return DeclarativeToolCompiler.output_schema(implementation, table)
 
 
 def compile_task_spec(

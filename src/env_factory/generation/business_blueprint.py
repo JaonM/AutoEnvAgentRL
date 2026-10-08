@@ -33,7 +33,11 @@ Schema:
   Freeze these meanings and roles now; source.answer_fields must preserve them.
 - requirements: nonempty list of {id, statement}, one per actual business obligation.
 - tools: list of {name, purpose, operation, inputs: {argument_name: origin}}.
-  Optional result_field names a non-default read result envelope (default records).
+  Optional result_field names a non-default read result envelope (select defaults
+  to records, aggregate_count to count). Insert returns {record: row, count: 1};
+  update returns only {updated_count: n}; delete returns only {deleted_count: n}.
+  Writes do not echo IDs, request arguments or updated rows. Obtain such facts
+  from an actual read, the inserted record or an existing disclosed input.
   A paginated select declares pagination: {cursor_argument, page_size: 1..100}.
   That optional input has origin {kind:pagination_cursor}; it consumes this tool's
   next_cursor on later pages. It is transport provenance, not a business DAG edge.
@@ -241,7 +245,7 @@ def validate_blueprint(blueprint, request):
             producer = value.get('tool')
             if not isinstance(producer, str) or producer not in tools or producer == consumer or not isinstance(value.get('field'), str) or not value['field']:
                 raise ValueError('BLUEPRINT: invalid producer tool/field')
-            from env_factory.sandbox_runtime import DeclarativeMetricEvaluator, SandboxError
+            from env_factory.sandbox_runtime import DeclarativeMetricEvaluator, DeclarativeToolCompiler, SandboxError
             try:
                 tokens = DeclarativeMetricEvaluator.path_tokens(value['field'])
             except SandboxError as exc:
@@ -251,12 +255,10 @@ def validate_blueprint(blueprint, request):
                 raise ValueError('BLUEPRINT: ambiguous producer field equals a request argument; '
                     'select does not echo request arguments. Use an explicit returned-column path '
                     'or reuse the original user disclosure with kind:user.')
-            roots = {tools[producer].get('result_field', 'records'), 'count'}
-            if tools[producer].get('pagination'):
-                roots.update({'total_count', 'has_more'})
-            if (tools[producer]['operation'] == 'select' and value['field'].startswith('$.')
-                    and tokens and tokens[0] not in [('field', name) for name in roots]):
-                raise ValueError('BLUEPRINT: select output has records/count, not arbitrary root fields')
+            try:
+                DeclarativeToolCompiler.validate_result_path(tools[producer], value['field'], shorthand=True)
+            except SandboxError as exc:
+                raise ValueError(f'BLUEPRINT: {consumer}.{argument} from {producer}: {exc}') from exc
             dependencies[consumer].add(producer)
         elif kind == 'pagination_cursor':
             if (depth or set(value) != {'kind'}

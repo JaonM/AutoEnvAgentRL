@@ -814,9 +814,113 @@ def order_records(records: list, order: list) -> list:
 
 
 class DeclarativeToolCompiler:
-    """Compile common read-only business tools from constrained specifications."""
+    """Compile business primitives and their response envelopes from one spec."""
 
     OPERATORS = {"eq", "in", "contains", "gte", "lte"}
+
+    DEFAULT_RESULT_FIELDS = {'select': 'records', 'aggregate_count': 'count',
+                             'insert': 'record', 'update': 'updated_count', 'delete': 'deleted_count'}
+
+    @staticmethod
+    def result_field(spec):
+        return spec.get('result_field', DeclarativeToolCompiler.DEFAULT_RESULT_FIELDS.get(spec.get('operation')))
+
+    @classmethod
+    def validate_result_path(cls, spec, path, *, shorthand=False):
+        """Reject impossible envelope paths before freezing business provenance.
+
+        Blueprint shorthand names may denote returned record columns. Their
+        existence is checked against executable captures later, when data and
+        projections are available. Explicit paths must follow the real envelope.
+        """
+        tokens = DeclarativeMetricEvaluator.path_tokens(path)
+        shape = cls.output_schema(spec)
+        if shape is None:
+            raise SandboxError('TOOL_SPEC_INVALID', 'unknown result envelope', 500)
+        roots = shape['properties']
+        if shorthand and not path.startswith('$') and tokens and tokens[0][1] not in roots:
+            if spec['operation'] == 'select':
+                tokens = [('field', cls.result_field(spec)), ('index', 0), *tokens]
+            elif spec['operation'] == 'insert':
+                tokens = [('field', 'record'), *tokens]
+        for kind, part in tokens:
+            # Open record contents cannot be certified during blueprint planning.
+            if not shape or (kind == 'field' and shape.get('type') == 'object' and 'properties' not in shape):
+                return
+            if shape.get('type') == 'array':
+                if kind in {'wildcard', 'filter'}:
+                    continue
+                shape = shape.get('items', {})
+                if kind == 'index' or kind == 'field' and str(part).isdigit():
+                    continue
+                if kind == 'field' and (not shape or 'properties' not in shape):
+                    return
+            if kind == 'field' and shape.get('type') == 'object' and part in shape.get('properties', {}):
+                shape = shape['properties'][part]
+                continue
+            raise SandboxError('TOOL_SPEC_INVALID',
+                f'{spec.get("operation")} output path {path!r} is impossible; root fields: {", ".join(roots)}', 500)
+
+    @staticmethod
+    def output_schema(implementation: Mapping[str, Any], table: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
+        operation = implementation.get("operation")
+        result_field = DeclarativeToolCompiler.result_field(implementation)
+        if operation == "select" and isinstance(result_field, str) and result_field:
+            projection = implementation.get("projection", [])
+            aliases = implementation.get("projection_aliases", {})
+            columns = {column['name']: column for column in (table or {}).get('columns', [])}
+            # Runtime returns the entire record only when neither an explicit
+            # projection nor aliases are present. Alias-only selects stay narrow.
+            if not projection and not aliases:
+                projection = list(columns)
+            fields = [field for field in projection if isinstance(field, str) and field] if isinstance(projection, list) else []
+            if isinstance(aliases, Mapping):
+                fields.extend(alias for alias in aliases if isinstance(alias, str) and alias)
+            fields = list(dict.fromkeys(fields))
+            item_schema: dict[str, Any] = {"type": "object"}
+            if fields:
+                properties = {}
+                for field in fields:
+                    column_name = aliases.get(field, field)
+                    column = columns.get(column_name, {})
+                    kind = ManifestDataStore._column_json_type(column.get('type'))
+                    shape = {'type': kind} if kind else {}
+                    if kind and column.get('nullable') is True and column_name not in (table or {}).get('primary_key', []):
+                        shape = {'anyOf': [shape, {'type': 'null'}]}
+                    properties[field] = shape
+                item_schema["properties"] = properties
+                item_schema["required"] = fields
+                item_schema["additionalProperties"] = False
+            pagination = implementation.get('pagination')
+            page_properties = ({'total_count': {'type': 'integer', 'minimum': 0},
+                                'next_cursor': {'type': 'string'}, 'has_more': {'type': 'boolean'}} if pagination else {})
+            return {
+                "type": "object",
+                "properties": {
+                    result_field: {"type": "array", "items": item_schema,
+                                   **({'maxItems': pagination['page_size']} if pagination else {})},
+                    "count": {"type": "integer"}, **page_properties,
+                },
+                "required": [result_field, "count", *page_properties],
+                "additionalProperties": False,
+            }
+        if operation == "aggregate_count" and isinstance(result_field, str) and result_field:
+            return {
+                "type": "object", "properties": {result_field: {"type": "integer"}},
+                "required": [result_field],
+                "additionalProperties": False,
+            }
+        field = {"insert": "record", "update": "updated_count", "delete": "deleted_count"}.get(str(operation))
+        if field:
+            value_schema = {"type": "object"} if operation == "insert" else {"type": "integer"}
+            properties = {field: value_schema}
+            required = [field]
+            if operation == "insert":
+                properties["count"] = {"type": "integer"}
+                required.append("count")
+            return {"type": "object", "properties": properties, "required": required,
+                    "additionalProperties": False}
+        return None
 
     def __init__(self, data: ManifestDataStore) -> None:
         self.data = data
@@ -881,7 +985,7 @@ class DeclarativeToolCompiler:
         if operation not in {"select", "aggregate_count", "insert", "update", "delete"}:
             raise SandboxError("TOOL_SPEC_INVALID", f"unsupported declarative operation: {operation}", 500)
         table = spec.get("table")
-        result_field = spec.get("result_field", "records")
+        result_field = self.result_field(spec)
         filters = spec.get("filters", [])
         projection = spec.get("projection", [])
         projection_aliases = spec.get("projection_aliases", {})
@@ -1578,11 +1682,12 @@ class BusinessLifecycle:
 
 
 class RewardStateSnapshots:
-    """Private, episode-local state at the first successful matching declared read.
+    """Private evidence at the first successful matching declared business call.
 
     Capture inside the tool transaction, after scheduled external events. Only
-    declared read tools can establish checkpoints; repeated reads cannot move an
-    established checkpoint. Snapshots never come from policy arguments/results.
+    declared read tools can establish state checkpoints. Validated write results
+    and arguments can establish observations, never read-state checkpoints.
+    Repeated calls cannot replace evidence. Results come from actual execution.
     Compiled process bindings, when present, exclude unrelated read calls and
     select the active script's argument/capture constraints.
     """
@@ -1631,7 +1736,7 @@ class RewardStateSnapshots:
         return bindings
 
     @staticmethod
-    def requested(value):
+    def requested(value, *, kinds=None):
         names = set()
         def walk(node):
             if isinstance(node, list):
@@ -1646,13 +1751,15 @@ class RewardStateSnapshots:
                             or not isinstance(result['path'], str) or not result['path'].startswith('$')):
                         raise SandboxError('METRIC_SPEC_INVALID', f'{kind} requires name and JSON path', 500)
                     DeclarativeMetricEvaluator.path_tokens(result['path'])
-                    names.add(result['name'])
+                    if kinds is None or kind in kinds:
+                        names.add(result['name'])
                 if set(node) == {"at_tool"}:
                     checkpoint = node["at_tool"]
                     if (not isinstance(checkpoint, Mapping) or set(checkpoint) != {"name", "expression"}
                             or not isinstance(checkpoint["name"], str) or not checkpoint["name"]):
                         raise SandboxError("METRIC_SPEC_INVALID", "at_tool requires name and expression", 500)
-                    names.add(checkpoint["name"])
+                    if kinds is None or 'at_tool' in kinds:
+                        names.add(checkpoint["name"])
                 for child in node.values():
                     walk(child)
         walk(value)
@@ -1662,9 +1769,14 @@ class RewardStateSnapshots:
     def validate_tools(cls, implementations, expressions):
         names = cls.requested(expressions)
         operations = {item["tool_name"]: item["operation"] for item in implementations}
-        invalid = sorted(name for name in names if operations.get(name) not in {"select", "aggregate_count"})
+        checkpoints = cls.requested(expressions, kinds={'at_tool'})
+        invalid = sorted(name for name in checkpoints if operations.get(name) not in {"select", "aggregate_count"})
         if invalid:
             raise SandboxError("METRIC_SPEC_INVALID", "at_tool requires declared read-only tools", 500, invalid)
+        invalid = sorted(name for name in names if operations.get(name) not in {
+            'select', 'aggregate_count', 'insert', 'update', 'delete'})
+        if invalid:
+            raise SandboxError('METRIC_SPEC_INVALID', 'tool observations require declared business tools', 500, invalid)
         return names
 
     def __init__(self, data, implementations, expressions):
@@ -1692,7 +1804,7 @@ class RewardStateSnapshots:
         if name not in self.names:
             return
         snapshots = self.store.get_state(self.KEY, {})
-        if name in snapshots:
+        if name in snapshots.get('$tool_results', {}) or name in snapshots:
             return
         if name in self.call_bindings:
             events = self.store.replay()['events'] + [{'event': 'tool_call',
@@ -1701,15 +1813,22 @@ class RewardStateSnapshots:
                     call_bindings=self.call_bindings, require_last=True)
                        for binding in self.call_bindings[name]):
                 return
-        # Called after successful validation of a read-only tool, in its transaction.
-        # Read state directly so this bookkeeping cannot create policy read evidence.
-        state = copy.deepcopy(self.data._all())
-        snapshots[name] = state
+        # Called after successful result/lifecycle validation, in the same
+        # transaction as the business call. An outer rollback removes evidence.
+        operation = next(item['operation'] for item in self.implementations if item['tool_name'] == name)
+        if operation in {'select', 'aggregate_count'}:
+            # Private bookkeeping must not create policy read evidence.
+            state = copy.deepcopy(self.data._all())
+            snapshots[name] = state
         snapshots.setdefault('$tool_results', {})[name] = copy.deepcopy(result)
         snapshots.setdefault('$tool_arguments', {})[name] = copy.deepcopy(arguments)
         self.store.set_state(self.KEY, snapshots)
-        self.store.event("reward_state_checkpoint", {"tool_name": name},
-                         {"state_sha256": hashlib.sha256(canonical_json(state).encode()).hexdigest()})
+        if operation in {'select', 'aggregate_count'}:
+            self.store.event("reward_state_checkpoint", {"tool_name": name},
+                             {"state_sha256": hashlib.sha256(canonical_json(state).encode()).hexdigest()})
+        else:
+            self.store.event('reward_tool_observation', {'tool_name': name},
+                             {'result_sha256': hashlib.sha256(canonical_json(result).encode()).hexdigest()})
 
 
 class TransactionWitness:
