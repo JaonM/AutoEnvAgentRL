@@ -63,6 +63,7 @@ def verify_independent_routes(artifacts, root, verify, prepare, *, workers=2, **
         (directory / 'verification.json').write_text(json.dumps(observed, ensure_ascii=False, indent=2) + '\n')
         report['realism_observations'].extend(observed.get('realism_observations', []))
         report.setdefault('difficulty_observations', []).extend(observed.get('difficulty_observations', []))
+        report.setdefault('policy_budget_references', []).extend(observed.get('policy_budget_references', []))
         report.setdefault('dynamic_choice_observations', []).extend(observed.get('dynamic_choice_observations', []))
         coverage['probes'].append({'route_id': probe['route_id'], 'initial_changes': probe['initial_changes'],
             'user_variables': probe.get('user_variables', {}), 'passed': observed['passed'], 'checks': observed['checks']})

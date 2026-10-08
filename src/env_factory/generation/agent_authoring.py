@@ -727,6 +727,8 @@ def compile_source(source: dict, *, root: Path, request: dict, script_count: int
     check_all_routes(result, root, verify_execution, prepare_route_probe)
     checks = verify_execution(result, root, calibration=source.get("semantic_calibration", {}),
                               condition_probes=condition_probes, judgment_cache=judgment_cache)
+    from .execution_budget import compile_budget
+    compile_budget(result, checks.get('policy_budget_references', []))
     result["task_readiness"] = {"ready": not privacy_findings,
         "errors": ["INTERACTION_PRIVACY_REVIEW_PENDING"] if privacy_findings else [], "warnings": [],
         "training_profile": P._derive_training_profile(business_tool_count=len(bindings),
@@ -1196,6 +1198,7 @@ def _verify_execution(artifacts: dict, root: Path, *, calibration: dict | None =
         condition_runs = []
         realism_observations = []
         difficulty_observations = []
+        policy_budget_references = []
         reference_observations = []
         dynamic_choice_observations = []
         executed_interaction_behaviors = set()
@@ -1296,6 +1299,9 @@ def _verify_execution(artifacts: dict, root: Path, *, calibration: dict | None =
             steps = scenario["steps"]
             checks[f"reference_{i}"] = reward(steps) >= 1 - 1e-9
             if checks[f"reference_{i}"]:
+                if artifacts['task_spec'].get('difficulty_requirements', {}).get('profile', 'standard') != 'standard':
+                    from .execution_budget import reference_records
+                    policy_budget_references.append(reference_records(scenario, validated_runs[id(scenario)]['history']))
                 from .dynamic_choice_coverage import observe as observe_choices
                 dynamic_choice_observations.extend({**item, 'scenario_id': scenario.get('scenario_id')}
                     for item in observe_choices(store.replay(), user.scripts.values()))
@@ -1476,6 +1482,7 @@ def _verify_execution(artifacts: dict, root: Path, *, calibration: dict | None =
                 "distinct_executed_interaction_behaviors": len(executed_interaction_behaviors),
                 "realism_observations": realism_observations,
                 "difficulty_observations": difficulty_observations,
+                "policy_budget_references": policy_budget_references,
                 "reference_observations": reference_observations,
                 "dynamic_choice_observations": dynamic_choice_observations,
                 "execution_route_coverage": route_coverage,
@@ -1549,7 +1556,10 @@ def main() -> None:
         # active delivery paths consumed by the sandbox builder.
         _archive_delivery(args.output, '.failed_deliveries')
         raise
-    print(json.dumps(result["generation_pipeline"]["verification"], ensure_ascii=False))
+    # Teacher traces are retained in the integrity-bound artifact for trainer
+    # sizing, not repeated in Code Agent feedback/context.
+    print(json.dumps({key: value for key, value in result['generation_pipeline']['verification'].items()
+                      if key != 'policy_budget_references'}, ensure_ascii=False))
 
 
 if __name__ == "__main__":

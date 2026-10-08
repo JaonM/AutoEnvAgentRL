@@ -16,6 +16,7 @@ import traceback
 
 from rl.errors import InfrastructureError, ContextBudgetExceeded, EnvironmentProtocolError
 from rl.data.trajectory import assign_episode_reward
+from .budgets import admit, execution_budget
 
 
 def environment_worker(connection, sandbox, parent_pid, factory="rl.environment:SandboxEpisode"):
@@ -52,7 +53,8 @@ def environment_worker(connection, sandbox, parent_pid, factory="rl.environment:
                     if saved and (command == 'resume' or saved['sequence'] == durable['sequence']):
                         if command != 'resume' and (command != saved['operation'] or argument != saved['argument']):
                             raise ValueError('environment continuation request mismatch')
-                        connection.send(saved['reply'])
+                        reply = {**saved['reply'], 'execution_budget': execution_budget(environment)}
+                        connection.send(reply)
                         continue
                     if command == 'resume':
                         raise ValueError('missing environment continuation')
@@ -71,6 +73,8 @@ def environment_worker(connection, sandbox, parent_pid, factory="rl.environment:
                          **({'tools': environment.tools} if hasattr(environment, 'tools') else {}),
                          'terminated':environment.terminated,
                          'started_at':started, 'finished_at':time.time()}
+                if command == 'reset':
+                    reply['execution_budget'] = execution_budget(environment)
                 if durable is not None:
                     atomic_json(path, {'sequence':durable['sequence'], 'operation':command, 'argument':argument,
                                        'environment':environment.snapshot(), 'reply':reply})
@@ -233,6 +237,8 @@ def parallel_rollouts(policy, pool, config, seed, *, stop=None, notify=None, con
                               finish_reason=state.get('finish_reason') or ('terminated' if reply['terminated'] else 'step_limit'),
                               started_at=state['started_at'],finished_at=time.time(),
                               environment_intervals=state['rpc_intervals'])
+                if state.get('budget_admission') is not None:
+                    result['budget_admission'] = state['budget_admission']
                 observe('finish', rollout_index=state['index'], step=len(state['actions']),
                         messages=reply['messages'], result=result)
                 completed[state['index']] = result
@@ -255,6 +261,11 @@ def parallel_rollouts(policy, pool, config, seed, *, stop=None, notify=None, con
                 send(slot,'finish',None)
                 continue
             notify(f'rollout-{state["index"]}-policy')
+            if 'execution_budget' in reply:
+                state['budget_admission'] = admit(policy, reply['messages'], tool_options, config, reply['execution_budget'])
+                if state['budget_admission'] is not None:
+                    observe('budget_admission', rollout_index=state['index'], step=len(state['actions']),
+                            report=state['budget_admission'])
             state['operation'] = 'policy'
             state['generated_steps'] = 0
             if decoder is not None:

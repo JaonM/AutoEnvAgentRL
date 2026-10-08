@@ -23,6 +23,10 @@ def rollout(policy, environment, config, seed, *, greedy=False, stop=None, notif
     environment.reset(seed)
     observe('reset', rollout_index=0, step=0, messages=environment.messages)
     tool_options = {'tools': environment.tools} if hasattr(environment, 'tools') else {}
+    from .budgets import admit, execution_budget
+    budget_admission = admit(policy, environment.messages, tool_options, config, execution_budget(environment))
+    if budget_admission is not None:
+        observe('budget_admission', rollout_index=0, step=0, report=budget_admission)
     actions = []
     finish_reason = None
     for _ in range(config['max_steps']):
@@ -56,6 +60,8 @@ def rollout(policy, environment, config, seed, *, greedy=False, stop=None, notif
     result.update(actions=actions, bootstrap=bootstrap, bootstrap_prompt=bootstrap_prompt, seed=seed,
                   truncated=not environment.terminated,
                   finish_reason=finish_reason or ('terminated' if environment.terminated else 'step_limit'))
+    if budget_admission is not None:
+        result['budget_admission'] = budget_admission
     observe('finish', rollout_index=0, step=len(actions), messages=environment.messages, result=result)
     return result
 

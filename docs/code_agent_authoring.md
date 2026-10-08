@@ -1860,8 +1860,19 @@ whether full traversal is part of the original goal, whether every page contribu
 necessary evidence and whether filters exclude the right distractors.
 
 Profile coverage is execution evidence, not a proof of business-rule semantics.
-Rollout-budget compatibility remains a prerequisite before running the mixed
-high-difficulty yield cohort.
+After full execution verification, hard profiles receive compiler-owned
+`task_spec.execution_budget`. Actual successful reference responses and resolved
+arguments are retained as trainer-only `policy_budget_references` in generation
+verification, including independent routes. Do not author this evidence. It is
+excluded from CLI feedback and policy sampling. The RL adapter uses its current
+tokenizer to report serial-reference action/context/output sizing and rejects a
+current prompt plus configured completion budget that cannot fit. Missing hard-profile
+evidence requires rebuilding the artifact. One native action may contain multiple
+ordered calls, so dependency depth and reference length do not prove a minimum
+number of model actions. Reference capacity is advisory, includes transport/template
+margin, and does not guarantee sufficient thinking tokens. Serial, concurrent,
+batched and resumed rollout paths preserve this distinction without raising budgets
+automatically. Business-meaning review still runs in the full production pipeline.
 
 Each pipeline invocation writes `difficulty_summary.json` alongside
 `realism_summary.json`. Difficulty groups are disjoint and use the runner's frozen

@@ -92,6 +92,10 @@ def test_compiled_large_profile_proves_actual_complete_three_page_cross_table_re
     assert any(row['retrieval_complete'] and row['retrieval_chains'][0]['pages'] == 3
                and set(row['read_tables']) == {'zones', 'readings'} for row in observations)
     assert result['task_spec']['difficulty_requirements']['min_dataset_rows'] == 10000
+    assert result['task_spec']['execution_budget']['reference_serial_actions'] == 5
+    assert result['task_spec']['execution_budget']['minimum_model_actions'] == 1
+    assert result['task_spec']['execution_budget']['complete_pages'] == 3
+    assert len(report['policy_budget_references']) == result['task_spec']['execution_budget']['reference_count']
     assert '即使已知最终答案' in result['public_input']['initial_user_message']
     # Inspect the omitted terminal page specifically: preceding pages must run
     # with this new episode's cursors, not fail because baseline cursors expired.
@@ -113,6 +117,9 @@ def test_standalone_reward_rejects_known_correct_answer_with_incomplete_pages(tm
     path = write_task_artifact(tmp_path, Task(artifact['task'], artifact['environment'], artifact['metrics'],
         task_intent=artifact['task_intent'], artifacts=artifact), 'multi_step_agentic')
     contract = json.loads(path.read_text()); contract.pop('actions')
+    from types import SimpleNamespace
+    from rl.rollout.budgets import execution_budget
+    assert execution_budget(SimpleNamespace(task=contract))['references']
     (tmp_path / 'BUILD_CONTRACT.json').write_text(json.dumps(contract))
     generate(tmp_path)
     project = Path(__file__).resolve().parents[2]

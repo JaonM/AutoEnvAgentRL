@@ -132,3 +132,21 @@ def test_native_ids_still_unique_and_time_calls_are_not_retryable(episode):
 
 def test_retry_tool_does_not_shadow_authored_names():
     assert retry_tool([{'function': {'name': name}} for name in ['retry_tool_call', '_retry_tool_call']])['function']['name'] == '__retry_tool_call'
+
+
+def test_budget_admission_uses_same_local_and_http_task_contract(episode):
+    from rl.rollout.budgets import admit, execution_budget, TaskBudgetError
+    from tests.rl.test_task_budgets import budget, CountingPolicy, config, SECRET
+    env, _ = episode
+    value = budget()
+    env.task['task_spec'] = {'difficulty_requirements': {'profile': 'complex_write_transactions'},
+                             'execution_budget': {**value['contract'], 'profile': 'complex_write_transactions'}}
+    env.task['artifacts'] = {'generation_pipeline': {'verification': {'policy_budget_references': value['references']}}}
+    before = copy.deepcopy(env.messages)
+    report = admit(CountingPolicy(), env.messages, {'tools': env.tools}, config(), execution_budget(env))
+    assert report['profile'] == 'complex_write_transactions'
+    assert report['reference_serial_actions'] == 3
+    assert SECRET not in json.dumps([report, env.messages, env.trace])
+    with pytest.raises(TaskBudgetError, match='CONTEXT_BUDGET_INCOMPATIBLE'):
+        admit(CountingPolicy(), env.messages, {'tools': env.tools}, {**config(), 'max_context': 10}, execution_budget(env))
+    assert env.messages == before
