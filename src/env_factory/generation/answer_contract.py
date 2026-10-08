@@ -4,7 +4,7 @@ from __future__ import annotations
 import copy
 import json
 
-from env_factory.sandbox_runtime import SandboxError, validate_json_schema
+from env_factory.sandbox_runtime import SandboxError, validate_json_schema, normalize_record_order
 
 
 def validate_direct_text_targets(source: dict) -> None:
@@ -179,6 +179,17 @@ def bind_answer_contract(source: dict) -> dict | None:
         for target in rule["expected"]["targets"]:
             labels = _finite_labels(target["expression"])
             field = schema["properties"][target["key"]]
+            if 'array_order' in target:
+                if field.get('type') != 'array':
+                    raise ValueError('ANSWER_CONTRACT_TYPES: array_order requires an array answer field')
+                items = field.get('items', {})
+                order = normalize_record_order(target['array_order'])
+                if order and (items.get('type') != 'object' or any(
+                        items.get('properties', {}).get(item['field'], {}).get('type')
+                        not in {'string', 'number', 'integer', 'boolean'} for item in order)):
+                    raise ValueError('ANSWER_CONTRACT_TYPES: array_order fields must be declared scalar record fields')
+                if 'tolerance' in target:
+                    raise ValueError('ANSWER_CONTRACT_TYPES: array_order cannot use numeric tolerance')
             if 'tolerance' in target:
                 if field.get('type') not in {'number', 'integer'}:
                     raise ValueError('ANSWER_CONTRACT_TYPES: numeric tolerance requires a numeric answer field')
@@ -230,6 +241,27 @@ def bind_answer_contract(source: dict) -> dict | None:
         public['initial_user_message'] += ('\n\nNumeric answer fields allow the following absolute errors '
             'in their declared units. Other value fields still require exact values:\n'
             + json.dumps(tolerances, ensure_ascii=False, sort_keys=True))
+    array_comparisons = {}
+    for rule in structured:
+        for target in rule['expected']['targets']:
+            if schema['properties'][target['key']].get('type') != 'array':
+                continue
+            if 'array_order' in target:
+                order = normalize_record_order(target['array_order'])
+                policy = {'mode': 'ordered_records' if order else 'unordered', 'order_by': order}
+            else:
+                policy = {'mode': 'exact_sequence'}
+            array_comparisons[target['key']] = policy
+    if array_comparisons:
+        public['array_answer_comparisons'] = array_comparisons
+        public['initial_user_message'] += (
+            '\n\nArray answer comparison rules: all records, field values, JSON types and duplicate '
+            'counts must match the required evidence. For ordered_records, sort lexicographically '
+            'by the listed fields/directions; records tied on every listed key may appear in any order. '
+            'For unordered, any permutation is accepted. For exact_sequence, preserve the required '
+            'sequence, including ties: copy tool-result arrays in the returned order; construct other '
+            'arrays in the publicly specified sequence. These rules do not change which records qualify.\n'
+            + json.dumps(array_comparisons, ensure_ascii=False, sort_keys=True))
     if semantic:
         public_criteria = [{"fields": metric["semantic_fields"], "rubric": metric["rubric"],
                             "criteria": metric["criteria"]} for metric in semantic]

@@ -339,7 +339,16 @@ authoring time without choosing the business scenario, tables, tools or answer.
   strings. Conditions are `{op: "eq|ne|gt|gte|lt|lte|and|or", args: [expr, expr]}`;
   literals may be text, numbers, booleans, arrays or objects (bounded finite JSON,
   no null). Dynamic ordered arrays use `{array: [expression, expression]}`.
-  Arrays are compared element by element, with strict JSON types. A numeric target may add
+  Arrays default to exact sequence comparison, including ties; the compiler publishes this
+  policy for every array field. A target may instead declare `array_order: ["code"]` to
+  require ascending code order while allowing permutations within equal-code groups, or
+  `array_order: [{field: "percent", direction: "desc"}, "name"]` for mixed directions.
+  `array_order: []` allows any permutation. Every mode preserves complete typed values and
+  duplicate counts; sorting fields must be scalar properties in the answer's record schema.
+  Declare only the ordering required by the public business goal. Query `order_by` uses the
+  same field/direction syntax, with nulls last in either direction. Sort actual business
+  columns directly; independently mutable negative/rank columns are not a valid replacement
+  for descending order. A numeric target may add
   `tolerance: 0.000001` for a justified absolute error in the field’s declared units
   (finite, within 0..1). Choose precision from the business requirement, not to mask a
   wrong calculation. The compiler publishes each tolerance in the public input.
@@ -352,6 +361,11 @@ authoring time without choosing the business scenario, tables, tools or answer.
   The compiler wraps these as literals without changing their meaning.
   Multiple `value_targets` outcome metrics may check separate fields of the same
   JSON answer. Always use `path: "$"`; each target's `key` selects its field.
+  Use returned counts or complete result arrays for existence and coverage decisions.
+  A blank identifier is not an empty query result unless an explicit public constraint
+  makes it disqualifying. Do not discard complete returned evidence by testing the first
+  record's identifier against an empty string. An uncalled tool is different from an
+  observed empty result; select the uncalled branch from actual route prerequisites.
   The answer must contain exactly the union of deterministic target keys and semantic outcome fields.
   The compiler may publish finite categorical decision labels, but never infers
   a public enum containing a private scripted user value. A selected identifier

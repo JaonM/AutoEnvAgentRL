@@ -24,6 +24,41 @@ def answer_source():
 
 
 class AnswerContractTest(unittest.TestCase):
+    def test_array_comparison_contract_publishes_keys_and_directions_without_gold_values(self):
+        for order, mode in [(['code'], 'ordered_records'), ([], 'unordered'), (None, 'exact_sequence')]:
+            with self.subTest(order=order):
+                source, _ = answer_source()
+                source['answer_contract']['schema']['properties']['voice_types'] = {
+                    'type': 'array', 'items': {'type': 'object', 'properties': {
+                        'code': {'type': 'string'}, 'percent': {'type': 'number'}},
+                        'required': ['code', 'percent'], 'additionalProperties': False}}
+                records = [{'code': 'private-fixture', 'percent': 72}]
+                target = source['metric_implementations'][0]['expected']['targets'][0]
+                target['expression'] = {'literal': records}
+                if order is not None:
+                    target['array_order'] = order
+                source['scenarios'][0]['steps'][0]['content'] = json.dumps({'voice_types': records})
+                bind_answer_contract(source)
+                public = source['description']['public_input']
+                self.assertEqual(public['array_answer_comparisons']['voice_types']['mode'], mode)
+                self.assertNotIn('private-fixture', public['initial_user_message'])
+                if order:
+                    self.assertEqual(public['array_answer_comparisons']['voice_types']['order_by'],
+                                     [{'field': 'code', 'direction': 'asc'}])
+
+    def test_array_order_rejects_nonrecord_or_undeclared_sort_fields(self):
+        for field_schema, order in [({'type': 'string'}, []),
+                                    ({'type': 'array', 'items': {'type': 'string'}}, ['code']),
+                                    ({'type': 'array', 'items': {'type': 'object',
+                                      'properties': {'code': {'type': 'string'}},
+                                      'required': ['code'], 'additionalProperties': False}}, ['absent'])]:
+            with self.subTest(field_schema=field_schema):
+                source, _ = answer_source()
+                source['answer_contract']['schema']['properties']['voice_types'] = field_schema
+                source['metric_implementations'][0]['expected']['targets'][0]['array_order'] = order
+                with self.assertRaisesRegex(ValueError, 'ANSWER_CONTRACT_TYPES'):
+                    bind_answer_contract(source)
+
     def test_private_canonical_summary_text_is_rejected_before_schema_publication(self):
         from env_factory.generation.answer_contract import validate_direct_text_targets
         source, _ = answer_source()

@@ -1916,13 +1916,18 @@ class ContractCompiler(UserSimulationContractMixin):
                         raise PipelineGenerationError(
                             f"tool_implementations[{index}] resolver is not backed by a foreign key"
                         )
-            for field in ("projection", "order_by"):
+            for field in ("projection",):
                 values = spec.get(field, [])
                 if not isinstance(values, list) or any(
                     not isinstance(value, str) or value not in table_columns[table]
                     for value in values
                 ):
                     raise PipelineGenerationError(f"tool_implementations[{index}].{field} is invalid")
+            from ..sandbox_runtime import normalize_record_order, SandboxError
+            try:
+                normalize_record_order(spec.get('order_by', []), columns=table_columns[table])
+            except SandboxError as exc:
+                raise PipelineGenerationError(f"tool_implementations[{index}].order_by is invalid: {exc}") from exc
             projection_aliases = spec.get("projection_aliases", {})
             if not isinstance(projection_aliases, dict) or any(
                 not isinstance(alias, str) or not alias

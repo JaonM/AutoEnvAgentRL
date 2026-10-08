@@ -198,6 +198,9 @@ Do not remove explanations or substitute exact matching to work around author-si
 judge availability. Structural preview alone cannot validate HTTP statuses, recovery,
 state transitions or step-removal counterexamples; never claim those checks passed.
 For injected faults, explicitly match expected_status to the scheduled response.
+Before-phase injected faults occur before business guards: an invalid write can receive
+the scheduled 503 first and the business 403 on its retry. Preserve this precedence in
+negative scenarios; do not replace both recovery-call statuses with the business error.
 For from_reference argument_mutations, declare expected_status on the mutation
 when the changed arguments should be rejected (for example, 403 for an unapproved
 write). Otherwise the negative inherits the successful call's status. Keep the
@@ -212,6 +215,20 @@ on the numeric value_targets target, consistent with the business precision requ
 The compiler publishes the allowed absolute error. Without tolerance, value_targets
 requires exact equality; repeating fractions cannot be represented exactly by a finite
 JSON decimal. Keep identifiers, integer counts, categorical labels and evidence lists exact.
+Query order_by accepts column names (ascending) and {{"field":"percent","direction":"desc"}}.
+Use actual business columns for descending order; never invent independently mutable negative/rank
+columns to simulate it. For every array value_targets target, decide the public comparison rule:
+array_order: ["code"] accepts complete records in code order, with arbitrary order within equal codes;
+array_order: [{{"field":"percent","direction":"desc"}},"name"] enforces mixed directions;
+array_order: [] accepts any permutation but still checks every typed value and duplicate count.
+Omitting array_order means exact sequence, including ties, and the compiler publishes that rule.
+Use only the keys/directions required by the business goal; never invent hidden secondary ordering
+constraints. Check every array field, not only the first one mentioned in repair feedback.
+Use returned count or the complete returned array to distinguish no rows from existing rows.
+Never use a first record's nonempty identifier as an existence proxy: empty text may be valid
+under the declared schema and must not discard other returned records or change coverage.
+An uncalled tool and an observed empty result are different. Guard uncalled-tool branches
+with actual observed route prerequisites; preserve all qualifying records once read.
 Open explanation/reason fields must allow faithful paraphrases. Never score them by
 value_targets equality to a menu_note, rationale or reference sentence. Use the supported
 semantic outcome with positive paraphrases and negative calibration cases, or design

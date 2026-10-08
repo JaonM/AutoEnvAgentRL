@@ -770,6 +770,35 @@ class ManifestDataStore:
         return sha256_json(self._all())
 
 
+def normalize_record_order(order: Any, *, columns: set[str] | None = None) -> list[dict[str, str]]:
+    """One ordering vocabulary for queries and public array reward contracts."""
+    if not isinstance(order, list) or len(order) > 64:
+        raise SandboxError('ORDER_SPEC_INVALID', 'order must be a bounded list', 500)
+    result = []
+    seen = set()
+    for item in order:
+        item = {'field': item, 'direction': 'asc'} if isinstance(item, str) else item
+        if (not isinstance(item, Mapping) or set(item) != {'field', 'direction'}
+                or not isinstance(item['field'], str) or not item['field']
+                or item['direction'] not in ('asc', 'desc') or item['field'] in seen
+                or (columns is not None and item['field'] not in columns)):
+            raise SandboxError('ORDER_SPEC_INVALID', 'order requires distinct known fields and asc/desc directions', 500)
+        seen.add(item['field'])
+        result.append(dict(item))
+    return result
+
+
+def order_records(records: list, order: list) -> list:
+    """Stable lexicographic order, with nulls last in either direction."""
+    rows = list(records)
+    for item in reversed(normalize_record_order(order)):
+        field = item['field']
+        present = [row for row in rows if row[field] is not None]
+        absent = [row for row in rows if row[field] is None]
+        rows = sorted(present, key=lambda row: row[field], reverse=item['direction'] == 'desc') + absent
+    return rows
+
+
 class DeclarativeToolCompiler:
     """Compile common read-only business tools from constrained specifications."""
 
@@ -852,8 +881,9 @@ class DeclarativeToolCompiler:
             for alias, column in projection_aliases.items()
         ):
             raise SandboxError("TOOL_SPEC_INVALID", "select projection aliases are invalid", 500)
-        if not isinstance(order_by, list) or not all(isinstance(item, str) for item in order_by):
-            raise SandboxError("TOOL_SPEC_INVALID", "select order_by is invalid", 500)
+        table_schema = getattr(self.data, 'schemas', {}).get(table)
+        order_by = normalize_record_order(order_by, columns=(
+            {column['name'] for column in table_schema.get('columns', [])} if table_schema is not None else None))
 
         def selected(arguments: dict[str, Any]) -> list[dict[str, Any]]:
             rows = self.data.table(table)
@@ -895,7 +925,7 @@ class DeclarativeToolCompiler:
                     )
                 ]
             if order_by:
-                rows.sort(key=lambda row: tuple((row.get(field) is None, row.get(field)) for field in order_by))
+                rows = order_records(rows, order_by)
             if projection or projection_aliases:
                 rows = [{
                     **{field: row.get(field) for field in projection},
@@ -2969,10 +2999,14 @@ class DeclarativeMetricEvaluator:
         keys = set()
         for target in expected["targets"]:
             if (not isinstance(target, Mapping) or not {"key", "expression"} <= set(target)
-                    or set(target) - {"key", "expression", "tolerance"}
+                    or set(target) - {"key", "expression", "tolerance", "array_order"}
                     or not isinstance(target["key"], str) or not target["key"] or target["key"] in keys):
                 raise SandboxError("METRIC_SPEC_INVALID", "value target key/expression is invalid", 500)
             keys.add(target["key"])
+            if 'array_order' in target:
+                normalize_record_order(target['array_order'])
+                if 'tolerance' in target:
+                    raise SandboxError('METRIC_SPEC_INVALID', 'array order cannot use numeric tolerance', 500)
             if 'tolerance' in target:
                 tolerance = target['tolerance']
                 if (type(tolerance) not in {int, float} or not 0 <= tolerance <= 1
@@ -3012,7 +3046,10 @@ class DeclarativeMetricEvaluator:
         for target in expected["targets"]:
             wanted = cls._value_expression(target["expression"], business_state)
             value = actual[target["key"]]
-            if 'tolerance' in target:
+            if 'array_order' in target:
+                if not cls._array_targets_match(wanted, value, target['array_order']):
+                    return False
+            elif 'tolerance' in target:
                 if (isinstance(wanted, bool) or isinstance(value, bool)
                         or not isinstance(wanted, (int, float, Decimal))
                         or not isinstance(value, (int, float, Decimal))):
@@ -3024,6 +3061,26 @@ class DeclarativeMetricEvaluator:
             elif not cls._json_value_equal(wanted, value):
                 return False
         return True
+
+    @classmethod
+    def _array_targets_match(cls, wanted: Any, actual: Any, order: list) -> bool:
+        # Membership is a typed multiset: duplicates are meaningful, and bool
+        # must not compare equal to 1. Only declared ordering ties may permute.
+        if (not isinstance(wanted, list) or not isinstance(actual, list)
+                or len(wanted) != len(actual) or not cls._json_value_equal(actual, actual)):
+            return False
+        try:
+            if order and not cls._json_value_equal(actual, order_records(actual, order)):
+                return False
+        except (TypeError, KeyError):
+            return False
+        remaining = list(wanted)
+        for value in actual:
+            index = next((i for i, item in enumerate(remaining) if cls._json_value_equal(item, value)), None)
+            if index is None:
+                return False
+            remaining.pop(index)
+        return not remaining
 
     @classmethod
     def _numeric_where(cls, where: Any, business_state: Mapping[str, Any], *, depth: int) -> dict:
