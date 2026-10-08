@@ -57,6 +57,8 @@ def generate(*, request: dict, artifact_dir: Path, script_count: int = 3,
              timeout: float = 600, resume_from: Path | None = None) -> dict:
     if timeout <= 0:
         raise ValueError("Code Agent timeout must be positive")
+    from .difficulty_profiles import validate_request
+    validate_request(request)
     agent = request.get("code_agent", "codex")
     model = request.get("code_agent_model", MODEL)
     started = time.monotonic()
@@ -104,6 +106,8 @@ mechanism across repairs. They do not change the requested task intent. External
 changes need business data but do not require an Agent write; compensation needs
 a stateful environment. If a mechanism is
 incompatible with the requested business, report the incompatibility; never drop it.
+request.difficulty_profile is immutable. Follow its exact profile requirements in
+AUTHORING.md; do not substitute a standard task or reduce required depth/data/transactions.
 You may declare additional realism_requirements in source. All declared events must
 change state and all faults must fire and recover in successful references/probes.
 For user authorization, every granted permission must have approval_terms binding

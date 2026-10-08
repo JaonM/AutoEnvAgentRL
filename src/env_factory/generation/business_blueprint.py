@@ -95,6 +95,8 @@ def _unique(items, key, label):
 
 
 def validate_blueprint(blueprint, request):
+    from .difficulty_profiles import validate_request
+    difficulty = validate_request(request)
     if not isinstance(blueprint, dict) or blueprint.get('version') != '1.0':
         raise ValueError('BLUEPRINT: version 1.0 required')
     description = blueprint.get('description', {})
@@ -269,6 +271,18 @@ def validate_blueprint(blueprint, request):
         remaining = {name: deps - set(ready) for name, deps in remaining.items() if name not in ready}
     if request['training_category'] == 'multi_step_agentic' and not any(dependencies.values()):
         raise ValueError('BLUEPRINT: multi-step tasks need a real tool-result dependency')
+    if difficulty['profile'] != 'standard':
+        if blueprint['environment_mode'] not in ({'stateful'} if difficulty['profile'] == 'complex_write_transactions'
+                                                 else {'reference_data', 'stateful'}):
+            raise ValueError('BLUEPRINT: difficulty profile requires a compatible business mode')
+        if difficulty['profile'] == 'large_scale_retrieval' and not any(tool.get('pagination') for tool in tools.values()):
+            raise ValueError('BLUEPRINT: large retrieval requires bounded pagination')
+        if difficulty['profile'] == 'long_horizon_planning':
+            depths = {}
+            for name in order:
+                depths[name] = 1 + max((depths[parent] for parent in dependencies[name]), default=0)
+            if max(depths.values(), default=0) < difficulty['min_dependency_depth']:
+                raise ValueError('BLUEPRINT: long-horizon planning requires at least eight dependent business tools')
     def ancestors(name):
         return dependencies[name] | {ancestor for parent in dependencies[name] for ancestor in ancestors(parent)}
     for reuse in reused_inputs:

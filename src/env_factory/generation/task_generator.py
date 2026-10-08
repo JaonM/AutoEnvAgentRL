@@ -111,6 +111,7 @@ class TaskGenerator:
         training_category: str = "multi_step_agentic",
         seed: int | None = None,
         realism_requirements: dict | None = None,
+        difficulty_profile: str = 'standard',
     ) -> Task:
         """Generate one task from a graph path with a uniformly sampled 0..hops length."""
 
@@ -133,6 +134,7 @@ class TaskGenerator:
         selected_type = self._select_task_type(task_type, rng=rng)
         request = {"version": "1.0", "language": self.language, "code_agent_model": self.code_agent_model, "code_agent": self.code_agent, "training_category": training_category,
             "realism_requirements": realism_requirements or {"version": "1.0", "mechanisms": []},
+            "difficulty_profile": difficulty_profile,
             "training_contract": training_contract(training_category),
             "task_type": selected_type.value, "task_style": task_style,
             "task_intent": task_intent, "seed": seed,
@@ -141,6 +143,9 @@ class TaskGenerator:
             "graph_context": {"source": "neo4j_scene_path", "hops": hops, "max_hops": max_hops,
                 "nodes": [node.name for node in path], "keywords": list(keywords),
                 "relation": "SAME_EVENT_ELEMENT"}}
+        from .difficulty_profiles import augment_realism, requirements as difficulty_requirements
+        request['difficulty_requirements'] = difficulty_requirements(difficulty_profile)
+        request['realism_requirements'] = augment_realism(request)
         artifacts = generate_with_agent(request=request,
             artifact_dir=Path(artifact_dir) if artifact_dir else Path(tempfile.mkdtemp(prefix="envfactory-agent-")),
             script_count=self.script_count, timeout=self.code_agent_timeout)

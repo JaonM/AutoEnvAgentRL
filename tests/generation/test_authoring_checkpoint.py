@@ -36,6 +36,17 @@ def test_publishing_new_candidate_preserves_old_content_addressed_snapshot(tmp_p
     assert 'source' in load_checkpoint(path)
 
 
+def test_assigned_difficulty_cannot_be_downgraded_on_resume(tmp_path):
+    from tests.generation.test_blueprint_pagination import fixture
+    plan, source, req = fixture()
+    req['difficulty_profile'] = 'large_scale_retrieval'
+    path = save_checkpoint(tmp_path, request=req, blueprint=plan, source=source,
+                           evidence={'status': 'failed', 'attempts': []})
+    assert load_checkpoint(path, expected_request=req)['request']['difficulty_profile'] == 'large_scale_retrieval'
+    with pytest.raises(ValueError, match='request differs'):
+        load_checkpoint(path, expected_request={**req, 'difficulty_profile': 'standard'})
+
+
 @pytest.mark.parametrize('tamper', ['content', 'path', 'symlink'])
 def test_checkpoint_cannot_accept_modified_or_redirected_source(tmp_path, tamper):
     path = save(tmp_path, implementation())

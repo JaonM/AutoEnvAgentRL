@@ -36,6 +36,24 @@ def bind_success_steps(steps, history):
     return bound
 
 
+def restore_pagination_refs(bound, original, implementations):
+    """Retain same-episode cursor captures while freezing business decisions.
+
+    A cursor from the baseline episode is invalid after reset. Missing a cursor
+    producer still fails normally; this never invents or skips an omitted page.
+    """
+    cursors = {item['tool_name']: item['pagination']['cursor_argument']
+               for item in implementations if item.get('pagination')}
+    for step, authored in zip(bound, original, strict=True):
+        cursor = cursors.get(step.get('tool_name'))
+        if step.get('operation') != 'tool_call' or cursor is None:
+            continue
+        value = authored.get('arguments', {}).get(cursor)
+        if isinstance(value, Mapping) and set(value) == {'$ref'}:
+            step['arguments'][cursor] = copy.deepcopy(value)
+    return bound
+
+
 def idempotent_call_groups(steps):
     groups, identities, versions = [], {}, {}
     episode = 0

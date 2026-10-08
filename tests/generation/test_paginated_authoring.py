@@ -20,6 +20,7 @@ def test_compiled_standalone_sandbox_executes_reproducible_bulk_data_and_cursor_
     tool = value['business_tools'][0]
     tool['parameters']['properties']['cursor'] = {'type': 'string', 'description': '上一页返回的游标'}
     tool['implementation'].update(pagination={'cursor_argument': 'cursor', 'page_size': 100}, order_by=['id'])
+    value['complete_retrieval_tools'] = ['read_temperature']
     value['answer_fields'] = {'sum': {'kind': 'derived',
         'schema': {'type': 'integer', 'description': '全部青松库记录的温度之和'},
         'expression': {'aggregate': {'table': 'zones', 'field': 'temperature', 'where': {'name': '青松库'}, 'op': 'sum'}}}}

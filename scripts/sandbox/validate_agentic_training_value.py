@@ -368,13 +368,23 @@ def sensitive_outcomes(baseline, changed, metrics):
     return verified
 
 
-def tool_evidence_signature(run: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Compare actual status and payload, excluding only platform error correlation IDs."""
+def tool_evidence_signature(run: Mapping[str, Any], *, steps=(), implementations=()) -> list[dict[str, Any]]:
+    """Compare business payloads, canonically naming declared opaque cursors."""
     results = []
-    for item in run.get('history', []):
-        if item.get('operation') != 'tool_call':
-            continue
+    paginated = {item['tool_name'] for item in implementations if item.get('pagination')}
+    calls = [step for step in steps if step.get('operation') == 'tool_call']
+    history = [item for item in run.get('history', []) if item.get('operation') == 'tool_call']
+    tokens = {}
+    for index, item in enumerate(history):
         status, body = item.get('status'), copy.deepcopy(item.get('body'))
+        name = calls[index].get('tool_name') if len(calls) == len(history) else None
+        if (name in paginated and status == 200 and isinstance(body, dict)
+                and isinstance(body.get('next_cursor'), str) and body['next_cursor']):
+            # Preserve equality/reuse relationships and every count/result field.
+            # Only the schema-declared root transport cursor may vary on reset.
+            key = (name, body['next_cursor'])
+            tokens.setdefault(key, 'cursor-' + str(len(tokens) + 1))
+            body['next_cursor'] = tokens[key]
         if (isinstance(status, int) and status >= 400 and isinstance(body, dict)
                 and set(body) == {'error'} and isinstance(body['error'], dict)
                 and set(body['error']) == {'code', 'message', 'details', 'request_id'}):
@@ -390,6 +400,7 @@ def probe_reference_data_reward_sensitivity(
     success_scenario: Mapping[str, Any], mutation: Mapping[str, Any] | list[Mapping[str, Any]],
     terminal_weight: float,
     metrics: list[Mapping[str, Any]] | None = None,
+    *, implementations=(),
 ) -> dict[str, Any]:
     """Keep the final answer fixed after changing an answer-bearing private input."""
     snapshot = getattr(app, "business_snapshot", None)
@@ -418,8 +429,8 @@ def probe_reference_data_reward_sensitivity(
     baseline_rewards = [reward_of(baseline), reward_of(repeated_baseline)]
     baseline_reward = baseline_rewards[0]
     required_drop = 0.5 * terminal_weight
-    baseline_tools = tool_evidence_signature(baseline)
-    repeated_tools = tool_evidence_signature(repeated_baseline)
+    baseline_tools = tool_evidence_signature(baseline, steps=steps, implementations=implementations)
+    repeated_tools = tool_evidence_signature(repeated_baseline, steps=steps, implementations=implementations)
     baseline_tool_results_stable = baseline_tools == repeated_tools
     if (not baseline_tool_results_stable or baseline_reward is None
             or baseline_reward < 1.0 - 1e-9 or baseline_rewards[1] != baseline_reward):
@@ -474,7 +485,7 @@ def probe_reference_data_reward_sensitivity(
                     'code': getattr(exc, 'code', None), 'message': str(exc)[:800]})
                 break
             changed_rewards.append(reward_of(changed))
-            changed_tools = tool_evidence_signature(changed)
+            changed_tools = tool_evidence_signature(changed, steps=altered['steps'], implementations=implementations)
             changed_tool_flags.append(baseline_tools != changed_tools)
             component_checks.append(sensitive_outcomes(baseline, changed, metrics or []))
         if len(changed_rewards) != 2:
@@ -520,6 +531,7 @@ def probe_reference_data_reward_candidates(
     app: Any, trainer_headers: Mapping[str, str], success_scenario: Mapping[str, Any],
     mutations: list[Mapping[str, Any]], terminal_weight: float,
     metrics: list[Mapping[str, Any]] | None = None,
+    *, implementations=(),
 ) -> dict[str, Any]:
     """Try executable counterfactuals, then combine independently stale facts.
 
@@ -539,6 +551,7 @@ def probe_reference_data_reward_candidates(
         seen.add(key)
         result = probe_reference_data_reward_sensitivity(
             app, trainer_headers, success_scenario, mutation, terminal_weight, metrics,
+            implementations=implementations,
         )
         attempts.append({"mutation": mutation, "result": result})
         if result.get("proved"):
@@ -553,6 +566,7 @@ def probe_reference_data_reward_candidates(
     if len(partial) > 1:
         result = probe_reference_data_reward_sensitivity(
             app, trainer_headers, success_scenario, partial, terminal_weight, metrics,
+            implementations=implementations,
         )
         attempts.append({"mutation": partial, "result": result})
         if result.get("proved"):
@@ -936,6 +950,7 @@ def validate(
                 candidates = ([probe_mutation] if isinstance(probe_mutation, Mapping) else []) + fallback_mutations
                 sensitivity = probe_reference_data_reward_candidates(
                     causal_app, trainer_headers, success_scenario, candidates, terminal_weight, task.get('metrics', []),
+                    implementations=task.get('tool_implementations', []),
                 )
                 evidence["business_data_reward_sensitivity"] = sensitivity
                 if not sensitivity.get("proved"):
@@ -1044,6 +1059,8 @@ def validate(
     # inside the test runner, without exercising the environment or reward.
     bound_success = copy.deepcopy(success_scenario)
     bound_success['steps'] = copy.deepcopy(resolved_success_steps)
+    from env_factory.contracts.trajectory_probes import restore_pagination_refs
+    restore_pagination_refs(bound_success['steps'], success_scenario['steps'], task.get('tool_implementations', []))
     # A deliberately broken tool chain may correctly keep the user FSM in its
     # prior stage or select a different conditional branch. Do not carry
     # positive-path dialogue assertions into tool-chain counterfactuals:

@@ -210,6 +210,8 @@ def main() -> int:
         help="每个任务生成的用户 FSM 数量，默认 3",
     )
     parser.add_argument("--training-category", choices=TRAINING_CATEGORIES, help="固定全部任务的训练路由类别")
+    parser.add_argument('--difficulty-mix', default='standard=1',
+                        help='难度分配比例，如 standard=4,long_horizon_planning=2,large_scale_retrieval=2,complex_write_transactions=2')
     parser.add_argument("--environment-mode", choices=("stateless", "reference_data", "stateful", "external_capability"),
                         help="要求实际环境模式；验证写入任务时使用 stateful，不能仅依赖 modify 意图标签")
     parser.add_argument("--code-agent", choices=("codex", "claude", "opencode"), default="codex")
@@ -246,6 +248,8 @@ def main() -> int:
             parser.error(str(exc))
     try:
         training_mix = parse_training_mix(args.training_mix)
+        from env_factory.generation.difficulty_profiles import parse_mix as parse_difficulty_mix
+        difficulty_mix = parse_difficulty_mix(args.difficulty_mix)
     except ValueError as exc:
         parser.error(str(exc))
     if args.environment_mode:
@@ -312,6 +316,12 @@ def main() -> int:
         )
         from env_factory.generation.realism_requirements import allocate_realism_requirements
         realism = allocate_realism_requirements(routes, available_modes=available_environment_modes, rng=run_rng)
+        from env_factory.generation.difficulty_profiles import allocate as allocate_difficulty, augment_realism, requirements as difficulty_requirements
+        profiles = allocate_difficulty(routes, difficulty_mix, rng=run_rng,
+            available_modes=available_environment_modes, task_intent=args.task_intent)
+        realism = [augment_realism({'difficulty_profile': profile, 'training_category': category,
+            'available_environment_modes': available_environment_modes, 'task_intent': args.task_intent,
+            'realism_requirements': assigned}) for profile, category, assigned in zip(profiles, routes, realism)]
         sample_seeds = _retry_seed_blocks(
             run_rng, len(reserved_tasks), args.route_attempts,
         )
@@ -327,6 +337,8 @@ def main() -> int:
                 "sample_seed": sample_seed,
                 "training_category": training_category,
                 "realism_requirements": realism[batch_index - 1],
+                "difficulty_profile": profiles[batch_index - 1],
+                "difficulty_requirements": difficulty_requirements(profiles[batch_index - 1]),
                 "requested_task_intent": args.task_intent,
                 "requested_task_style": args.task_style,
                 "requested_task_type": args.task_type,
@@ -381,6 +393,7 @@ def main() -> int:
                                 training_category=training_category,
                                 seed=attempt_seed,
                                 realism_requirements=realism[batch_index - 1],
+                                difficulty_profile=profiles[batch_index - 1],
                             )
                         if resume_checkpoint:
                             # Manifest paths stay relative to task.json. Keep the

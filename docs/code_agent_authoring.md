@@ -1803,6 +1803,54 @@ separate prose obligation unless the original goal requires it; preserve actual
 reasoning obligations. Existing checkpoint requests retain their original contract
 requirements. Shared fields currently require compact source authoring.
 
+### Runner-owned difficulty profiles and complete retrieval
+
+`request.difficulty_profile` is immutable through repairs and checkpoint resume.
+The runner allocates `--difficulty-mix` before sampling candidates and records each
+profile in `sample_manifest.json`. Hard profiles require `multi_step_agentic`;
+incompatible category or environment-mode allocations fail rather than downgrade.
+`task_spec.difficulty_requirements` is compiler-owned; never author or override it.
+
+- `standard` preserves ordinary tasks.
+- `long_horizon_planning` requires at least eight distinct business tools in an
+  executed result-to-argument dependency chain, with an actually triggered fault
+  and successful recovery in a passing reference. Repeated calls, unconsumed
+  capability edges and `next_cursor` hops do not establish business depth.
+- `large_scale_retrieval` requires at least 10,000 actual rows, reads across at
+  least two business tables, bounded pagination, and a passing reference completing
+  at least three distinct pages. Every select over a table of 10,000 or more rows
+  must use pagination. Semantic explanations must use `evidence_mode: fields`
+  with sufficient declared premises. Use reproducible `row_recipe` data, relevant
+  distractors, cross-table predicates and complete aggregates; never truncate a
+  requested answer to fit the existing 64-entry answer-expression bound.
+- `complex_write_transactions` reserves stateful tasks with at least two changed
+  tables and three changed objects, bound authorization, idempotency and recovery.
+  Its dedicated executed transaction witness is still being integrated; allocation
+  does not grant coverage, and missing coverage prevents acceptance.
+
+For ordinary tasks that explicitly require full retrieval, declare
+`complete_retrieval_tools: ["search_items"]` in source. Entries must uniquely name
+paginated tools. Large-retrieval profiles automatically require this for every
+paginated business tool. The compiler publishes the traversal obligation and
+derives process bindings into `task_spec.retrieval_contract`; do not author this
+compiled object. Runtime reward requires a complete chain starting from a query
+that satisfies its actual process/capture/user-script binding. Later pages must
+follow that same query's returned cursor, preserve total count, and together cover
+the entire result. An unrelated completed query or repeated page cannot substitute.
+Empty results complete in one page. Inactive route tools are not required.
+
+Full-result retrieval and numeric correctness are distinct obligations: a known
+correct sum with an omitted page does not receive full reward. Ablations freeze
+business decisions but retain cursor capture references, because opaque cursors
+belong to the current episode. Missing producers still fail; the runner never
+manufactures a cursor or silently skips a page. Independent review must check
+whether full traversal is part of the original goal, whether every page contributes
+necessary evidence and whether filters exclude the right distractors.
+
+Profile coverage is execution evidence, not a proof of business-rule semantics.
+Rollout-budget compatibility and complete transaction witnesses remain prerequisites
+before running the mixed high-difficulty yield cohort.
+
 ### Generation timing evidence
 
 Business-condition counterfactuals preserve scheduled task events. If an event

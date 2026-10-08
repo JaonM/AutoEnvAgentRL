@@ -2192,6 +2192,65 @@ class ExecutionRoutes:
         return self.routes[values.index(True)]
 
 
+class CompleteRetrieval:
+    """Prove a complete cursor chain for a process-matching business query."""
+
+    @staticmethod
+    def observe(contract, events, required_tools=None):
+        if not contract:
+            return {'retrieval_complete': True, 'retrieval_chains': []}
+        bindings = contract.get('process_bindings', {})
+        reports = []
+        for spec in contract.get('tools', []):
+            name, cursor = spec['tool_name'], spec['cursor_argument']
+            if required_tools is not None and name not in required_tools:
+                continue
+            chains = []
+            for position, event in enumerate(events):
+                if (not isinstance(event, Mapping) or event.get('event') != 'tool_call'
+                        or event.get('payload', {}).get('tool_name') != name):
+                    continue
+                arguments, page = event['payload'].get('arguments'), event.get('result')
+                if not isinstance(arguments, Mapping) or not isinstance(page, Mapping):
+                    continue
+                token = arguments.get(cursor, '')
+                rows = page.get(spec['result_field'])
+                count, total, following, more = (page.get(key) for key in ('count', 'total_count', 'next_cursor', 'has_more'))
+                if (not isinstance(token, str) or not isinstance(rows, list) or type(count) is not int
+                        or count != len(rows) or not 0 <= count <= spec['page_size']
+                        or type(total) is not int or total < count or type(more) is not bool
+                        or not isinstance(following, str) or bool(following) != more):
+                    continue
+                query = {key: value for key, value in arguments.items() if key != cursor}
+                if token == '':
+                    prefix = events[:position + 1]
+                    # An explicit empty cursor is the same first-page request.
+                    normalized = copy.deepcopy(prefix[-1])
+                    normalized['payload']['arguments'] = query
+                    prefixes = [prefix, [*prefix[:-1], normalized]]
+                    if not any(DeclarativeMetricEvaluator._compare(candidate, 'contains_tool_call', binding,
+                            call_bindings=bindings, require_last=True)
+                               for candidate in prefixes for binding in bindings.get(name, [])):
+                        continue
+                    chains.append({'query': query, 'next': '', 'total': total, 'rows': 0,
+                                   'pages': 0, 'seen': set(), 'complete': False})
+                for chain in chains:
+                    if (chain['complete'] or chain['query'] != query or chain['total'] != total
+                            or token != chain['next'] or token in chain['seen']):
+                        continue
+                    chain['seen'].add(token)
+                    chain['pages'] += 1
+                    chain['rows'] += count
+                    chain['next'] = following
+                    chain['complete'] = not more and chain['rows'] == total
+            complete = [chain for chain in chains if chain['complete']]
+            best = max(complete or chains, key=lambda chain: (chain['pages'], chain['rows']), default={})
+            reports.append({'tool_name': name, 'complete': bool(complete),
+                            'pages': best.get('pages', 0), 'rows': best.get('rows', 0),
+                            'total_count': best.get('total')})
+        return {'retrieval_complete': all(row['complete'] for row in reports), 'retrieval_chains': reports}
+
+
 class ContractRewardGate:
     """Apply curriculum-level causal prerequisites before reward aggregation."""
 
@@ -2408,6 +2467,9 @@ class ContractRewardGate:
             if metric.get("category") == "process" and metric.get("id") not in inactive
         )
         causal_progress = causal_progress and process_complete
+        retrieval = CompleteRetrieval.observe(self.task_spec.get('retrieval_contract'), events,
+            set(route['required_tools']) if route else None)
+        causal_progress = causal_progress and retrieval['retrieval_complete']
         if not causal_progress:
             for metric in self.metrics:
                 # Process shaping must not reward an isolated downstream call.
@@ -2437,6 +2499,7 @@ class ContractRewardGate:
                 selected_route=route.get('id') if route else None,
                 route_required=bool(self.routes.routes), called_tools=sorted(called),
                 dependency_edges=[{'edge': edge, 'established': established(edge)} for edge in edges])
+            diagnostics.update(retrieval)
             if predicates:
                 diagnostics.update(goal_satisfied=BusinessGoalEvaluator.evaluate(predicates, state, baseline),
                     initially_satisfied=initially_satisfied,

@@ -568,6 +568,7 @@ def run_pipeline(project, root, config):
                        "--seed", str(config["seed"])]
             for key, flag in (("task_type", "--task-type"),
                               ("training_category", "--training-category"),
+                              ("difficulty_mix", "--difficulty-mix"),
                               ("generation_intent", "--task-intent"),
                               ("generation_environment_mode", "--environment-mode")):
                 if config.get(key):
@@ -687,7 +688,13 @@ def main(argv=None):
     from env_factory.tasks.task_routing import TRAINING_CATEGORIES
     parser.add_argument('--training-category', choices=TRAINING_CATEGORIES,
                         help='固定全部新任务的训练类别，便于同类别良品率评测')
+    parser.add_argument('--difficulty-mix', default='standard=1', help='难度分配比例，默认 standard=1')
     args = parser.parse_args(argv)
+    from env_factory.generation.difficulty_profiles import parse_mix as parse_difficulty_mix
+    try:
+        parse_difficulty_mix(args.difficulty_mix)
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.task_type is not None:
         from env_factory.graph.knowledge_graph import TaskType
         values = [value.strip() for value in args.task_type.split(",")]

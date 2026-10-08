@@ -308,7 +308,9 @@ def compile_source(source: dict, *, root: Path, request: dict, script_count: int
     from .predicate_selectors import validate_predicate_selectors
     validate_predicate_selectors(source)
     from .realism_requirements import validate_realism_request
-    realism_requirements = validate_realism_request(source, request)
+    from .difficulty_profiles import augment_realism
+    realism_requirements = validate_realism_request(source,
+        {**request, 'realism_requirements': augment_realism(request)})
     from .authorization_contract import validate_authorizations
     validate_authorizations(source, request)
     from .reference_requests import validate_reference_requests
@@ -544,6 +546,11 @@ def compile_source(source: dict, *, root: Path, request: dict, script_count: int
                 'bindings': [{'tool': tool, 'argument': argument} for tool, argument in scopes]}, ensure_ascii=False)})
         for script in interaction_scripts:
             script['user_input'] = copy.deepcopy(description['public_input'])
+    from .difficulty_profiles import compile_requirements
+    difficulty_spec = {}
+    compile_requirements(source, request, difficulty_spec, metric_impl)
+    for script in interaction_scripts or []:
+        script['user_input'] = copy.deepcopy(description['public_input'])
     scripts = interaction_scripts or P._deterministic_user_scripts(description=description, count=script_count, finalize_on_goal=True)
     for index, script in enumerate(scripts):
         P._validate_user_script_state_machine(script, index)
@@ -567,6 +574,10 @@ def compile_source(source: dict, *, root: Path, request: dict, script_count: int
         semantic_goal=source.get("semantic_goal"), capability_plan=capabilities)
     from .execution_routes import compile_execution_routes
     compile_execution_routes(source, spec, metrics, metric_impl, interaction_scripts)
+    spec.update(difficulty_spec)
+    if 'retrieval_contract' in spec:
+        from .difficulty_profiles import process_bindings
+        spec['retrieval_contract']['process_bindings'] = process_bindings(metric_impl)
     from env_factory.sandbox_runtime import RewardStateSnapshots
     disclosed_bindings = RewardStateSnapshots.validate_user_values(
         [metric_impl, source.get('execution_routes', [])], interaction_scripts or [])
@@ -866,6 +877,9 @@ def prepare_route_probe(artifacts, root, probe):
     probe_rules = {rule['metric_id']: rule for rule in probe.get('process_rules', [])}
     candidate['metric_implementations'] = [copy.deepcopy(probe_rules.get(rule['metric_id'], rule))
                                            for rule in candidate['metric_implementations']]
+    if 'retrieval_contract' in candidate['task_spec']:
+        from .difficulty_profiles import process_bindings
+        candidate['task_spec']['retrieval_contract']['process_bindings'] = process_bindings(candidate['metric_implementations'])
     if probe.get('user_variables'):
         from .execution_routes import validate_probe_user_variables
         users = candidate['user_simulation_manifest']
@@ -1180,6 +1194,7 @@ def _verify_execution(artifacts: dict, root: Path, *, calibration: dict | None =
         ablation_failures = []
         condition_runs = []
         realism_observations = []
+        difficulty_observations = []
         reference_observations = []
         dynamic_choice_observations = []
         executed_interaction_behaviors = set()
@@ -1290,6 +1305,14 @@ def _verify_execution(artifacts: dict, root: Path, *, calibration: dict | None =
                 realism_observations.append(execution_outcome['realism'])
                 from .report_values import report_value
                 observed = diagnostic()
+                from .difficulty_profiles import observed_dependency_depth
+                difficulty_observations.append({**{key: value for key, value in observed['gate_diagnostics'].items()
+                    if key in {'retrieval_complete', 'retrieval_chains'}},
+                    'dependency_depth': observed_dependency_depth(observed['gate_diagnostics']),
+                    'recovered_fault_ids': execution_outcome['realism']['recovered_fault_ids'],
+                    'read_tables': sorted({name for event in store.replay()['events']
+                        if event.get('event') == 'tool_call'
+                        for name in event.get('payload', {}).get('business_data_reads', [])})})
                 reference_observations.append(report_value({
                     'scenario_id': scenario.get('scenario_id'),
                     'reward': execution_outcome.get('reward'),
@@ -1302,6 +1325,8 @@ def _verify_execution(artifacts: dict, root: Path, *, calibration: dict | None =
                 actual_route = execution_outcome.get('reward', {}).get('execution_route')
                 checks[f"reference_route_{i}"] = actual_route == scenario.get('execution_route') and actual_route is not None
             bound_steps = _bind_reference_for_ablations(steps, validated_runs[id(scenario)])
+            from env_factory.contracts.trajectory_probes import restore_pagination_refs
+            restore_pagination_refs(bound_steps, steps, artifacts['tool_implementations'])
             selected_route = next((route for route in gate.routes.routes
                                    if route['id'] == scenario.get('execution_route')), None)
             for probe in (condition_probes or {}).get('cases', []):
@@ -1318,7 +1343,12 @@ def _verify_execution(artifacts: dict, root: Path, *, calibration: dict | None =
                 for step in trial:
                     # The wrong policy reuses its old choices despite changed
                     # results; absent captures must not crash the test harness.
+                    captures = {key: value for key, value in step.get('capture', {}).items()
+                                if value == '$.next_cursor' and any(tool.get('pagination')
+                                    and tool['tool_name'] == step.get('tool_name') for tool in artifacts['tool_implementations'])}
                     step.pop('capture', None)
+                    if captures:
+                        step['capture'] = captures
                 original_baseline = copy.deepcopy(data.baseline)
                 evidence = {'scenario_id': scenario.get('scenario_id'), 'mutation': probe}
                 try:
@@ -1435,6 +1465,7 @@ def _verify_execution(artifacts: dict, root: Path, *, calibration: dict | None =
                 "semantic_judgment_reuse": model_evaluator.runtime.validation_cache_report(),
                 "distinct_executed_interaction_behaviors": len(executed_interaction_behaviors),
                 "realism_observations": realism_observations,
+                "difficulty_observations": difficulty_observations,
                 "reference_observations": reference_observations,
                 "dynamic_choice_observations": dynamic_choice_observations,
                 "execution_route_coverage": route_coverage,
