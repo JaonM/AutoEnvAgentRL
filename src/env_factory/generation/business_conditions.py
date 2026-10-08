@@ -222,3 +222,42 @@ def probe_business_conditions(conditions: list[dict], bindings: dict, source: di
     return {'scope': 'isolated_query_predicates_not_episode_reward', 'cases': cases,
             'verified': sum(case['status'] == 'verified' for case in cases),
             'needs_authored_case': sum(case['status'] != 'verified' for case in cases)}
+
+
+def restore_condition_counterfactual(probe, data, store):
+    """Reestablish one negative predicate after scheduled external changes.
+
+    This is a runner-owned counterfactual intervention, never a source repair or
+    production tool. Use the same comparator/planner on the actual query-time
+    state; reject coupled predicates and invalid data rather than crediting them.
+    Record exact external field changes so unrelated-write checks do not mistake
+    the harness intervention for an Agent mutation.
+    """
+    import copy
+    state = data._all()
+    condition = {'id': probe['condition_id'], **{key: probe[key]
+        for key in ('tool', 'table', 'column', 'operator')}}
+    plan = probe_business_conditions([condition], {probe['tool']: {'where': probe['query_where']}},
+        {'tables': [{'table_name': name, 'rows': rows} for name, rows in state.items()],
+         'metric_implementations': []})['cases'][0]
+    if plan['status'] != 'verified':
+        return plan
+    table, column = probe['table'], probe['column']
+    primary = data.schemas[table].get('primary_key', [])
+    if not primary or column in primary:
+        return {**plan, 'status': 'needs_authored_case',
+                'reason': 'query-time intervention requires an unchanged primary key'}
+    rows = copy.deepcopy(state[table])
+    for mutation in plan['row_mutations']:
+        rows[mutation['row_index']][column] = mutation['mutated_value']
+    # Validate the whole table atomically before publishing any intervention.
+    data.replace_table(table, rows)
+    for mutation in plan['row_mutations']:
+        before = state[table][mutation['row_index']]
+        store.event('external_business_change', {
+            'event_id': 'condition-counterfactual:' + probe['condition_id'],
+            'counterfactual': True, 'condition_id': probe['condition_id'],
+            'table': table, 'selector': {key: before[key] for key in primary},
+            'values': {column: mutation['mutated_value']}},
+            {'updated_count': 1, 'before': [before], 'after': [rows[mutation['row_index']]]})
+    return plan

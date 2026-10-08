@@ -123,6 +123,16 @@ def repair_feedback(error: Exception, *, root: Path, attempt_root: Path) -> dict
                     'do not choose either conflicting value merely to satisfy the validator.',
                 'closure': 'Shared goal and reward agree; the complete reference and relevant counterexamples pass.'})
     elif prefix == 'AGENT_PREFLIGHT_FAILED' and isinstance(parsed, dict):
+        for evidence in parsed.get('business_conditions', []):
+            probe = evidence.get('mutation', {})
+            issues.append({'code': 'BUSINESS_CONDITION_COUNTERFACTUAL',
+                'evidence_level': 'execution_observation', 'scenario_id': evidence.get('scenario_id'),
+                'check': probe.get('condition_id'), 'observed_failure': evidence,
+                'claim': evidence.get('reason', 'Wrong policy retained full reward when the business condition was false.'),
+                'suggested_change': 'Inspect the query-time state, scheduled events and isolated predicate mutation. '
+                    'An inconclusive probe is not proof of a bad reward. Preserve task dynamics and the public goal; '
+                    'supply a valid isolated counterexample or fix the outcome dependency as supported by execution evidence.',
+                'closure': 'The complete reference succeeds and a valid isolated condition counterfactual loses full credit.'})
         for evidence in parsed.get('ablations', []):
             issues.append({'code': prefix, 'evidence_level': 'execution_observation',
                            'scenario_id': evidence.get('scenario_id'),

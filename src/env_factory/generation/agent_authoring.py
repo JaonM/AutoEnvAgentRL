@@ -1118,26 +1118,42 @@ def _verify_execution(artifacts: dict, root: Path, *, calibration: dict | None =
                 handler = registry.handlers[name]
                 def checked_query(arguments):
                     # Dynamics have already run at this point. A scheduled
-                    # update may undo a fixture mutation or create alternatives;
-                    # such a replay cannot prove the condition is enforced.
+                    # update may undo a fixture mutation or create alternatives.
+                    # Reestablish and verify an isolated query-time counterfactual.
                     # Harness inspection must not become an agent business read.
                     state = data._all()
                     where = evaluator._numeric_where(mutation['query_where'], state, depth=0)
                     eligible = [row for row in state[mutation['table']]
                                 if evaluator._where_matches(row, where)]
-                    observed.append({'eligible_count': len(eligible)})
+                    from .report_values import report_value
+                    observation = {'eligible_count': len(eligible),
+                        'tool': name, 'arguments': copy.deepcopy(arguments),
+                        'resolved_where': report_value(where),
+                        'external_changes': [event for event in store.replay()['events']
+                            if event.get('event') == 'external_business_change']}
+                    observed.append(observation)
                     if eligible:
-                        raise ConditionProbeInconclusive('eligible alternatives remain at query execution')
+                        from .business_conditions import restore_condition_counterfactual
+                        plan = restore_condition_counterfactual(mutation, data, store)
+                        observation['query_time_intervention'] = plan
+                        if plan['status'] != 'verified':
+                            raise ConditionProbeInconclusive('query-time predicate cannot be isolated: ' + plan['reason'])
+                        after = data._all()
+                        current_where = evaluator._numeric_where(mutation['query_where'], after, depth=0)
+                        observation['eligible_count_after'] = sum(
+                            evaluator._where_matches(row, current_where) for row in after[mutation['table']])
+                        if current_where != where or observation['eligible_count_after']:
+                            raise ConditionProbeInconclusive('query-time intervention changed the operand or retained eligible alternatives')
                     return handler(arguments)
                 registry.handlers[name] = checked_query
             try:
                 value = reward_impl(steps, negative=negative, mutation=mutation)
                 if handler is not None and not observed and execution_outcome.get('kind') != 'client_rejection':
                     raise ConditionProbeInconclusive('condition query was not executed')
-                if mutation:
-                    execution_outcome['condition_observations'] = observed
                 return value
             finally:
+                if mutation:
+                    execution_outcome['condition_observations'] = observed
                 if handler is not None:
                     registry.handlers[mutation['tool']] = handler
                 proof_limit = previous
@@ -1294,7 +1310,8 @@ def _verify_execution(artifacts: dict, root: Path, *, calibration: dict | None =
                                     execution=copy.deepcopy(execution_outcome), replay=store.replay())
                 except ConditionProbeInconclusive as exc:
                     checks[f"business_condition_{i}_{probe['condition_id']}"] = False
-                    evidence.update(status='needs_authored_case', reason=str(exc))
+                    evidence.update(status='needs_authored_case', reason=str(exc),
+                                    execution=copy.deepcopy(execution_outcome), replay=store.replay())
                 except SandboxError as exc:
                     if exc.code != 'DATA_INVALID':
                         raise
@@ -1382,12 +1399,14 @@ def _verify_execution(artifacts: dict, root: Path, *, calibration: dict | None =
                 raise ValueError('REWARD_PAIR_MISMATCH: ' + json.dumps(
                     [item for item in paired['results'] if not item['passed']], ensure_ascii=False))
         if not all(checks.values()):
-            if ablation_failures:
+            condition_failures = [run for run in condition_runs if run['status'] != 'passed']
+            if ablation_failures or condition_failures:
                 (root / 'preflight_ablation_failure.json').write_text(
                     json.dumps(ablation_failures, ensure_ascii=False, indent=2) + '\n')
                 raise ValueError('AGENT_PREFLIGHT_FAILED: ' + json.dumps({
                     'failed_checks': [k for k, v in checks.items() if not v],
-                    'ablations': ablation_failures}, ensure_ascii=False))
+                    'ablations': ablation_failures,
+                    'business_conditions': condition_failures}, ensure_ascii=False))
             raise ValueError("AGENT_PREFLIGHT_FAILED: " + ", ".join(k for k, v in checks.items() if not v))
         route_coverage = {'references': sorted({s.get('execution_route') for s in successes if s.get('execution_route')}),
                           'probes': []}

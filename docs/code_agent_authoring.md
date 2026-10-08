@@ -1652,6 +1652,17 @@ and an unchanged normalized request; it never silently overwrites the failed run
 
 ### Generation timing evidence
 
+Business-condition counterfactuals preserve scheduled task events. If an event
+restores eligible rows after the initial negative fixture mutation, the parent
+replans the single-predicate intervention against actual query-time state. It
+validates data constraints and unchanged remaining predicates, and verifies zero
+eligible rows without changing the query operand. Harness changes are explicitly
+marked `counterfactual` in replay; they do not count as successful reference realism
+coverage. Only their changed fields are excluded from unrelated-write attribution.
+Coupled or invalid mutations remain inconclusive and fail validation. Repair feedback
+includes their condition, scenario, query state and event evidence; preserve the
+business goal and dynamics rather than removing an event to satisfy a probe.
+
 `code_agent_generation.json` records each attempt's `author_seconds` separately from
 `phase_seconds`: `blueprint_validation`, `compile_and_execution`,
 `delivery_verification`, and `independent_review`. Only phases actually attempted are

@@ -153,7 +153,8 @@ def test_coupled_condition_is_reported_uncovered_instead_of_false_success():
     assert report['cases'][1]['status'] == 'needs_authored_case'
 
 
-def test_episode_counterfactual_detects_eligibility_removed_from_reward(tmp_path):
+@pytest.mark.parametrize('dynamic', [False, True])
+def test_episode_counterfactual_detects_eligibility_removed_from_reward(tmp_path, dynamic):
     from tests.generation.test_agent_authoring import fixture
     from env_factory.generation.agent_authoring import compile_source, verify_execution
     source, request = fixture('simple_agentic')
@@ -170,6 +171,10 @@ def test_episode_counterfactual_detects_eligibility_removed_from_reward(tmp_path
     source['metric_implementations'][0]['expected']['targets'][0]['expression'] = {
         'from_tool': {'name': 'read_temperature', 'field': 'temperature'}}
     artifacts = compile_source(source, root=tmp_path, request=request)
+    if dynamic:
+        artifacts['business_lifecycle'] = {'version': '1.0', 'dynamics': {'events': [
+            {'id': 'restore_support', 'at_tick': 1, 'changes': [
+                {'table': 'zones', 'selector': {'id': 821}, 'values': {'supports_persian': True}}]}]}}
     probes = artifacts['generation_pipeline']['business_condition_probes']
     # Inject the historical defect: the answer value remains unchanged when only
     # eligibility changes, and the reward silently omits that condition.
@@ -178,6 +183,40 @@ def test_episode_counterfactual_detects_eligibility_removed_from_reward(tmp_path
             rule['expected']['targets'][0]['expression']['lookup']['where'].pop('supports_persian')
     with pytest.raises(ValueError, match='AGENT_PREFLIGHT_FAILED:.*business_condition_0_language'):
         verify_execution(artifacts, tmp_path, condition_probes=probes)
+
+
+def test_query_time_intervention_preserves_unrelated_agent_write_detection(tmp_path):
+    from tests.runtime.test_business_lifecycle import setup
+    from env_factory.generation.business_conditions import restore_condition_counterfactual
+    from env_factory.sandbox_runtime import BusinessGoalEvaluator
+    store, data, _ = setup(tmp_path)
+    # The same object's other fields may already differ because of Agent writes.
+    # Primary-key scoping must not excuse those writes when rebasing the probe.
+    data.schemas['orders']['columns'].append({'name': 'note', 'type': 'TEXT', 'nullable': False})
+    data.baseline['orders'][0]['note'] = 'original'
+    data.replace_table('orders', [{'id': 1, 'status': 'draft', 'note': 'unauthorized'}])
+    probe = {'condition_id': 'draft_only', 'tool': 'read', 'table': 'orders', 'column': 'status',
+             'operator': 'eq', 'query_where': {'status': {'eq': 'draft'}}}
+    plan = restore_condition_counterfactual(probe, data, store)
+    assert plan['status'] == 'verified'
+    baseline = BusinessGoalEvaluator.external_baseline(data.baseline, store.replay()['events'])
+    assert baseline['orders'][0]['status'] == data.table('orders')[0]['status']
+    assert baseline['orders'][0]['note'] == 'original'
+    assert not BusinessGoalEvaluator.preserves_unrelated({}, baseline, data._all())
+    data.update('orders', {'id': 1}, {'note': 'original'})
+    assert BusinessGoalEvaluator.preserves_unrelated({}, baseline, data._all())
+
+
+def test_query_time_intervention_rejects_coupled_predicate_without_mutation(tmp_path):
+    from tests.runtime.test_business_lifecycle import setup
+    from env_factory.generation.business_conditions import restore_condition_counterfactual
+    store, data, _ = setup(tmp_path)
+    before, replay = data._all(), store.replay()
+    probe = {'condition_id': 'draft_only', 'tool': 'read', 'table': 'orders', 'column': 'status',
+             'operator': 'eq', 'query_where': {'status': {'eq': 'draft', 'in': ['draft']}}}
+    plan = restore_condition_counterfactual(probe, data, store)
+    assert plan['status'] == 'needs_authored_case'
+    assert data._all() == before and store.replay() == replay
 
 
 def test_computed_decimal_operand_has_json_safe_evidence():
@@ -215,7 +254,7 @@ def test_condition_probe_invalidates_every_eligible_alternative():
         assert rows[2] == source['tables'][0]['rows'][2]
 
 
-def test_scheduled_event_restoring_eligibility_is_inconclusive(tmp_path):
+def test_scheduled_event_restoring_eligibility_gets_isolated_query_time_probe(tmp_path):
     import json
     from tests.generation.test_agent_authoring import fixture
     from env_factory.generation.agent_authoring import compile_source, verify_execution
@@ -229,16 +268,26 @@ def test_scheduled_event_restoring_eligibility_is_inconclusive(tmp_path):
         'tool': 'read_temperature', 'argument': 'max_temperature', 'column': 'temperature', 'operator': 'lte'}]
     source['metric_implementations'][0]['expected']['targets'][0]['expression'] = {
         'from_tool': {'name': 'read_temperature', 'field': 'temperature'}}
-    artifacts = compile_source(source, root=tmp_path, request=request)
-    artifacts['business_lifecycle'] = {'version': '1.0', 'roles': [], 'tools': {}, 'dynamics': {
+    source['tables'][0]['rows'][0]['temperature'] = 19
+    source['business_lifecycle'] = {'version': '1.0', 'roles': [], 'tools': {}, 'dynamics': {
         'events': [{'id': 'restore_temperature', 'at_tick': 1, 'changes': [
             {'table': 'zones', 'selector': {'id': 821}, 'values': {'temperature': 18}}]}]}}
-    with pytest.raises(ValueError, match='AGENT_PREFLIGHT_FAILED:.*business_condition'):
-        verify_execution(artifacts, tmp_path,
-            condition_probes=artifacts['generation_pipeline']['business_condition_probes'])
+    artifacts = compile_source(source, root=tmp_path, request=request, structural_preview=True)
+    original = copy.deepcopy(artifacts['business_lifecycle'])
+    result = verify_execution(artifacts, tmp_path,
+        condition_probes=artifacts['generation_pipeline']['business_condition_probes'])
+    assert result['passed']
+    assert artifacts['business_lifecycle'] == original
     evidence = json.loads((tmp_path / 'business_condition_execution.json').read_text())
-    assert evidence[0]['status'] == 'needs_authored_case'
-    assert evidence[0]['reason'] == 'eligible alternatives remain at query execution'
+    assert evidence[0]['status'] == 'passed'
+    observation = evidence[0]['execution']['condition_observations'][0]
+    assert observation['eligible_count'] == 1 and observation['eligible_count_after'] == 0
+    assert observation['query_time_intervention']['other_predicates_match']
+    events = evidence[0]['replay']['events']
+    assert any(e['event'] == 'external_business_change' and
+               e['payload']['event_id'] == 'restore_temperature' for e in events)
+    assert any(e['event'] == 'external_business_change' and
+               e['payload'].get('counterfactual') is True for e in events)
 
 
 def test_actual_selected_record_carries_query_conditions_but_count_does_not():

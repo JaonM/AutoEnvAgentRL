@@ -23,6 +23,22 @@ def test_ablation_feedback_identifies_distinct_omissions_and_retained_reward(tmp
     assert all(i['evidence_level'] == 'execution_observation' for i in packet['issues'])
 
 
+def test_condition_feedback_retains_inconclusive_state_and_events(tmp_path):
+    root, attempt = setup(tmp_path)
+    finding = {'scenario_id': 'main', 'status': 'needs_authored_case',
+        'reason': 'query-time predicate cannot be isolated',
+        'mutation': {'condition_id': 'current'},
+        'execution': {'condition_observations': [{'eligible_count': 1,
+            'external_changes': [{'event_id': 'activate'}]}]}}
+    packet = repair_feedback(ValueError('AGENT_PREFLIGHT_FAILED: ' + json.dumps({
+        'failed_checks': ['business_condition_0_current'], 'business_conditions': [finding]})),
+        root=root, attempt_root=attempt)
+    issue, = packet['issues']
+    assert issue['observed_failure'] == finding
+    assert issue['claim'] == finding['reason']
+    assert 'Preserve task dynamics' in issue['suggested_change']
+
+
 def test_review_claim_contains_resolved_evidence_without_becoming_proof(tmp_path):
     root,attempt=setup(tmp_path)
     bundle={'compiled_tool_implementations':[{'filters':[{'argument':'state','column':'state','operator':'eq'}]}]}
