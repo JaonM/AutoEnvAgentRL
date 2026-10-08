@@ -142,7 +142,9 @@ def expand_source(source: dict, request: dict) -> dict:
     """
     from .business_contract import expand_business_contract
     from .decision_table import expand_decision_table
-    source = expand_business_contract(expand_decision_table(copy.deepcopy(source)))
+    from .data_recipes import expand_data_recipes
+    source = expand_data_recipes(copy.deepcopy(source), seed=0 if request.get('seed') is None else request['seed'])
+    source = expand_business_contract(expand_decision_table(source))
     from .answer_fields import expand_answer_fields
     source = expand_answer_fields(source, required=request.get('require_answer_fields', False))
     if "business_tools" not in source:
@@ -406,6 +408,17 @@ def compile_source(source: dict, *, root: Path, request: dict, script_count: int
         raise ValueError("business environment requires data tables")
     P._validate_tools(tools)
     P._validate_tool_implementations(implementations, tools=tools, tables=tables)
+    for implementation in implementations:
+        if implementation.get('pagination'):
+            paging = implementation['pagination']
+            tool = next(t['function'] for t in tools if t['function']['name'] == implementation['tool_name'])
+            tool['description'] += (f"\nPagination: at most {paging['page_size']} rows per page. "
+                f"Omit {paging['cursor_argument']} for the first page; copy next_cursor into "
+                f"{paging['cursor_argument']} for the next page and keep all other arguments unchanged. "
+                "count is this page's row count; total_count counts all matches. An empty next_cursor "
+                "and has_more=false indicate completion. Ordering is stable and includes the primary key. "
+                "A cursor is bound to this query and episode. PAGINATION_CURSOR_STALE (409) means "
+                "query data changed: restart without a cursor; do not combine old and new pages.")
     query_inputs = validate_query_inputs(source)
     if {x["tool_name"] for x in implementations} != {x["function"]["name"] for x in tools}:
         raise ValueError("every business tool requires an implementation")
@@ -487,6 +500,8 @@ def compile_source(source: dict, *, root: Path, request: dict, script_count: int
     manifest = P._materialize_business_data(tables, P._render_data_document(tables),
         root / "data/business_data", environment_mode=plan["mode"], manifest_root="data/business_data")
     manifest["data_governance"]["origin"] = "programmatically_generated_synthetic"
+    if source.get('_data_recipe_provenance'):
+        manifest['row_recipes'] = copy.deepcopy(source['_data_recipe_provenance'])
     if interaction_scripts and request.get('require_structured_interactions'):
         from env_factory.sandbox_runtime import STRUCTURED_INTERACTION_INSTRUCTIONS
         description['public_input'].setdefault('materials', []).append({

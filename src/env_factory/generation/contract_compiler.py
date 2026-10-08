@@ -1923,9 +1923,12 @@ class ContractCompiler(UserSimulationContractMixin):
                     for value in values
                 ):
                     raise PipelineGenerationError(f"tool_implementations[{index}].{field} is invalid")
-            from ..sandbox_runtime import normalize_record_order, SandboxError
+            from ..sandbox_runtime import normalize_record_order, SandboxError, DeclarativeToolCompiler
             try:
                 normalize_record_order(spec.get('order_by', []), columns=table_columns[table])
+                DeclarativeToolCompiler.validate_pagination(spec,
+                    next(item for item in tables if item['table_name'] == table),
+                    next(tool['function']['parameters'] for tool in tools if tool['function']['name'] == name))
             except SandboxError as exc:
                 raise PipelineGenerationError(f"tool_implementations[{index}].order_by is invalid: {exc}") from exc
             projection_aliases = spec.get("projection_aliases", {})
@@ -2062,6 +2065,8 @@ class ContractCompiler(UserSimulationContractMixin):
                 if isinstance(mapping, dict):
                     consumed.update(mapping)
             consumed.update(argument for tool_name, argument in disclosed if tool_name == name)
+            if spec.get('pagination'):
+                consumed.add(spec['pagination']['cursor_argument'])
             consumed.update(lifecycle_parameter_uses((business_lifecycle or {}).get('tools', {}).get(name, {})))
             unused = sorted(parameter_names - consumed)
             if unused:

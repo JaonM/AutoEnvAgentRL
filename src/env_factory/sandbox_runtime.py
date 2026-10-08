@@ -428,6 +428,16 @@ class DataManifestValidator:
                    or (row[column] is not None and row[column] not in parent_values)
                    for row in loaded[table]):
                 raise SandboxError("DATA_INVALID", f"foreign key {table}.{column} is invalid", 500)
+        recipes = manifest.get('row_recipes', {})
+        if not isinstance(recipes, Mapping) or set(recipes) - set(loaded):
+            raise SandboxError('DATA_MANIFEST_INVALID', 'row recipe manifest references unknown tables', 500)
+        for name, recipe in recipes.items():
+            if (not isinstance(recipe, Mapping) or recipe.get('algorithm') != 'sha256-index-v1'
+                    or type(recipe.get('expanded_row_count')) is not int
+                    or type(recipe.get('seed')) is not int or not isinstance(recipe.get('recipe'), Mapping)
+                    or recipe.get('expanded_row_count') != len(loaded[name])
+                    or recipe.get('expanded_rows_sha256') != sha256_json(loaded[name])):
+                raise SandboxError('DATA_MANIFEST_INVALID', f'row recipe data identity differs: {name}', 500)
         return {"tables": loaded, "data_hash": sha256_json(loaded)}
 
 
@@ -809,6 +819,34 @@ class DeclarativeToolCompiler:
         self.data = data
 
     @staticmethod
+    def validate_pagination(spec, table_schema, parameters=None):
+        pagination = spec.get('pagination')
+        if pagination is None:
+            return None
+        if (not isinstance(pagination, Mapping) or set(pagination) != {'cursor_argument', 'page_size'}
+                or spec.get('operation') != 'select'
+                or not isinstance(pagination['cursor_argument'], str) or not pagination['cursor_argument']
+                or type(pagination['page_size']) is not int or not 1 <= pagination['page_size'] <= 100):
+            raise SandboxError('TOOL_SPEC_INVALID', 'pagination requires select, cursor_argument and page_size 1..100', 500)
+        cursor = pagination['cursor_argument']
+        if (cursor in {rule.get('argument') for rule in spec.get('filters', [])}
+                or spec.get('result_field', 'records') in {'count', 'total_count', 'next_cursor', 'has_more'}):
+            raise SandboxError('TOOL_SPEC_INVALID', 'pagination argument/result field conflicts with business fields', 500)
+        schema = table_schema or {}
+        columns = {column['name'] for column in schema.get('columns', [])}
+        order = normalize_record_order(spec.get('order_by', []), columns=columns)
+        primary = schema.get('primary_key', [])
+        if not primary or not set(primary) <= {item['field'] for item in order}:
+            raise SandboxError('TOOL_SPEC_INVALID', 'pagination order_by must include the full primary key for stable unique ordering', 500)
+        if parameters is not None:
+            shape = parameters.get('properties', {}).get(cursor, {})
+            if (shape.get('type') != 'string' or 'enum' in shape or 'default' in shape
+                    or cursor in parameters.get('required', [])
+                    or shape.get('maxLength', 64) < 64 or shape.get('minLength', 0) > 64):
+                raise SandboxError('TOOL_SPEC_INVALID', 'pagination cursor must be an optional open string accepting 64 characters', 500)
+        return dict(pagination)
+
+    @staticmethod
     def _matches(actual: Any, expected: Any, operator: str) -> bool:
         if operator == "eq":
             return actual == expected
@@ -885,9 +923,10 @@ class DeclarativeToolCompiler:
         table_schema = getattr(self.data, 'schemas', {}).get(table)
         order_by = normalize_record_order(order_by, columns=(
             {column['name'] for column in table_schema.get('columns', [])} if table_schema is not None else None))
+        pagination = self.validate_pagination(spec, table_schema)
 
-        def selected(arguments: dict[str, Any]) -> list[dict[str, Any]]:
-            rows = self.data.table(table)
+        def selected(arguments: dict[str, Any], snapshot=None) -> list[dict[str, Any]]:
+            rows = self.data.table(table) if snapshot is None else snapshot[table]
             for rule in filters:
                 argument = rule["argument"]
                 if argument not in arguments:
@@ -913,7 +952,7 @@ class DeclarativeToolCompiler:
                     requested_values = requested if isinstance(requested, list) else [requested]
                     expected_values = [
                         row.get(resolver["value_column"])
-                        for row in self.data.table(resolver["table"])
+                        for row in (self.data.table(resolver["table"]) if snapshot is None else snapshot[resolver['table']])
                         if row.get(resolver["match_column"]) in requested_values
                     ]
                     if rule["operator"] == "in":
@@ -934,7 +973,47 @@ class DeclarativeToolCompiler:
                 } for row in rows]
             return rows
 
+        def page(arguments):
+            # A transaction keeps cursor validation, table reads and issuance in
+            # one episode snapshot even if another request writes concurrently.
+            store = self.data.episode_store
+            with store.transaction():
+                cursor = arguments.get(pagination['cursor_argument'], '')
+                if not isinstance(cursor, str) or (cursor and not re.fullmatch('[a-f0-9]{64}', cursor)):
+                    raise SandboxError('PAGINATION_CURSOR_INVALID', 'cursor must be issued by this paginated query', 400)
+                arguments = {key: value for key, value in arguments.items() if key != pagination['cursor_argument']}
+                scope = hashlib.sha256(canonical_json({'spec': spec, 'arguments': arguments}).encode()).hexdigest()
+                tables = {table, *(rule['resolve']['table'] for rule in filters
+                                  if rule.get('resolve') and rule['argument'] in arguments)}
+                snapshot = {name: self.data.table(name) for name in sorted(tables)}
+                fingerprint = hashlib.sha256(canonical_json(snapshot).encode()).hexdigest()
+                state = store.get_state('declarative_pagination', {})
+                issued = state.get('issued', {})
+                offset = 0
+                if cursor:
+                    claim = issued.get(cursor)
+                    if not isinstance(claim, Mapping) or claim.get('scope') != scope:
+                        raise SandboxError('PAGINATION_CURSOR_INVALID', 'cursor belongs to another query or episode', 400)
+                    if claim.get('snapshot') != fingerprint:
+                        raise SandboxError('PAGINATION_CURSOR_STALE', 'query data changed; restart without a cursor', 409)
+                    offset = claim['offset']
+                rows = selected(arguments, snapshot)
+                end = offset + pagination['page_size']
+                records = rows[offset:end]
+                next_cursor = ''
+                if end < len(rows):
+                    state.setdefault('generation', uuid.uuid4().hex)
+                    claim = {'scope': scope, 'snapshot': fingerprint, 'offset': end}
+                    next_cursor = hashlib.sha256(canonical_json({**claim, 'generation': state['generation']}).encode()).hexdigest()
+                    issued[next_cursor] = claim
+                    state['issued'] = issued
+                    store.set_state('declarative_pagination', state)
+                return {result_field: records, 'count': len(records), 'total_count': len(rows),
+                        'next_cursor': next_cursor, 'has_more': bool(next_cursor)}
+
         def handler(arguments: dict[str, Any]) -> dict[str, Any]:
+            if pagination:
+                return page(arguments)
             if operation == "insert":
                 mapping = spec.get("values", {})
                 row = {column: arguments[argument] for argument, column in mapping.items()}

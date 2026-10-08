@@ -249,13 +249,17 @@ def _declarative_output_schema(implementation: Mapping[str, Any], table: Mapping
             item_schema["properties"] = properties
             item_schema["required"] = fields
             item_schema["additionalProperties"] = False
+        pagination = implementation.get('pagination')
+        page_properties = ({'total_count': {'type': 'integer', 'minimum': 0},
+                            'next_cursor': {'type': 'string'}, 'has_more': {'type': 'boolean'}} if pagination else {})
         return {
             "type": "object",
             "properties": {
-                result_field: {"type": "array", "items": item_schema},
-                "count": {"type": "integer"},
+                result_field: {"type": "array", "items": item_schema,
+                               **({'maxItems': pagination['page_size']} if pagination else {})},
+                "count": {"type": "integer"}, **page_properties,
             },
-            "required": [result_field, "count"],
+            "required": [result_field, "count", *page_properties],
             "additionalProperties": False,
         }
     if operation == "aggregate_count" and isinstance(result_field, str) and result_field:

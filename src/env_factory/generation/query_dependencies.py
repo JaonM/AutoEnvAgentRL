@@ -16,6 +16,8 @@ def validate_query_dependencies(source):
             if implementation.get('operation') not in {'select','aggregate_count'}:
                 continue
             consumed = {item['argument'] for item in implementation.get('filters', [])}
+            if isinstance(implementation.get('pagination'), dict):
+                consumed.add(implementation['pagination'].get('cursor_argument'))
             for argument,value in step.get('arguments', {}).items():
                 if dependent(value) and argument not in consumed:
                     raise ValueError('QUERY_DEPENDENCY_UNUSED: '+step['tool_name']+'.'+argument+

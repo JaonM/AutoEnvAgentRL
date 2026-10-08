@@ -12,7 +12,7 @@ def test_only_declared_faults_are_policy_observations():
     assert not is_authored_tool_fault(task,'/v1/tools/pay',503,{'error':{'code':'INTERNAL_ERROR'}})
     assert is_business_conflict('/v1/tools/pay',409,{'error':{'code':'INVALID_TRANSITION'}})
     assert not is_business_conflict('/v1/tools/pay',409,{'error':{'code':'SESSION_EXPIRED'}})
-    for code in ['USER_INPUT_MISMATCH', 'USER_REQUEST_STOPPED', 'BUSINESS_PRECONDITION_FAILED']:
+    for code in ['USER_INPUT_MISMATCH', 'USER_REQUEST_STOPPED', 'BUSINESS_PRECONDITION_FAILED', 'PAGINATION_CURSOR_STALE']:
         assert is_business_conflict('/v1/tools/pay', 409, {'error': {'code': code}})
         assert not is_business_conflict('/v1/reset', 409, {'error': {'code': code}})
 

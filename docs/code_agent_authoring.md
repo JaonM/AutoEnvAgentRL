@@ -1650,6 +1650,55 @@ preserving the previous files under the continuation's `previous_delivery/` dire
 The Python `generate(..., resume_from=checkpoint_path)` API requires a fresh output directory
 and an unchanged normalized request; it never silently overwrites the failed run.
 
+### Reproducible bulk data and bounded pagination
+
+A table may add `row_recipe: {count, columns}` to generate synthetic rows before
+its explicit `rows`. The columns mapping must cover every declared column. The
+runner's request seed, table name, column name and zero-based row index determine
+each seeded value using `sha256-index-v1`; no generated code is executed. Supported
+scalar generators are:
+
+- `{literal: value}` for a finite JSON scalar, including nullable values.
+- `{sequence: {start: 1000, step: 1}}` for integer identities.
+- `{string_sequence: {prefix: "record-", start: 0, step: 1, suffix: ""}}`.
+- `{cycle: [values...]}` for repeating known categories or valid foreign keys.
+- `{seeded_choice: [values...]}` and `{integer: {min: 0, max: 999}}` for seeded data.
+
+Bounds are 100,000 total expanded rows, 32 columns per recipe, 2,000,000 generated
+cells and 64 MiB of generated row JSON. Choice lists contain 1..100 scalars.
+All expanded rows still undergo type, primary key, foreign key, unique and CHECK
+validation. Explicit business rows may supplement generated distractors; they
+must have distinct keys. The compiled manifest records the recipe, seed, algorithm,
+expanded count and content digest. Runtime loading rejects a changed row file
+that no longer matches that digest. Recipe metadata is private construction
+evidence, not an answer disclosed to the policy.
+
+For a select tool, declare `pagination: {cursor_argument: "cursor", page_size: 100}`
+and an optional open string `cursor` parameter. Page size is fixed at 1..100.
+`order_by` must include every primary-key column, giving unique stable ordering;
+the cursor argument cannot also be a business filter. The compiler publishes
+these semantics in the tool description and output schema:
+
+- Omit the cursor for the first page, then copy `next_cursor` while retaining the
+  same query arguments. `count` counts this page, `total_count` counts all matches.
+- Empty `next_cursor` and `has_more=false` identify the last page, including an
+  empty result. Retrying an unchanged page returns the same page.
+- Cursors must have been issued in this episode for this tool/query. Unknown,
+  tampered or cross-query cursors fail with `PAGINATION_CURSOR_INVALID` (400).
+- Cursors bind the content of the queried table and active resolver tables.
+  Changed content gives `PAGINATION_CURSOR_STALE` (409); restart and discard old
+  pages. A restored identical snapshot is compatible. Reset invalidates issued
+  cursors; a new query receives new opaque tokens. Logical record order is seeded
+  and reproducible, while cursor tokens are episode-local transport values.
+
+Pagination and row volume alone do not prove a hard task. References must actually
+use page captures, and final rewards must check the business result's completeness
+and exclusions. Count alone is observable on the first page and does not establish
+that later pages are needed. Profile coverage, action/context budgets and bounded
+semantic evidence must be validated separately before claiming large-retrieval
+coverage; never send a ten-thousand-row database to a semantic judge as a substitute
+for scoped evidence.
+
 ### Shared answer field meanings
 
 New multi-step requests set `require_answer_fields=true`. In `blueprint.json`,

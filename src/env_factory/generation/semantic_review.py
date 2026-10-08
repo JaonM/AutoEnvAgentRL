@@ -168,6 +168,7 @@ def _review_source_once(*, source: dict, artifacts: dict, request: dict, root: P
               "reference_observations": artifacts.get("generation_pipeline", {}).get("verification", {}).get("reference_observations", []),
               "execution_checks": artifacts.get("generation_pipeline", {}).get("verification", {}).get("checks", {}),
               "compiled_tools": artifacts["tools"],
+              "compiled_data_recipes": artifacts.get('data_manifest', {}).get('row_recipes', {}),
               "compiled_tool_implementations": artifacts.get("tool_implementations", []),
               "compiled_metrics": artifacts["metrics"],
               "compiled_goal_contract": artifacts.get("task_spec", {}).get("goal_contract", {}),
