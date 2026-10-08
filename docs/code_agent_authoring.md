@@ -1902,6 +1902,12 @@ sample count, median and maximum. Failed generation now records its terminal
 timestamp too. Missing historical timestamps remain missing rather than becoming
 zero latency. Per-profile throughput is its ready-task contribution per shared
 cohort wall hour, not a claim about isolated profile execution speed.
+First feedback includes execution events, parent `actionable_feedback_at` markers,
+and failed local blueprint-validation completion timestamps, including checkpoint
+continuations. The per-sample report links the earliest source file and timestamp.
+Generic failed model/review phases and author timeouts do not by themselves prove
+an actionable business defect. Events outside reservation-to-terminal bounds are
+excluded; missing feedback remains missing.
 
 ### Generation timing evidence
 

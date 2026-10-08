@@ -54,6 +54,11 @@ def summarize_difficulty(task_dirs, sandbox_root, *, requested, wall_seconds):
         elapsed = _seconds(ended - reserved) if ended is not None and reserved is not None else None
         feedback = []
         if reserved is not None:
+            def record(when, path, source):
+                when = _seconds(when)
+                if when is not None and when >= reserved and (ended is None or when <= ended):
+                    feedback.append({'seconds': when - reserved, 'timestamp': when,
+                                     'source': source, 'file': str(path.relative_to(directory))})
             for path in directory.rglob('execution_progress.jsonl'):
                 try:
                     lines = path.read_text().splitlines()
@@ -66,16 +71,32 @@ def summarize_difficulty(task_dirs, sandbox_root, *, requested, wall_seconds):
                         continue
                     if not isinstance(event, dict):
                         continue
-                    when = _seconds(event.get('timestamp'))
-                    if (event.get('status') == 'actionable_feedback' and when is not None
-                            and when >= reserved and (ended is None or when <= ended)):
-                        feedback.append(when - reserved)
+                    if event.get('status') == 'actionable_feedback':
+                        record(event.get('timestamp'), path, 'execution_validation')
+            reports = [directory / 'code_agent_generation.json',
+                       *sorted(directory.glob('generation_retries/*/code_agent_generation.json'))]
+            for path in reports:
+                attempts = _read(path).get('attempts', [])
+                for attempt in attempts if isinstance(attempts, list) else []:
+                    if not isinstance(attempt, dict):
+                        continue
+                    record(attempt.get('actionable_feedback_at'), path, 'parent_validation')
+                    phases = attempt.get('phase_events', [])
+                    for phase in phases if isinstance(phases, list) else []:
+                        # Blueprint validation is local and deterministic. Other
+                        # failed phases may be provider outages, so require their
+                        # explicit actionable_feedback_at marker above.
+                        if (isinstance(phase, dict) and phase.get('phase') == 'blueprint_validation'
+                                and phase.get('status') == 'failed'):
+                            record(phase.get('completed_at'), path, 'blueprint_validation')
+        first = min(feedback, key=lambda item: (item['seconds'], item['file'], item['source'])) if feedback else None
         rows.append({'task_directory': str(directory), 'profile': profile, 'generated': generated,
             'build_attempted': bool(build), 'terminal': terminal,
             'training_ready': generated and build.get('training_ready') is True,
             'infrastructure_failure': (build or generation).get('failure_code') == 'INFRA',
             'reservation_to_terminal_seconds': elapsed,
-            'reservation_to_first_recorded_feedback_seconds': min(feedback) if feedback else None})
+            'reservation_to_first_recorded_feedback_seconds': first['seconds'] if first else None,
+            'first_recorded_feedback': first})
     untracked = max(0, requested - len(rows))
     valid_denominator = requested > 0 and len(rows) <= requested
     groups = {}
@@ -99,5 +120,6 @@ def summarize_difficulty(task_dirs, sandbox_root, *, requested, wall_seconds):
         'groups': groups, 'samples': rows,
         'note': 'Difficulty groups are disjoint. Unassigned historical tasks stay unassigned. '
                 'Latencies include failures and queue time when timestamps exist; observed counts expose missing evidence. '
-                'Feedback measures only recorded actionable validation findings. '
+                'Feedback uses recorded execution/parent findings and failed local blueprint validation, '
+                'including retries; generic provider failures are not inferred to be actionable defects. '
                 'Profile throughput is its contribution per shared cohort wall hour, not isolated profile runtime.'}

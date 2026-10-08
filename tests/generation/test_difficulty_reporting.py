@@ -8,6 +8,34 @@ def stamp(seconds):
     return datetime.fromtimestamp(seconds, timezone.utc).isoformat()
 
 
+def test_parent_and_blueprint_feedback_include_retries_without_guessing_provider_failure(tmp_path):
+    directory = sample(tmp_path, 1, 'standard', failed=True, seconds=100)
+    (directory / 'execution_progress.jsonl').unlink()
+    report = directory / 'code_agent_generation.json'
+    report.write_text(json.dumps({'attempts': [
+        {'phase_events': [{'phase': 'independent_review', 'status': 'failed', 'completed_at': 1001}]},
+        {'phase_events': [{'phase': 'blueprint_validation', 'status': 'failed', 'completed_at': 1030}]},
+        {'actionable_feedback_at': 1050}, {'actionable_feedback_at': 999},
+        {'actionable_feedback_at': 1101}, {'actionable_feedback_at': True}]}))
+    retry = directory / 'generation_retries' / 'attempt-2' / 'code_agent_generation.json'
+    retry.parent.mkdir(parents=True)
+    retry.write_text(json.dumps({'attempts': [{'actionable_feedback_at': 1020}]}))
+    result = summarize_difficulty([directory], tmp_path, requested=1, wall_seconds=100)
+    row = result['samples'][0]
+    assert row['reservation_to_first_recorded_feedback_seconds'] == 20
+    assert row['first_recorded_feedback'] == {'seconds': 20, 'timestamp': 1020,
+        'source': 'parent_validation', 'file': 'generation_retries/attempt-2/code_agent_generation.json'}
+    retry.write_text(json.dumps({'attempts': [{'phase_events': [
+        {'phase': 'compile_and_execution', 'status': 'failed', 'completed_at': 1002}]}]}))
+    row = summarize_difficulty([directory], tmp_path, requested=1, wall_seconds=100)['samples'][0]
+    assert row['reservation_to_first_recorded_feedback_seconds'] == 30
+    assert row['first_recorded_feedback']['source'] == 'blueprint_validation'
+    report.write_text(json.dumps({'attempts': [None, {'phase_events': None}, {'status': 'failed',
+        'error': 'CODE_AGENT_TIMEOUT', 'candidate_ready_at': 1001}]}))
+    row = summarize_difficulty([directory], tmp_path, requested=1, wall_seconds=100)['samples'][0]
+    assert row['reservation_to_first_recorded_feedback_seconds'] is None
+
+
 def sample(root, number, profile, *, ready=False, failed=False, pending=False, seconds=30):
     directory = root / 'artifacts' / f'artifact-{number}' / 'task'
     directory.mkdir(parents=True)
