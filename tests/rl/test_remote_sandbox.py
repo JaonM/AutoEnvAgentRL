@@ -25,6 +25,11 @@ class App:
                 result = {'reward_mode': body['reward_mode']}
             elif path == '/v1/tools':
                 result = {'tools': [{'function': {'name': 'increment'}}]}
+            elif path == '/v1/time':
+                result = {'virtual_datetime': '2026-01-01T00:00:00+00:00',
+                          'origin_datetime': '2026-01-01T00:00:00+00:00',
+                          'tick': 0, 'elapsed_seconds': 0, 'tick_seconds': 0,
+                          'advances_on_tool_attempt': False}
             elif path == '/v1/tools/increment':
                 db.execute('update state set value=value+1')
                 result = {'ok': True}

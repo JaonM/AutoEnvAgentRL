@@ -11,6 +11,7 @@ REQUIRED_SYSTEM_ENDPOINTS = frozenset({
     ("observation", "GET", "/v1/observation"),
     ("state", "GET", "/v1/state"),
     ("tools", "GET", "/v1/tools"),
+    ("time", "GET", "/v1/time"),
     ("user_simulator", "POST", "/v1/user_simulator"),
     ("reward", "GET", "/v1/reward"),
     ("replay", "GET", "/v1/replay"),

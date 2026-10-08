@@ -286,9 +286,15 @@ uv run --extra rl hf download mlx-community/Qwen3-4B-Instruct-2507-4bit \
 沙箱 reset 后通过 `GET /v1/tools` 获取工具定义，随每次采样传给 tokenizer 的
 `apply_chat_template(..., tools=tools)`。system 消息使用 `src/rl/environments/system_prompt.py` 中的个人智能分身提示词，
 包含身份、时间日期、工具使用及隐私安全规则；工具格式由模型自带的模板生成。
-当前时间通过 `SandboxEpisode.get_current_time()` 预留接口注入，本地和 HTTP 沙箱共用该入口。
-目前沙箱尚无对应时间接口，默认保留 `{{current_time}}` 占位符，不读取宿主机时间或让模型猜测。
-接入后应返回沙箱的 `Asia/Shanghai` 时间，格式为 `YYYY-MM-DD HH:mm:ss`，在 episode reset 时渲染。
+当前时间通过 `SandboxEpisode.get_current_time()` 调用 `GET /v1/time` 注入，本地和 HTTP 沙箱共用该入口。
+episode reset 时转换为 `Asia/Shanghai` 的 `YYYY-MM-DD HH:mm:ss` 并填入系统提示词。
+待训练 Agent 也可使用原生 `get_current_time` 工具读取当前虚拟时间；若业务工具同名，系统工具逐个添加 `_` 前缀避免覆盖。
+时间读取不推进 tick、不触发外部事件、不调用评分，也不属于业务工具依赖；它仍占用普通 policy action/token 预算。
+接口返回 `virtual_datetime`、`origin_datetime`（ISO 8601 UTC）、`tick`、`elapsed_seconds`、`tick_seconds` 和 `advances_on_tool_attempt`。
+默认基准为 `2026-01-01T00:00:00+00:00`，可通过任务的 `business_lifecycle.clock.origin_datetime` 配置带时区且精确到秒的日期时间。
+配置日期基准本身不启用动态时间：只有启用了非空 `business_lifecycle.dynamics` 的任务，经过参数校验且未命中幂等缓存的业务调用尝试才推进 tick。
+业务失败和注入故障沿用既有推进规则；已提交的幂等重放不再次推进。无 dynamics 的任务保持静态时间。
+reset 恢复固定基准，快照恢复对应 episode 的 tick；绝不回退到宿主机时钟。旧沙箱缺少接口时需要重新构建和验收。
 策略 tokenizer 必须具有 MLX-LM 可识别的原生工具调用格式和解析器。
 
 模型生成的工具调用解析为 `assistant.tool_calls`，工具执行结果使用 `role="tool"`，

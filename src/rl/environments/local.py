@@ -1,8 +1,6 @@
 """Real sandbox episodes; policy inputs never include trainer-only state/rewards."""
 from __future__ import annotations
 import copy
-import base64
-import sqlite3
 import hashlib
 import importlib.util
 import json
@@ -70,13 +68,10 @@ class SandboxEpisode:
             raise RuntimeError(f'environment endpoint failed: {path} ({status})')
         return status, value
 
-    def get_current_time(self) -> str | None:
-        """Reserved sandbox time API hook, shared by local and HTTP episodes.
-
-        TODO: call the sandbox time endpoint once its contract exists, returning
-        Asia/Shanghai time as YYYY-MM-DD HH:mm:ss. Never use the host clock.
-        """
-        return None
+    def get_current_time(self) -> str:
+        """Read the sandbox clock for local and HTTP episode prompts."""
+        from .virtual_time import format_current_time
+        return format_current_time(self.request('GET', '/v1/time')[1])
 
     def reset(self, seed):
         self.trace = []
@@ -92,6 +87,9 @@ class SandboxEpisode:
         if self.user_interaction_tool is not None:
             self.tools = [*self.tools, self.user_interaction_tool]
             public = policy_public_input(public, self.user_interaction_tool)
+        from .virtual_time import clock_tool
+        self.time_tool = clock_tool(self.tools)
+        self.tools = [*self.tools, self.time_tool]
         user = public.get('initial_user_message') or self.task['task']
         if public.get('materials'):
             user += '\nPublic materials: ' + json.dumps(public['materials'], ensure_ascii=False)
@@ -158,8 +156,12 @@ class SandboxEpisode:
                 for call, params in zip(calls, arguments):
                     name = call['function']['name']
                     interaction = getattr(self, 'user_interaction_tool', None)
+                    clock = getattr(self, 'time_tool', None)
                     if getattr(self, 'terminated', False):
                         status, value = 409, {'error': 'episode already terminated'}
+                    elif clock is not None and name == clock['function']['name']:
+                        status, value = ((400, {'error': 'time query takes no arguments'}) if params
+                                         else self.request('GET', '/v1/time'))
                     elif interaction is not None and name == interaction['function']['name']:
                         from .user_interaction import interaction_content
                         from env_factory.sandbox_runtime import SandboxError
@@ -208,33 +210,23 @@ class SandboxEpisode:
 
     def snapshot(self):
         """Snapshot the committed local sandbox plus policy-visible conversation."""
-        database = sqlite3.connect(self.app.episode_store.db_path)
-        memory = sqlite3.connect(':memory:')
-        try:
-            database.backup(memory)
-            payload = base64.b64encode(memory.serialize()).decode('ascii')
-        finally:
-            memory.close()
-            database.close()
+        from .services.sandbox_service import snapshot_database
+        payload = snapshot_database(self.app.episode_store.db_path)
         return {'database': payload, 'user_interaction_tool': copy.deepcopy(getattr(self, 'user_interaction_tool', None)),
+                'time_tool': copy.deepcopy(getattr(self, 'time_tool', None)),
                 **{name: copy.deepcopy(getattr(self, name)) for name in
             ('messages', 'conversation', 'reward', 'terminated', 'trace', 'tools')}, 'names': sorted(self.names)}
 
     def restore(self, state):
-        memory = sqlite3.connect(':memory:')
-        database = sqlite3.connect(self.app.episode_store.db_path)
-        try:
-            memory.deserialize(base64.b64decode(state['database']))
-            memory.backup(database)
-        finally:
-            memory.close()
-            database.close()
+        from .services.sandbox_service import restore_database
+        restore_database(self.app.episode_store.db_path, state['database'])
         for name in ('messages', 'conversation', 'reward', 'terminated', 'trace', 'tools'):
             setattr(self, name, copy.deepcopy(state[name]))
         self.names = set(state['names'])
         self._restore_interaction_tool(state)
 
     def _restore_interaction_tool(self, state):
+        self.time_tool = copy.deepcopy(state.get('time_tool'))
         self.user_interaction_tool = copy.deepcopy(state.get('user_interaction_tool'))
         if 'user_interaction_tool' not in state:
             from .user_interaction import interaction_tool

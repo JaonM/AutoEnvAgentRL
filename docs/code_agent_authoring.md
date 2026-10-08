@@ -1911,6 +1911,25 @@ certification requirements for rollout/evaluator separation remain in force.
 
 ## Feedback and validation scheduling
 
+### Virtual time
+
+Every sandbox exposes read-only `GET /v1/time`: `virtual_datetime` and
+`origin_datetime` in ISO 8601 UTC, `tick`, `elapsed_seconds`, `tick_seconds`, and
+`advances_on_tool_attempt`. The default origin is `2026-01-01T00:00:00+00:00`.
+Set `business_lifecycle.clock: {"origin_datetime": "2026-10-08T09:00:00+08:00"}`
+with lifecycle `version: "1.0"` to use another fixed origin. The origin must have
+a timezone and whole-second precision; it never follows host time or the seed.
+Clock configuration alone leaves time static. A nonempty `dynamics` config enables
+the existing tick policy: one tick per validated, noncached tool attempt, including
+business failures and injected faults, at `dynamics.tick_seconds` per tick (default 1).
+An idempotent replay of a committed request does not advance time. Reading time
+does not fire events, append replay events, change business data, or run a judge.
+Reset restores the baseline; episode selection and snapshot restore preserve isolation.
+RL exposes this endpoint through a native time tool and injects Shanghai time at reset.
+Do not author a competing wall-clock business tool or a hidden wait operation.
+
+### Early contract diagnostics
+
 Select tools with no `projection` and no `projection_aliases` return every declared
 table column. Their output schema derives those columns and types from the table;
 an alias-only select returns only its declared aliases. Capture paths and downstream

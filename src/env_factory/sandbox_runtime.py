@@ -23,6 +23,7 @@ import uuid
 import unicodedata
 from decimal import Decimal, InvalidOperation
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from pathlib import Path
@@ -1054,6 +1055,53 @@ class PersistentToolError(SandboxError):
     """A failed response whose clock/events or committed write must survive."""
 
 
+class VirtualClock:
+    """Read-only view of episode time, independent of the host wall clock."""
+
+    DEFAULT_ORIGIN = '2026-01-01T00:00:00+00:00'
+    RESPONSE_SCHEMA = {'type': 'object', 'additionalProperties': False,
+        'properties': {
+            'virtual_datetime': {'type': 'string'}, 'origin_datetime': {'type': 'string'},
+            'tick': {'type': 'integer', 'minimum': 0},
+            'elapsed_seconds': {'type': 'integer', 'minimum': 0},
+            'tick_seconds': {'type': 'integer', 'minimum': 0},
+            'advances_on_tool_attempt': {'type': 'boolean'}},
+        'required': ['virtual_datetime', 'origin_datetime', 'tick', 'elapsed_seconds',
+                     'tick_seconds', 'advances_on_tool_attempt']}
+
+    def __init__(self, config, store, dynamics=None):
+        config = {} if config is None else config
+        if not isinstance(config, Mapping) or set(config) - {'origin_datetime'}:
+            raise SandboxError('CLOCK_INVALID', 'clock accepts only origin_datetime', 500)
+        origin = config.get('origin_datetime', self.DEFAULT_ORIGIN)
+        try:
+            if not isinstance(origin, str):
+                raise ValueError('origin must be text')
+            parsed = datetime.fromisoformat(origin)
+            if parsed.tzinfo is None or parsed.utcoffset() is None or parsed.microsecond:
+                raise ValueError('origin requires a timezone and whole seconds')
+            self.origin = parsed.astimezone(timezone.utc)
+        except (ValueError, TypeError, OverflowError) as exc:
+            raise SandboxError('CLOCK_INVALID', 'origin_datetime must be an ISO 8601 datetime with timezone and whole seconds', 500) from exc
+        self.store, self.dynamics = store, dynamics
+
+    def read(self):
+        enabled = self.dynamics is not None
+        state = self.store.get_state(ScenarioDynamics.KEY, {}) if enabled else {}
+        tick = state.get('tick', 0)
+        seconds_per_tick = self.dynamics.config.get('tick_seconds', 1) if enabled else 0
+        if type(tick) is not int or tick < 0:
+            raise SandboxError('CLOCK_STATE_INVALID', 'virtual tick must be a nonnegative integer', 500)
+        elapsed = tick * seconds_per_tick
+        try:
+            current = self.origin + timedelta(seconds=elapsed)
+        except OverflowError as exc:
+            raise SandboxError('CLOCK_STATE_INVALID', 'virtual datetime is out of range', 500) from exc
+        return {'virtual_datetime': current.isoformat(), 'origin_datetime': self.origin.isoformat(),
+                'tick': tick, 'elapsed_seconds': elapsed, 'tick_seconds': seconds_per_tick,
+                'advances_on_tool_attempt': enabled}
+
+
 class ScenarioDynamics:
     """Persisted virtual time, external updates and bounded transport faults.
 
@@ -1299,10 +1347,11 @@ class BusinessLifecycle:
     def __init__(self, config, data, store, tool_names):
         self.config, self.data, self.store = copy.deepcopy(config or {}), data, store
         self.dynamics = ScenarioDynamics(self.config['dynamics'], data, store, tool_names) if self.config.get('dynamics') else None
+        self.clock = VirtualClock(self.config.get('clock'), store, self.dynamics)
         if not self.config:
             self.rules = {}
             return
-        if self.config.get('version') != '1.0' or set(self.config) - {'version', 'roles', 'tools', 'dynamics'}:
+        if self.config.get('version') != '1.0' or set(self.config) - {'version', 'roles', 'tools', 'dynamics', 'clock'}:
             raise SandboxError('LIFECYCLE_INVALID', 'unsupported lifecycle contract', 500)
         roles = self.config.get('roles', [])
         if not isinstance(roles, list) or any(not isinstance(x, str) or not x for x in roles):
@@ -4450,6 +4499,7 @@ class SandboxApplication:
     ) -> None:
         self.episode_store = episode_store
         self.tool_registry = tool_registry
+        self.clock = tool_registry.lifecycle.clock if tool_registry.lifecycle else VirtualClock(None, episode_store)
         self.observation_callback = observation
         self.reward_callback = reward
         self.user_turn_callback = user_turn
@@ -4521,6 +4571,8 @@ class SandboxApplication:
             return {"status": "ok"}
         if method == "GET" and path == "/v1/tools":
             return {"tools": self.tool_registry.tools}
+        if method == 'GET' and path == '/v1/time':
+            return self.clock.read()
         trainer_paths = {"/v1/reset", "/v1/observation", "/v1/state", "/v1/user_simulator", "/v1/agent_response", "/v1/reward", "/v1/replay"}
         mutation = os.getenv("SANDBOX_MUTATION_MODE", "disabled")
         if path in trainer_paths and mutation != "bypass_trainer_auth":

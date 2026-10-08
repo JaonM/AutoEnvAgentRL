@@ -2813,18 +2813,20 @@ class ContractCompiler(UserSimulationContractMixin):
                     "description": "本次工具调用的业务结果；不包含 observation 或 reward。",
                 },
             })
+        from ..sandbox_runtime import VirtualClock
         return {
             "protocol": "http",
             "base_path": "/v1",
             "version": "1.0",
             "shared_runtime": {
                 "module": "sandbox_runtime.py",
-                "version": "1.2",
+                "version": "1.3",
                 "required_components": [
                     "EpisodeStore",
                     "ManifestDataStore",
                     "DeclarativeToolCompiler",
                     "SandboxApplication",
+                    "VirtualClock",
                     "ContractToolRegistry",
                     "ContractRewardAggregator",
                     "ContractRewardGate",
@@ -2916,6 +2918,9 @@ class ContractCompiler(UserSimulationContractMixin):
                     },
                 },
                 {"name": "tools", "kind": "system", "method": "GET", "path": "/v1/tools"},
+                {"name": "time", "kind": "system", "access": "agent",
+                 "method": "GET", "path": "/v1/time",
+                 "response_schema": copy.deepcopy(VirtualClock.RESPONSE_SCHEMA)},
                 {
                     "name": "user_simulator",
                     "kind": "user_simulator",
@@ -3033,6 +3038,7 @@ class ContractCompiler(UserSimulationContractMixin):
         shared_runtime = interface.get("shared_runtime")
         required_shared = {
             "EpisodeStore", "ManifestDataStore", "DeclarativeToolCompiler", "SandboxApplication", "ContractToolRegistry",
+            "VirtualClock",
             "ContractRewardAggregator", "ContractRewardGate", "DeclarativeMetricEvaluator", "AcceptanceScenarioRunner", "ContractUserSimulator",
             "validate_json_schema"
         }
@@ -3053,6 +3059,7 @@ class ContractCompiler(UserSimulationContractMixin):
             ("observation", "GET", "/v1/observation"),
             ("state", "GET", "/v1/state"),
             ("tools", "GET", "/v1/tools"),
+            ("time", "GET", "/v1/time"),
             ("user_simulator", "POST", "/v1/user_simulator"),
             ("agent_response", "POST", "/v1/agent_response"),
             ("reward", "GET", "/v1/reward"),
@@ -3060,6 +3067,10 @@ class ContractCompiler(UserSimulationContractMixin):
         ):
             if (name, method, path) not in endpoint_keys:
                 raise PipelineGenerationError(f"runtime_interface missing {method} {path}")
+        from ..sandbox_runtime import VirtualClock
+        time_endpoint = next(item for item in endpoints if item.get('name') == 'time')
+        if time_endpoint.get('response_schema') != VirtualClock.RESPONSE_SCHEMA or time_endpoint.get('access') != 'agent':
+            raise PipelineGenerationError('runtime_interface time endpoint must publish the shared clock schema and agent access')
         expected_tools = {tool["function"]["name"]: tool["function"]["parameters"] for tool in tools}
         declared_tools = [
             item for item in endpoints

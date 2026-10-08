@@ -44,5 +44,5 @@ SYSTEM_PROMPT = """## 身份
 
 
 def render_system_prompt(current_time: str | None = None) -> str:
-    """Leave the slot intact until the sandbox time API is available."""
+    """Render the clock supplied by the environment; pure chat may omit it."""
     return SYSTEM_PROMPT if current_time is None else SYSTEM_PROMPT.replace('{{current_time}}', current_time)

@@ -7,6 +7,7 @@ from rl.chat import completion
 from rl.environment import SandboxEpisode
 from rl.parallel_rollout import EnvironmentPool, parallel_rollouts
 from rl.rollout_worker import rollout
+from rl.environments.virtual_time import clock_tool
 
 
 TOOLS = [{'type': 'function', 'function': {'name': 'lookup', 'description': '查询数量',
@@ -33,6 +34,8 @@ class NativeRuntime(SandboxEpisode):
             return 200, {'reward_mode': 'episode_end'}
         if path == '/v1/tools':
             return 200, {'tools': TOOLS}
+        if path == '/v1/time':
+            return 200, {'virtual_datetime': '2026-01-01T00:00:00+00:00', 'tick': 0, 'elapsed_seconds': 0}
         if path == '/v1/observation':
             return 200, {'ready': True}
         if path == '/v1/tools/lookup':
@@ -53,10 +56,9 @@ class NativeRuntime(SandboxEpisode):
 
 
 @pytest.mark.parametrize('sandbox_time', [None, '2026-10-03 09:30:00'])
-def test_system_prompt_uses_reserved_sandbox_clock(sandbox_time):
+def test_system_prompt_uses_sandbox_clock(sandbox_time):
     from rl.system_prompt import SYSTEM_PROMPT
     env = NativeRuntime(None)
-    assert env.get_current_time() is None
     calls = []
     def clock():
         calls.append('sandbox clock')
@@ -66,13 +68,13 @@ def test_system_prompt_uses_reserved_sandbox_clock(sandbox_time):
     expected = SYSTEM_PROMPT if sandbox_time is None else SYSTEM_PROMPT.replace('{{current_time}}', sandbox_time)
     assert env.messages[0] == {'role': 'system', 'content': expected}
     assert calls == ['sandbox clock']
-    assert env.tools == TOOLS
+    assert env.tools == [*TOOLS, env.time_tool]
 
 
 def test_native_call_result_and_plain_user_response():
     env = NativeRuntime(None)
     env.reset(42)
-    assert env.tools == TOOLS
+    assert env.tools == [*TOOLS, env.time_tool]
     assert 'lookup' not in env.messages[0]['content']  # schemas travel separately
     original = [1, 2]
     sample = completion(tokenizer(CALL), original, TOOLS)
@@ -141,11 +143,11 @@ def test_reasoning_is_separate_from_user_submission():
 
 class NativePolicy:
     def encode(self, messages, *, tools):
-        assert tools == TOOLS
+        assert tools == [*TOOLS, clock_tool(TOOLS)]
         return [10]
 
     def sample(self, messages, max_tokens, max_context, *, tools, greedy=False):
-        assert tools == TOOLS
+        assert tools == [*TOOLS, clock_tool(TOOLS)]
         text = '7件' if messages[-1]['role'] == 'tool' else CALL
         return {'prompt': self.encode(messages, tools=tools), 'tokens': [1, 2], 'old_logp': [-.1, -.2],
                 **completion(tokenizer(text), [1, 2], tools)}
