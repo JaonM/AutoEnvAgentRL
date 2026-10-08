@@ -48,15 +48,16 @@ def _write_json(path: Path, value: object) -> None:
 from env_factory.generation.artifacts import write_task_artifact as _write_task_artifact
 
 
-def _reset_reserved_directory(path: Path) -> None:
-    """Remove partial artifacts while preserving the experiment sample identity."""
-    for child in path.iterdir():
-        if child.name == "sample_manifest.json":
-            continue
-        if child.is_dir():
-            shutil.rmtree(child)
+def _archive_rejected_candidate(task_dir: Path, attempt: int) -> Path:
+    """Keep complete rejected evidence outside the next candidate's delivery."""
+    archive = task_dir.parent / 'rejected_generations' / f'attempt-{attempt}'
+    archive.mkdir(parents=True, exist_ok=False)
+    for child in task_dir.iterdir():
+        if child.name == 'sample_manifest.json':
+            shutil.copy2(child, archive / child.name)
         else:
-            child.unlink()
+            child.rename(archive / child.name)
+    return archive
 
 
 def _retry_seed_blocks(rng: random.Random, count: int, attempts: int) -> list[int]:
@@ -85,6 +86,7 @@ def _validate_generated_candidate(task_dir: Path) -> None:
     })
     raise TaskGenerationError(
         "task buildability gate failed: " + ", ".join(codes or ["UNKNOWN"])
+        + "; issues=" + json.dumps(result.get('issues', []), ensure_ascii=False)
     )
 
 
@@ -444,7 +446,9 @@ def main() -> int:
                             continue
                         if structural_failure:
                             raise TaskGenerationError(str(exc)) from exc
-                        _reset_reserved_directory(task_dir)
+                        if route_attempt < args.route_attempts:
+                            _archive_rejected_candidate(task_dir, route_attempt)
+                            resume_checkpoint = None
                 raise TaskGenerationError(
                     f"{training_category} route exhausted {args.route_attempts} candidate(s): {last_error}"
                 )
