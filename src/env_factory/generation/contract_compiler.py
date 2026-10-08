@@ -9,6 +9,7 @@ import math
 import re
 import unicodedata
 import hashlib
+import tempfile
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -2410,7 +2411,7 @@ class ContractCompiler(UserSimulationContractMixin):
         if not steps:
             return []
         from ..sandbox_runtime import (
-            AcceptanceScenarioRunner, DeclarativeToolCompiler, ManifestDataStore,
+            AcceptanceScenarioRunner, DeclarativeToolCompiler, EpisodeStore, ManifestDataStore,
             SandboxError, validate_json_schema,
         )
         tool_schemas = {
@@ -2421,18 +2422,8 @@ class ContractCompiler(UserSimulationContractMixin):
             and isinstance(function.get("parameters", {}), dict)
         }
 
-        class PreviewState:
-            def __init__(self) -> None:
-                self.values: dict[str, Any] = {}
-
-            def get_state(self, key: str, default=None) -> Any:
-                return copy.deepcopy(self.values.get(key, default))
-
-            def set_state(self, key: str, value: Any) -> None:
-                self.values[key] = copy.deepcopy(value)
-
         class PreviewData(ManifestDataStore):
-            def __init__(self) -> None:
+            def __init__(self, store: EpisodeStore) -> None:
                 self.baseline = {
                     item["table_name"]: [dict(row) for row in item.get("rows", [])]
                     for item in data_tables
@@ -2448,68 +2439,73 @@ class ContractCompiler(UserSimulationContractMixin):
                             for name in schema["rows"][0]
                         ]
                     self.schemas[item["table_name"]] = schema
-                self.episode_store = PreviewState()
+                self.episode_store = store
                 self._validate_tables(self.baseline)
                 self.reset()
 
-        try:
-            preview_data = PreviewData()
-            handlers = DeclarativeToolCompiler(preview_data).compile_all(
-                [by_name[name] for name in dict.fromkeys(step["tool_name"] for step in steps)]
-            )
-        except (SandboxError, KeyError) as exc:
-            raise PipelineGenerationError(f"success tool preview cannot compile: {exc}") from exc
-
-        executed_arguments: list[dict[str, Any]] = []
-
-        def call(method: str, path: str, body: Any, headers: dict[str, str]) -> tuple[int, Any, dict[str, str]]:
-            if path == "/v1/reset":
-                preview_data.reset()
-                return 200, {}, {}
-            name = path.removeprefix("/v1/tools/")
-            if tools is not None:
-                if name not in tool_schemas:
-                    raise SandboxError("TOOL_NOT_FOUND", f"tool schema is missing: {name}", 400)
-                validate_json_schema(tool_schemas[name], body)
-            executed_arguments.append(copy.deepcopy(body))
-            return 200, handlers[name](body), {}
-
-        try:
-            replay = AcceptanceScenarioRunner(call).run({"steps": preview_steps, "assertions": []})
-        except (SandboxError, KeyError, TypeError, ValueError) as exc:
-            raise PipelineGenerationError(f"success tool preview failed: {exc}") from exc
-        if (semantic_goal and isinstance(semantic_goal.get("row_predicates"), list)
-                and len(steps) == sum(step.get("operation") == "tool_call"
-                                      for step in success.get("steps", []))):
-            from ..sandbox_runtime import BusinessGoalEvaluator
-
-            final_state = {name: preview_data.table(name) for name in preview_data.baseline}
-            predicates = semantic_goal["row_predicates"]
-            if not BusinessGoalEvaluator.evaluate(predicates, final_state, preview_data.baseline):
-                raise PipelineGenerationError(
-                    "success tool preview does not establish the stateful goal"
+        # Pagination and writes must use the same atomic state semantics as the
+        # delivered sandbox. Keep the isolated database alive for the whole replay.
+        with tempfile.TemporaryDirectory(prefix="envfactory-tool-preview-") as directory:
+            store = EpisodeStore(Path(directory) / "episodes.sqlite3")
+            try:
+                preview_data = PreviewData(store)
+                handlers = DeclarativeToolCompiler(preview_data).compile_all(
+                    [by_name[name] for name in dict.fromkeys(step["tool_name"] for step in steps)]
                 )
-            if semantic_goal.get("requires_state_change") and final_state == preview_data.baseline:
-                raise PipelineGenerationError(
-                    "success tool preview leaves business state unchanged"
-                )
-        observed = []
-        tool_index = 0
-        for step, result in zip(preview_steps, replay["history"]):
-            if step.get("operation") != "tool_call":
-                continue
-            observed.append({
-                "tool_name": step["tool_name"],
-                "arguments": executed_arguments[tool_index],
-                "result": result["body"],
-            })
-            tool_index += 1
-            for variable, path in step.get("capture", {}).items():
-                if replay["variables"].get(variable) in (None, [], {}):
+            except (SandboxError, KeyError) as exc:
+                raise PipelineGenerationError(f"success tool preview cannot compile: {exc}") from exc
+
+            executed_arguments: list[dict[str, Any]] = []
+
+            def call(method: str, path: str, body: Any, headers: dict[str, str]) -> tuple[int, Any, dict[str, str]]:
+                if path == "/v1/reset":
+                    store.reset(seed=(body or {}).get("seed", 17))
+                    preview_data.reset()
+                    return 200, {}, {}
+                name = path.removeprefix("/v1/tools/")
+                if tools is not None:
+                    if name not in tool_schemas:
+                        raise SandboxError("TOOL_NOT_FOUND", f"tool schema is missing: {name}", 400)
+                    validate_json_schema(tool_schemas[name], body)
+                executed_arguments.append(copy.deepcopy(body))
+                return 200, handlers[name](body), {}
+
+            try:
+                replay = AcceptanceScenarioRunner(call).run({"steps": preview_steps, "assertions": []})
+            except (SandboxError, KeyError, TypeError, ValueError) as exc:
+                raise PipelineGenerationError(f"success tool preview failed: {exc}") from exc
+            if (semantic_goal and isinstance(semantic_goal.get("row_predicates"), list)
+                    and len(steps) == sum(step.get("operation") == "tool_call"
+                                          for step in success.get("steps", []))):
+                from ..sandbox_runtime import BusinessGoalEvaluator
+
+                final_state = {name: preview_data.table(name) for name in preview_data.baseline}
+                predicates = semantic_goal["row_predicates"]
+                if not BusinessGoalEvaluator.evaluate(predicates, final_state, preview_data.baseline):
                     raise PipelineGenerationError(
-                        f"success tool preview capture is empty: {step['tool_name']}.{path}"
+                        "success tool preview does not establish the stateful goal"
                     )
-        return observed
+                if semantic_goal.get("requires_state_change") and final_state == preview_data.baseline:
+                    raise PipelineGenerationError(
+                        "success tool preview leaves business state unchanged"
+                    )
+            observed = []
+            tool_index = 0
+            for step, result in zip(preview_steps, replay["history"]):
+                if step.get("operation") != "tool_call":
+                    continue
+                observed.append({
+                    "tool_name": step["tool_name"],
+                    "arguments": executed_arguments[tool_index],
+                    "result": result["body"],
+                })
+                tool_index += 1
+                for variable, path in step.get("capture", {}).items():
+                    if replay["variables"].get(variable) in (None, [], {}):
+                        raise PipelineGenerationError(
+                            f"success tool preview capture is empty: {step['tool_name']}.{path}"
+                        )
+            return observed
 
     @staticmethod
     def _tool_chain_projection_gaps(
