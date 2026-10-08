@@ -57,7 +57,10 @@ def compile_interactions(contract, description, tools, count, *, implementations
                 terminal = route.get('when', {}).get('user_rejection', {})
                 if not route or tool in route.get('required_tools', []):
                     return False
-                if stage_id in route.get('required_stages', []) and terminal.get('stage') != stage_id:
+                from env_factory.sandbox_runtime import RewardStateSnapshots
+                observed = RewardStateSnapshots.user_values(route.get('when', {}))
+                if (stage_id in route.get('required_stages', []) and terminal.get('stage') != stage_id
+                        and stage_id not in observed):
                     return False
             return True
         references = []
@@ -95,11 +98,15 @@ def compile_interactions(contract, description, tools, count, *, implementations
                     raise ValueError(f'interaction stage requires {field}')
             reference_tokens = re.findall(r'\{\{([^{}]+)\}\}', stage['reference_response'])
             observed_reference = bool(reference_tokens)
-            if observed_reference and (not structured_requests or 'options_from' not in stage
-                    or 'observed_options' not in reference_tokens
-                    or set(reference_tokens) - {'observed_options', 'observed_result'}):
-                raise ValueError('INTERACTION_REFERENCE_TEMPLATE: an observed menu requires structured '
-                                 'options_from, {{observed_options}}, and only optional {{observed_result}}')
+            if observed_reference and (not structured_requests
+                    or set(reference_tokens) - {'observed_options', 'observed_result', 'observed_context'}
+                    or (set(reference_tokens) & {'observed_options', 'observed_result'} and (
+                        'options_from' not in stage or 'observed_options' not in reference_tokens))
+                    or ('observed_context' in reference_tokens and 'context_from' not in stage)):
+                raise ValueError('INTERACTION_REFERENCE_TEMPLATE: observed menu needs options_from '
+                                 'and {{observed_options}}; observed context needs context_from')
+            if 'context_from' in stage and ('observed_context' not in reference_tokens or not structured_requests):
+                raise ValueError('INTERACTION_REFERENCE_TEMPLATE: context_from needs structured {{observed_context}}')
             required = stage.get('assistant_contains_all')
             if not structured_requests and (not isinstance(required, list) or not required or any(not isinstance(x, str) or not x.strip() for x in required)):
                 raise ValueError('interaction stage requires grounded assistant_contains_all')
@@ -150,6 +157,11 @@ def compile_interactions(contract, description, tools, count, *, implementations
                 producer = stage['options_from']['tool']
                 if producer not in evidence or producer == before:
                     raise ValueError('options_from producer must be a preceding requires_tools dependency')
+            if 'context_from' in stage:
+                from env_factory.sandbox_runtime import observed_interaction_options
+                observed_interaction_options({'context_from': stage['context_from']}, [])
+                if stage['context_from']['tool'] not in evidence or stage['context_from']['tool'] == before:
+                    raise ValueError('context_from producer must be a preceding requires_tools dependency')
             hidden = stage.get('private_fact')
             bounded_choice = kind == 'option_selection' or 'options_from' in stage
             def privacy_issue(message, surface, evidence):
@@ -434,8 +446,10 @@ def interleave_scenarios(scenarios, scripts, *, execution_routes=()):
                                 if refusal.get('stage') == stage['id'] else {'expected_stage':stage['id']})
                     observed_menu = ({'observed_options_from': copy.deepcopy(stage['options_from'])}
                                      if '{{observed_options}}' in stage['reference_response'] else {})
+                    observed_context = ({'observed_context_from': copy.deepcopy(stage['context_from'])}
+                                        if 'context_from' in stage else {})
                     steps.append({'operation':'dialogue_turn', 'content':stage['reference_response'],
-                                  **observed_menu, **expected, 'expected_status':200})
+                                  **observed_menu, **observed_context, **expected, 'expected_status':200})
                 steps.append(step)
             if pending:
                 raise ValueError('interaction stage ordering cannot be reached in reference tools; '

@@ -258,6 +258,23 @@ actual observations; preserve the business requirement and refusal behavior.
 When selecting a record from multiple returned rows, bind captures to the disclosed
 unique business key using a predicate path; records[0] alone does not establish
 that the row matches the user's choice. Keep ambiguity handling executable.
+Use user_value:{{stage:STAGE_ID}} for an actually disclosed choice needed BEFORE its
+downstream tool call, including selected-key ambiguity stops. Require that stage
+on each dependent route; test the selected key against observed data, not whether
+any unselected key is duplicated. The value is unavailable before disclosure or
+after a non-advancing refusal. A direct user_value query-scope reward needs a
+separate private-evidence outcome just like tool_argument.
+If the task says to show a business list before a user chooses, requires_tools
+alone does not enforce presentation. Declare context_from:{{tool:NAME,path:"$.records"}}
+on the interaction stage, add that producer to requires_tools, and put
+{{{{observed_context}}}} in reference_response. This works with fixed topic choices.
+The user-visible request.context must match the actual complete observed JSON.
+For a partial negative (including explanation-only defects), bind its violated
+business requirement or assert the final $.components.<outcome_id> <= 0.2 and
+total reward < 1. A total-reward assertion < 1 alone cannot identify the defect.
+Remove redundant read requests from references. If a repeated read is genuinely
+optional, use the documented optional_observation contract; do not add requests
+solely to trigger a later fault or relabel a necessary request as optional.
 Exact query values must be discoverable in the public input, tool parameter
 contract (such as a meaningful enum), a previous tool result, or a required user
 disclosure bound to that tool argument in interaction_contract. Never require

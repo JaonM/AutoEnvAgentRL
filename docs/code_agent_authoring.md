@@ -1675,8 +1675,13 @@ semantics; they do not convert a snapshot into a final-state query.
 
 Requirement-bound negative scenarios may retain credit for other correct outcomes.
 Their fresh replay must reject the bound outcome (normalized score at most 0.2), satisfy
-all negative requirement bindings, and produce total reward below 1. Unbound negative
-scenarios retain the total-reward ceiling of 0.2. Authored assertions and independent
+all negative requirement bindings, and produce total reward below 1. Unbound partial
+negatives must assert a final active outcome component at most 0.2 (with the exact
+authored comparator enforced) and lose total reward. Without either form of evidence,
+the total-reward ceiling is 0.2. Compiler and delivery use the same component rule;
+a failing requirement binding cannot fall back to a different passing component.
+An explanation-only defect needs its semantic outcome assertion or requirement
+binding; asserting only total reward below 1 is insufficient. Authored assertions and independent
 semantic review remain required; declaring a requirement does not certify its meaning.
 
 ### Options supplied by a tool
@@ -1696,8 +1701,10 @@ than copying the fixture choices alone:
 The producer must appear in the stage's `requires_tools` and must differ from its
 consumer tool. Omit `separator` when the JSON path already returns a string array.
 The latest successful producer response supplies the allowed choices; an unsuccessful
-call does not replace a prior successful response. Choices must be unique nonempty
-strings and must contain the script's private selection before a choice can advance.
+call does not replace a prior successful response. Choices are nonempty strings,
+deduplicated for the menu without dropping business records. A projected menu with
+one remaining option retains its collection type. It must contain the script's
+private selection before a choice can advance.
 An actual non-advancing refusal does not disclose that selection and can still execute
 when the preference is unavailable. Missing or invalid option evidence keeps the
 interaction pending. The agent's structured request must present the
@@ -1724,6 +1731,44 @@ dialogue using only completed tool calls. It cannot inspect a private preference
 the underlying database, future calls or a probe's initial changes. Missing/invalid
 observations produce an empty menu that the ordinary simulator rejects. The runtime
 never rewrites a live agent's question, and a literal reference question stays literal.
+
+### Disclosed user values before a downstream call
+
+`{"user_value":{"stage":"selection"}}` evaluates to the scalar actually disclosed
+by a successful advancing turn at that stage. It is unresolved before disclosure,
+after a non-advancing refusal, and after reset. It never reads future private user
+preferences. Use it in a checkpoint-based predicate that tests the **selected** key
+for ambiguity before calling a downstream tool; unselected duplicates alone must
+not trigger a stop. Every route using the value must require that disclosure stage.
+The stage and its tool/argument binding must exist consistently across user variants.
+An ambiguity-stop reference can include the disclosure while omitting its downstream
+tool; interleaving places that required question before the final answer.
+
+A direct `user_value` answer field can report a query's scope only alongside a
+separate positive private-data outcome and when its bound parameter filters that
+query. User preference alone does not establish business eligibility. Normal
+runtime, preview, route probes and semantic review share these meanings.
+
+### Presenting observed context before a choice
+
+Reading a list internally is insufficient when the task asks to show it before
+asking a question. Declare `context_from` on the stage, even if the options are
+fixed topics rather than record identifiers:
+
+```json
+{
+  "requires_tools": ["list_eligible"],
+  "context_from": {"tool": "list_eligible", "path": "$.records"},
+  "reference_response": "合格记录：{{observed_context}}。请选择研究主题。"
+}
+```
+
+Structured questions must present `request.context` equal to the complete observed
+JSON value from the latest successful producer response. Missing, partial, stale,
+or differently typed values cannot advance the user protocol. Empty lists are valid
+observations. Public `user_interaction_context` material describes the required
+source for each question. Reference rendering supplies actual observed context and
+may be combined with observed option templates; live agent messages are never repaired.
 
 ### Repair budget after observed transport retries
 

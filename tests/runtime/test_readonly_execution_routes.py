@@ -61,6 +61,13 @@ def test_missing_first_record_does_not_require_unreachable_later_evidence():
     assert result['components']['p_details'] == 0
 
 
+def test_early_stop_does_not_award_full_credit_after_reading_downstream_anyway():
+    ctx = context(first=0, later=2)
+    report = reward(ctx)
+    assert report['execution_route'] == 'missing'
+    assert report['reward'] == 0
+
+
 @pytest.mark.parametrize('first,later,route', [(1, None, None), (1, 0, 'empty'), (1, 2, 'found')])
 def test_later_checkpoint_is_required_only_after_first_read_succeeds(first, later, route):
     report = reward(context(first, later))

@@ -1429,6 +1429,47 @@ class RewardStateSnapshots:
     KEY = "reward_state_snapshots"
 
     @staticmethod
+    def user_values(value):
+        """Collect observed disclosure references, without interpreting literals."""
+        stages = set()
+        def walk(node):
+            if isinstance(node, list):
+                for child in node:
+                    walk(child)
+            elif isinstance(node, Mapping) and set(node) != {'literal'}:
+                if set(node) == {'user_value'}:
+                    ref = node['user_value']
+                    if (not isinstance(ref, Mapping) or set(ref) != {'stage'}
+                            or not isinstance(ref['stage'], str) or not ref['stage']):
+                        raise SandboxError('METRIC_SPEC_INVALID', 'user_value requires a stage identifier', 500)
+                    stages.add(ref['stage'])
+                for child in node.values():
+                    walk(child)
+        walk(value)
+        return stages
+
+    @classmethod
+    def validate_user_values(cls, expressions, scripts):
+        names = cls.user_values(expressions)
+        bindings = {}
+        for name in sorted(names):
+            resolved = []
+            for script in scripts:
+                stage = next((stage for stage in script['interaction_protocol']['stages']
+                              if stage['id'] == name), {})
+                if stage.get('kind') not in {'information_required', 'option_selection', 'correction', 'constraint_update'}:
+                    raise SandboxError('METRIC_SPEC_INVALID', 'user_value requires a disclosure stage in every script', 500)
+                replies = [stage['user_reply'], *(branch['user_reply'] for branch in stage.get('branches', [])
+                                                  if branch['advance'])]
+                if any(ContractUserSimulator.disclosed_value(stage, reply) is None for reply in replies):
+                    raise SandboxError('METRIC_SPEC_INVALID', 'user_value requires the actual value in each advancing reply', 500)
+                resolved.append(stage['bind_to'])
+            if not resolved or any(binding != resolved[0] for binding in resolved):
+                raise SandboxError('METRIC_SPEC_INVALID', 'user_value requires consistent tool argument bindings', 500)
+            bindings[name] = copy.deepcopy(resolved[0])
+        return bindings
+
+    @staticmethod
     def requested(value):
         names = set()
         def walk(node):
@@ -1937,6 +1978,9 @@ class ExecutionRoutes:
 
     def validate_user_branches(self, scripts):
         for route in self.routes:
+            disclosures = RewardStateSnapshots.validate_user_values(route['when'], scripts)
+            if not disclosures.keys() <= set(route['required_stages']):
+                raise SandboxError('EXECUTION_ROUTE_INVALID', 'route must require its observed disclosure stages', 500)
             if route['id'] not in self.dialogue_stop_ids:
                 continue
             ref = route['when']['user_rejection']
@@ -2124,7 +2168,8 @@ class ContractRewardGate:
             for path in paths
         )
         early_termination = bool(route and route['id'] in self.routes.early_stop_ids
-                                 and set(route['required_tools']) <= called)
+                                 and set(route['required_tools']) <= called
+                                 and set(all_calls) <= set(route['required_tools']))
         dialogue_termination = bool(route and route['id'] in self.routes.dialogue_stop_ids
                                     and set(route['required_tools']) <= called
                                     and set(all_calls) <= set(route['required_tools'])
@@ -2825,6 +2870,12 @@ class DeclarativeMetricEvaluator:
             observed = getattr(business_state, 'snapshots', {}).get('$user_branches', {}).get(ref['stage'], {})
             return (observed.get('branch') == ref['branch'] and observed.get('outcome') == 'user_rejection'
                     and observed.get('applied') is True and observed.get('advanced') is False)
+        if set(expression) == {'user_value'}:
+            RewardStateSnapshots.user_values(expression)
+            observed = getattr(business_state, 'snapshots', {}).get('$user_values', {}).get(expression['user_value']['stage'], {})
+            value = observed.get('value')
+            return copy.deepcopy(value) if (observed.get('disclosed') is True
+                and cls._json_value_equal(value, value)) else None
         if set(expression) in ({'tool_result'}, {'tool_argument'}):
             RewardStateSnapshots.requested(expression)
             kind = next(iter(expression))
@@ -3020,7 +3071,7 @@ class DeclarativeMetricEvaluator:
     ) -> Decimal | None:
         if depth > 12 or not isinstance(expression, Mapping):
             raise SandboxError("METRIC_SPEC_INVALID", "numeric expression is invalid", 500)
-        if set(expression) in ({"if"}, {"initial"}, {"at_tool"}, {"tool_result"}, {"tool_argument"}):
+        if set(expression) in ({"if"}, {"initial"}, {"at_tool"}, {"tool_result"}, {"tool_argument"}, {"user_value"}):
             value = cls._value_expression(expression, business_state, depth=depth + 1)
             return Decimal(str(value)) if not isinstance(value, bool) and isinstance(value, (int, float, Decimal)) else None
         if set(expression) == {"literal"}:
@@ -3466,6 +3517,9 @@ STRUCTURED_INTERACTION_INSTRUCTIONS = (
     'Do not wrap the JSON in Markdown fences. Use this envelope for intermediate questions, '
     'even when the final answer requires a different JSON schema. '
     'After user replies, call business tools normally. Final answers retain their task-defined format.'
+    ' When user_interaction_context specifies a context source for a question, include request.context '
+    'with the exact observed JSON value at that tool response path. This is user-visible evidence '
+    'presented before the user chooses; reading the data without presenting it is insufficient.'
 )
 
 
@@ -3483,6 +3537,20 @@ def structured_interaction_request(stage):
 
 def observed_interaction_options(stage, events, *, require_selection=True):
     """Resolve declared choices from the latest successful producer response."""
+    context = stage.get('context_from')
+    if context is not None:
+        if (not isinstance(context, Mapping) or set(context) != {'tool', 'path'}
+                or not isinstance(context['tool'], str) or not context['tool']
+                or not isinstance(context['path'], str)):
+            raise SandboxError('USER_SIMULATION_INVALID', 'invalid context_from binding', 500)
+        DeclarativeMetricEvaluator.path_tokens(context['path'])
+        response = next((event.get('result') for event in reversed(events)
+            if event.get('event') == 'tool_call' and event.get('payload', {}).get('tool_name') == context['tool']
+            and isinstance(event.get('result'), Mapping) and 'error' not in event['result']), None)
+        observed = DeclarativeMetricEvaluator._resolve(response, context['path'])
+        if not DeclarativeMetricEvaluator._json_value_equal(observed, observed):
+            return None
+        stage = {**stage, 'observed_context': copy.deepcopy(observed)}
     binding = stage.get('options_from')
     if binding is None:
         return stage
@@ -3498,6 +3566,10 @@ def observed_interaction_options(stage, events, *, require_selection=True):
     choices = DeclarativeMetricEvaluator._resolve(response, binding['path'])
     if 'separator' in binding:
         choices = [part.strip() for part in choices.split(binding['separator'])] if isinstance(choices, str) else None
+    elif isinstance(choices, str) and any(kind == 'wildcard' for kind, _ in DeclarativeMetricEvaluator.path_tokens(binding['path'])):
+        # The general scalar resolver unwraps one projected row. A menu keeps
+        # its collection type when a catalog changes from two choices to one.
+        choices = [choices]
     if (not isinstance(choices, list) or not choices or any(not isinstance(value, str) or not value for value in choices)
             or require_selection and stage.get('private_fact') not in choices):
         return None
@@ -3520,13 +3592,16 @@ def interaction_request_matches(stage, text, mode='legacy_phrases', *, validate_
             or not isinstance(event['question'], str) or not event['question'].strip()):
         return False
     request = event['request']
-    if (not isinstance(request, dict) or set(request) - {'intent', 'tool', 'arguments', 'options', 'proposal'}
+    if (not isinstance(request, dict) or set(request) - {'intent', 'tool', 'arguments', 'options', 'proposal', 'context'}
             or not isinstance(request.get('arguments'), list)
             or any(not isinstance(name, str) for name in request['arguments'])
             or len(set(request['arguments'])) != len(request['arguments'])):
         return False
     expected = structured_interaction_request(stage)
     if any(request.get(key) != expected[key] for key in ('intent', 'tool', 'arguments')):
+        return False
+    if 'context_from' in stage and not DeclarativeMetricEvaluator._json_value_equal(
+            request.get('context'), stage.get('observed_context')):
         return False
     rejection_only = (stage.get('kind') == 'execution_confirmation' and not stage.get('grant_permissions'))
     if ('proposal' in request) != bool(ApprovalTerms.proposal_fields(stage)) and not rejection_only:
@@ -3790,6 +3865,16 @@ class ContractUserSimulator:
                         return False
         return True
 
+    @staticmethod
+    def disclosed_value(stage, reply):
+        value = stage.get('private_fact')
+        if not ApprovalTerms.scalar(value):
+            return None
+        text = value if isinstance(value, str) else json.dumps(value)
+        pattern = (re.escape(text) if isinstance(value, str) else
+                   r'(?<![\d.])' + re.escape(text) + r'(?![\d.])')
+        return value if text and re.search(pattern, reply) else None
+
     def _protocol_turn(self, script, state, messages):
         stages = script['interaction_protocol']['stages']
         index = int(state.get('protocol_index', 0))
@@ -3894,6 +3979,12 @@ class ContractUserSimulator:
             snapshots.setdefault('$user_branches', {})[stages[index]['id']] = {
                 'branch': branch_id, 'outcome': outcome, 'applied': True, 'advanced': bool(advance),
                 'event_index': len(self.episode_store.replay()['events']) - 1}
+            disclosed = self.disclosed_value(stage, reply)
+            if (advance and disclosed is not None and
+                    stage.get('kind') in {'information_required', 'option_selection', 'correction', 'constraint_update'}):
+                snapshots.setdefault('$user_values', {})[stages[index]['id']] = {
+                    'value': copy.deepcopy(disclosed), 'disclosed': True,
+                    'event_index': len(self.episode_store.replay()['events']) - 1}
             self.episode_store.set_state(RewardStateSnapshots.KEY, snapshots)
         return result
 
@@ -4418,33 +4509,41 @@ class AcceptanceScenarioRunner:
         return content
 
     @staticmethod
-    def render_observed_dialogue(content, binding, events):
-        """Render an explicitly authored reference template from actual reads.
+    def render_observed_dialogue(content, binding, events, *, context_binding=None):
+        """Render trusted reference templates once from completed public reads.
 
-        Live agent utterances are never repaired. Missing/invalid observations
-        produce an empty menu, which the ordinary user protocol must reject.
+        Live utterances are never repaired. Missing evidence remains unresolved.
         """
         try:
             envelope = json.loads(content)
-            question = envelope['question']
-            request = envelope['request']
+            question, request = envelope['question'], envelope['request']
             if (not isinstance(question, str) or not isinstance(request, dict)
-                    or '{{observed_options}}' not in question):
-                raise ValueError('missing observed menu template')
+                    or binding is not None and '{{observed_options}}' not in question
+                    or context_binding is not None and '{{observed_context}}' not in question):
+                raise ValueError('missing observed evidence template')
         except (ValueError, TypeError, KeyError) as exc:
-            raise SandboxError('SCENARIO_INVALID', 'observed dialogue requires a structured menu template', 500) from exc
-        resolved = observed_interaction_options({'options_from': binding}, events, require_selection=False)
-        choices = resolved['options'] if resolved else []
-        result = next((event['result'] for event in reversed(events)
-                       if event.get('event') == 'tool_call'
-                       and event.get('payload', {}).get('tool_name') == binding['tool']), None)
-        # Single-pass substitution prevents returned strings containing template
-        # syntax from becoming a second round of interpolation.
-        values = {'observed_options': choices, 'observed_result': result}
-        envelope['question'] = re.sub(r'\{\{(observed_options|observed_result)\}\}',
-            lambda match: json.dumps(values[match.group(1)], ensure_ascii=False), question)
-        request['options'] = choices
+            raise SandboxError('SCENARIO_INVALID', 'observed dialogue requires a structured template', 500) from exc
+        values = {}
+        if binding is not None:
+            resolved = observed_interaction_options({'options_from': binding}, events, require_selection=False)
+            choices = resolved['options'] if resolved else []
+            result = next((event['result'] for event in reversed(events)
+                if event.get('event') == 'tool_call' and event.get('payload', {}).get('tool_name') == binding['tool']
+                and isinstance(event.get('result'), Mapping) and 'error' not in event['result']), None)
+            values.update(observed_options=choices, observed_result=result)
+            request['options'] = choices
+        if context_binding is not None:
+            resolved = observed_interaction_options({'context_from': context_binding}, events)
+            context = resolved.get('observed_context') if resolved else None
+            values['observed_context'] = request['context'] = context
+        envelope['question'] = re.sub(r'\{\{(observed_options|observed_result|observed_context)\}\}',
+            lambda match: json.dumps(values[match.group(1)], ensure_ascii=False)
+                if match.group(1) in values else match.group(0), question)
         return json.dumps(envelope, ensure_ascii=False)
+
+    @classmethod
+    def render_observed_context(cls, content, binding, events):
+        return cls.render_observed_dialogue(content, None, events, context_binding=binding)
 
     def run(self, scenario: Mapping[str, Any], *, allow_untriggered_faults: bool = False) -> dict[str, Any]:
         variables: dict[str, Any] = {}
@@ -4503,8 +4602,9 @@ class AcceptanceScenarioRunner:
                 # values into a structured proposal. Live agent requests must
                 # already contain actual scalar values.
                 content = self.resolve_dialogue_content(step.get('content', ''), variables)
-                if 'observed_options_from' in step:
-                    content = self.render_observed_dialogue(content, step['observed_options_from'], observed_tools)
+                if 'observed_options_from' in step or 'observed_context_from' in step:
+                    content = self.render_observed_dialogue(content, step.get('observed_options_from'), observed_tools,
+                        context_binding=step.get('observed_context_from'))
                 status, _, _ = self.call('POST', '/v1/agent_response', {'content':content}, self.trainer_headers)
                 if status != 200:
                     raise SandboxError('SCENARIO_ASSERTION_FAILED', 'dialogue response failed', 500)

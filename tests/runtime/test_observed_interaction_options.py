@@ -63,3 +63,10 @@ def test_duplicate_options_are_deduplicated_after_separator_parsing():
     assert observed_interaction_options(stage, [event])['options'] == ['a', 'b']
     event['result']['choices'] = 'a,,b'
     assert observed_interaction_options(stage, [event]) is None
+
+
+def test_projected_menu_remains_a_collection_with_one_remaining_choice():
+    stage = {'private_fact': 'a', 'options_from': {'tool': 'catalog', 'path': '$.records[*].id'}}
+    event = {'event': 'tool_call', 'payload': {'tool_name': 'catalog'}, 'result': {'records': [{'id': 'a'}]}}
+    assert observed_interaction_options(stage, [event])['options'] == ['a']
+    assert observed_interaction_options({**stage, 'private_fact': 'b'}, [event]) is None

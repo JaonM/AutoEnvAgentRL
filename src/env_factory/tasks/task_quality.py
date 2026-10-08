@@ -152,9 +152,14 @@ def _query_scope_reward(item: dict, task: dict, implementations: list[dict]) -> 
     targets = item.get('expected', {}).get('targets', [])
     for target in targets:
         expression = target.get('expression', {})
-        if not isinstance(expression, dict) or set(expression) != {'tool_argument'}:
+        if isinstance(expression, dict) and set(expression) == {'user_value'}:
+            binding = task.get('task_spec', {}).get('disclosed_value_bindings', {}).get(
+                expression['user_value'].get('stage'), {})
+            observed = {'name': binding.get('tool'), 'path': '$.' + str(binding.get('argument', ''))}
+        elif isinstance(expression, dict) and set(expression) == {'tool_argument'}:
+            observed = expression['tool_argument']
+        else:
             return False
-        observed = expression['tool_argument']
         match = re.fullmatch(r'\$\.([A-Za-z_][A-Za-z_0-9]*)', observed.get('path', ''))
         if not match or not any(
                 tool.get('tool_name') == observed.get('name')

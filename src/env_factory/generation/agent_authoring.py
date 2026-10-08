@@ -500,6 +500,16 @@ def compile_source(source: dict, *, root: Path, request: dict, script_count: int
             description['public_input']['materials'].append({
                 'name': 'approval_proposal_tools', 'mime_type': 'application/json',
                 'content': json.dumps(proposal_tools, ensure_ascii=False, sort_keys=True)})
+        contexts = [dict(tool=stage['before_tool'], arguments=([] if stage['kind'] == 'execution_confirmation'
+                         else [stage['bind_to']['argument']]),
+                         context_from=stage['context_from'])
+                    for script in interaction_scripts for stage in script['interaction_protocol']['stages']
+                    if 'context_from' in stage]
+        if contexts:
+            contexts = list({json.dumps(item, sort_keys=True): item for item in contexts}.values())
+            description['public_input']['materials'].append({
+                'name': 'user_interaction_context', 'mime_type': 'application/json',
+                'content': json.dumps(contexts, ensure_ascii=False)})
         for script in interaction_scripts:
             script['user_input'] = copy.deepcopy(description['public_input'])
     scripts = interaction_scripts or P._deterministic_user_scripts(description=description, count=script_count, finalize_on_goal=True)
@@ -525,6 +535,11 @@ def compile_source(source: dict, *, root: Path, request: dict, script_count: int
         semantic_goal=source.get("semantic_goal"), capability_plan=capabilities)
     from .execution_routes import compile_execution_routes
     compile_execution_routes(source, spec, metrics, metric_impl, interaction_scripts)
+    from env_factory.sandbox_runtime import RewardStateSnapshots
+    disclosed_bindings = RewardStateSnapshots.validate_user_values(
+        [metric_impl, source.get('execution_routes', [])], interaction_scripts or [])
+    if disclosed_bindings:
+        spec['disclosed_value_bindings'] = disclosed_bindings
     if spec.get('execution_routes'):
         formula['normalization'] = 'exclude inactive route process metrics; normalize active positive weights to one; penalty weights unchanged'
     if interaction_scripts:
