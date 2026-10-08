@@ -2328,6 +2328,9 @@ class BusinessGoalEvaluator:
 class ExecutionRoutes:
     """One trusted decision selects causal and interaction obligations together."""
 
+    # Bound validation cost without limiting a long plan to eight outcomes.
+    MAX_ROUTES = 64
+
     def __init__(self, task_spec):
         self.routes = task_spec.get("execution_routes", [])
         self.process_tools = task_spec.get("process_metric_tools", {})
@@ -2338,8 +2341,8 @@ class ExecutionRoutes:
         self.writes = {name for name, op in tools.items() if op in {"insert", "update", "delete"}}
         if not self.routes:
             return
-        if not isinstance(self.routes, list) or not 2 <= len(self.routes) <= 8:
-            raise SandboxError("EXECUTION_ROUTE_INVALID", "routes require 2..8 alternatives", 500)
+        if not isinstance(self.routes, list) or not 2 <= len(self.routes) <= self.MAX_ROUTES:
+            raise SandboxError("EXECUTION_ROUTE_INVALID", f"routes require 2..{self.MAX_ROUTES} alternatives", 500)
         readonly = task_spec.get('environment_contract', {}).get('mode') == 'reference_data'
         if not readonly and not task_spec.get("goal_contract", {}).get("row_predicates"):
             raise SandboxError("EXECUTION_ROUTE_INVALID", "routes require typed business state goals", 500)

@@ -717,7 +717,8 @@ expressions shared by semantic goals and outcome rewards. Correct refusal must
 preserve state and produce the correct answer; merely skipping a write is insufficient.
 
 For different valid execution paths in `reference_data` or `stateful` tasks,
-add `execution_routes` (2..8 entries). Read-only tasks use only `writes: "forbidden"`;
+add `execution_routes` (2..64 entries; preserve every distinct completion and truthful
+early-stop branch, including long-plan prefixes). Read-only tasks use only `writes: "forbidden"`;
 do not invent a state change or switch modes merely to represent a branch. Each
 entry has exactly `id`, `when`, `required_tools`, `required_stages`, and `writes`
 (`"required"` or `"forbidden"`). IDs use letters, digits, `_` or `-` (max 64).

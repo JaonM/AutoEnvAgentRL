@@ -143,3 +143,33 @@ def test_unobserved_boolean_operand_is_never_converted_to_false(op, known, expec
     expr = {'op': op, 'args': [{'literal': known}, {'op': 'eq', 'args': [
         {'tool_result': {'name': 'later', 'path': '$.count'}}, {'literal': 0}]}]}
     assert DeclarativeMetricEvaluator._value_expression(expr, {}) is expected
+
+
+@pytest.mark.parametrize('route_count', [14, 64])
+def test_many_distinct_outcomes_keep_exact_selection_and_reward_obligations(route_count):
+    spec, _ = contract()
+    template = deepcopy(spec['execution_routes'][1])
+    spec['execution_routes'] = spec['execution_routes'][:1]
+    for count in range(route_count - 1):
+        route = deepcopy(template)
+        route['id'] = f'details_{count}'
+        route['when']['args'][1]['args'][1]['literal'] = count
+        spec['execution_routes'].append(route)
+    for count in range(route_count - 1):
+        result = reward(context(1, count), spec=spec)
+        assert result['execution_route'] == f'details_{count}'
+        assert result['reward'] == pytest.approx(1)
+        assert reward(context(1, count), {'p_identity': 1, 'p_details': 1, 'answer': 0}, spec)['reward'] < 1
+    assert reward(context(1, None), spec=spec)['reward'] == 0
+    assert reward(context(1, route_count), spec=spec)['reward'] == 0
+    # More expressive branching still rejects overlapping outcomes.
+    spec['execution_routes'][-1]['when'] = deepcopy(spec['execution_routes'][1]['when'])
+    assert reward(context(1, 0), spec=spec)['reward'] == 0
+
+
+def test_route_validation_retains_a_finite_resource_bound():
+    spec, _ = contract()
+    template = spec['execution_routes'][-1]
+    spec['execution_routes'] = [{**deepcopy(template), 'id': f'route_{i}'} for i in range(65)]
+    with pytest.raises(SandboxError, match='routes require 2..64 alternatives'):
+        ExecutionRoutes(spec)
