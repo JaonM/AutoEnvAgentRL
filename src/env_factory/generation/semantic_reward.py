@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import copy
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import nullcontext
+from pathlib import Path
+import tempfile
 
 from env_factory.sandbox_runtime import SandboxError, validate_json_schema
 
@@ -130,14 +133,17 @@ def scope_calibration_references(calibration, successes):
 
 
 def calibrate_semantic_outcomes(contract: dict, calibration: dict, *, context: dict, store,
-                                progress=None, reference_contexts: dict | None = None, judgment_cache=None) -> dict:
+                                progress=None, reference_contexts: dict | None = None, judgment_cache=None,
+                                workers: int = 1) -> dict:
     """Run real runtime judges against declared paraphrase and error cases.
 
     A failed negative judged through an infrastructure fallback is not evidence
     that the evaluator recognized the error. All cases require real judgments.
     """
     import os
-    from env_factory.sandbox_runtime import ContractModelMetricEvaluator, ContractEvaluatorRuntime
+    from env_factory.sandbox_runtime import ContractModelMetricEvaluator, ContractEvaluatorRuntime, EpisodeStore
+    if type(workers) is not int or not 1 <= workers <= 2:
+        raise ValueError('calibration workers must be 1 or 2')
     if os.getenv("SANDBOX_EVALUATOR_MOCK", "").lower() in {"1", "true", "yes"}:
         raise SemanticCalibrationUnavailable("SEMANTIC_CALIBRATION_UNAVAILABLE: mock judge cannot certify semantics")
     metrics = [m for m in contract.get("metrics", []) if m.get("semantic_fields")]
@@ -150,42 +156,90 @@ def calibrate_semantic_outcomes(contract: dict, calibration: dict, *, context: d
     if required - set(reference_contexts or {}):
         raise ValueError("SEMANTIC_CALIBRATION_REFERENCE: missing executed reference context")
     report = {"passed": True, "semantic_verification": True, "cases": []}
-    for metric in metrics:
+    def evaluate_case(metric, index, case, case_store):
         judge_contract = {**contract, "metrics": [metric]}
-        judge = ContractModelMetricEvaluator(judge_contract, store, judgment_cache=judgment_cache)
-        for index, case in enumerate(calibration[metric["id"]]):
-            # Calibration requires a fresh recorded judgment, not a prior cached label.
-            store.set_state(ContractEvaluatorRuntime.STATE_KEY, {})
-            before = len(store.replay()["events"])
-            selected = (reference_contexts[case['reference_id']]
-                        if 'reference_id' in case else context)
-            evidence = {**selected, "final_agent_response": json.dumps(case["answer"], ensure_ascii=False)}
-            with (progress.measure("semantic_calibration", metric_id=metric['id'], case_index=index)
-                  if progress is not None else nullcontext()):
-                scores = judge.evaluate_all(evidence, {})
-            events = store.replay()["events"][before:]
-            calls = [event for event in events if event.get("event") == "evaluator_call"]
-            if (not calls or any(not call.get("payload", {}).get("judgment_obtained") for call in calls)):
-                raise SemanticCalibrationUnavailable(
-                    f"SEMANTIC_CALIBRATION_UNAVAILABLE: no real judgment for {metric['id']} case {index}")
-            wanted = metric["evaluator"]["score_mapping"][case["expected"]]
-            actual = scores[metric["id"]]
-            report["cases"].append({"metric_id": metric["id"], "index": index,
-                "expected_label": case["expected"], "actual_score": actual,
-                "passed": actual == wanted,
-                "reference_id": case.get('reference_id'),
-                "criterion_evidence": [call.get('result', {}).get('criterion_results', {}) for call in calls],
-                "judgment_context_hashes": [call["payload"]["context_hash"] for call in calls]})
-            if actual != wanted:
-                report['cases'][-1]['failed_case_evidence'] = {
-                    'answer': case['answer'], 'semantic_fields': metric.get('semantic_fields', []),
-                    'rubric': metric.get('rubric'), 'criteria': metric.get('criteria', []),
-                }
-            report["passed"] &= actual == wanted
-            conflicts = judge.runtime.validation_cache_report()['conflicting_judgments']
-            if conflicts:
-                report.setdefault('conflicting_judgments', {}).update(conflicts)
-                report['passed'] = False
+        judge = ContractModelMetricEvaluator(judge_contract, case_store, judgment_cache=judgment_cache)
+        # Every case still obtains a fresh judgment, including identical contexts.
+        case_store.set_state(ContractEvaluatorRuntime.STATE_KEY, {})
+        before = len(case_store.replay()["events"])
+        selected = (reference_contexts[case['reference_id']]
+                    if 'reference_id' in case else context)
+        evidence = {**copy.deepcopy(selected), "final_agent_response": json.dumps(case["answer"], ensure_ascii=False)}
+        with (progress.measure("semantic_calibration", metric_id=metric['id'], case_index=index)
+              if progress is not None else nullcontext()):
+            scores = judge.evaluate_all(evidence, {})
+        events = case_store.replay()["events"][before:]
+        calls = [event for event in events if event.get("event") == "evaluator_call"]
+        if (not calls or any(not call.get("payload", {}).get("judgment_obtained") for call in calls)):
+            if progress is not None:
+                progress.feedback('semantic_calibration', metric_id=metric['id'], case_index=index,
+                                  code='SEMANTIC_CALIBRATION_UNAVAILABLE')
+            raise SemanticCalibrationUnavailable(
+                f"SEMANTIC_CALIBRATION_UNAVAILABLE: no real judgment for {metric['id']} case {index}")
+        wanted = metric["evaluator"]["score_mapping"][case["expected"]]
+        actual = scores[metric["id"]]
+        row = {"metric_id": metric["id"], "index": index,
+            "expected_label": case["expected"], "actual_score": actual,
+            "passed": actual == wanted, "reference_id": case.get('reference_id'),
+            "criterion_evidence": [call.get('result', {}).get('criterion_results', {}) for call in calls],
+            "judgment_context_hashes": [call["payload"]["context_hash"] for call in calls]}
+        if actual != wanted:
+            row['failed_case_evidence'] = {
+                'answer': case['answer'], 'semantic_fields': metric.get('semantic_fields', []),
+                'rubric': metric.get('rubric'), 'criteria': metric.get('criteria', [])}
+            if progress is not None:
+                progress.feedback('semantic_calibration', metric_id=metric['id'], case_index=index,
+                                  code='SEMANTIC_CALIBRATION_FAILED')
+        return row, judge.runtime.validation_cache_report()['conflicting_judgments']
+
+    jobs = [(metric, index, case) for metric in metrics
+            for index, case in enumerate(calibration[metric['id']])]
+    if workers == 1:
+        results = [evaluate_case(*job, store) for job in jobs]
+    else:
+        # Never reset a shared evaluator cache or SQLite episode concurrently.
+        # The runtime bridge separately bounds model concurrency across pipelines.
+        episode = store.current()
+        with tempfile.TemporaryDirectory(prefix='envfactory-calibration-') as directory:
+            def isolated_job(ordinal, job):
+                isolated = EpisodeStore(Path(directory) / f'{ordinal}.sqlite3')
+                isolated.reset(episode_id=f'calibration-{ordinal}', seed=episode.seed)
+                result, error = None, None
+                try:
+                    result = evaluate_case(*job, isolated)
+                except Exception as exc:
+                    error = exc
+                return result, isolated.replay()['events'], error
+
+            completed = {}
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                pending = {executor.submit(isolated_job, ordinal, job): ordinal
+                           for ordinal, job in enumerate(jobs)}
+                for future in as_completed(pending):
+                    completed[pending[future]] = future.result()
+            # Publish in contract order, retaining each original event's identity
+            # and timestamp. Completion order cannot change the report or labels.
+            results, errors = [], []
+            for ordinal, (metric, index, _) in enumerate(jobs):
+                result, events, error = completed[ordinal]
+                for event in events:
+                    if event['event'] == 'reset':
+                        continue
+                    store.event(event['event'], {**event['payload'], 'calibration_case': {
+                        'metric_id': metric['id'], 'index': index,
+                        'sequence': event['sequence'], 'timestamp': event['timestamp']}}, event['result'])
+                if error is not None:
+                    errors.append(error)
+                else:
+                    results.append(result)
+            if errors:
+                raise errors[0]
+    for row, conflicts in results:
+        report['cases'].append(row)
+        report['passed'] &= row['passed']
+        if conflicts:
+            report.setdefault('conflicting_judgments', {}).update(conflicts)
+            report['passed'] = False
     return report
 
 

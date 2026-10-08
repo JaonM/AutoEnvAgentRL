@@ -1667,6 +1667,12 @@ compiler or reviewer; it is not a heartbeat or proof that a subprocess is alive.
 
 `execution_progress.jsonl` additionally records start/end events for reference
 scenarios, reward evaluator invocations, and individual semantic calibration calls.
+Parent validation runs at most two calibration cases concurrently, with a separate
+SQLite episode and evaluator cache for each case. Each case still obtains a fresh
+judgment; identical cases are not coalesced. Contexts and expected labels stay fixed,
+and reports/replay evidence are merged in contract order. A failed label or unavailable
+judge emits actionable feedback immediately; acceptance waits for all cases. The shared
+runtime bridge also bounds model concurrency across pipelines.
 Each pair has an `operation_id`, a validation `run_id`, and elapsed `seconds` on
 completion or failure. Resuming appends a new run instead of erasing earlier evidence.
 These records omit answers and judge payloads. `completed` means the invocation

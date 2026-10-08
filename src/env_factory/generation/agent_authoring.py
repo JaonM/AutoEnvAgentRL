@@ -1220,13 +1220,17 @@ def _verify_execution(artifacts: dict, root: Path, *, calibration: dict | None =
                 contexts[name] = executed_contexts[scenario_id]
             calibration_store = EpisodeStore(Path(directory) / "semantic-calibration.sqlite3")
             calibration_store.reset(episode_id="semantic-calibration", seed=17)
-            report = calibrate_semantic_outcomes(artifacts, calibration, context=contexts[None],
-                                                reference_contexts=contexts,
-                                                store=calibration_store, progress=progress, judgment_cache=judgment_cache)
+            try:
+                report = calibrate_semantic_outcomes(artifacts, calibration, context=contexts[None],
+                                                    reference_contexts=contexts,
+                                                    store=calibration_store, progress=progress, judgment_cache=judgment_cache,
+                                                    workers=2)
+            finally:
+                (root / "semantic_calibration_replay.json").write_text(json.dumps(
+                    calibration_store.replay(), ensure_ascii=False, indent=2) + "\n")
             report['reference_scenarios'] = {str(name): scenario['scenario_id']
                                              for name, scenario in selected_references.items()}
             (root / "semantic_calibration.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
-            (root / "semantic_calibration_replay.json").write_text(json.dumps(calibration_store.replay(), ensure_ascii=False, indent=2) + "\n")
             if report.get('conflicting_judgments'):
                 raise SemanticCalibrationUnavailable('SEMANTIC_JUDGMENT_CONFLICT: ' + json.dumps(
                     report['conflicting_judgments'], ensure_ascii=False))
