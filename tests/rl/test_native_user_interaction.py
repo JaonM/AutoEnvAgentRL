@@ -139,8 +139,8 @@ def test_native_proposal_and_observed_context_reach_real_user_consent_and_write(
     assert data.table('bookings')[0]['daily_fee'] == 950
 
 
-@pytest.mark.parametrize('value', [None, [], {}, {'$ref': 'hidden'}, float('nan')])
-def test_native_proposals_require_actual_scalar_values(value):
+@pytest.mark.parametrize('value', [None, {'$ref': 'hidden'}, float('nan')])
+def test_native_proposals_reject_unresolved_or_nonfinite_values(value):
     from env_factory.sandbox_runtime import SandboxError
     from rl.environments.user_interaction import interaction_content
     native = interaction_tool({'materials': [{'name': 'user_interaction_format'}]}, [{'function': {'name': 'book'}}])

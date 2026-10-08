@@ -56,7 +56,7 @@ def test_wrong_entity_and_revocation_are_rejected(tmp_path):
 def test_consent_cannot_recompute_approved_price_from_current_offer():
     stage = {'grant_permissions': ['book'], 'approval_terms': {'book': {'scope': 'terms',
         'arguments': {'fee': {'tool_result': {'name': 'offer', 'path': '$.fee'}}}}}}
-    with pytest.raises(ValueError, match='literal scalars'):
+    with pytest.raises(ValueError, match='bounded literal JSON'):
         ApprovalTerms.validate(stage)
 
 

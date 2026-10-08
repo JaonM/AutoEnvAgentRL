@@ -1398,7 +1398,7 @@ use proposal-bound terms instead of hardcoding the reference data's values:
 This form requires structured interactions. Supply the usual stage fields and an
 actual user reply approving the displayed parameters. The public material
 `approval_proposal_tools` lists tools and parameter names requiring `request.proposal`.
-The agent sends all write parameters as finite scalars in that object, alongside
+The agent sends all write parameters as bounded literal JSON values in that object, alongside
 the normal confirmation request; its question must describe the same proposal.
 The simulator echoes the approved parameters and freezes them with the grant.
 The write must use exactly that argument set. Postcondition references bind the
@@ -1406,7 +1406,7 @@ same frozen values inside the write transaction, including row identity.
 
 `reference_proposal` is a construction hint for reference scenarios only. It may
 use captured `$ref` or `$expr` values, resolved before the confirmation is sent;
-real requests must contain scalar values. It never determines actual consent.
+real requests must contain resolved literal values. It never determines actual consent.
 Later business changes do not update an existing approval. Obtain new approval
 when terms change. Rejection branches grant nothing, and may receive the same
 public proposal format. Grant branches for one tool must use one format.
@@ -1418,6 +1418,55 @@ arguments unchanged. Only declared proposal arguments may be referenced in
 postconditions. Include a positive probe with changed initial business values
 and negative probes for altered writes or persisted values after approval.
 Do not use this form to turn fixed-price consent into approval of any price.
+
+For a transaction with several protected writes, one confirmation may approve
+multiple operations. Keep `before_tool` as the first write, and add `tool` to each
+grant's terms. Each grant must be required by exactly its target tool. Group the
+proposal by **public tool name**, so identical parameter names for different
+operations cannot collide:
+
+```json
+{
+  "kind": "execution_confirmation",
+  "before_tool": "hold_stock",
+  "grant_permissions": ["hold", "release"],
+  "reference_proposal": {
+    "hold_stock": {"item_ids": {"$ref": "selected_ids"}, "quantity": 3},
+    "release_stock": {"item_ids": {"$ref": "previous_ids"}, "quantity": 1}
+  },
+  "approval_terms": {
+    "hold": {"scope": "terms", "tool": "hold_stock",
+      "proposal_arguments": ["item_ids", "quantity"]},
+    "release": {"scope": "terms", "tool": "release_stock",
+      "proposal_arguments": ["item_ids", "quantity"]}
+  }
+}
+```
+
+Supply all usual stage fields, actual user approval, and business postconditions
+where server-derived writes need further constraints. A group may contain up to
+16 distinct writes and must include `before_tool`. Every operation uses `scope:
+terms` and binds **all** of its parameters; grouped operation-wide permission is
+invalid. Use separate grants for different operations. The public
+`approval_proposal_tools` material exposes the grouped tool/parameter shape; the
+actual confirmation sends those nested parameters through `request.proposal` (or
+the native user-interaction tool's `proposal`). No private reference values are
+published. Approval never executes the writes. Required reads, causal order,
+failure recovery, compensation and transaction invariants remain necessary.
+
+Literal parameters may contain finite strings/numbers/booleans, arrays and
+objects. Null, unresolved expressions and references are invalid in actual
+consent. A proposal is bounded to 32 KiB, 2048 JSON nodes, depth 8, 1024 entries
+per array and 64 keys per object. Arrays retain order and membership; stored
+approval is a deep copy. Changing a target, amount, array or operation requires
+new consent. Runtime tool schemas still constrain parameter types.
+
+Only approve identifiers and terms already observable at that confirmation.
+If the first operation creates an ID needed by later writes, split the approval:
+confirm the creation, observe its result, then confirm the remaining exact
+operations. Do not invent a future ID or recompute approved values from changing
+data. Grouping is a way to fit truthful transaction consent within the existing
+2..5 user-turn bound, not a reason to merge necessary disclosures or decisions.
 
 For truly unrestricted approval use `{"scope":"operation"}` explicitly. This is
 not allowed when the actual user reply limits price, entity, dates or quantity.

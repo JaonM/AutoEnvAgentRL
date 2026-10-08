@@ -28,8 +28,8 @@ def interaction_tool(public, tools):
                 'intent': {'type': 'string', 'enum': ['request_input', 'confirm_execution']},
                 'options': {'type': 'array', 'items': {}},
                 'context': {'description': '公开交互约定要求展示的实际工具结果，保持原 JSON 结构，不得省略或猜测。'},
-                'proposal': {'type': 'object', 'description': 'approval_proposal_tools 要求审批的工具参数；包含全部指定参数及实际值。',
-                             'additionalProperties': {'type': ['string', 'number', 'boolean']}},
+                'proposal': {'type': 'object', 'description': 'approval_proposal_tools 要求审批的工具参数；包含全部指定参数及实际值，多操作时按工具名嵌套。',
+                             'additionalProperties': {'type': ['string', 'number', 'boolean', 'array', 'object']}},
             }, 'required': ['question', 'business_tool', 'requested_fields']}}}
 
 
@@ -56,6 +56,10 @@ def policy_public_input(public, native):
 def interaction_content(arguments, schema):
     from env_factory.sandbox_runtime import validate_json_schema
     validate_json_schema(schema, arguments, 'user_interaction')
+    if 'proposal' in arguments:
+        from env_factory.sandbox_runtime import ApprovalTerms, SandboxError
+        if not ApprovalTerms.literal(arguments['proposal']):
+            raise SandboxError('SCHEMA_VALIDATION_FAILED', 'proposal requires bounded literal JSON values', 400)
     # Preserve restored trajectories created with the original adapter schema.
     modern = 'business_tool' in schema.get('properties', {})
     request = {'tool': arguments['business_tool' if modern else 'tool'],

@@ -517,7 +517,7 @@ def compile_source(source: dict, *, root: Path, request: dict, script_count: int
                 for effective in [stage, *[{**stage, **branch} for branch in stage.get('branches', [])]]:
                     fields = ApprovalTerms.proposal_fields(effective)
                     if fields:
-                        proposal_tools[effective['before_tool']] = sorted(fields)
+                        proposal_tools[effective['before_tool']] = ApprovalTerms.proposal_shape(effective)
         if proposal_tools:
             description['public_input']['materials'].append({
                 'name': 'approval_proposal_tools', 'mime_type': 'application/json',

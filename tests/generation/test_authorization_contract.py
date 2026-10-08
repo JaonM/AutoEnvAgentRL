@@ -137,3 +137,75 @@ def test_invalid_proposal_contract_rejected_before_execution(tmp_path, defect):
         stage['approval_terms']['adjust'] = {'scope': 'operation'}
     with pytest.raises(ValueError, match='AUTHORIZATION_PROPOSAL_INVALID'):
         compile_source(source, request=request, root=tmp_path, structural_preview=True)
+
+
+def grouped_source():
+    source, request = proposal_source()
+    source['description']['public_input']['initial_user_message'] += '同时将备用温度设置为配置温度加1度；分别确认两个操作的目标值。'
+    for row in source['tables'][0]['rows']:
+        row['backup_temperature'] = 0
+    source['tables'][0]['columns'].append({'name': 'backup_temperature', 'type': 'integer', 'nullable': False})
+    original, additional = 'update_temperature', 'update_backup_temperature'
+    tool = deepcopy(source['tools'][-1])
+    tool['function'].update(name=additional, description='更新备用温度')
+    source['tools'].append(tool)
+    implementation = deepcopy(source['tool_implementations'][-1])
+    implementation.update(tool_name=additional, changes={'value': 'backup_temperature'})
+    source['tool_implementations'].append(implementation)
+    source['actions'].append({**deepcopy(source['actions'][-1]), 'name': additional, 'description': '更新备用温度'})
+    source['tool_bindings'].append({'tool_name': additional, 'action_name': additional})
+    source['capability_plan'].append({**deepcopy(source['capability_plan'][-1]), 'action_name': additional})
+    source['reward_key_steps'].append({**deepcopy(source['reward_key_steps'][-1]),
+                                      'step_id': additional, 'action_name': additional})
+    steps = source['scenarios'][0]['steps']
+    position = next(i for i, step in enumerate(steps) if step.get('tool_name') == original)
+    write = deepcopy(steps[position])
+    write.update(tool_name=additional)
+    write['arguments']['value'] = {'$expr': {'op': 'add', 'args': [{'$ref': 'target_temperature'}, 1]}}
+    steps.insert(position + 1, write)
+    goal = source['semantic_goal']['row_predicates'][0]['value_expressions']
+    goal['backup_temperature'] = {'op': 'add', 'args': [deepcopy(goal['temperature']), {'literal': 1}]}
+    source['business_lifecycle']['tools'][additional] = {'requires_grants': ['adjust_backup']}
+    for variant in source['interaction_contract']['variants']:
+        stage = variant['stages'][-1]
+        stage['grant_permissions'].append('adjust_backup')
+        stage['approval_terms']['adjust']['tool'] = original
+        term = deepcopy(stage['approval_terms']['adjust'])
+        term['tool'] = additional
+        term['postconditions'][0]['values'] = {'backup_temperature': {'proposal_argument': 'value'}}
+        stage['approval_terms']['adjust_backup'] = term
+        stage['reference_proposal'] = {original: deepcopy(steps[position]['arguments']),
+                                       additional: deepcopy(write['arguments'])}
+        stage['reference_response'] = '请确认展示的主温度和备用温度两项操作及其各自参数。'
+        stage['user_reply'] = '确认这两项操作，仅同意所展示的各自参数。'
+    return source, request
+
+
+def test_grouped_confirmation_compiles_and_executes_within_existing_turn_bound(tmp_path):
+    source, request = grouped_source()
+    result = compile_source(source, request=request, root=tmp_path)
+    assert result['generation_pipeline']['verification']['passed']
+    assert all(len(v['stages']) <= 5 for v in source['interaction_contract']['variants'])
+    public = next(m for m in result['public_input']['materials'] if m['name'] == 'approval_proposal_tools')
+    assert json.loads(public['content']) == {'update_temperature': {
+        'update_temperature': ['id', 'value'], 'update_backup_temperature': ['id', 'value']}}
+    assert 'target_temperature' not in public['content']
+
+
+@pytest.mark.parametrize('defect', ['unknown_tool', 'unguarded', 'shared_grant', 'partial_parameters',
+                                  'unrestricted', 'missing_operation', 'crossed_parameters', 'wrong_literal_type'])
+def test_invalid_grouped_contract_fails_before_model_scoring(tmp_path, defect):
+    source, request = grouped_source()
+    stage = source['interaction_contract']['variants'][0]['stages'][-1]
+    term = stage['approval_terms']['adjust_backup']
+    if defect == 'unknown_tool': term['tool'] = 'unknown'
+    if defect == 'unguarded': source['business_lifecycle']['tools']['update_backup_temperature']['requires_grants'] = []
+    if defect == 'shared_grant': source['business_lifecycle']['tools']['update_backup_temperature']['requires_grants'].append('adjust')
+    if defect == 'partial_parameters': term['proposal_arguments'] = ['value']
+    if defect == 'unrestricted': stage['approval_terms']['adjust_backup'] = {'scope': 'operation'}
+    if defect == 'missing_operation': stage['reference_proposal'].pop('update_backup_temperature')
+    if defect == 'crossed_parameters': stage['reference_proposal']['update_backup_temperature'] = {'different': 25}
+    if defect == 'wrong_literal_type': stage['reference_proposal']['update_backup_temperature']['value'] = [25]
+    from env_factory.sandbox_runtime import SandboxError
+    with pytest.raises((ValueError, SandboxError)):
+        compile_source(source, request=request, root=tmp_path, structural_preview=True)

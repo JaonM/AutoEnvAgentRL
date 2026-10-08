@@ -1411,13 +1411,68 @@ class ApprovalTerms:
         return isinstance(value, (str, bool, int, float)) and (
             not isinstance(value, float) or math.isfinite(value))
 
+    @classmethod
+    def literal(cls, value):
+        """Finite, bounded JSON data; executable expressions are never consent."""
+        remaining = 2048
+
+        def visit(item, depth):
+            nonlocal remaining
+            remaining -= 1
+            if remaining < 0 or depth > 8:
+                return False
+            if cls.scalar(item):
+                return not isinstance(item, str) or len(item) <= 32768
+            if isinstance(item, list):
+                return len(item) <= 1024 and all(visit(child, depth + 1) for child in item)
+            if isinstance(item, dict):
+                if (len(item) > 64 or any(not isinstance(key, str) or not key
+                        or key.startswith('$') or len(key) > 256 for key in item)):
+                    return False
+                if set(item) in ({'tool_result'}, {'lookup'}, {'aggregate'}, {'initial'},
+                                 {'at_tool'}, {'op', 'args'}, {'proposal_argument'}):
+                    return False
+                return all(visit(child, depth + 1) for child in item.values())
+            return False
+
+        try:
+            return visit(value, 0) and len(canonical_json(value).encode()) <= 32768
+        except (TypeError, ValueError, OverflowError):
+            return False
+
     @staticmethod
-    def proposal_fields(stage):
+    def grouped(stage):
+        return any(term.get('tool', stage.get('before_tool')) != stage.get('before_tool')
+                   for term in stage.get('approval_terms', {}).values())
+
+    @classmethod
+    def proposal_shape(cls, stage):
+        """Public field names only; never include private reference values."""
         terms = stage.get('approval_terms', {})
+        if cls.grouped(stage):
+            shape = {}
+            for term in terms.values():
+                name = term.get('tool', stage.get('before_tool'))
+                shape.setdefault(name, set()).update(
+                    [*term.get('arguments', {}), *term.get('proposal_arguments', [])])
+            return {name: sorted(fields) for name, fields in sorted(shape.items())}
         if not any(term.get('proposal_arguments') for term in terms.values()):
-            return set()
-        return {key for term in terms.values()
-                for key in [*term.get('arguments', {}), *term.get('proposal_arguments', [])]}
+            return []
+        return sorted({key for term in terms.values()
+                       for key in [*term.get('arguments', {}), *term.get('proposal_arguments', [])]})
+
+    @classmethod
+    def proposal_fields(cls, stage):
+        return set(cls.proposal_shape(stage))
+
+    @classmethod
+    def proposal_matches(cls, stage, proposal):
+        shape = cls.proposal_shape(stage)
+        if not isinstance(proposal, dict) or set(proposal) != set(shape) or not cls.literal(proposal):
+            return False
+        return not isinstance(shape, dict) or all(
+            isinstance(proposal[name], dict) and set(proposal[name]) == set(fields)
+            for name, fields in shape.items())
 
     @staticmethod
     def validate(stage, *, required=False):
@@ -1430,11 +1485,13 @@ class ApprovalTerms:
         for grant, term in terms.items():
             if not isinstance(term, dict) or term.get('scope') not in {'terms', 'operation'}:
                 raise ValueError('AUTHORIZATION_TERMS_INVALID: scope must be terms or operation')
+            if 'tool' in term and (not isinstance(term['tool'], str) or not term['tool']):
+                raise ValueError('AUTHORIZATION_TERMS_INVALID: tool must name a protected operation')
             if term['scope'] == 'operation':
                 if set(term) != {'scope'}:
                     raise ValueError('AUTHORIZATION_TERMS_INVALID: operation scope cannot contain hidden terms')
                 continue
-            if set(term) - {'scope', 'arguments', 'postconditions', 'proposal_arguments'}:
+            if set(term) - {'scope', 'tool', 'arguments', 'postconditions', 'proposal_arguments'}:
                 raise ValueError('AUTHORIZATION_TERMS_INVALID: unsupported term fields')
             arguments, conditions = term.get('arguments', {}), term.get('postconditions', [])
             if not isinstance(arguments, dict) or not isinstance(conditions, list):
@@ -1448,8 +1505,8 @@ class ApprovalTerms:
             if not isinstance(arguments, dict) or not isinstance(conditions, list) or not (arguments or conditions or proposal):
                 raise ValueError('AUTHORIZATION_TERMS_INVALID: empty terms')
             # Consent is fixed when the user grants it, never recomputed from a changing offer.
-            if any(not isinstance(k, str) or not k or not ApprovalTerms.scalar(v) for k, v in arguments.items()):
-                raise ValueError('AUTHORIZATION_TERMS_INVALID: arguments must be literal scalars')
+            if not ApprovalTerms.literal(arguments):
+                raise ValueError('AUTHORIZATION_TERMS_INVALID: arguments must be bounded literal JSON values')
             if conditions:
                 def approved_value(value):
                     return ApprovalTerms.scalar(value) or (
@@ -1468,6 +1525,12 @@ class ApprovalTerms:
                         condition[part] = {key: 0 if isinstance(value, dict) else value
                                            for key, value in condition[part].items()}
                 DeclarativeMetricEvaluator.validate_state_predicates(shape)
+        if ApprovalTerms.grouped(stage):
+            targets = {term.get('tool', stage.get('before_tool')) for term in terms.values()}
+            if (stage.get('before_tool') not in targets or len(targets) > 16
+                    or any(term['scope'] != 'terms' or not (
+                        term.get('arguments') or term.get('proposal_arguments')) for term in terms.values())):
+                raise ValueError('AUTHORIZATION_TERMS_INVALID: grouped consent must bind each operation and include before_tool')
         return terms
 
     @classmethod
@@ -1475,20 +1538,22 @@ class ApprovalTerms:
         terms = copy.deepcopy(cls.validate(stage))
         fields = cls.proposal_fields(stage)
         if fields:
-            if (not isinstance(proposal, dict) or set(proposal) != fields
-                    or any(not cls.scalar(value) for value in proposal.values())):
-                raise ValueError('AUTHORIZATION_PROPOSAL_INVALID: present every approved scalar argument exactly once')
+            if not cls.proposal_matches(stage, proposal):
+                raise ValueError('AUTHORIZATION_PROPOSAL_INVALID: present every approved argument in its declared operation scope')
             for term in terms.values():
-                if any(not DeclarativeMetricEvaluator._json_value_equal(proposal[key], value)
+                values = proposal[term.get('tool', stage['before_tool'])] if cls.grouped(stage) else proposal
+                if any(not DeclarativeMetricEvaluator._json_value_equal(values[key], value)
                        for key, value in term.get('arguments', {}).items()):
                     raise ValueError('AUTHORIZATION_PROPOSAL_INVALID: proposal contradicts fixed user terms')
-                if term.get('proposal_arguments'):
+                has_proposal = bool(term.get('proposal_arguments'))
+                if has_proposal:
                     term['arguments'] = {**term.get('arguments', {}),
-                        **{key: proposal[key] for key in term.pop('proposal_arguments')}}
+                        **{key: copy.deepcopy(values[key]) for key in term.pop('proposal_arguments')}}
+                if cls.grouped(stage) or has_proposal:
                     term['proposal_bound'] = True
                     for condition in term.get('postconditions', []):
                         for part in ('where', 'values'):
-                            condition[part] = {key: proposal[value['proposal_argument']]
+                            condition[part] = {key: copy.deepcopy(values[value['proposal_argument']])
                                 if isinstance(value, dict) else value for key, value in condition[part].items()}
         return terms
 
@@ -1499,7 +1564,7 @@ class ApprovalTerms:
         for grant in [*stage.get('revoke_permissions', []), *stage.get('grant_permissions', [])]:
             stored.pop(grant, None)
         for grant, term in terms.items():
-            stored[grant] = {'tool': stage['before_tool'], **copy.deepcopy(term)}
+            stored[grant] = {'tool': term.get('tool', stage['before_tool']), **copy.deepcopy(term)}
         store.set_state(cls.KEY, stored)
 
     @classmethod
@@ -4341,7 +4406,8 @@ STRUCTURED_INTERACTION_INSTRUCTIONS = (
     'For a choice include request.options containing the offered values. To request permission for a write, '
     'use intent="confirm_execution", the write tool name, and arguments=[]. '
     'For tools listed in the public approval_proposal_tools material, include request.proposal '
-    'with every listed argument name and its actual scalar value presented for approval. '
+    'with every listed argument and its actual bounded JSON value presented for approval. '
+    'When the material maps operation names to argument lists, nest proposal parameters under each operation name. '
     'These values define the confirmation scope; the question must describe the same proposal. '
     'For other tools omit proposal. '
     'These are public tool/parameter names, never internal script or stage IDs. '
@@ -4442,12 +4508,11 @@ def interaction_request_matches(stage, text, mode='legacy_phrases', *, validate_
     if ('proposal' in request) != bool(ApprovalTerms.proposal_fields(stage)) and not rejection_only:
         return False
     if 'proposal' in request:
-        if (not isinstance(request['proposal'], dict)
-                or any(not isinstance(key, str) or not ApprovalTerms.scalar(value) for key, value in request['proposal'].items())):
+        if not isinstance(request['proposal'], dict) or not ApprovalTerms.literal(request['proposal']):
             return False
         if not validate_approval_terms:
             fields = ApprovalTerms.proposal_fields(stage)
-            if fields and set(request['proposal']) != fields:
+            if fields and not ApprovalTerms.proposal_matches(stage, request['proposal']):
                 return False
         else:
             try:
