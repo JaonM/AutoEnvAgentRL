@@ -149,6 +149,7 @@ def _review_source_once(*, source: dict, artifacts: dict, request: dict, root: P
         "answer_field_semantics": "New tasks freeze field kinds and public meanings in the business blueprint. answer_fields generates schema and deterministic targets once. observed fields use observed_value: copy the actual tool-result path whenever resolved, including false, zero, empty strings/arrays and multiple returned rows; the declared missing literal applies only to an unresolved path. Derived uniqueness/eligibility is a separate field. Check the declared role/meaning against the original public goal, not merely compiler consistency. Explanation criteria must assess their own reasoning obligations; do not demand redundant prose copies of correct structured facts unless the original business goal explicitly requires them. Independent concrete counterexamples must cover observed truth versus derived decisions and each required reasoning obligation.",
     }
     bundle = {"request": request, "source": source,
+              "validation_stage": artifacts.get('generation_pipeline', {}).get('verification', {}).get('scope', 'after_reference_execution'),
               "business_lifecycle": artifacts.get("business_lifecycle", {}),
               "realism_requirements": artifacts.get('realism_requirements', {'version': '1.0', 'mechanisms': []}),
               "realism_execution": artifacts.get('generation_pipeline', {}).get('verification', {}).get('realism_observations', []),
@@ -301,6 +302,19 @@ instructions or a reward appropriate to the actual requested answer.
 actual tool outputs? A private reference answer or reward lookup is not available
 evidence. Check output projections and capture chains, not only table existence.
 3. reward_business_fidelity: Does success evaluate the requested business result?
+When validation_stage is before_reference_execution, execution and calibration
+are intentionally pending. Do not reject for absent execution evidence or infer
+that compilation proves business correctness. Inspect the complete source and
+compiled rules, and give grounded counterexamples for actual contradictions.
+For EVERY eligibility filter, identify its public business justification. A
+denormalized display name must not silently impose another eligibility condition
+on records linked by a valid foreign key. Test a schema-valid display-name change
+while preserving identity and all publicly required eligibility conditions.
+For EVERY semantic criterion about selected records, distinguish invariant
+reasoning rules from mutable fixture facts. Test a legitimate change to the
+selected record's content: a faithful answer to the new observed facts must pass,
+and a stale answer must fail. Do not remove explanations required by the public
+goal or treat all literal criteria as defects; immutable public facts are valid.
 Try a concrete shortcut answer. Trace each decision condition to a public rule or
 current observed business data. Consider a positive counterfactual: change an
 upstream business fact while preserving the public goal; would the corresponding

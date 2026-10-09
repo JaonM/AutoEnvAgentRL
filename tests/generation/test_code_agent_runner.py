@@ -11,6 +11,18 @@ from env_factory.generation.semantic_review import SemanticReviewUnavailable
 
 
 class CodeAgentRunnerTest(unittest.TestCase):
+    def test_nested_review_time_is_not_counted_twice(self):
+        from env_factory.generation.code_agent import _timed_call
+        attempt = {}
+        def compile_candidate():
+            _timed_call(attempt, 'independent_review', lambda: None)
+            self.assertEqual(attempt['active_phase'], 'compile_and_execution')
+        with patch('env_factory.generation.code_agent.time.monotonic', side_effect=[0, 1, 3, 5]):
+            _timed_call(attempt, 'compile_and_execution', compile_candidate)
+        self.assertEqual(attempt['phase_seconds'],
+                         {'independent_review': 2, 'compile_and_execution': 3})
+        self.assertNotIn('active_phase', attempt)
+
     def test_original_goal_is_retained_before_structural_repair(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -183,8 +195,14 @@ class CodeAgentRunnerTest(unittest.TestCase):
                 (root / "code_agent_attempts/attempt-1/events.jsonl").write_text('{"type":"turn.completed","usage":{"output_tokens":50}}\n')
                 (workspace / "compiled_artifacts.json").write_text('{"forged":true}')
             process.communicate.side_effect = finish
+            stages = []
+            def compile_with_review(*args, **kwargs):
+                candidate = {"generation_pipeline": {}}
+                kwargs['before_execution'](candidate)
+                stages.append('execution')
+                return candidate
             with patch("env_factory.generation.code_agent.subprocess.Popen", return_value=process) as popen, patch(
-                    "env_factory.generation.code_agent.compile_source", return_value={"generation_pipeline": {}}) as compiler, patch(
+                    "env_factory.generation.code_agent.compile_source", side_effect=compile_with_review) as compiler, patch(
                     "env_factory.generation.code_agent.verify_delivery") as delivery:
                 result = generate(request={"training_category": "direct_response"}, artifact_dir=root)
             self.assertEqual(compiler.call_args.args[0], {"version": "1.0"})
@@ -192,6 +210,8 @@ class CodeAgentRunnerTest(unittest.TestCase):
             self.assertIn("gpt-6.1-sol", popen.call_args.args[0])
             self.assertEqual(result["generation_pipeline"]["completed_turns"], 2)
             self.assertIsNone(result["generation_pipeline"]["llm_calls"])
+            self.assertEqual(stages, ['execution'])
+            self.assertEqual(result['generation_pipeline']['review_invocations'], 1)
             delivery.assert_called_once()
 
     def test_cli_exit_zero_without_completed_model_turn_is_not_success(self):

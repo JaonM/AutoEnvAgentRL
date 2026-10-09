@@ -67,6 +67,46 @@ def fixture(category):
 
 
 class AgentAuthoringTest(unittest.TestCase):
+    def test_business_review_rejection_precedes_all_execution(self):
+        source, request = fixture('simple_agentic')
+        reviewed = []
+        def reject(candidate):
+            reviewed.append(candidate)
+            self.assertEqual(candidate['generation_pipeline']['verification']['scope'],
+                             'before_reference_execution')
+            self.assertTrue(candidate['tool_implementations'])
+            self.assertTrue(candidate['metric_implementations'])
+            raise ValueError('SOURCE_SEMANTIC_REVIEW_FAILED: extra business predicate')
+        with tempfile.TemporaryDirectory() as directory, patch(
+                'env_factory.generation.agent_authoring.verify_execution') as execution, patch(
+                'env_factory.generation.deterministic_preflight.check_all_routes') as routes:
+            with self.assertRaisesRegex(ValueError, 'extra business predicate'):
+                compile_source(source, root=Path(directory), request=request,
+                               before_execution=reject)
+            execution.assert_not_called()
+            routes.assert_not_called()
+        self.assertEqual(len(reviewed), 1)
+
+    def test_business_review_pass_preserves_real_execution_and_contract(self):
+        source, request = fixture('simple_agentic')
+        calls = []
+        def review(candidate):
+            calls.append('review')
+            # A reviewer receives an isolated snapshot, not mutable authority.
+            candidate['tool_implementations'].clear()
+        def execute(candidate, *args, **kwargs):
+            calls.append('execution')
+            self.assertTrue(candidate['tool_implementations'])
+            return {'passed': True}
+        with tempfile.TemporaryDirectory() as directory, patch(
+                'env_factory.generation.agent_authoring.verify_execution', side_effect=execute), patch(
+                'env_factory.generation.deterministic_preflight.check_all_routes') as routes:
+            result = compile_source(source, root=Path(directory), request=request,
+                                    before_execution=review)
+        self.assertEqual(calls, ['review', 'execution'])
+        routes.assert_called_once()
+        self.assertTrue(result['generation_pipeline']['verification']['passed'])
+
     def test_unused_parameter_is_rejected_before_execution(self):
         source, request = fixture('simple_agentic')
         source['tools'][0]['function']['parameters']['properties']['ignored'] = {

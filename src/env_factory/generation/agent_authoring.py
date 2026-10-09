@@ -294,7 +294,7 @@ def expand_source(source: dict, request: dict) -> dict:
 
 def compile_source(source: dict, *, root: Path, request: dict, script_count: int = 3,
                    structural_preview: bool = False, defer_privacy_review: bool = False, blueprint: dict | None = None,
-                   judgment_cache=None) -> dict:
+                   judgment_cache=None, before_execution=None) -> dict:
     """Compile a complete business design against runner-owned graph/route input."""
     source = expand_source(source, request)
     from .scenario_assertions import validate_scenario_fixture_scope
@@ -723,6 +723,16 @@ def compile_source(source: dict, *, root: Path, request: dict, script_count: int
                     "reference_execution", "policy_ablations", "semantic_calibration",
                     "delivery_preflight", "independent_semantic_review"]}}
         return result
+    if before_execution is not None:
+        # Independent business review sees the complete compiled contract, but
+        # cannot mistake an unexecuted candidate for execution evidence.
+        result['generation_pipeline'] = {'backend': 'code_agent',
+            'privacy_review_obligations': privacy_findings,
+            'business_condition_probes': condition_probes,
+            'verification': {'passed': False, 'structural_checks_passed': True,
+                'scope': 'before_reference_execution',
+                'pending': ['reference_execution', 'semantic_calibration', 'delivery_preflight']}}
+        before_execution(copy.deepcopy(result))
     from .deterministic_preflight import check_all_routes
     check_all_routes(result, root, verify_execution, prepare_route_probe)
     checks = verify_execution(result, root, calibration=source.get("semantic_calibration", {}),

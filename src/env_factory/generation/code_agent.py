@@ -43,6 +43,8 @@ def _timed_call(attempt, phase, function, *args, _progress=None, **kwargs):
     started = time.monotonic()
     window = {'phase': phase, 'started_at': time.time(), 'status': 'running'}
     attempt.setdefault('phase_events', []).append(window)
+    previous_phase = attempt.get("active_phase")
+    window['parent_phase'] = previous_phase
     attempt["active_phase"] = phase
     if _progress:
         _progress()
@@ -54,10 +56,18 @@ def _timed_call(attempt, phase, function, *args, _progress=None, **kwargs):
         window['status'] = 'failed'
         raise
     finally:
-        window.update(completed_at=time.time(), seconds=time.monotonic() - started)
+        elapsed = time.monotonic() - started
+        nested = sum(item['seconds'] for item in attempt['phase_events']
+                     if item is not window and item.get('parent_phase') == phase
+                     and item['started_at'] >= window['started_at'] and 'seconds' in item)
+        window.update(completed_at=time.time(), seconds=elapsed,
+                      exclusive_seconds=max(0.0, elapsed - nested))
         durations = attempt.setdefault('phase_seconds', {})
-        durations[phase] = durations.get(phase, 0.0) + time.monotonic() - started
-        attempt.pop('active_phase', None)
+        durations[phase] = durations.get(phase, 0.0) + window['exclusive_seconds']
+        if previous_phase is None:
+            attempt.pop('active_phase', None)
+        else:
+            attempt['active_phase'] = previous_phase
         if _progress:
             _progress()
 
@@ -643,31 +653,39 @@ checks to pass. Finish by reporting the source file and checks actually executed
                     if (goal_anchor is None and isinstance(description, dict)
                             and isinstance(description.get("task"), str) and description["task"].strip()):
                         goal_anchor = json.loads(json.dumps(description))
+                    review = None
+                    def review_before_execution(candidate):
+                        nonlocal review
+                        evidence["agent_invocations"] += 1
+                        evidence["review_invocations"] = evidence.get("review_invocations", 0) + 1
+                        evidence_path.write_text(json.dumps(evidence, ensure_ascii=False, indent=2) + "\n")
+                        review = timed_call(attempt, 'independent_review', review_source,
+                            source=source, artifacts=candidate, request=request,
+                            root=attempt_root / "semantic_review", model=model,
+                            timeout=180, goal_anchor=goal_anchor)
+                        attempt["semantic_review"] = review
+                        provenance = review["provenance"]
+                        extra_reviews = provenance.get("agent_invocations", 1) - 1
+                        evidence["agent_invocations"] += extra_reviews
+                        evidence["review_invocations"] += extra_reviews
+                        evidence["completed_turns"] += provenance["completed_turns"]
+                        for key, value in provenance["usage"].items():
+                            evidence["usage"][key] = evidence["usage"].get(key, 0) + value
+                        events_digest.update(provenance["events_sha256"].encode())
+                        evidence["events_sha256"] = events_digest.hexdigest()
+                        if review["status"] != "pass":
+                            raise ValueError("SOURCE_SEMANTIC_REVIEW_FAILED: " + json.dumps(review["findings"], ensure_ascii=False))
                     artifacts = timed_call(attempt, 'compile_and_execution', compile_source,
-                                               source, root=root, request=request, script_count=script_count,
-                                               defer_privacy_review=True, blueprint=blueprint, judgment_cache=judgment_cache)
+                        source, root=root, request=request, script_count=script_count,
+                        defer_privacy_review=True, blueprint=blueprint, judgment_cache=judgment_cache,
+                        before_execution=review_before_execution)
+                    # Support injected compilers; the production compiler always
+                    # invokes this hook before any reference or calibration call.
+                    if review is None:
+                        review_before_execution(artifacts)
                     privacy_pending = bool(artifacts['generation_pipeline'].get('privacy_review_obligations'))
                     if not privacy_pending:
                         timed_call(attempt, 'delivery_verification', verify_delivery, artifacts, root)
-                    evidence["agent_invocations"] += 1
-                    evidence["review_invocations"] = evidence.get("review_invocations", 0) + 1
-                    evidence_path.write_text(json.dumps(evidence, ensure_ascii=False, indent=2) + "\n")
-                    review = timed_call(attempt, 'independent_review', review_source,
-                        source=source, artifacts=artifacts, request=request,
-                        root=attempt_root / "semantic_review", model=model,
-                        timeout=180, goal_anchor=goal_anchor)
-                    attempt["semantic_review"] = review
-                    provenance = review["provenance"]
-                    extra_reviews = provenance.get("agent_invocations", 1) - 1
-                    evidence["agent_invocations"] += extra_reviews
-                    evidence["review_invocations"] += extra_reviews
-                    evidence["completed_turns"] += provenance["completed_turns"]
-                    for key, value in provenance["usage"].items():
-                        evidence["usage"][key] = evidence["usage"].get(key, 0) + value
-                    events_digest.update(provenance["events_sha256"].encode())
-                    evidence["events_sha256"] = events_digest.hexdigest()
-                    if review["status"] != "pass":
-                        raise ValueError("SOURCE_SEMANTIC_REVIEW_FAILED: " + json.dumps(review["findings"], ensure_ascii=False))
                     from .semantic_review import resolve_requirement_review
                     resolve_requirement_review(artifacts, review)
                     if privacy_pending:
