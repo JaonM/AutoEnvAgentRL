@@ -190,14 +190,17 @@ class Sandbox:
                 'query_identity': signature, 'state_version': self.version}
 
     def _transaction(self, tool, args):
+        before = copy.deepcopy(self.data)
         candidate = copy.deepcopy(self.data)
         changes = []
         for operation in tool['operations']:
             key = evaluate(operation['key'], self.context(args=args, data=candidate))
             row = self._row(candidate, operation['table'], key)
-            context = self.context(args=args, data=candidate, row=row)
-            checks = [evaluate(self.rules[r]['predicate'], context) for r in tool['rule_ids']]
+            original_row = self._row(before, operation['table'], key)
+            precondition_context = self.context(args=args, data=before, row=original_row)
+            checks = [evaluate(self.rules[r]['predicate'], precondition_context) for r in tool['rule_ids']]
             require(all(type(c) is bool and c for c in checks), 'transaction business precondition failed')
+            context = self.context(args=args, data=candidate, row=row)
             updates = {column: evaluate(expression, context) for column, expression in operation['set'].items()}
             row.update(updates)
             changes.append({'table': operation['table'], 'key': key, 'set': copy.deepcopy(updates)})

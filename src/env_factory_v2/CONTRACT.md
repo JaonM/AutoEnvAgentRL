@@ -45,8 +45,11 @@ tools use id,kind,description,parameters (closed object schema),rule_ids.
 Query tools also use table,columns,order_by ([{field,direction:"asc"|"desc"}]),
 page_size (1..128). Results: items,total,offset,next_cursor,query_identity,
 state_version. Pagination cursors are bound to episode/query/state.
-Transaction tools use operations=[{table,key:EXPR,set:{column:EXPR}}], evaluating
-in order on one isolated candidate state, then validating schemas, FKs and
+Transaction tools use operations=[{table,key:EXPR,set:{column:EXPR}}]. Their
+rule_ids are preconditions over the immutable state BEFORE this transaction,
+including the original target row. They are never reevaluated against partially
+written state. Write expressions evaluate in order on one isolated candidate
+state, then validate schemas, FKs and
 invariants before atomic commit. key identifies exactly one existing row;
 primary-key writes, insertion and deletion are currently unsupported.
 Transaction tools MUST name authorization=user_stage_id and have actual-state
