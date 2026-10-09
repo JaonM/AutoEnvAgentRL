@@ -137,14 +137,37 @@ class NativeCodeAgent:
 
     def generate(self, request, *, feedback=None):
         grammar = (Path(__file__).parent / 'CONTRACT.md').read_text()
+        if feedback is not None and feedback.get('previous_source') is not None:
+            from .repair import apply_edits
+            previous = feedback['previous_source']
+            evidence = {key: value for key, value in feedback.items() if key != 'previous_source'}
+            value, provenance = self.ask(
+                'Repair the supplied contract using atomic JSON Pointer edits, not a complete rewrite. '
+                'Preserve every original business obligation and difficulty. Repair the actual executable '
+                'evidence; do not change expectations to hide unintended errors or remove required tests. '
+                'For an intentional invalid action, use its actual error text as expect_error only if the '
+                'action really tests that intended protection. Prefer the smallest coherent edits. '
+                'Each edit has op add/replace/remove, path beginning /, and value_json containing JSON '
+                '(use null for remove). Paths refer to the result of earlier edits; - appends to arrays. '
+                'Never execute tools.',
+                {'original_request': request, 'grammar': grammar, 'previous_source': previous,
+                 'repair_feedback': evidence}, object_schema({'edits': {'type': 'array', 'items': object_schema({
+                     'op': {'type': 'string', 'enum': ['add', 'replace', 'remove']},
+                     'path': {'type': 'string'}, 'value_json': {'type': 'string'}})}}))
+            try:
+                return apply_edits(previous, value['edits']), provenance
+            except json.JSONDecodeError as exc:
+                raise ContractError(f'repair value invalid JSON at line {exc.lineno}, column {exc.colno}: {exc.msg}') from exc
         value, provenance = self.ask('Generate a NEW business contract following the supplied grammar. '
             'Preserve the original request and its category. No Python code. Model roles may not invent hidden '
             'business filters or freeze mutable facts in reasoning criteria. Include grounded positive/negative '
             'scenarios and data counterexamples. If repairing, address executable evidence without weakening '
-            'the original goal. Do not execute tools.',
+            'the original goal. Keep descriptions concise, use seed generators for bulk data and probes '
+            'to reuse trajectories rather than duplicating long scenarios. Preserve all required negative '
+            'branches, dependencies, scale and transaction objects. Do not execute tools.',
             {'original_request': request, 'grammar': grammar, 'repair_feedback': feedback},
             object_schema({'source_json': {'type': 'string'}}))
         try:
             return json.loads(value['source_json']), provenance
         except json.JSONDecodeError as exc:
-            raise ContractError('generated source is invalid JSON') from exc
+            raise ContractError(f'generated source is invalid JSON at line {exc.lineno}, column {exc.colno}: {exc.msg}') from exc

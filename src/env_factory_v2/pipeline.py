@@ -34,6 +34,7 @@ def build(request, *, agent, output, source=None, repairs=1, docker=True, base_i
     frozen_platform = implementation_identity()
     agent.start_scope()
     attempts, feedback, rejected = [], None, set()
+    previous_source = None
     started = time.monotonic()
     for index in range(repairs + 1):
         require(implementation_identity() == frozen_platform, 'platform changed during pipeline')
@@ -49,10 +50,13 @@ def build(request, *, agent, output, source=None, repairs=1, docker=True, base_i
             phase('generation')
             phase_start = time.monotonic()
             if source is None or index:
-                candidate, provenance = agent.generate(request, feedback=feedback)
+                repair_feedback = ({**feedback, 'previous_source': previous_source}
+                                   if feedback is not None and previous_source is not None else feedback)
+                candidate, provenance = agent.generate(request, feedback=repair_feedback)
                 attempt['generation_provenance'] = provenance
             else:
                 candidate = copy.deepcopy(source)
+            previous_source = copy.deepcopy(candidate)
             attempt['phases']['generation'] = time.monotonic() - phase_start
             save(folder / 'source.json', candidate)
             phase('compile')
@@ -121,10 +125,10 @@ def build(request, *, agent, output, source=None, repairs=1, docker=True, base_i
             return delivery
         except ContractError as exc:
             attempt.update(status='failed', error=str(exc), failed_phase=attempt.pop('active_phase', None))
-            save(folder / 'feedback.json', feedback or {'error': str(exc), 'original_request': request})
+            feedback = {**(feedback or {}), 'error': str(exc),
+                        'failed_phase': attempt['failed_phase'], 'original_request': request}
+            save(folder / 'feedback.json', feedback)
             save(output / 'progress.json', {'qualified': False, 'attempts': attempts, 'status': 'repair_pending' if index < repairs else 'failed'})
-            if feedback is None:
-                feedback = {'error': str(exc), 'original_request': request}
         except Exception as exc:
             # Transport/container infrastructure is never repaired by weakening source.
             attempt.update(status='infrastructure_failed', error=f'{type(exc).__name__}: {exc}', failed_phase=attempt.pop('active_phase', None))

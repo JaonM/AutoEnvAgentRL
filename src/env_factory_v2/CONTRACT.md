@@ -137,6 +137,19 @@ scenarios: [{id,steps,answer:{answer_id:EXPR},expect_success:boolean,mutations?,
 Provide at least one successful and one failed valid-answer trajectory. An
 intentional invalid-action negative must name expect_error substring explicitly;
 an accidentally broken negative is not evidence of reward discrimination.
+Common exact runtime error substrings for intentional negatives:
+- Violating a declared result_binding (including a literal instead of the required
+  capture or a capture from the wrong tool/path): `required observed-result dependency missing`.
+- Violating a user_binding, including calling before disclosure with a literal:
+  `tool argument must use the actual disclosed user value`.
+- Resolving a nonexistent capture when no earlier binding check rejects it:
+  `unknown observed result`.
+- A transaction without live exact consent:
+  `authorization missing, revoked, consumed or parameters changed`.
+Checks execute in order. A negative meant to test insufficient balance/capacity
+must first obtain valid exact consent and valid references so it reaches the
+business precondition. An earlier authorization/dependency error is not proof
+of insufficient-balance handling or rollback. Do not guess synonyms for errors.
 steps: call/traverse {kind,tool,id,arguments}; call optionally cursor.
 References inside arguments: {"$result":"previous_call_id","path":"items.0.id"}
 or {"$user":"completed_stage_id","path":"value"}.
