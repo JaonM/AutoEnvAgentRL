@@ -1,0 +1,158 @@
+import copy
+import json
+from unittest.mock import Mock, patch
+
+import pytest
+
+from env_factory_v2.challenge import challenge
+from env_factory_v2.code_agent import NativeCodeAgent
+from env_factory_v2.contract import compile_contract
+from env_factory_v2.examples import direct, simple
+from env_factory_v2.pipeline import build
+
+
+def native(tmp_path):
+    return NativeCodeAgent(base_url='http://127.0.0.1:9999/v1', token='test-only-token-000000000000000000', evidence_root=tmp_path)
+
+
+def payload():
+    return {'contract_identity': 'test-contract', 'field': {'criteria': [{'id': 'facts'}]},
+            'authoritative_facts': {'ids': ['I1']}}
+
+
+def judgment(passed=True):
+    return ({'criteria': {'facts': passed}}, {'model': 'gpt-6.1-sol', 'backend': 'codex_cli', 'response_id': 'unit-test-only'})
+
+
+def test_exact_judgment_reuse_and_fresh_independent_replay(tmp_path):
+    agent = native(tmp_path)
+    agent.ask = Mock(side_effect=[judgment(), judgment(), judgment()])
+    first = agent.judge(payload())
+    hit = agent.judge(payload())
+    fresh = agent.independent_judge(payload())
+    changed = payload()
+    changed['authoritative_facts']['ids'] = []
+    agent.judge(changed)
+    assert agent.ask.call_count == 3
+    assert hit['provenance']['reused'] is True
+    assert first['provenance']['dependency_identity'] == fresh['provenance']['dependency_identity']
+    assert not fresh['provenance']['reused']
+
+
+def test_conflicting_fresh_judgment_poisoned_for_entire_scope(tmp_path):
+    agent = native(tmp_path)
+    agent.ask = Mock(side_effect=[judgment(True), judgment(False)])
+    agent.judge(payload())
+    with pytest.raises(RuntimeError, match='conflicts'):
+        agent.independent_judge(payload())
+    with pytest.raises(RuntimeError, match='poisoned'):
+        agent.judge(payload())
+    assert agent.ask.call_count == 2
+    agent.start_scope()
+    agent.ask = Mock(return_value=judgment(True))
+    agent.judge(payload())
+    assert agent.ask.call_count == 1
+
+
+def test_native_user_expression_cannot_generate_new_facts_or_authorization(tmp_path):
+    agent = native(tmp_path)
+    agent.ask = Mock(return_value=({'language': 'zh', 'tone': 'polite'}, {'unit_test': True}))
+    event = {'approved': False, 'proposal': {'tool': 'transfer', 'arguments': {'amount': 20}}}
+    response = agent.express_user(event)
+    assert response['event'] == event
+    assert '不批准' in response['text'] and '20' in response['text']
+    schema = agent.ask.call_args.args[2]
+    assert set(schema['properties']) == {'language', 'tone'}
+
+
+def test_unrelated_natural_question_cannot_unlock_a_user_stage(tmp_path):
+    agent = native(tmp_path)
+    agent.ask = Mock(return_value=({'stage_id': '__unrelated__'}, {'unit_test': True}))
+    with pytest.raises(ValueError, match='does not request'):
+        agent.interpret_user('天气怎么样？', simple()['user']['stages'])
+
+
+def challenge_value(source):
+    rules = [r['id'] for r in source['rules']]
+    return {'business_consistent': True, 'reason': 'Unit-test transport fixture, not native proof.', 'cases': [
+        {'id': 'independent_positive', 'rule_ids': rules, 'scenario_id': 'correct', 'reason': 'correct answer',
+         'mutations_json': '[]', 'answer_json': '{}', 'expect_success': True},
+        {'id': 'independent_negative', 'rule_ids': rules, 'scenario_id': 'wrong', 'reason': 'wrong answer',
+         'mutations_json': '[]', 'answer_json': '{}', 'expect_success': False}]}
+
+
+def test_unexecuted_rejection_is_not_grounds_for_author_repair(tmp_path):
+    source = direct()
+    value = challenge_value(source)
+    value['business_consistent'] = False
+    agent = native(tmp_path)
+    agent.ask = Mock(return_value=(value, {'unit_test': True}))
+    with pytest.raises(RuntimeError, match='inconclusive'):
+        challenge(compile_contract(source), {'goal': source['task']}, agent)
+
+
+def test_review_cannot_invent_invalid_action_error_expectations(tmp_path):
+    source = direct()
+    value = challenge_value(source)
+    value['cases'][1]['expect_error'] = 'invented binding message'
+    response = {'model': 'gpt-6.1-sol', 'backend': 'codex_cli', 'id': 'unit-test-only',
+                'choices': [{'message': {'content': json.dumps(value)}}]}
+    agent = native(tmp_path / 'native')
+    agent.generate = Mock()
+    with patch('env_factory_v2.code_agent.urlopen') as transport:
+        transport.return_value.__enter__.return_value.read.return_value = json.dumps(response).encode()
+        result = build({'goal': source['task']}, agent=agent, source=source,
+                       output=tmp_path / 'run', repairs=2, docker=False)
+    assert result['status'] == 'infrastructure_failed' and not result['qualified']
+    agent.generate.assert_not_called()
+
+
+def test_invalid_independent_mutation_is_not_an_author_defect(tmp_path):
+    source = simple()
+    value = challenge_value(source)
+    value['cases'][0]['mutations_json'] = json.dumps([{'table': 'items', 'key': 'missing', 'column': 'size', 'value': 'L'}])
+    agent = native(tmp_path)
+    agent.ask = Mock(return_value=(value, {'unit_test': True}))
+    with pytest.raises(RuntimeError, match='ungrounded claim'):
+        challenge(compile_contract(source), {'goal': source['task']}, agent)
+
+
+def test_no_container_run_cannot_claim_qualified(tmp_path):
+    source = direct()
+    agent = native(tmp_path / 'native')
+    agent.ask = Mock(return_value=(challenge_value(source), {'unit_test': True}))
+    result = build({'category': source['category'], 'goal': source['task']}, agent=agent,
+                   output=tmp_path / 'run', source=source, docker=False, repairs=0)
+    assert result['qualified'] is False
+    assert result['gates']['joint_execution_and_counterexamples'] is True
+    assert result['gates']['container_execution'] is False
+    assert (tmp_path / 'run/sandbox/Dockerfile').is_file()
+
+
+def test_native_transport_failure_never_triggers_author_repair(tmp_path):
+    agent = native(tmp_path / 'native')
+    agent.generate = Mock(side_effect=RuntimeError('bridge unavailable'))
+    result = build({'category': 'direct_response', 'goal': 'test'}, agent=agent, output=tmp_path / 'run', repairs=2)
+    assert agent.generate.call_count == 1
+    assert result['qualified'] is False and result['status'] == 'infrastructure_failed'
+
+
+def test_broken_negative_recipe_is_rejected_before_any_review_model_call(tmp_path):
+    source = direct()
+    source['scenarios'][1]['answer']['temperature'] = {'ref': 'evidence.never_executed.value'}
+    agent = native(tmp_path / 'native')
+    agent.ask = Mock()
+    result = build({'goal': source['task']}, agent=agent, output=tmp_path / 'run', source=source, repairs=0, docker=False)
+    assert not result['qualified']
+    assert result['attempts'][0]['failed_phase'] == 'recipe_preflight'
+    agent.ask.assert_not_called()
+
+
+def test_platform_change_during_native_review_invalidates_evidence(tmp_path):
+    source = direct()
+    agent = native(tmp_path / 'native')
+    agent.ask = Mock(return_value=(challenge_value(source), {'unit_test': True}))
+    with patch('env_factory_v2.pipeline.implementation_identity', side_effect=['before', 'before', 'after']):
+        result = build({'goal': source['task']}, agent=agent, output=tmp_path / 'run', source=source, repairs=0, docker=False)
+    assert result['qualified'] is False and result['status'] == 'infrastructure_failed'
+    assert not (tmp_path / 'run/sandbox').exists()
