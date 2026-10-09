@@ -91,6 +91,51 @@ def test_unexecuted_rejection_is_not_grounds_for_author_repair(tmp_path):
         challenge(compile_contract(source), {'goal': source['task']}, agent)
 
 
+def test_contradictory_positive_label_is_audited_without_dropping_counterexample(tmp_path):
+    source = direct()
+    value = challenge_value(source)
+    mislabeled = copy.deepcopy(value['cases'][1])
+    mislabeled.update(id='incorrect_positive', expect_success=True, reason='This answer is deliberately wrong.')
+    value['cases'].append(mislabeled)
+    audit = {'business_consistent': True, 'reason': 'The contract follows the original fixed fact.',
+             'cases': [{'id': c['id'], 'expect_success': c['id'] == 'independent_positive',
+                        'reason': 'Original temperature is 18; 19 is incorrect.'} for c in value['cases']]}
+    agent = native(tmp_path)
+    agent.ask = Mock(side_effect=[(value, {'unit_test': 'review'}), (audit, {'unit_test': 'audit'})])
+    result = challenge(compile_contract(source), {'goal': source['task']}, agent)
+    assert result['passed'] and len(result['records']) == 3
+    assert not result['records'][-1]['case']['expect_success']
+    assert not result['review_audit']['original_review']['records'][-1]['passed']
+    assert agent.ask.call_count == 2
+
+
+def test_audit_cannot_make_real_correct_behavior_penalty_pass(tmp_path):
+    source = direct()
+    source['answers'][0]['expected'] = {'literal': 99}
+    value = challenge_value(source)
+    audit = {'business_consistent': False, 'reason': 'Original temperature is 18, not 99.',
+             'cases': [{'id': c['id'], 'expect_success': c['expect_success'],
+                        'reason': 'Use original business value, not grader target.'} for c in value['cases']]}
+    agent = native(tmp_path)
+    agent.ask = Mock(side_effect=[(value, {'unit_test': 'review'}), (audit, {'unit_test': 'audit'})])
+    result = challenge(compile_contract(source), {'goal': 'Return the public temperature 18.'}, agent)
+    assert not result['passed']
+    assert not result['records'][0]['passed']
+    assert result['records'][0]['case']['expect_success']
+
+
+def test_audit_cannot_drop_an_inconvenient_case(tmp_path):
+    source = direct()
+    value = challenge_value(source)
+    value['business_consistent'] = False
+    audit = {'business_consistent': True, 'reason': 'Unsupported shortcut.', 'cases': [
+        {'id': 'independent_positive', 'expect_success': True, 'reason': 'Keep only positive.'}]}
+    agent = native(tmp_path)
+    agent.ask = Mock(side_effect=[(value, {'unit_test': 'review'}), (audit, {'unit_test': 'audit'})])
+    with pytest.raises(RuntimeError, match='preserve every independent case'):
+        challenge(compile_contract(source), {'goal': source['task']}, agent)
+
+
 def test_review_cannot_invent_invalid_action_error_expectations(tmp_path):
     source = direct()
     value = challenge_value(source)

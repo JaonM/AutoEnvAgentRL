@@ -16,12 +16,21 @@ CASE_SCHEMA = object_schema({
 })
 CHALLENGE_SCHEMA = object_schema({'business_consistent': {'type': 'boolean'},
     'reason': {'type': 'string'}, 'cases': {'type': 'array', 'items': CASE_SCHEMA}})
+AUDIT_SCHEMA = object_schema({'business_consistent': {'type': 'boolean'}, 'reason': {'type': 'string'},
+    'cases': {'type': 'array', 'items': object_schema({'id': {'type': 'string'},
+              'expect_success': {'type': 'boolean'}, 'reason': {'type': 'string'}})}})
 
 
 def challenge(compiled, original_request, agent):
     from .contract import ContractError
     try:
-        return _challenge(compiled, original_request, agent)
+        report = _challenge(compiled, original_request, agent)
+        all_passed = all(record['passed'] for record in report['records'])
+        if report['business_consistent'] != all_passed:
+            report = _audit(compiled, original_request, agent, report)
+        if not report['business_consistent'] and all(record['passed'] for record in report['records']):
+            raise RuntimeError('independent review is inconclusive: no executed counterexample supports its rejection')
+        return report
     except (ContractError, ValueError, KeyError, TypeError) as exc:
         raise RuntimeError('independent challenge invalid; do not repair source from an ungrounded claim: ' + str(exc)) from exc
 
@@ -75,9 +84,58 @@ def _challenge(compiled, original_request, agent):
         passed = expected_result(scenario, first) and expected_result(scenario, repeat)
         records.append({'case': case, 'passed': passed and replay_identity(first) == replay_identity(repeat),
                         'first': first, 'repeat': repeat})
-    if not value['business_consistent'] and all(record['passed'] for record in records):
-        raise RuntimeError('independent review is inconclusive: no executed counterexample supports its rejection')
     return {'scope': 'native_independent_contract_challenge', 'contract_identity': compiled['identity'],
             'passed': value['business_consistent'] and all(r['passed'] for r in records),
             'business_consistent': value['business_consistent'], 'reason': value['reason'],
             'provenance': provenance, 'records': records}
+
+
+def _audit(compiled, original_request, agent, report):
+    """Resolve contradictory review labels without editing source or discarding cases."""
+    from .fixtures import review_contract
+    from .expressions import canonical
+    source, fixtures = review_contract(compiled['source'])
+    observations = []
+    for record in report['records']:
+        run = record['first']
+        answer = run['answer']
+        observations.append({'case': record['case'], 'matched_expectation': record['passed'],
+                             'actual_error': run['error'], 'actual_outcome': run['outcome'],
+                             'actual_answer': answer if len(canonical(answer)) <= 8000 else
+                             {'omitted': 'large answer; derive exact values from generator and case recipe'}})
+    value, provenance = agent.ask(
+        'Independently audit a contradictory business review against the ORIGINAL request. '
+        'The prior review conclusion and executed cases disagree. For EVERY unchanged case determine '
+        'whether its actual proposed behavior/answer SHOULD succeed according to the original business. '
+        'A deliberately wrong answer must have expect_success=false even if a prior label says true. '
+        'Do not change expectations merely to match the observed grader; the grader may itself be wrong. '
+        'Distinguish evaluator validation obligations from agent answer obligations; require additional '
+        'answer prose only where the original business asks for it. Keep every case ID, mutation, recipe '
+        'and trajectory unchanged. Explain each expectation from original business facts. No dropped cases, '
+        'invented data, weaker rules or tools. business_consistent describes the contract, not the reviewer. '
+        'If a business omission remains, keep business_consistent=false even if cases cannot expose it. '
+        'Do not execute tools.',
+        {'original_request': original_request, 'contract': source, 'compiled_public': compiled['public'],
+         'fixture_evidence': fixtures, 'prior_review': {'business_consistent': report['business_consistent'],
+         'reason': report['reason']}, 'executed_cases': observations}, AUDIT_SCHEMA)
+    labels = {case['id']: case for case in value['cases']}
+    require(len(labels) == len(value['cases']) and set(labels) == {r['case']['id'] for r in report['records']},
+            'audit must preserve every independent case exactly once')
+    require(value['reason'].strip() and all(case['reason'].strip() for case in value['cases']), 'audit reasons required')
+    require(any(case['expect_success'] for case in value['cases'])
+            and any(not case['expect_success'] for case in value['cases']), 'audit must preserve positive and negative coverage')
+    scenarios = {s['id']: s for s in compiled['source']['scenarios']}
+    records = []
+    for old in report['records']:
+        case = copy.deepcopy(old['case'])
+        label = labels[case['id']]
+        case['expect_success'], case['reason'] = label['expect_success'], label['reason']
+        # Same executed evidence, independently corrected business labels. No
+        # source, mutations, answers or semantic judgments are regenerated here.
+        scenario = {**scenarios[case['scenario_id']], 'expect_success': case['expect_success']}
+        records.append({**old, 'case': case, 'passed': expected_result(scenario, old['first'])
+                        and expected_result(scenario, old['repeat'])
+                        and replay_identity(old['first']) == replay_identity(old['repeat'])})
+    return {**report, 'passed': value['business_consistent'] and all(r['passed'] for r in records),
+            'business_consistent': value['business_consistent'], 'reason': value['reason'], 'records': records,
+            'review_audit': {'provenance': provenance, 'result': value, 'original_review': report}}
