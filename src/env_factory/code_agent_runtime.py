@@ -369,7 +369,7 @@ def main(argv=None):
     parser.add_argument('--host', default='127.0.0.1')
     parser.add_argument('--port', type=int, default=0)
     parser.add_argument('--model', default='gpt-6.1-sol')
-    parser.add_argument('--workers', type=int, default=4)
+    parser.add_argument('--workers', type=int, default=1)
     parser.add_argument('--timeout', type=float, default=180)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args(argv)

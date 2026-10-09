@@ -1285,7 +1285,7 @@ def _verify_execution(artifacts: dict, root: Path, *, calibration: dict | None =
                 report = calibrate_semantic_outcomes(artifacts, calibration, context=contexts[None],
                                                     reference_contexts=contexts,
                                                     store=calibration_store, progress=progress, judgment_cache=judgment_cache,
-                                                    workers=2)
+                                                    workers=1)
             finally:
                 (root / "semantic_calibration_replay.json").write_text(json.dumps(
                     calibration_store.replay(), ensure_ascii=False, indent=2) + "\n")

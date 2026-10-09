@@ -2300,7 +2300,7 @@ Start the host service from the repository root in a persistent terminal:
 ```sh
 .venv/bin/python -m env_factory.code_agent_runtime \
   --host 127.0.0.1 --port 55794 --model gpt-6.1-sol \
-  --workers 6 --timeout 180 --output output/code_agent_runtime_service
+  --workers 1 --timeout 180 --output output/code_agent_runtime_service
 ```
 
 The service writes `connection.json` and a mode-600 `token` file. Configure local
@@ -2312,7 +2312,9 @@ Do not put the token in source control, command arguments or generated artifacts
 Restarting with the same output directory reuses the token; SIGTERM stops the
 service and its active evaluation processes. An authenticated `GET /health`
 reports the backend and configured model. Keep this service running for the whole
-pipeline batch. Size its bounded worker pool for concurrent pipeline consumers.
+pipeline batch. Start with one service worker and one generation/build worker
+per stage to limit overlapping model demand. Generation calibration also runs
+one case at a time; increase concurrency only after capacity has been measured.
 
 Docker Desktop can reach this loopback service using `host.docker.internal`;
 container launchers substitute the container URL. Other Docker installations
