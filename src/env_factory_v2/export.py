@@ -79,7 +79,8 @@ def verify_container(output, *, image, agent=None):
             token_path.chmod(0o644)
             url = agent.base_url.replace('127.0.0.1', 'host.docker.internal').replace('localhost', 'host.docker.internal')
             args += ['--mount', f'type=bind,src={token_path.resolve()},dst=/bridge-token,readonly',
-                     '-e', 'V2_BRIDGE_URL=' + url, '-e', 'V2_BRIDGE_TOKEN_FILE=/bridge-token']
+                     '-e', 'V2_BRIDGE_URL=' + url, '-e', 'V2_BRIDGE_TOKEN_FILE=/bridge-token',
+                     '-e', 'V2_BRIDGE_TRANSPORT_TIMEOUT=' + str(agent.timeout)]
         else:
             args += ['--network=none']
         run = subprocess.run(args + [identity, 'python', '-m', 'env_factory_v2', 'container-check', '/sandbox/contract.json'],

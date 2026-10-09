@@ -15,6 +15,28 @@ def native(tmp_path):
     return NativeCodeAgent(base_url='http://127.0.0.1:9999/v1', token='test-only-token-000000000000000000', evidence_root=tmp_path)
 
 
+def test_connection_budget_reaches_container_environment(tmp_path, monkeypatch):
+    from env_factory_v2.__main__ import environment_agent
+    token = tmp_path / 'token'
+    token.write_text('test-only-token-000000000000000000')
+    connection = tmp_path / 'connection.json'
+    connection.write_text(json.dumps({'backend': 'codex', 'model': 'gpt-6.1-sol',
+        'base_url': 'http://127.0.0.1:9999/v1', 'token_file': str(token), 'timeout_seconds': 240}))
+    agent = NativeCodeAgent.from_connection(connection, evidence_root=tmp_path)
+    assert agent.timeout == 255
+    monkeypatch.setenv('V2_BRIDGE_URL', agent.base_url)
+    monkeypatch.setenv('V2_BRIDGE_TOKEN_FILE', str(token))
+    monkeypatch.setenv('V2_BRIDGE_TRANSPORT_TIMEOUT', str(agent.timeout))
+    assert environment_agent().timeout == 255
+
+
+@pytest.mark.parametrize('timeout', [True, 0, -1, float('inf'), float('nan'), 616])
+def test_native_transport_rejects_unbounded_or_invalid_timeout(tmp_path, timeout):
+    with pytest.raises(ValueError, match='timeout'):
+        NativeCodeAgent(base_url='http://127.0.0.1:9999/v1',
+            token='test-only-token-000000000000000000', timeout=timeout, evidence_root=tmp_path)
+
+
 def payload():
     return {'contract_identity': 'test-contract', 'field': {'criteria': [{'id': 'facts'}]},
             'authoritative_facts': {'ids': ['I1']}}

@@ -68,6 +68,7 @@ def main():
                 'planned': 20, 'mix': {'direct': 4, 'simple': 4, 'ordinary': 4, 'complex': 8},
                 'model': 'gpt-6.1-sol', 'concurrency': 1, 'repairs': 1, 'docker': True,
                 'sample_timeout_seconds': args.sample_timeout, 'platform_identity': frozen,
+                'bridge_timeout_seconds': json.loads(args.connection.read_text()).get('timeout_seconds', 180),
                 'base_image': args.base_image, 'runner_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                 'policy': 'No platform changes within round. All failures remain in planned denominator. No terminal sample reruns.'}
     write(root / 'protocol.json', protocol)

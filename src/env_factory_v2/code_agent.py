@@ -6,6 +6,7 @@ import json
 import time
 import uuid
 import copy
+import math
 from pathlib import Path
 from urllib.request import Request, urlopen
 
@@ -27,6 +28,8 @@ class NativeCodeAgent:
         require(base_url.startswith(('http://127.0.0.1:', 'http://localhost:', 'http://host.docker.internal:')),
                 'native bridge must be local')
         require(isinstance(token, str) and len(token) >= 24, 'bridge token required')
+        require(type(timeout) in {int, float} and math.isfinite(timeout) and 0 < timeout <= 615,
+                'native transport timeout must be finite and within 615 seconds')
         self.base_url = base_url.rstrip('/')
         self.token = token
         self.timeout = timeout
@@ -44,8 +47,11 @@ class NativeCodeAgent:
         connection = json.loads(Path(path).read_text())
         require(connection.get('model') == MODEL and connection.get('backend') == 'codex', 'unexpected native bridge model/backend')
         token = Path(connection['token_file']).read_text().strip()
+        budget = connection.get('timeout_seconds', 180)
+        require(type(budget) in {int, float} and math.isfinite(budget) and 0 < budget <= 600,
+                'native bridge budget must be finite and within 600 seconds')
         return cls(base_url=connection['container_base_url' if container else 'base_url'],
-                   token=token, evidence_root=evidence_root)
+                   token=token, timeout=budget + 15, evidence_root=evidence_root)
 
     def ask(self, role, payload, schema):
         validate_schema(schema)

@@ -20,6 +20,7 @@ def environment_agent():
         return None
     return NativeCodeAgent(base_url=os.environ['V2_BRIDGE_URL'],
         token=Path(os.environ['V2_BRIDGE_TOKEN_FILE']).read_text().strip(),
+        timeout=float(os.environ.get('V2_BRIDGE_TRANSPORT_TIMEOUT', '180')),
         evidence_root='/tmp/v2-native-evidence')
 
 
