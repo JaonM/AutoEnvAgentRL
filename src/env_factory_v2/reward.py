@@ -26,8 +26,10 @@ def _key(value):
     return (type(value).__name__, value)
 
 
-def complete_retrieval(sandbox, tool_id):
-    records = [record for record in sandbox.trace if record.get('tool') == tool_id and record.get('status') == 'ok']
+def complete_retrieval(sandbox, tool_id, *, query_identity=None, state_version=None):
+    records = [record for record in sandbox.trace if record.get('tool') == tool_id and record.get('status') == 'ok'
+               and (query_identity is None or record['result']['query_identity'] == query_identity)
+               and (state_version is None or record['result']['state_version'] == state_version)]
     groups = {}
     for record in records:
         page = record['result']

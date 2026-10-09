@@ -99,6 +99,19 @@ class Sandbox:
         self._advance()
         require(isinstance(question, str) and question.strip(), 'a user question/proposal is required')
         resolved = self.resolve(proposal) if proposal is not None else None
+        user_stage = self.user.stages.get(stage, {})
+        if user_stage.get('kind') == 'choice' and self.tools[user_stage['source_tool']].get('complete_retrieval'):
+            from .reward import complete_retrieval
+            observation = self.observations.get(source_id)
+            require(observation is not None and observation['tool'] == user_stage['source_tool'],
+                    'choice must use an actual observed menu')
+            menu = observation['result']
+            require(menu['state_version'] == self.version
+                    and len(menu['items']) == menu['total']
+                    and menu['next_cursor'] is None
+                    and complete_retrieval(self, user_stage['source_tool'],
+                        query_identity=menu['query_identity'], state_version=self.version),
+                    'choice requires the complete current observed menu before selection')
         result = self.user.respond(stage, observations=self.observations, tools=self.tools,
                                    proposal=resolved, source_id=source_id)
         self.trace.append({'kind': 'user', 'stage': stage, 'question': question, 'proposal': resolved,

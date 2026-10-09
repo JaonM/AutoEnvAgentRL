@@ -412,4 +412,6 @@ def public_tool(tool, rules):
            if tool['kind'] == 'query' else 'Commits all declared updates atomically only after exact user approval.'))
     if any(binding.get('recency') == 'latest' for binding in tool.get('result_bindings', [])):
         published['description'] += ' Bindings with recency=latest must reference the most recent successful business tool call; user/time/state/collect events do not replace it.'
+    if tool.get('complete_retrieval'):
+        published['description'] += ' Complete retrieval is mandatory. Before a user choice, retrieve all pages and provide a complete current menu from one unchanged query; later reads cannot repair an earlier choice.'
     return published

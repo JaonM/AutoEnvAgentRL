@@ -217,9 +217,24 @@ branches allow successful refusal/no-write outcomes. Exactly applicable business
 obligations must be preserved, never require an inactive branch's tools. Default
 requires all declared tools and user stages. Unauthorized protected writes always
 prevent full success. Retrieval tools marked complete_retrieval require every
-page of one unchanged query before full credit. Direct has zero business tools,
-stages and tables; simple has one tool; multistep has at least two tools and an
+page of one unchanged query before full credit.
+When such a tool supplies a user choice, retrieve and collect the entire menu
+BEFORE that user turn. The source_id must identify a complete menu from the
+current state and the same query; later reads cannot repair an earlier choice.
+An incomplete or stale menu raises `choice requires the complete current observed menu before selection`.
+Tools without complete_retrieval retain their declared partial-menu behavior.
+Direct has zero business tools, stages and tables; simple has one tool; multistep has at least two tools and an
 actual result_binding. No padding to satisfy these requirements.
+
+Answer meanings distinguish CURRENT STATE from THIS EXECUTION. A historical
+paid/registered/settled flag does not prove this episode submitted a transaction.
+For an answer about whether the current authorized transaction committed, use
+`user_state.regions.STAGE == "consent.consumed"`: consent is consumed only after
+a successful atomic commit, never on approval alone or a rejected write. Decline,
+revocation, and unfinished approval therefore mean false even if the initial
+record was already paid. For answers about current record state instead, expose
+that record through actual queries and grade its current value. Include a no-write
+case with an already-completed initial record to distinguish these two meanings.
 
 limits: {max_actions:1..4096}. User turns, business calls and waits consume budget.
 time: {base:timezone-aware ISO datetime,seconds_per_action:0..86400}.
