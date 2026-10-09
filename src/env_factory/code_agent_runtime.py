@@ -1,12 +1,14 @@
 """Authenticated local JSON inference bridge to isolated Codex CLI sessions.
 
 The model is fixed by the operator, never by task data. No API-provider fallback,
-shared conversation, or cached judgment is used here. Containers receive only a
+shared conversation is used. Explicit validation dependencies may reuse a verified
+completion within one caller-scoped validation run; ordinary calls stay fresh. Containers receive only a
 bridge token, not the host's Codex credentials.
 """
 from __future__ import annotations
 
 import argparse
+from collections import OrderedDict
 import copy
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -15,6 +17,7 @@ import math
 import os
 from pathlib import Path
 import secrets
+import re
 import signal
 import subprocess
 import tempfile
@@ -23,7 +26,7 @@ import time
 import uuid
 
 from env_factory.generation.agent_cli import command, native_failure
-from env_factory.runtime_llm import RuntimeLLMClient, RuntimeLLMError
+from env_factory.runtime_llm import RuntimeLLMClient, RuntimeLLMError, validate_judgment_result
 
 _ACTIVE = set()
 _ACTIVE_LOCK = threading.Lock()
@@ -177,6 +180,75 @@ def _run_codex_once(messages, schema, *, model, timeout, evidence_root):
             'usage': completed[0].get('usage', {}) if len(completed) == 1 else {}}, ensure_ascii=False, indent=2)+'\n')
 
 
+class ValidationDependencies:
+    """Bounded host memory; no author-writable files can supply cached verdicts."""
+
+    def __init__(self, *, max_entries=2048, max_bytes=32 * 1024 * 1024, ttl=7200):
+        self.entries, self.bytes = OrderedDict(), 0
+        self.max_entries, self.max_bytes, self.ttl = max_entries, max_bytes, ttl
+        self.lock = threading.RLock()
+
+    def get(self, key):
+        with self.lock:
+            item = self.entries.get(key)
+            if item is None:
+                return None
+            if time.monotonic() - item[0] > self.ttl:
+                self.bytes -= self.entries.pop(key)[1]
+                return None
+            self.entries.move_to_end(key)
+            if item[2].get('conflicting_judgments'):
+                raise RuntimeLLMError('Conflicting native validation judgments')
+            return copy.deepcopy(item[2])
+
+    def put(self, key, response):
+        conflict = False
+        with self.lock:
+            previous = self.entries.get(key)
+            if previous and time.monotonic() - previous[0] <= self.ttl:
+                old = previous[2]
+                conflict = bool(old.get('conflicting_judgments')) or (
+                    self.verdict(old) != self.verdict(response))
+                if conflict:
+                    response = {'conflicting_judgments': True}
+            size = len(json.dumps(response, ensure_ascii=False).encode())
+            if size > self.max_bytes:
+                return
+            if key in self.entries:
+                self.bytes -= self.entries.pop(key)[1]
+            self.entries[key] = (time.monotonic(), size, copy.deepcopy(response))
+            self.bytes += size
+            while len(self.entries) > self.max_entries or self.bytes > self.max_bytes:
+                _, old = self.entries.popitem(last=False)
+                self.bytes -= old[1]
+        if conflict:
+            raise RuntimeLLMError('Conflicting native validation judgments')
+
+    @staticmethod
+    def verdict(response):
+        value = json.loads(response['choices'][0]['message']['content'])
+        return (value.get('label'), {key: item.get('satisfied')
+                for key, item in value.get('criterion_results', {}).items()})
+
+
+def validation_dependency(body):
+    value = body.get('validation_dependency')
+    if value is None:
+        return None
+    if (not isinstance(value, dict) or set(value) != {'scope', 'context_hash', 'label_scores', 'criterion_ids', 'reuse'}
+            or type(value['reuse']) is not bool
+            or not isinstance(value['scope'], str) or re.fullmatch('[a-f0-9]{32}', value['scope']) is None
+            or not isinstance(value['context_hash'], str) or re.fullmatch('[a-f0-9]{64}', value['context_hash']) is None
+            or not isinstance(value['label_scores'], dict) or len(value['label_scores']) > 64
+            or any(not isinstance(k, str) or not k or type(v) not in (int, float) or not math.isfinite(v)
+                   for k, v in value['label_scores'].items())
+            or not isinstance(value['criterion_ids'], list) or len(value['criterion_ids']) > 64
+            or any(not isinstance(item, str) or not item for item in value['criterion_ids'])
+            or len(set(value['criterion_ids'])) != len(value['criterion_ids'])):
+        raise ValueError('invalid validation dependency')
+    return value
+
+
 class CodeAgentServer(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -186,6 +258,7 @@ class CodeAgentServer(ThreadingHTTPServer):
         self.token, self.model, self.timeout = token, model, timeout
         self.slots = threading.BoundedSemaphore(workers)
         self.evidence_root, self.runner = Path(evidence_root), runner
+        self.dependencies = ValidationDependencies()
         super().__init__(address, Handler)
 
 
@@ -236,13 +309,49 @@ class Handler(BaseHTTPRequestHandler):
             schema = fmt['json_schema']['schema']
             if fmt['type'] != 'json_schema' or not isinstance(schema, dict) or schema.get('type') != 'object':
                 raise ValueError('schema')
-        except (OSError, ValueError, TypeError, KeyError):
+            dependency = validation_dependency(body)
+        except (OSError, ValueError, TypeError, KeyError, OverflowError):
             return self.reply(400, {'error': 'invalid_request'})
+        cache_key = None
+        if dependency is not None:
+            # Exact messages, schema, model and runtime/evidence digest must all
+            # match; the caller cannot replace the server's computed key.
+            cache_key = hashlib.sha256(json.dumps({'model': self.server.model,
+                'messages': messages, 'schema': schema,
+                'dependency': {key: value for key, value in dependency.items() if key != 'reuse'}},
+                ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+            try:
+                cached = self.server.dependencies.get(cache_key) if dependency['reuse'] else None
+            except RuntimeLLMError:
+                return self.reply(502, {'error': 'conflicting_validation_dependencies'})
+            if cached is not None:
+                cached['usage'] = {}  # A dependency does not consume a new native completion.
+                cached['validation_dependency'] = {**dependency, 'reused': True}
+                try:
+                    with self.server.dependencies.lock:
+                        self.server.evidence_root.mkdir(parents=True, exist_ok=True)
+                        with (self.server.evidence_root / 'validation_dependency_reuse.jsonl').open('a') as log:
+                            log.write(json.dumps({'origin_response_id': cached['id'], 'key': cache_key,
+                                'scope': dependency['scope'], 'context_hash': dependency['context_hash'],
+                                'model': self.server.model, 'at': time.time()}) + '\n')
+                except OSError:
+                    return self.reply(502, {'error': 'validation_dependency_audit_unavailable'})
+                return self.reply(200, cached)
         if not self.server.slots.acquire(blocking=False):
             return self.reply(429, {'error': 'code_agent_busy'})
         try:
             response = self.server.runner(messages, schema, model=self.server.model,
                 timeout=self.server.timeout, evidence_root=self.server.evidence_root)
+            if cache_key is not None:
+                value = json.loads(response['choices'][0]['message']['content'])
+                if (response.get('backend') != 'codex_cli' or response.get('model') != self.server.model
+                        or not isinstance(response.get('id'), str) or not response['id']):
+                    raise RuntimeLLMError('invalid native response identity')
+                RuntimeLLMClient._validate_response(value, schema)
+                validate_judgment_result(value, label_scores=dependency['label_scores'],
+                                         criterion_ids=dependency['criterion_ids'])
+                self.server.dependencies.put(cache_key, response)
+                response['validation_dependency'] = {**dependency, 'reused': False}
             self.reply(200, response)
         except RuntimeLLMError as exc:
             self.reply(503 if exc.failure_code == 'CODE_AGENT_CAPACITY' else 502, {

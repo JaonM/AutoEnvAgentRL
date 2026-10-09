@@ -563,7 +563,7 @@ validate_training_readiness() {
   echo "执行 RL 训练素材环境准备就绪硬门禁"
   SANDBOX_TRAINER_API_KEY="${SANDBOX_TRAINER_API_KEY:-envfactory-readiness-key}" \
     python3 "$project_dir/scripts/sandbox/validate_training_readiness.py" \
-      --root "$output_path" --output "$output_path/training_readiness.json"
+      --root "$output_path" --output "$output_path/training_readiness.json" --with-acceptance
 }
 
 validate_agentic_training_value() {
@@ -1151,15 +1151,15 @@ Path(sys.argv[2]).write_text(
 PY
 }
 
-restore_final_acceptance_evidence() {
+validate_final_acceptance_and_readiness() {
   local acceptance_log acceptance_status
   acceptance_log="$(mktemp "${TMPDIR:-/tmp}/sandbox-final-acceptance.XXXXXX")"
   set +e
-  (cd "$output_path" && SANDBOX_MUTATION_MODE=disabled bash ./acceptance.sh) >"$acceptance_log" 2>&1
+  SANDBOX_MUTATION_MODE=disabled validate_training_readiness >"$acceptance_log" 2>&1
   acceptance_status=$?
   set -e
   if [[ "$acceptance_status" -ne 0 ]]; then
-    echo "mutation testing 后的最终基线验收失败，退出码：$acceptance_status" >&2
+    echo "最终基线验收或训练就绪检查失败，退出码：$acceptance_status" >&2
     cp "$acceptance_log" "$output_path/acceptance_failure.log"
     cat "$acceptance_log" >&2
     rm -f "$acceptance_log"
@@ -1218,6 +1218,11 @@ restore_and_reject_platform_changes() {
 }
 
 validate_delivery() {
+  # Scope dependency reuse to this one validation attempt. Live application
+  # factories and independent review/calibration do not opt into reuse.
+  local SANDBOX_VALIDATION_SCOPE
+  SANDBOX_VALIDATION_SCOPE="$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
+  export SANDBOX_VALIDATION_SCOPE
   local missing=()
   local file
   for file in "${required_sandbox_files[@]}"; do
@@ -1273,15 +1278,14 @@ PY
   validate_runtime_genericity || return $?
   validate_outer_conformance || return $?
   validate_mutation_tests "$baseline_context_digest" || return $?
-  set_build_phase "training_readiness" "" "${current_attempt:-0}" "${current_defect_ids:-}" "正在验证 RL 训练素材环境准备就绪性"
-  validate_training_readiness || return $?
   set_build_phase "agentic_training_value" "" "${current_attempt:-0}" "${current_defect_ids:-}" "正在验证 Agentic RL 训练素材价值"
   validate_agentic_training_value || return $?
   # Mutation runs execute acceptance.sh repeatedly and deliberately leave the
-  # last mutant's failed evidence behind.  Re-run a clean baseline before the
-  # semantic reviewer; merely normalizing the mutant envelope would preserve
-  # false failure evidence and invite an unnecessary model repair.
-  restore_final_acceptance_evidence || return $?
+  # last mutant's failed evidence behind. Run a clean baseline once and share
+  # its in-memory scenario results with readiness; retain independent replays
+  # and readiness-specific checks before the semantic reviewer.
+  set_build_phase "training_readiness" "" "${current_attempt:-0}" "${current_defect_ids:-}" "正在合并执行最终基线验收与训练就绪检查"
+  validate_final_acceptance_and_readiness || return $?
   validate_dockerfile_security || return $?
   if [[ "$runtime" == "docker" ]]; then
     "$project_dir/scripts/build_docker_sandbox_image.sh" --context "$output_path" --pin-only

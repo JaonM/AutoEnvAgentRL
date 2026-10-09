@@ -209,3 +209,157 @@ def test_optional_fields_are_restored_without_relaxing_original_validation():
     RuntimeLLMClient._validate_response(restored,original)
     with pytest.raises(RuntimeLLMError):
         RuntimeLLMClient._validate_response(bridge.restore_optional_fields({'label':None},original),original)
+
+
+def dependency(scope='a' * 32, context='b' * 64):
+    return {'scope': scope, 'context_hash': context, 'reuse': True, 'label_scores': {'pass': 1, 'fail': 0},
+            'criterion_ids': []}
+
+
+def test_only_explicit_exact_validation_dependencies_reuse_native_response(server):
+    srv, calls = server
+    client = client_for(srv)
+    messages = [{'role': 'user', 'content': 'negative'}]
+    with capture_runtime_llm_trace() as trace:
+        first = client.json_chat(messages, response_schema=SCHEMA, validation_dependency=dependency())
+        second = client.json_chat(messages, response_schema=SCHEMA, validation_dependency=dependency())
+    assert first == second == {'label': 'fail'}
+    assert len(calls) == 1
+    assert trace[0]['response_id_sha256'] == trace[1]['response_id_sha256']
+    assert trace[0]['validation_dependency_reused'] is False
+    assert trace[1]['validation_dependency_reused'] is True
+    assert summarize_runtime_llm_trace(trace)['validation_dependency_reuses'] == 1
+    audit = json.loads((srv.evidence_root / 'validation_dependency_reuse.jsonl').read_text())
+    assert audit['origin_response_id'] == '1'
+    assert srv.token not in json.dumps(audit)
+    # Live episodes, semantic calibration and independent reviewers omit opt-in.
+    for _ in range(2):
+        client.json_chat(messages, response_schema=SCHEMA)
+    assert len(calls) == 3
+
+
+@pytest.mark.parametrize('change', ['scope', 'context', 'messages', 'schema', 'criteria', 'mapping'])
+def test_changed_dependency_inputs_require_another_native_completion(server, change):
+    from copy import deepcopy
+    srv, calls = server
+    client, item, schema = client_for(srv), dependency(), deepcopy(SCHEMA)
+    messages = [{'role': 'user', 'content': 'positive'}]
+    client.json_chat(messages, response_schema=schema, validation_dependency=item)
+    if change == 'scope': item['scope'] = 'c' * 32
+    if change == 'context': item['context_hash'] = 'c' * 64
+    if change == 'messages': messages[0]['content'] = 'negative'
+    if change == 'schema': schema['properties']['label']['description'] = 'Changed schema'
+    if change == 'mapping': item['label_scores']['pass'] = .5
+    if change == 'criteria':
+        item['criterion_ids'] = ['business_rule']
+        schema['properties']['criterion_results'] = {'type': 'object', 'properties': {
+            'business_rule': {'type': 'object', 'properties': {'satisfied': {'type': 'boolean'}},
+                              'required': ['satisfied']}}, 'required': ['business_rule']}
+        schema['required'].append('criterion_results')
+        # Invalid output must fail rather than reuse the old schema's verdict.
+        with pytest.raises(RuntimeLLMError):
+            client.json_chat(messages, response_schema=schema, validation_dependency=item)
+    else:
+        client.json_chat(messages, response_schema=schema, validation_dependency=item)
+    assert len(calls) == 2
+
+
+def test_failed_or_inconsistent_judgments_are_never_cached(server):
+    srv, calls = server
+    original = srv.runner
+    attempt = [0]
+    def runner(*args, **kwargs):
+        response = original(*args, **kwargs)
+        attempt[0] += 1
+        if attempt[0] == 1:
+            response['choices'][0]['message']['content'] = json.dumps({'label': 'pass',
+                'criterion_results': {'rule': {'satisfied': False}}})
+        else:
+            response['choices'][0]['message']['content'] = json.dumps({'label': 'pass',
+                'criterion_results': {'rule': {'satisfied': True}}})
+        return response
+    srv.runner = runner
+    schema = {'type': 'object', 'properties': {'label': SCHEMA['properties']['label'],
+        'criterion_results': {'type': 'object', 'properties': {'rule': {'type': 'object',
+            'properties': {'satisfied': {'type': 'boolean'}}, 'required': ['satisfied']}}, 'required': ['rule']}},
+        'required': ['label', 'criterion_results']}
+    item = {**dependency(), 'criterion_ids': ['rule']}
+    client = client_for(srv)
+    with pytest.raises(RuntimeLLMError):
+        client.json_chat([{'role': 'user', 'content': 'positive'}], response_schema=schema, validation_dependency=item)
+    for _ in range(2):
+        result = client.json_chat([{'role': 'user', 'content': 'positive'}], response_schema=schema, validation_dependency=item)
+        assert result['criterion_results']['rule']['satisfied'] is True
+    assert len(calls) == 2
+
+
+def test_dependency_cache_is_bounded_expires_and_poisoned_labels_cannot_reappear(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(bridge.time, 'monotonic', lambda: clock[0])
+    cache = bridge.ValidationDependencies(max_entries=2, max_bytes=1000, ttl=10)
+    def response(label):
+        return {'choices': [{'message': {'content': json.dumps({'label': label})}}]}
+    for key in ['a', 'b', 'c']:
+        cache.put(key, response('pass'))
+    assert cache.get('a') is None
+    with pytest.raises(RuntimeLLMError, match='Conflicting'):
+        cache.put('b', response('fail'))
+    with pytest.raises(RuntimeLLMError, match='Conflicting'):
+        cache.get('b')
+    with pytest.raises(RuntimeLLMError, match='Conflicting'):
+        cache.put('b', response('pass'))
+    clock[0] = 11
+    assert cache.get('b') is None and cache.get('c') is None
+    assert cache.bytes == 0
+
+
+@pytest.mark.parametrize('reuse', [False, True])
+def test_runtime_opt_in_uses_bridge_across_evaluator_instances(server, tmp_path, monkeypatch, reuse):
+    from env_factory.sandbox_runtime import ContractEvaluatorRuntime, EpisodeStore
+    from tests.runtime.test_validation_judgment_reuse import METRIC, CONTEXT
+    srv, calls = server
+    monkeypatch.setenv('SANDBOX_EVALUATOR_MOCK', '0')
+    monkeypatch.setenv('SANDBOX_LLM_BACKEND', 'codex')
+    monkeypatch.setenv('SANDBOX_LLM_API_KEY', srv.token)
+    monkeypatch.setenv('SANDBOX_LLM_MODEL', srv.model)
+    monkeypatch.setenv('SANDBOX_LLM_BASE_URL', f'http://127.0.0.1:{srv.server_port}/v1')
+    monkeypatch.setenv('SANDBOX_VALIDATION_SCOPE', 'a' * 32)
+    for number in range(2):
+        store = EpisodeStore(tmp_path / f'phase-{number}.sqlite3')
+        evaluator = ContractEvaluatorRuntime(store, reuse_across_resets=reuse)
+        assert evaluator.json_judge(METRIC, CONTEXT, fallback={'label': 'fail'}, response_schema=SCHEMA) == {'label': 'pass'}
+    assert len(calls) == (1 if reuse else 2)
+
+
+def test_fresh_independent_judgment_cannot_hide_a_conflict_with_reused_dependency(server):
+    srv, calls = server
+    client, item = client_for(srv), dependency()
+    messages = [{'role': 'user', 'content': 'positive'}]
+    assert client.json_chat(messages, response_schema=SCHEMA, validation_dependency=item)['label'] == 'pass'
+    original = srv.runner
+    def changed(*args, **kwargs):
+        response = original(*args, **kwargs)
+        response['choices'][0]['message']['content'] = '{"label":"fail"}'
+        return response
+    srv.runner = changed
+    with pytest.raises(RuntimeLLMError):
+        client.json_chat(messages, response_schema=SCHEMA, validation_dependency={**item, 'reuse': False})
+    assert len(calls) == 2
+    with pytest.raises(RuntimeLLMError):
+        client.json_chat(messages, response_schema=SCHEMA, validation_dependency=item)
+    assert len(calls) == 2  # Conflict does not resurrect the earlier pass.
+
+
+def test_same_label_does_not_hide_conflicting_criterion_observations():
+    cache = bridge.ValidationDependencies()
+    def response(satisfied, reason):
+        value = {'label': 'fail', 'criterion_results': {
+            'rule': {'satisfied': satisfied, 'reason': reason}}}
+        return {'choices': [{'message': {'content': json.dumps(value)}}]}
+    cache.put('key', response(False, 'first explanation'))
+    cache.put('key', response(False, 'equivalent explanation'))
+    assert cache.get('key')
+    with pytest.raises(RuntimeLLMError, match='Conflicting'):
+        cache.put('key', response(True, 'contradictory observation'))
+    with pytest.raises(RuntimeLLMError, match='Conflicting'):
+        cache.get('key')

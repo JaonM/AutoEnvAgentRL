@@ -2242,7 +2242,7 @@ For query tasks that promise obstacle reporting, zero or ambiguous matches requi
 
 Semantic judges that declare tool_results also receive observed_tool_failures from already-recorded injected-fault events. These contain the affected tool, status, occurrence, phase and commit outcome. The future fault schedule and unused private identifiers are excluded. Recovery explanations should reflect these actual outcomes; a successful retry does not erase the earlier failure.
 
-### Local validation judgment reuse
+### Validation judgment reuse
 
 A single in-process live delivery validation may reuse a completed model judgment
 only for identical metric, rubric, criteria, schema, runtime evidence and evaluator
@@ -2252,6 +2252,31 @@ records `semantic_judgment_reuse` with the original judgment identifiers. Reused
 are not independent model samples. Generated sandbox servers and normal training
 episodes keep episode-isolated judgments by default; separate validation invocations
 do not share this cache.
+
+The construction workflow creates a fresh `SANDBOX_VALIDATION_SCOPE` for each
+delivery validation attempt. Acceptance and readiness scenario execution may also
+reuse verified native completions across processes through the host bridge. The
+bridge derives the key from the exact model, messages, schema, scope, runtime and
+evidence digest, criterion IDs and label mapping. Its bounded in-memory store
+expires entries after two hours and never loads judgments from task files. A hit
+retains the original native response identity, reports zero new token usage and
+writes a host audit record. This is dependency reuse, not another independent
+model judgment. Changed business evidence still requires a new completion.
+
+Readiness determinism checks explicitly disable reuse. Fresh judgments in the
+same scope are compared with earlier results: a changed label or criterion
+satisfaction invalidates the dependency and fails validation. Calibration and
+independent source review remain independent. Reported reuse counts measure saved
+calls, not proven wall-clock speedup or improved task yield.
+
+The final baseline acceptance and training-readiness gate run together after
+mutation checks. Acceptance executes the current contract scenarios once and
+passes their complete outcomes directly in memory to readiness. Readiness
+checks the exact scenario list against the current task contract and uses those
+outcomes for reward separation. It still runs independent determinism replays,
+observation privacy, state causality, unrelated-state preservation and episode
+isolation checks. No saved acceptance file supplies shared results. Standalone
+acceptance and readiness commands remain available for focused diagnosis.
 
 Private-data sensitivity probes compare tool HTTP statuses and complete business
 payloads across repeated runs. A platform error envelope's per-request correlation
@@ -2265,7 +2290,7 @@ hiding real result changes or accepting a stale answer.
 Task authoring, sandbox implementation and independent source review already use
 Code Agent sessions. Set `SANDBOX_LLM_BACKEND=codex` to route semantic scoring,
 independent calibration and model-driven user simulation through an authenticated
-host service as well. Each request starts a fresh, read-only Codex CLI session with
+host service as well. Each uncached request starts a fresh, read-only Codex CLI session with
 shell, search and delegation disabled. Native completion and the original response
 schema are required. A failed invocation is an evaluator availability error, never
 a passing judgment; this backend does not fall back to an external model API.

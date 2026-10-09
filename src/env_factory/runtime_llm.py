@@ -28,6 +28,20 @@ class RuntimeLLMError(RuntimeError):
         self.request_id = request_id
 
 
+def validate_judgment_result(value, *, label_scores, criterion_ids):
+    """One shared consistency check for local and bridge-held judgments."""
+    if label_scores and value.get('label') not in label_scores:
+        raise RuntimeLLMError('evaluator label is not declared')
+    if criterion_ids and 'criterion_results' in value:
+        observations = value.get('criterion_results')
+        if not isinstance(observations, dict) or set(observations) != set(criterion_ids):
+            raise RuntimeLLMError('evaluator criterion IDs do not match contract')
+        if (label_scores.get(value.get('label')) == max(label_scores.values(), default=None)
+                and not all(isinstance(item, dict) and item.get('satisfied') is True
+                            for item in observations.values())):
+            raise RuntimeLLMError('full-credit label contradicts criterion evidence')
+
+
 _TRACE: ContextVar[list[dict[str, Any]] | None] = ContextVar(
     "envfactory_runtime_llm_trace", default=None
 )
@@ -66,6 +80,7 @@ def summarize_runtime_llm_trace(
         "version": "1.0",
         "responses": len(records),
         "mock_responses": sum(record.get("mock") is True for record in records),
+        "validation_dependency_reuses": sum(record.get("validation_dependency_reused") is True for record in records),
         "models": dict(sorted(models.items())),
         "backends": dict(sorted(backends.items())),
         "usage": dict(sorted(usage.items())),
@@ -117,6 +132,7 @@ class RuntimeLLMClient:
     def __init__(self, config: RuntimeLLMConfig | None = None, *, mock_handler: Callable[[Sequence[Mapping[str, Any]], Mapping[str, Any]], dict[str, Any]] | None = None) -> None:
         self.config = config or RuntimeLLMConfig.from_env()
         self.mock_handler = mock_handler
+        self.last_response_metadata = {}
 
     def json_chat(
         self,
@@ -124,7 +140,9 @@ class RuntimeLLMClient:
         *,
         response_schema: Mapping[str, Any],
         semantic_validator: Callable[[Mapping[str, Any]], None] | None = None,
+        validation_dependency: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
+        self.last_response_metadata = {}
         if not messages:
             raise RuntimeLLMError("messages must not be empty")
         if self.config.mock:
@@ -149,6 +167,8 @@ class RuntimeLLMClient:
         if self.config.backend == 'codex':
             body['response_format'] = {'type':'json_schema', 'json_schema':{
                 'name':'runtime_response', 'strict':True, 'schema':dict(response_schema)}}
+            if validation_dependency is not None:
+                body['validation_dependency'] = dict(validation_dependency)
         if self.config.model == "kimi-k3":
             effort = os.getenv("KIMI_K3_REASONING_EFFORT", "").strip()
             if effort:
@@ -171,6 +191,12 @@ class RuntimeLLMClient:
                 if self.config.backend == 'codex' and (
                         payload.get('backend') != 'codex_cli' or payload.get('model') != self.config.model):
                     raise RuntimeLLMError('runtime Code Agent identity mismatch')
+                reused = payload.get('validation_dependency')
+                if isinstance(reused, dict) and reused.get('reused') is True:
+                    if (validation_dependency is None or validation_dependency.get('reuse') is not True
+                            or any(reused.get(key) != validation_dependency.get(key)
+                            for key in ('scope', 'context_hash', 'label_scores', 'criterion_ids'))):
+                        raise RuntimeLLMError('unexpected validation dependency response')
                 trace = _TRACE.get()
                 if trace is not None:
                     response_id = payload.get("id")
@@ -184,6 +210,8 @@ class RuntimeLLMClient:
                         } if isinstance(response_id, str) and response_id else {}),
                         "mock": False,
                         "backend": self.config.backend,
+                        **({'validation_dependency_reused': payload['validation_dependency'].get('reused') is True}
+                           if isinstance(payload.get('validation_dependency'), dict) else {}),
                     })
                 content = payload["choices"][0]["message"]["content"]
                 value = json.loads(content)
@@ -192,6 +220,11 @@ class RuntimeLLMClient:
                 self._validate_response(value, response_schema)
                 if semantic_validator is not None:
                     semantic_validator(value)
+                identity = payload.get('id')
+                self.last_response_metadata = {
+                    'validation_dependency_reused': isinstance(reused, dict) and reused.get('reused') is True,
+                    **({'response_id_sha256': hashlib.sha256(identity.encode()).hexdigest()}
+                       if isinstance(identity, str) and identity else {})}
                 return value
             except HTTPError as exc:
                 failure_code = request_id = None

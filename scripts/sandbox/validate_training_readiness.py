@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import copy
 import importlib.util
+import inspect
 import json
 import math
 import os
@@ -88,7 +89,7 @@ def reward_from_run(run: dict[str, Any]) -> float | None:
     return None
 
 
-def import_app(root: Path):
+def import_app(root: Path, *, reuse_validation_judgments=False):
     sys.path.insert(0, str(root))
     spec = importlib.util.spec_from_file_location("generated_sandbox_app", root / "app.py")
     if spec is None or spec.loader is None:
@@ -97,6 +98,8 @@ def import_app(root: Path):
     spec.loader.exec_module(module)
     if not hasattr(module, "create_app"):
         raise RuntimeError("generated app.py must expose create_app()")
+    if "reuse_validation_judgments" in inspect.signature(module.create_app).parameters:
+        return module.create_app(reuse_validation_judgments=reuse_validation_judgments)
     return module.create_app()
 
 
@@ -169,7 +172,7 @@ def preservation_probes(app, runner, scenario, goal, headers):
             "passed": all(case["passed"] for case in results)}
 
 
-def validate(root: Path) -> dict[str, Any]:
+def validate(root: Path, *, acceptance_runs=None) -> dict[str, Any]:
     task = load(root / "task.json")
     scenarios = task.get("acceptance_contract", {}).get("executable_scenarios", [])
     failures: list[dict[str, Any]] = []
@@ -225,7 +228,7 @@ def validate(root: Path) -> dict[str, Any]:
     # purpose; production runs can override the variable to exercise a real
     # evaluator endpoint.
     os.environ.setdefault("SANDBOX_EVALUATOR_MOCK", "1")
-    app = import_app(root)
+    app = import_app(root, reuse_validation_judgments=True)
     from sandbox_runtime import AcceptanceScenarioRunner  # imported from generated sandbox
     from sandbox_runtime import BusinessGoalEvaluator
     token = os.environ.get("SANDBOX_TRAINER_API_KEY", "envfactory-readiness-key")
@@ -234,14 +237,24 @@ def validate(root: Path) -> dict[str, Any]:
                                      business_snapshot=getattr(app, "business_snapshot", None),
                                      mutate_business_state=getattr(app, "mutate_business_state", None))
     runs: dict[str, list[dict[str, Any]]] = {}
-    for scenario in scenarios:
+    if acceptance_runs is not None and [item[0] for item in acceptance_runs] != scenarios:
+        raise ValueError('shared acceptance scenarios do not match the current contract')
+    evidence['scenario_execution'] = {
+        'source': 'current_in_process_acceptance' if acceptance_runs is not None else 'readiness',
+        'shared_scenarios': len(acceptance_runs) if acceptance_runs is not None else 0,
+        'independent_determinism_replays': 2 if any(s.get('kind') == 'goal_success' for s in scenarios) else 0,
+    }
+    for index, scenario in enumerate(scenarios):
         if not isinstance(scenario, dict) or scenario.get("kind") not in {"goal_success", "goal_failure", "noise_selection", "counterfactual"}:
             continue
         try:
-            result = runner.run(scenario)
+            result = copy.deepcopy(acceptance_runs[index][1]) if acceptance_runs is not None else runner.run(scenario)
             runs.setdefault(scenario["kind"], []).append(result)
         except Exception as exc:  # noqa: BLE001 - evidence gate
             failures.append({"gate": "scenario_execution", "scenario_id": scenario.get("scenario_id"), "message": str(exc)})
+    judgment_report = getattr(app, 'validation_judgment_report', None)
+    if callable(judgment_report):
+        evidence['semantic_judgment_reuse'] = judgment_report()
     success = reward_from_run(runs.get("goal_success", [{}])[0]) if runs.get("goal_success") else None
     failure = reward_from_run(runs.get("goal_failure", [{}])[0]) if runs.get("goal_failure") else None
     evidence["rewards"] = {"success": success, "failure": failure}
@@ -259,10 +272,19 @@ def validate(root: Path) -> dict[str, Any]:
     if runs.get("goal_success"):
         scenario = next(item for item in scenarios if item.get("kind") == "goal_success")
         try:
+            # Determinism is an independent repeatability check, so use a fresh
+            # evaluator with no validation dependency reuse, even when the outer
+            # workflow provides a shared validation scope.
+            app = import_app(root)
+            runner = AcceptanceScenarioRunner(app.handle, trainer_headers=auth,
+                business_snapshot=getattr(app, 'business_snapshot', None),
+                mutate_business_state=getattr(app, 'mutate_business_state', None))
             first = canonical(runner.run(scenario))
             second = canonical(runner.run(scenario))
-            evidence["determinism"] = first == second
-            if first != second:
+            repeated_rewards = [reward_from_run(first), reward_from_run(second)]
+            evidence['independent_rewards'] = repeated_rewards
+            evidence["determinism"] = first == second and repeated_rewards == [success, success]
+            if not evidence['determinism']:
                 failures.append({"gate": "determinism", "message": "same structured trajectory is not deterministic"})
             goal = (task_spec or {}).get("goal_contract", {})
             if goal.get("row_predicates"):
@@ -375,12 +397,33 @@ def validate(root: Path) -> dict[str, Any]:
     }
 
 
+def validate_with_acceptance(root: Path) -> dict[str, Any]:
+    """Share only trajectories produced now, in memory, by baseline acceptance."""
+    sys.path.insert(0, str(root))
+    os.environ.setdefault('SANDBOX_TRAINER_API_KEY', 'envfactory-readiness-key')
+    os.environ.setdefault('SANDBOX_EVALUATOR_MOCK', '1')
+    spec = importlib.util.spec_from_file_location('current_acceptance_runner', root / 'acceptance_runner.py')
+    if spec is None or spec.loader is None:
+        raise RuntimeError('cannot import acceptance runner')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    runs = []
+    if module.main(scenario_results=runs) != 0:
+        return {'training_ready': False, 'hard_gates_passed': False, 'live_rollout_verified': False,
+                'failed_gates': ['business_acceptance'], 'evidence': {},
+                'failures': [{'gate': 'business_acceptance', 'message': 'current baseline acceptance failed'}]}
+    return validate(root, acceptance_runs=runs)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--output", type=Path)
+    parser.add_argument('--with-acceptance', action='store_true',
+                        help='Run current baseline acceptance once and share its in-memory scenario results')
     args = parser.parse_args()
-    result = validate(args.root.resolve())
+    result = (validate_with_acceptance(args.root.resolve()) if args.with_acceptance
+              else validate(args.root.resolve()))
     output = args.output or args.root / "training_readiness.json"
     output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(result, ensure_ascii=False, indent=2))

@@ -94,14 +94,14 @@ class TaskHooks:
 ACCEPTANCE_RUNNER_SOURCE = '''#!/usr/bin/env python3
 """EnvFactory-owned contract acceptance; no task-specific code generation."""
 from __future__ import annotations
-import json, os, sys, tempfile
+import copy, json, os, sys, tempfile
 from pathlib import Path
 from app import create_app
 from sandbox_runtime import AcceptanceScenarioRunner, validate_json_schema
 
 ROOT = Path(__file__).resolve().parent
 
-def main() -> int:
+def main(*, scenario_results=None) -> int:
     contract = json.loads((ROOT / "BUILD_CONTRACT.json").read_text(encoding="utf-8"))
     result_path = ROOT / "acceptance_result.json"
     failure_path = ROOT / "acceptance_failure.log"
@@ -109,7 +109,7 @@ def main() -> int:
     evidence = []
     try:
         db_path = Path(tempfile.mkdtemp(prefix="envfactory-acceptance-")) / "episodes.sqlite3"
-        app = create_app(db_path=db_path)
+        app = create_app(db_path=db_path, reuse_validation_judgments=True)
         # This probe is part of baseline acceptance and kills bypass_trainer_auth.
         status, body, _ = app.handle("GET", "/v1/observation", None, {})
         if status != 401:
@@ -130,6 +130,8 @@ def main() -> int:
             raise AssertionError("contract has no executable scenarios")
         for scenario in scenarios:
             outcome = runner.run(scenario)
+            if scenario_results is not None:
+                scenario_results.append((copy.deepcopy(scenario), copy.deepcopy(outcome)))
             evidence.append({
                 "scenario_id": scenario.get("scenario_id"),
                 "status": "passed",
@@ -140,6 +142,7 @@ def main() -> int:
             "http_conformance": "skipped",
             "http_skip_reason": "validated through the in-process public application boundary",
             "scenarios": evidence,
+            "semantic_judgment_reuse": app.validation_judgment_report(),
         }
         result_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\\n", encoding="utf-8")
         return 0

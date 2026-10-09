@@ -422,7 +422,7 @@ class BuildWorkflowTest(unittest.TestCase):
             "validate_agentic_training_value || return $?\n  # Mutation runs execute acceptance.sh",
             workflow,
         )
-        self.assertIn("restore_final_acceptance_evidence || return $?\n  validate_dockerfile_security", workflow)
+        self.assertIn("validate_final_acceptance_and_readiness || return $?\n  validate_dockerfile_security", workflow)
         self.assertIn("from env_factory.tasks.task_portability import prepare_sandbox_task", workflow)
         self.assertIn("prepare_sandbox_task(", workflow)
 
