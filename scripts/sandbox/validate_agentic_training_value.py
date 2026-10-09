@@ -12,6 +12,7 @@ import math
 import os
 import re
 import sys
+import uuid
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -400,7 +401,7 @@ def probe_reference_data_reward_sensitivity(
     success_scenario: Mapping[str, Any], mutation: Mapping[str, Any] | list[Mapping[str, Any]],
     terminal_weight: float,
     metrics: list[Mapping[str, Any]] | None = None,
-    *, implementations=(),
+    *, implementations=(), _baselines=None,
 ) -> dict[str, Any]:
     """Keep the final answer fixed after changing an answer-bearing private input."""
     snapshot = getattr(app, "business_snapshot", None)
@@ -420,10 +421,27 @@ def probe_reference_data_reward_sensitivity(
         for step in steps
     ):
         return {"proved": False, "reason": "success trajectory lacks reset or answer"}
+    signature = None
+    reused_baseline = False
+    baseline_identity = uuid.uuid4().hex
     try:
-        baseline = runner.run(scenario)
-        repeated_baseline = runner.run(scenario)
-        baseline_state = snapshot()
+        if _baselines is not None:
+            # This store exists only inside one candidate-probe invocation. A
+            # cheap real reset verifies that a previous mutation did not change
+            # the initial fixture before its successful trajectories are shared.
+            runner.run({'steps': copy.deepcopy(steps[:reset_index + 1]), 'assertions': []})
+            signature = (copy.deepcopy(scenario), copy.deepcopy(snapshot()),
+                         copy.deepcopy(implementations), tuple(os.getenv(name, '') for name in (
+                             'SANDBOX_EVALUATOR_MOCK', 'SANDBOX_LLM_BACKEND',
+                             'SANDBOX_LLM_BASE_URL', 'SANDBOX_LLM_MODEL', 'SANDBOX_VALIDATION_SCOPE')))
+            reused_baseline = _baselines.get('app') is app and _baselines.get('signature') == signature
+        if reused_baseline:
+            baseline, repeated_baseline, baseline_state = copy.deepcopy(_baselines['observations'])
+            baseline_identity = _baselines['identity']
+        else:
+            baseline = runner.run(scenario)
+            repeated_baseline = runner.run(scenario)
+            baseline_state = copy.deepcopy(snapshot())
     except Exception as exc:
         return {"proved": False, "reason": type(exc).__name__}
     baseline_rewards = [reward_of(baseline), reward_of(repeated_baseline)]
@@ -440,6 +458,11 @@ def probe_reference_data_reward_sensitivity(
             "baseline_rewards": baseline_rewards,
             "baseline_tool_results_stable": baseline_tool_results_stable,
         }
+    if _baselines is not None and not reused_baseline:
+        _baselines.update(app=app, signature=signature, identity=baseline_identity,
+                          observations=copy.deepcopy((baseline, repeated_baseline, baseline_state)))
+    baseline_dependency = {'identity': baseline_identity, 'reused': reused_baseline,
+                           'scope': 'current_candidate_probe_run'}
     variants = [copy.deepcopy(mutation)]
     single = mutation if isinstance(mutation, Mapping) else {}
     table = single.get("table")
@@ -507,6 +530,7 @@ def probe_reference_data_reward_sensitivity(
             "mutation": variant,
             "baseline_rewards": baseline_rewards,
             "baseline_tool_results_stable": baseline_tool_results_stable,
+            "baseline_dependency": baseline_dependency,
             "changed_reward": changed_reward,
             "changed_rewards": changed_rewards,
             "required_drop": required_drop,
@@ -524,6 +548,7 @@ def probe_reference_data_reward_sensitivity(
                     "baseline_reward": baseline_reward,
                     "baseline_rewards": baseline_rewards,
                     "baseline_tool_results_stable": baseline_tool_results_stable,
+                    "baseline_dependency": baseline_dependency,
                     "variants_tried": variants_tried, "execution_errors": execution_errors}
 
 
@@ -544,6 +569,7 @@ def probe_reference_data_reward_candidates(
     partial = []
     best = None
     seen = set()
+    baselines = {}
     for mutation in mutations:
         key = json.dumps(mutation, sort_keys=True)
         if key in seen:
@@ -551,7 +577,7 @@ def probe_reference_data_reward_candidates(
         seen.add(key)
         result = probe_reference_data_reward_sensitivity(
             app, trainer_headers, success_scenario, mutation, terminal_weight, metrics,
-            implementations=implementations,
+            implementations=implementations, _baselines=baselines,
         )
         attempts.append({"mutation": mutation, "result": result})
         if result.get("proved"):
@@ -566,7 +592,7 @@ def probe_reference_data_reward_candidates(
     if len(partial) > 1:
         result = probe_reference_data_reward_sensitivity(
             app, trainer_headers, success_scenario, partial, terminal_weight, metrics,
-            implementations=implementations,
+            implementations=implementations, _baselines=baselines,
         )
         attempts.append({"mutation": partial, "result": result})
         if result.get("proved"):

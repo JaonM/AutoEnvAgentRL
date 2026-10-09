@@ -2278,6 +2278,15 @@ observation privacy, state causality, unrelated-state preservation and episode
 isolation checks. No saved acceptance file supplies shared results. Standalone
 acceptance and readiness commands remain available for focused diagnosis.
 
+Within one training-value candidate-probe run, multiple private-data mutations
+share the same successful baseline pair. Before each reuse, the runner performs
+a real reset and checks that the initial business snapshot, scenario, tool
+implementations and evaluator configuration still match. Changed dependencies
+require fresh baselines, and unstable baseline pairs are never stored. Each
+mutated trajectory still executes twice. `baseline_dependency` records the
+original pair identity and whether it was shared; these are not additional
+independent baseline samples or evidence from a different evaluator mode.
+
 Private-data sensitivity probes compare tool HTTP statuses and complete business
 payloads across repeated runs. A platform error envelope's per-request correlation
 ID is excluded from this comparison; its error code, message and details remain
