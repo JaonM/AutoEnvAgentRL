@@ -83,9 +83,17 @@ Transaction tools use operations=[{table,key:EXPR,set:{column:EXPR}}]. Their
 rule_ids are preconditions over the immutable state BEFORE this transaction,
 including the original target row. They are never reevaluated against partially
 written state. Write expressions evaluate in order on one isolated candidate
-state, then validate schemas, FKs and
-invariants before atomic commit. key identifies exactly one existing row;
-primary-key writes, insertion and deletion are currently unsupported.
+state, then validate schemas, FKs and invariants before atomic commit. key
+identifies exactly one existing row; primary-key writes, insertion and deletion
+are currently unsupported.
+
+Tool rule_ids apply to EVERY operation row, including operations on different
+tables. An activity-only row predicate cannot also guard a registration row.
+For heterogeneous transactions, express shared conditions over data and args
+(select identities through public rules), not fields unique to one target row.
+Collection-local row references inside filter/map belong to that collection and
+do not refer to the operation row. The compiler rejects operation-row references
+to fields absent from any target table; this is a schema error, not a valid negative.
 Transaction tools MUST name authorization=user_stage_id and have actual-state
 goals. Do not simulate transactions merely through final-answer accuracy.
 For transfers and settlement, goals and answer targets must identify the exact

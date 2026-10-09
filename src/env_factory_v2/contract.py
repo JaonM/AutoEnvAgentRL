@@ -129,6 +129,16 @@ def contains_rule(expression):
     return 'rule' in expression or any(contains_rule(child) for child in expression_children(expression))
 
 
+def free_row_fields(expression):
+    """Fields of the operation/query row, excluding collection-local rows."""
+    op, value = next(iter(expression.items()))
+    if op == 'ref':
+        return {value.split('.')[1]} if value.startswith('row.') else set()
+    if op in {'filter', 'map'}:
+        return free_row_fields(value['items'])
+    return set().union(*(free_row_fields(child) for child in expression_children(expression)))
+
+
 def compile_contract(source):
     source = copy.deepcopy(source)
     try:
@@ -210,6 +220,13 @@ def compile_contract(source):
                 stage.get('as_fact', stage.get('fact')) for stage in source['user'].get('stages', [])}
             require(argument in tool['parameters']['required'] and isinstance(fact, str) and fact in available, 'invalid private fact binding')
         for rule_id in tool['rule_ids']:
+            if tool['kind'] == 'transaction':
+                row_fields = free_row_fields(rules[rule_id]['predicate'])
+                for operation in tool['operations']:
+                    missing = row_fields - set(tables[operation['table']]['schema']['properties'])
+                    require(not missing, f"transaction rule {rule_id} references row fields absent from table "
+                            f"{operation['table']}: {', '.join(sorted(missing))}; tool rules apply to every operation row; "
+                            'use a shared predicate over authoritative data for cross-table conditions')
             for reference in refs(rules[rule_id]['predicate']):
                 if reference.startswith('args.'):
                     require(reference.split('.')[1] in tool['parameters']['properties'], 'rule uses undeclared parameter')
