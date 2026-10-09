@@ -32,6 +32,9 @@ properties, required, additionalProperties=false. Supported types string, intege
 number, boolean, object, array; optional enum and nullable=true. Arrays require
 items schema. foreign_keys contain {column,target_table,target_column}. Unique
 non-null primary keys; all initial mutations retain schemas and foreign keys.
+For a foreign-key column declaring nullable=true, null means no relationship
+(for example a terminal next_id or an unselected purchase) and needs no target
+record. Every non-null value must match a real target; dangling values are rejected.
 For bulk data, replace rows with generator={count:0..10000,seed:integer,columns:{column:SPEC}}.
 Do not write hundreds of literal rows. Column specs: {kind:"constant",value};
 {kind:"sequence",start,step,prefix?,width?} generates start+i*step, optionally

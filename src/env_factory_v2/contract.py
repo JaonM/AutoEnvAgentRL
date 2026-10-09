@@ -85,6 +85,10 @@ def validate_data(contract, data):
         for fk in table.get('foreign_keys', []):
             targets = {canonical(row[fk['target_column']]) for row in data[fk['target_table']]}
             for row in rows:
+                # Schema validation above already rejects undeclared nulls. A
+                # nullable FK means no relationship, not a reference to a null PK.
+                if row[fk['column']] is None:
+                    continue
                 require(canonical(row[fk['column']]) in targets, f'{name}: foreign key violation')
 
 
