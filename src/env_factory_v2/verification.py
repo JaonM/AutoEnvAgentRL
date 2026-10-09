@@ -6,7 +6,7 @@ import hashlib
 
 from .contract import compile_contract, require
 from .expressions import ContractError, canonical, evaluate
-from .reward import grade
+from .reward import assess_process, grade
 from .runtime import Sandbox
 
 
@@ -44,7 +44,12 @@ def run_scenario(compiled, scenario, *, judge=None, recipes_only=False):
         # Scenario answer recipes are test fixtures, never runtime reward targets.
         answer = {key: evaluate(expression, sandbox.context(private=True))
                   for key, expression in scenario['answer'].items()}
-        outcome = {'pending_grade': True} if recipes_only else grade(sandbox, answer, judge=judge)
+        if recipes_only:
+            outcome = {'pending_grade': True}
+            if scenario['expect_success']:
+                outcome['workflow'] = assess_process(sandbox)
+        else:
+            outcome = grade(sandbox, answer, judge=judge)
     except ContractError as exc:
         error = str(exc)
         answer = None
@@ -76,7 +81,11 @@ def preflight_recipes(compiled):
         run = run_scenario(compiled, scenario, recipes_only=True)
         expected_error = scenario.get('expect_error')
         passed = (run['error'] is not None and expected_error in run['error']) if expected_error else run['error'] is None
-        checks.append({'id': scenario['id'], 'kind': kind, 'passed': passed, 'error': run['error']})
+        workflow = run['outcome'].get('workflow')
+        if scenario['expect_success'] and run['error'] is None:
+            passed = passed and workflow['passed']
+        checks.append({'id': scenario['id'], 'kind': kind, 'passed': passed, 'error': run['error'],
+                       **({'workflow': workflow} if workflow is not None else {})})
     return {'scope': 'trajectory_and_recipe_validation_no_semantic_judgment',
             'passed': all(check['passed'] for check in checks), 'checks': checks}
 
