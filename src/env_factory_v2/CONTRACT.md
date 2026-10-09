@@ -1,0 +1,142 @@
+# V2 executable business contract
+
+All contracts are JSON data. No Python, SQL, eval, network code or arbitrary filters.
+The implementation in contract.py is authoritative and rejects unknown keys.
+Generator examples are demonstrations only; generation must design a new business.
+
+Required top-level keys: version="2.0", id, category (direct_response,
+simple_agentic, multi_step_agentic), task (original public business goal), rules,
+tables, tools, user, answers, scenarios, probes, limits, time.
+Optional: explanations, invariants, events, success, goals.
+
+Expressions have exactly one operator. Literals always use {"literal":VALUE};
+paths use {"ref":"data.accounts.0.balance"}. Roots depend on context. Operators:
+eq/ne/lt/le/gt/ge/in/contains/add/sub/mul/at take two expression operands;
+and/or take nonempty expression lists; not/count/sum/unique take one expression
+operand in a list; list takes expression operands; object maps field names to
+expressions; if takes {condition,then,else}; filter/map take {items,value} with
+row available while evaluating value. sum expects its single expression to return
+a numeric list. Type-strict comparisons; false and zero are real observations.
+at takes [collection_expression,index_expression]. Shared predicates use
+{"rule":{"id":"public_rule_id","arguments":{"size":{"ref":"user.size"}}}}.
+Supply exactly the named args referenced by that public rule. The current row,
+data and time remain in scope. Public rule definitions may not invoke other rules.
+
+rules: list of {id,public,predicate}. public explains an actual business condition;
+predicate can reference row,args,data,initial,user,time. Tool filters are ONLY references
+to these rules, never handwritten extra predicates. A display name cannot become
+an identity constraint without an original public requirement.
+
+tables: {id,schema,primary_key,rows,foreign_keys?}. Row object schemas declare
+properties, required, additionalProperties=false. Supported types string, integer,
+number, boolean, object, array; optional enum and nullable=true. Arrays require
+items schema. foreign_keys contain {column,target_table,target_column}. Unique
+non-null primary keys; all initial mutations retain schemas and foreign keys.
+For bulk data, replace rows with generator={count:0..10000,seed:integer,columns:{column:SPEC}}.
+Do not write hundreds of literal rows. Column specs: {kind:"constant",value};
+{kind:"sequence",start,step,prefix?,width?} generates start+i*step, optionally
+formatted as prefix+zero-padded integer; {kind:"cycle",values,offset?} picks
+values[(i+seed+offset)%len(values)]; {kind:"foreign_key",table,column,offset?}
+cycles through an earlier materialized table with the same index formula.
+All generated rows undergo full schema, primary-key and FK validation. Reviewers
+receive exact generator plans and small concrete previews; execution uses ALL rows.
+
+tools use id,kind,description,parameters (closed object schema),rule_ids.
+Query tools also use table,columns,order_by ([{field,direction:"asc"|"desc"}]),
+page_size (1..128). Results: items,total,offset,next_cursor,query_identity,
+state_version. Pagination cursors are bound to episode/query/state.
+Transaction tools use operations=[{table,key:EXPR,set:{column:EXPR}}], evaluating
+in order on one isolated candidate state, then validating schemas, FKs and
+invariants before atomic commit. key identifies exactly one existing row;
+primary-key writes, insertion and deletion are currently unsupported.
+Transaction tools MUST name authorization=user_stage_id and have actual-state
+goals. Do not simulate transactions merely through final-answer accuracy.
+Optional tool keys: user_bindings={argument:fact_name},
+result_bindings=[{argument,tool,path}], complete_retrieval=true.
+result_bindings require actual observed references, not matching literals;
+path may use '*' for a numeric result-array index, e.g. items.*.id.
+The binding tool can be a list of permitted providers. A tool may consume its own
+earlier result: runtime observations must already exist, preventing temporal cycles.
+Source parameters describe resolved business values. The compiler separately
+publishes wire schemas: a captured argument is a {$result,path} object, not a
+string. User-bound arguments may use their business value or a {$user,path}
+object. Do not copy compiled wire schemas back into source parameter schemas.
+Public tool prose is compiler-generated; authored descriptions cannot impose
+separate behavior. Query nulls sort last in either direction.
+
+user: {facts:{private_name:VALUE},stages:[...]}. Each stage has id,kind,depends_on.
+fact/correction stages have fact; optional as_fact declares the current public
+binding updated by that disclosure. Planned corrections use a different private
+fact key and overwrite the same as_fact only after their prerequisites.
+choice stages have fact,source_tool,source_path (e.g.items),
+value_field (e.g.id),fallback (refuse|first_available). They decide ONLY from the
+actual observed menu; missing preference may legitimately refuse. Authorization
+stages have tool and facts must explicitly include approve_STAGE_ID:boolean.
+They receive {tool,arguments} proposals, authorize exact parameters once, and
+support revocation. Models cannot mutate facts, choices or authorizations.
+Stages depend only on earlier stages. Do not expose private facts in public text.
+Reward user bindings use actual disclosed choices/corrections, overriding initial
+preferences. A permitted fallback choice must not be graded against an unavailable
+original preference. Refusal/no-write success branches must also make state goals
+and answer targets conditional on that actual decision.
+
+answers: [{id,meaning,expected:EXPR,weight,comparison:"exact"|"unordered",schema}].
+Expected roots: data,initial,evidence,user,time. Never reference submitted answer.
+Current record facts must follow actual records, not fixture literals. Meaning
+and comparison are public. Weights including explanations sum to one.
+Every eligibility filter in reward targets, invariants and actual-state goals MUST invoke
+named public rules (or boolean combinations of them). Never duplicate a tool's
+eligibility predicate manually in an expected expression. Use filter/map with
+the rule operator to compute the authoritative complete set independently of
+the agent's possibly incomplete tool observations. Scenario/challenge answer
+recipes may use independent expressions to challenge the rule itself.
+explanations: [{id,meaning,criteria:[{id,rule_id,obligation}],context_fields:[answer_id],weight}].
+Criteria describe invariant reasoning obligations over actual runtime facts,
+not immutable wording or mutable fixture content. Code Agent grades explanations
+only against authoritative evaluated context_fields and actual user turns.
+
+invariants: [{rule_id,predicate:EXPR}], roots data,initial,user,time.
+goals: [{id,rule_ids,predicate:EXPR}], roots data,initial,evidence,user,time.
+Goals enforce real world outcomes separately from answer accuracy. Writes require
+at least one goal. Example: actual destination balance equals initial balance+20.
+success: [{id,public,when:EXPR,required_tools:[id],required_stages:[id]}]. Explicit
+branches allow successful refusal/no-write outcomes. Exactly applicable business
+obligations must be preserved, never require an inactive branch's tools. Default
+requires all declared tools and user stages. Unauthorized protected writes always
+prevent full success. Retrieval tools marked complete_retrieval require every
+page of one unchanged query before full credit. Direct has zero business tools,
+stages and tables; simple has one tool; multistep has at least two tools and an
+actual result_binding. No padding to satisfy these requirements.
+
+limits: {max_actions:1..4096}. User turns, business calls and waits consume budget.
+time: {base:timezone-aware ISO datetime,seconds_per_action:0..86400}.
+Reading time does not advance it. wait advances virtual time without sleeping.
+events: [{at_seconds,table,key:literal_primary_key,set:{column:literal_value}}].
+Events apply deterministically before actions at their scheduled virtual time.
+
+scenarios: [{id,steps,answer:{answer_id:EXPR},expect_success:boolean,mutations?,expect_error?}].
+Provide at least one successful and one failed valid-answer trajectory. An
+intentional invalid-action negative must name expect_error substring explicitly;
+an accidentally broken negative is not evidence of reward discrimination.
+steps: call/traverse {kind,tool,id,arguments}; call optionally cursor.
+References inside arguments: {"$result":"previous_call_id","path":"items.0.id"}
+or {"$user":"completed_stage_id","path":"value"}.
+User steps: {kind:"user",stage,question,source_id?,proposal?}.
+Wait steps: {kind:"wait",seconds}; revoke: {kind:"revoke",stage}.
+traverse executes all real pages, each consuming one action, and creates evidence
+under the traversal id with items,total,next_cursor=null,pages.
+The helper consumes one collection action after all page calls. Public agents
+fetch pages through /tool, then /collect with {pages:[observed_page_id],id};
+collection rejects duplicate, mixed-query, out-of-order or incomplete pages.
+Answer recipes may reference data,initial,evidence,user,time. These are fixture
+recipes, never available as agent actions and never used as reward targets.
+mutations: [{table,key,column,value}] apply to initial fixtures by primary key.
+
+probes: [{id,scenario,rule_ids,mutations,expect_success,answer?,expect_error?}].
+Cover correct changed-data answers AND wrong stale answers, display-field
+invariance, missing/wrong dependencies, menu absence, exact consent, rollback,
+time boundaries where applicable. Correct independent partial fields may retain
+partial reward, but failed goal/process/safety never receives full success.
+
+Unsupported capabilities fail explicitly; do not approximate physical behavior,
+external effects or complex transactions with fabricated narrative feedback.
