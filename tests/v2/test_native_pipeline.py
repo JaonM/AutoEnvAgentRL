@@ -201,3 +201,36 @@ def test_platform_change_during_native_review_invalidates_evidence(tmp_path):
         result = build({'goal': source['task']}, agent=agent, output=tmp_path / 'run', source=source, repairs=0, docker=False)
     assert result['qualified'] is False and result['status'] == 'infrastructure_failed'
     assert not (tmp_path / 'run/sandbox').exists()
+
+
+def test_audit_appends_real_negative_without_relabeling_correct_cases(tmp_path):
+    source = direct()
+    value = challenge_value(source)
+    value['cases'][1].update(scenario_id='correct', expect_success=False)
+    audit = {'business_consistent': True, 'reason': 'Both prior cases return 18.', 'cases': [
+        {'id': case['id'], 'expect_success': True, 'reason': '18 is the requested fact.'}
+        for case in value['cases']]}
+    extra = copy.deepcopy(value['cases'][1])
+    extra.update(id='actual_wrong_fact', scenario_id='wrong', reason='19 contradicts original temperature.')
+    agent = native(tmp_path)
+    agent.ask = Mock(side_effect=[(value, {}), (audit, {}), ({'cases': [extra]}, {})])
+    result = challenge(compile_contract(source), {'goal': source['task']}, agent)
+    assert result['passed']
+    assert [record['case']['expect_success'] for record in result['records']] == [True, True, False]
+    assert result['records'][-1]['first']['outcome']['reward'] == 0
+    assert len(result['review_audit']['original_review']['records']) == 2
+
+
+def test_supplement_that_is_actually_correct_cannot_manufacture_negative_proof(tmp_path):
+    source = direct()
+    value = challenge_value(source)
+    value['cases'][1].update(scenario_id='correct', expect_success=False)
+    audit = {'business_consistent': True, 'reason': 'Both answers correct.', 'cases': [
+        {'id': case['id'], 'expect_success': True, 'reason': 'Correct fixed fact.'} for case in value['cases']]}
+    extra = copy.deepcopy(value['cases'][1])
+    extra.update(id='fake_negative', reason='Incorrect negative label for correct answer.')
+    agent = native(tmp_path)
+    agent.ask = Mock(side_effect=[(value, {}), (audit, {}), ({'cases': [extra]}, {})])
+    result = challenge(compile_contract(source), {'goal': source['task']}, agent)
+    assert not result['passed']
+    assert not result['records'][-1]['passed']

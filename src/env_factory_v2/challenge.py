@@ -126,25 +126,27 @@ def _challenge(compiled, original_request, agent):
     for case in value['cases']:
         require(case['id'] and case['id'] not in identities and case['scenario_id'] in scenarios, 'invalid challenge identity')
         identities.add(case['id'])
-        scenario = copy.deepcopy(scenarios[case['scenario_id']])
-        mutations, answer = json.loads(case['mutations_json']), json.loads(case['answer_json'])
-        require(isinstance(mutations, list) and isinstance(answer, dict), 'invalid challenge recipes')
-        scenario.update(id=case['id'], mutations=scenario.get('mutations', []) + mutations,
-                        expect_success=case['expect_success'])
-        # A reviewer cannot turn a correctly rejected action into an author defect
-        # by guessing a different runtime error substring.
-        if answer:
-            scenario['answer'] = answer
-        first = run_scenario(compiled, scenario, judge=agent.judge)
-        repeat = run_scenario(compiled, scenario, judge=agent.independent_judge)
-        passed = expected_result(scenario, first) and expected_result(scenario, repeat)
-        records.append({'case': case, 'passed': passed and replay_identity(first) == replay_identity(repeat),
-                        'first': first, 'repeat': repeat})
+        records.append(_execute_case(compiled, case, scenarios, agent))
     return {'scope': 'native_independent_contract_challenge', 'contract_identity': compiled['identity'],
             'passed': value['business_consistent'] and all(r['passed'] for r in records),
             'business_consistent': value['business_consistent'], 'reason': value['reason'],
             'provenance': provenance, 'records': records,
             **({'format_repair': format_repair} if format_repair else {})}
+
+
+def _execute_case(compiled, case, scenarios, agent):
+    scenario = copy.deepcopy(scenarios[case['scenario_id']])
+    mutations, answer = json.loads(case['mutations_json']), json.loads(case['answer_json'])
+    require(isinstance(mutations, list) and isinstance(answer, dict), 'invalid challenge recipes')
+    scenario.update(id=case['id'], mutations=scenario.get('mutations', []) + mutations,
+                    expect_success=case['expect_success'])
+    if answer:
+        scenario['answer'] = answer
+    first = run_scenario(compiled, scenario, judge=agent.judge)
+    repeat = run_scenario(compiled, scenario, judge=agent.independent_judge)
+    passed = expected_result(scenario, first) and expected_result(scenario, repeat)
+    return {'case': case, 'passed': passed and replay_identity(first) == replay_identity(repeat),
+            'first': first, 'repeat': repeat}
 
 
 def _audit(compiled, original_request, agent, report):
@@ -179,8 +181,6 @@ def _audit(compiled, original_request, agent, report):
     require(len(labels) == len(value['cases']) and set(labels) == {r['case']['id'] for r in report['records']},
             'audit must preserve every independent case exactly once')
     require(value['reason'].strip() and all(case['reason'].strip() for case in value['cases']), 'audit reasons required')
-    require(any(case['expect_success'] for case in value['cases'])
-            and any(not case['expect_success'] for case in value['cases']), 'audit must preserve positive and negative coverage')
     scenarios = {s['id']: s for s in compiled['source']['scenarios']}
     records = []
     for old in report['records']:
@@ -193,6 +193,38 @@ def _audit(compiled, original_request, agent, report):
         records.append({**old, 'case': case, 'passed': expected_result(scenario, old['first'])
                         and expected_result(scenario, old['repeat'])
                         and replay_identity(old['first']) == replay_identity(old['repeat'])})
+    supplement = None
+    missing = {True, False} - {record['case']['expect_success'] for record in records}
+    if missing:
+        extra, extra_provenance = agent.ask(
+            'Append grounded independent counterexamples to restore missing positive/negative coverage after '
+            'correcting contradictory labels. Never relabel or discard any existing case. Each new case must '
+            'reuse an actual scenario and provide schema-valid JSON mutations and answer recipes. Derive '
+            'expected success from the ORIGINAL business, never from the observed grader. A negative case '
+            'must propose genuinely wrong behavior/answer. No invented data, runtime error strings, weaker '
+            'rules or tools. Supply 1..4 new cases with unique IDs and the requested missing labels. Do not execute tools.',
+            {'original_request': original_request, 'contract': source, 'compiled_public': compiled['public'],
+             'fixture_evidence': fixtures, 'existing_cases': [record['case'] for record in records],
+             'missing_expect_success': sorted(missing),
+             'grammar': (__import__('pathlib').Path(__file__).parent / 'CONTRACT.md').read_text()},
+            object_schema({'cases': {'type': 'array', 'items': CASE_SCHEMA}}))
+        require(1 <= len(extra['cases']) <= 4 and len(records) + len(extra['cases']) <= 32,
+                'audit supplemental case limit exceeded')
+        extra, format_repair = _repair_recipe_json(extra, agent)
+        identities = {record['case']['id'] for record in records}
+        rules = {rule['id'] for rule in compiled['source']['rules']}
+        for case in extra['cases']:
+            require(case['id'] and case['id'] not in identities and case['scenario_id'] in scenarios,
+                    'invalid supplemental challenge identity')
+            require(case['reason'].strip() and set(case['rule_ids']) <= rules,
+                    'supplemental challenge must use actual rules and reasons')
+            require(case['expect_success'] in missing, 'supplemental challenge must restore missing label')
+            identities.add(case['id'])
+            records.append(_execute_case(compiled, case, scenarios, agent))
+        supplement = {'provenance': extra_provenance, 'result': extra, 'format_repair': format_repair}
+    require({record['case']['expect_success'] for record in records} == {True, False},
+            'audit must preserve positive and negative coverage')
     return {**report, 'passed': value['business_consistent'] and all(r['passed'] for r in records),
             'business_consistent': value['business_consistent'], 'reason': value['reason'], 'records': records,
-            'review_audit': {'provenance': provenance, 'result': value, 'original_review': report}}
+            'review_audit': {'provenance': provenance, 'result': value, 'original_review': report,
+                             'supplement': supplement}}
