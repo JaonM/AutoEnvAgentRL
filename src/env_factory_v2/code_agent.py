@@ -149,6 +149,8 @@ class NativeCodeAgent:
                 'action really tests that intended protection. Prefer the smallest coherent edits. '
                 'Each edit has op add/replace/remove, path beginning /, and value_json containing JSON '
                 '(use null for remove). Paths refer to the result of earlier edits; - appends to arrays. '
+                'value_json must parse as JSON: string replacements include their JSON quotation marks; '
+                'never place unquoted prose in value_json. '
                 'Never execute tools.',
                 {'original_request': request, 'grammar': grammar, 'previous_source': previous,
                  'repair_feedback': evidence}, object_schema({'edits': {'type': 'array', 'items': object_schema({
