@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import copy
 import json
-import re
 
 from .code_agent import object_schema
 from .contract import require
+from .json_syntax import content_tokens as _json_content_tokens
 from .verification import expected_result, replay_identity, run_scenario
 
 
@@ -21,19 +21,6 @@ CHALLENGE_SCHEMA = object_schema({'business_consistent': {'type': 'boolean'},
 AUDIT_SCHEMA = object_schema({'business_consistent': {'type': 'boolean'}, 'reason': {'type': 'string'},
     'cases': {'type': 'array', 'items': object_schema({'id': {'type': 'string'},
               'expect_success': {'type': 'boolean'}, 'reason': {'type': 'string'}})}})
-
-
-def _json_content_tokens(raw):
-    """Allow delimiter repairs only; retain every key, literal and their order."""
-    pattern = r'"(?:[^"\\\x00-\x1f]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*"|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?|true|false|null'
-    tokens = []
-    end = 0
-    for match in re.finditer(pattern, raw):
-        require(not raw[end:match.start()].strip(' \t\r\n{}[]:,'), 'unsupported JSON content repair')
-        tokens.append(match.group())
-        end = match.end()
-    require(not raw[end:].strip(' \t\r\n{}[]:,'), 'unsupported JSON content repair')
-    return tokens
 
 
 def _repair_recipe_json(value, agent):

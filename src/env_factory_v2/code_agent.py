@@ -170,4 +170,10 @@ class NativeCodeAgent:
         try:
             return json.loads(value['source_json']), provenance
         except json.JSONDecodeError as exc:
-            raise ContractError(f'generated source is invalid JSON at line {exc.lineno}, column {exc.colno}: {exc.msg}') from exc
+            from .json_syntax import recover_json
+            try:
+                recovered, evidence = recover_json(value['source_json'], self)
+                return recovered, {**provenance, 'format_repair': evidence}
+            except (ContractError, ValueError) as repair_error:
+                raise ContractError(f'generated source is invalid JSON at line {exc.lineno}, column {exc.colno}: '
+                                    f'{exc.msg}; bounded syntax recovery failed: {repair_error}') from repair_error
