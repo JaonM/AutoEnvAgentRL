@@ -8,6 +8,11 @@ Required top-level keys: version="2.0", id, category (direct_response,
 simple_agentic, multi_step_agentic), task (original public business goal), rules,
 tables, tools, user, answers, scenarios, probes, limits, time.
 Optional: explanations, invariants, events, success, goals.
+At least one positive scenario must succeed on the original seeded data without
+any initial mutations, including inherited mutations. Changed-data positives
+belong in probes or additional scenarios. Include a negative scenario as well;
+negative probes alone do not replace it. A repair must fix the specific missing
+baseline or negative trajectory, preserving the other valid tests.
 Scenarios may reuse another scenario with extends=PARENT_ID. The child must
 declare its own id and expect_success. Other supplied fields replace inherited
 fields (answer and mutations replace completely); omitted fields are inherited.

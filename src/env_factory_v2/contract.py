@@ -291,8 +291,10 @@ def compile_contract(source):
         require(set(event['set']) <= set(tables[event['table']]['schema']['properties']), 'unknown event field')
         require(tables[event['table']]['primary_key'] not in event['set'], 'events cannot change primary keys')
     scenarios = named(source['scenarios'], 'scenario')
-    require(any(s.get('expect_success') is True and not s.get('mutations') for s in scenarios.values())
-            and any(s.get('expect_success') is False for s in scenarios.values()), 'positive and negative scenarios required')
+    require(any(s.get('expect_success') is True and not s.get('mutations') for s in scenarios.values()),
+            'baseline success scenario required: expect_success=true without initial mutations; use probes for changed-data success')
+    require(any(s.get('expect_success') is False for s in scenarios.values()),
+            'negative scenario required: expect_success=false; negative probes alone are insufficient')
     for scenario in scenarios.values():
         fields(scenario, ['id', 'steps', 'answer', 'expect_success'], ['mutations', 'expect_error'])
         require(type(scenario['expect_success']) is bool and isinstance(scenario['steps'], list), 'invalid scenario')
