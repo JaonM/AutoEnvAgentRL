@@ -174,6 +174,14 @@ correct guesses. For linked tasks require all currently reachable chain IDs
 If links extend or reorder the chain, obligations change with the actual data.
 Do not freeze the expected list to initial IDs, a fixed length or test call IDs.
 When facts must be fresh, include the relevant fact columns alongside identity.
+Translate every original quantitative obligation into an explicit executable
+goal or active success condition, not just seed size or public prose. If the
+agent must obtain at least N eligible options, require the current eligible count
+to be at least N using the same public filter, plus complete retrieval/required
+observations. Apply that obligation to every applicable completion branch,
+including refusal where the original requires obtaining the menu first. Include
+N-1 and exactly N counterexamples. Distinguish these behavior requirements from
+fixture-only dataset scale; do not invent agent obligations from fixture size.
 Revocation removes completion of the revoked consent stage. A valid refusal or
 revocation branch must use its actual user_state region as proof and MUST NOT
 require that revoked consent stage in required_stages. Fact/choice prerequisites
