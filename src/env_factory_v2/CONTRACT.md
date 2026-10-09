@@ -68,6 +68,16 @@ invariants before atomic commit. key identifies exactly one existing row;
 primary-key writes, insertion and deletion are currently unsupported.
 Transaction tools MUST name authorization=user_stage_id and have actual-state
 goals. Do not simulate transactions merely through final-answer accuracy.
+For transfers and settlement, goals and answer targets must identify the exact
+authorized recipient row using the disclosed selection and observed account
+identity. A supplier, quote or customer relationship can match multiple accounts;
+it does not mean every related account must receive the payment. Include a
+counterexample with another valid account for the same related object, and check
+that only the intended recipient changes while unrelated balances remain intact.
+Public rule descriptions must state only what their predicates enforce. A rule
+matching an available row to an argument does not itself prove the user's actual
+selection; publish and enforce that obligation through user_bindings and the
+actual choice stage. Review the combined rule, binding and authorization behavior.
 Optional tool keys: user_bindings={argument:fact_name},
 result_bindings=[{argument,tool,path}], complete_retrieval=true.
 result_bindings require actual observed references, not matching literals;
