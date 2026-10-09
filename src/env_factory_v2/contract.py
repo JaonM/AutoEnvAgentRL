@@ -327,10 +327,21 @@ def compile_contract(source):
         'when': {'literal': True}, 'required_tools': list(tools), 'required_stages': list(stages)}])
     require(bool(success), 'success branches required')
     for branch in named(success, 'success branch').values():
-        fields(branch, ['id', 'public', 'when', 'required_tools', 'required_stages'])
+        fields(branch, ['id', 'public', 'when', 'required_tools', 'required_stages'], ['required_observations'])
         require(isinstance(branch['public'], str) and branch['public'].strip(), 'branch meaning required')
         require(set(branch['required_tools']) <= set(tools) and set(branch['required_stages']) <= set(stages), 'unknown success dependency')
         validate_expr(branch['when'], roots={'data', 'initial', 'evidence', 'user', 'user_state', 'time'})
+        for observation in named(branch.get('required_observations', []), 'required observation').values():
+            fields(observation, ['id', 'tools', 'columns', 'expected'])
+            require(isinstance(observation['tools'], list) and observation['tools']
+                    and set(observation['tools']) <= set(branch['required_tools']), 'observation providers must be required tools')
+            require(isinstance(observation['columns'], list) and observation['columns']
+                    and len(set(observation['columns'])) == len(observation['columns']), 'observation columns required')
+            for provider in observation['tools']:
+                require(tools[provider]['kind'] == 'query'
+                        and set(observation['columns']) <= set(tools[provider]['columns']), 'observation columns must be actual query results')
+            validate_expr(observation['expected'], roots={'data', 'initial', 'evidence', 'user', 'user_state', 'time'})
+            validate_rule_links(observation['expected'], rules, shared_filters=True)
     digest = hashlib.sha256(canonical(source).encode()).hexdigest()
     from .user_simulator import statechart_spec
     public = {'task': source['task'], 'category': source['category'],

@@ -140,6 +140,17 @@ Goals enforce real world outcomes separately from answer accuracy. Writes requir
 at least one goal. Example: actual destination balance equals initial balance+20.
 success: [{id,public,when:EXPR,required_tools:[id],required_stages:[id]}].
 required_stages means stages still completed in the current simulator state.
+Optional required_observations on a success branch is a list of
+{id,tools:[QUERY_ID],columns:[COLUMN],expected:EXPRESSION}. expected returns a list
+of row objects with exactly those columns, derived from current authoritative
+data (reuse public filtering rules). Every expected row must occur in an actual
+successful result from one of the declared query tools. Providers must also be
+required_tools and publish all these columns. This checks observations, not just
+correct guesses. For linked tasks require all currently reachable chain IDs
+(derive them using walk), plus the actual terminal owner ID from the owner query.
+If links extend or reorder the chain, obligations change with the actual data.
+Do not freeze the expected list to initial IDs, a fixed length or test call IDs.
+When facts must be fresh, include the relevant fact columns alongside identity.
 Revocation removes completion of the revoked consent stage. A valid refusal or
 revocation branch must use its actual user_state region as proof and MUST NOT
 require that revoked consent stage in required_stages. Fact/choice prerequisites

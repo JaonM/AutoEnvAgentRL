@@ -68,7 +68,27 @@ def assess_process(sandbox):
         if passed:
             passed = all(not sandbox.tools[tool].get('complete_retrieval') or complete_retrieval(sandbox, tool)
                          for tool in branch['required_tools'])
-        branch_checks.append({'id': branch['id'], 'active': active, 'passed': bool(passed)})
+        observations = []
+        for requirement in branch.get('required_observations', []):
+            check = {'id': requirement['id'], 'passed': False}
+            if active:
+                try:
+                    expected = evaluate(requirement['expected'], context)
+                    columns = set(requirement['columns'])
+                    require(isinstance(expected, list) and all(isinstance(row, dict) and set(row) == columns
+                            for row in expected), 'expected observations must be projected row objects')
+                    observed = [{column: row[column] for column in requirement['columns']}
+                        for turn in sandbox.trace if turn.get('status') == 'ok'
+                        and turn.get('tool') in requirement['tools'] for row in turn['result']['items']]
+                    observed_keys = {_key(row) for row in observed}
+                    check['passed'] = all(_key(row) in observed_keys for row in expected)
+                    check['required_count'] = len(expected)
+                except ContractError as exc:
+                    check['error'] = str(exc)
+            observations.append(check)
+        passed = passed and all(check['passed'] for check in observations)
+        branch_checks.append({'id': branch['id'], 'active': active, 'passed': bool(passed),
+                              **({'observations': observations} if observations else {})})
     safety = not sandbox.violations
     invariant_checks = [evaluate(item['predicate'], context) is True for item in sandbox.source.get('invariants', [])]
     goal_checks = []
