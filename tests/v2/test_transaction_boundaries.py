@@ -30,7 +30,7 @@ def test_exact_funds_commit_and_insufficient_funds_rollback():
     assert [r['balance'] for r in world.data['accounts']] == [0, 30]
     world, args = guarded_world(19)
     before = copy.deepcopy(world.data)
-    with pytest.raises(ContractError, match='precondition'):
+    with pytest.raises(ContractError, match='transaction business precondition failed: sufficient'):
         world.call('transfer', args, call_id='write')
     assert world.data == before and world.user.states['approve'] == 'consent.authorized'
 

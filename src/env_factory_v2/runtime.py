@@ -205,14 +205,16 @@ class Sandbox:
             original_row = self._row(before, operation['table'], key)
             precondition_context = self.context(args=args, data=before, row=original_row)
             checks = [evaluate(self.rules[r]['predicate'], precondition_context) for r in tool['rule_ids']]
-            require(all(type(c) is bool and c for c in checks), 'transaction business precondition failed')
+            failed = [rule for rule, check in zip(tool['rule_ids'], checks) if type(check) is not bool or not check]
+            require(not failed, 'transaction business precondition failed: ' + ', '.join(failed))
             context = self.context(args=args, data=candidate, row=row)
             updates = {column: evaluate(expression, context) for column, expression in operation['set'].items()}
             row.update(updates)
             changes.append({'table': operation['table'], 'key': key, 'set': copy.deepcopy(updates)})
         validate_data(self.source, candidate)
         for invariant in self.source.get('invariants', []):
-            require(evaluate(invariant['predicate'], self.context(data=candidate)) is True, 'transaction invariant violated')
+            require(evaluate(invariant['predicate'], self.context(data=candidate)) is True,
+                    'transaction invariant violated: ' + invariant['rule_id'])
         self.data = candidate
         self.version += 1
         return {'committed': True, 'changes': changes}
