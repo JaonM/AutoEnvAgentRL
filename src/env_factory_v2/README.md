@@ -38,7 +38,15 @@ business value schemas remain separately available. There is no string-schema
 versus reference-object contradiction. Phase transitions persist in progress.json.
 
 The User Simulator owns private facts, actual-menu decisions and authorization
-state. Structured stage requests work deterministically. Optional native language
+state. A hierarchical statechart gives each declared stage an independent region:
+waiting (blocked/ready), resolved (disclosed/selected/refused), and consent
+(awaiting_confirmation/authorized/declined/invalidated/revoked/consumed).
+Dependency guards synchronize regions. Fact corrections invalidate dependent
+choices and live approvals; changed proposals invalidate old consent. Revoked or
+invalidated consent requires a fresh user confirmation, whereas consumed consent
+is terminal. Failed atomic execution retains exact approval for retry. No custom
+FSM library or authored transition code is required. Structured stage requests
+work deterministically. Optional native language
 interpretation sees public stages only, and cannot set user values. Optional
 natural responses choose a native style/locale and deterministically render facts,
 refusals and exact proposals; model prose cannot contradict the structured event.
@@ -92,7 +100,9 @@ complete retrieval; 12-result dependency chain; authorized atomic transfer;
 
 POST /reset with {} creates an episode and returns public instructions. Use its
 opaque identifier in X-Episode for POST /tool, /user, /answer, /wait, /revoke, /delete
-and /collect, and GET /time. GET /health is global. /collect assembles complete
+and /collect, and GET /time or /user-state. The latter returns only stage states
+and transition history, without private facts or proposals, and consumes no tick.
+GET /health is global. /collect assembles complete
 pages already observed by that episode; it never performs extra business reads.
 Container verification replays a successful trajectory through this actual HTTP
 API and checks that its reward and virtual time agree with in-process execution.

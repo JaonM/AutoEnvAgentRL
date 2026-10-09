@@ -326,6 +326,7 @@ def compile_contract(source):
         require(set(branch['required_tools']) <= set(tools) and set(branch['required_stages']) <= set(stages), 'unknown success dependency')
         validate_expr(branch['when'], roots={'data', 'initial', 'evidence', 'user', 'time'})
     digest = hashlib.sha256(canonical(source).encode()).hexdigest()
+    from .user_simulator import statechart_spec
     public = {'task': source['task'], 'category': source['category'],
               'business_call_limit': 0 if category == 'direct_response' else 1 if category == 'simple_agentic' else None,
               'rules': [{'id': r['id'], 'text': r['public']} for r in rules.values()],
@@ -333,10 +334,12 @@ def compile_contract(source):
               'explanations': [{k: v for k, v in e.items() if k != 'weight'} for e in explanations.values()],
               'tools': [public_tool(tool, rules) for tool in tools.values()],
               'user_stages': [{k: v for k, v in s.items() if k != 'fallback'} for s in stages.values()],
+              'user_statechart': statechart_spec(),
               'data_schemas': [{'id': t['id'], 'schema': t['schema']} for t in tables.values()],
               'success': success, 'safety': 'An unauthorized protected write attempt prevents full success.',
               'runtime_api': {'collect': 'Assemble contiguous, complete actual query pages by their observation IDs; never fetches or invents records.',
-                              'time': 'Read virtual datetime/tick/elapsed_seconds without advancing time.'},
+                              'time': 'Read virtual datetime/tick/elapsed_seconds without advancing time.',
+                              'user-state': 'Read stage states and transition history only; no private facts or proposals; does not advance time.'},
               'limits': source['limits'], 'time': source['time']}
     return {'version': '2.0', 'identity': digest, 'source': source, 'public': public}
 

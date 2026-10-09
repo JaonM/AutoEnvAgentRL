@@ -35,6 +35,8 @@ def serve(source, *, host='127.0.0.1', port=8080, agent=None):
                 sandbox = episodes.get(self.headers.get('X-Episode'))
                 if self.path == '/time' and sandbox is not None:
                     return self.reply(200, sandbox.time())
+                if self.path == '/user-state' and sandbox is not None:
+                    return self.reply(200, sandbox.user.snapshot())
                 return self.reply(404, {'error': 'unknown route/episode'})
 
         def do_POST(self):

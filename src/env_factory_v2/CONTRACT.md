@@ -74,6 +74,19 @@ actual observed menu; missing preference may legitimately refuse. Authorization
 stages have tool and facts must explicitly include approve_STAGE_ID:boolean.
 They receive {tool,arguments} proposals, authorize exact parameters once, and
 support revocation. Models cannot mutate facts, choices or authorizations.
+The platform compiles stages to parallel regions of a hierarchical statechart;
+no additional authored FSM schema is required. Dependency guards enable waiting
+stages. Facts resolve as disclosed; choices resolve as selected or refused.
+Consent enters awaiting_confirmation, then authorized or declined. Changing a
+schema-valid proposal or attempting different authorized parameters invalidates
+old consent. Revoked, invalidated or declined consent can receive another explicit
+proposal/user decision; consumed consent is terminal and cannot be reused.
+Transaction failures before commit retain exact consent for a retry. A correction
+of disclosed facts invalidates dependent choices and live consent, including
+consent without a declared dependency edge. Repeated completed facts/choices are
+rejected unless a dependency invalidated that stage. Corrected preferences govern
+repeated choices. GET /user-state exposes only states and transition events,
+never private context, and does not advance the clock.
 Stages depend only on earlier stages. Do not expose private facts in public text.
 Reward user bindings use actual disclosed choices/corrections, overriding initial
 preferences. A permitted fallback choice must not be graded against an unavailable
