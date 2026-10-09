@@ -17,7 +17,18 @@ operand in a list; list takes expression operands; object maps field names to
 expressions; if takes {condition,then,else}; filter/map take {items,value} with
 row available while evaluating value. sum expects its single expression to return
 a numeric list. Type-strict comparisons; false and zero are real observations.
-at takes [collection_expression,index_expression]. Shared predicates use
+at takes [collection_expression,index_expression].
+walk takes {items:EXPRESSION,start:EXPRESSION,key:COLUMN,next:COLUMN,max_nodes:INTEGER}.
+It returns current rows in linked order, following next from start until null;
+null start returns an empty list. Column names are literal strings, max_nodes is
+1..10000, and items has at most 10000 rows. Duplicate keys, missing links, cycles
+and over-limit chains fail explicitly. Keys are non-null scalars, with typed
+identity (true is not 1; 1 and 1.0 are equal). Use a public rule to select the
+business start where required, then map the walked rows for IDs or sum mapped
+costs. Never use table positions as route order or hard-code a reference path.
+This is pure authoritative-state computation, not a substitute for required
+agent tool observations, pagination or user authorization.
+Shared predicates use
 {"rule":{"id":"public_rule_id","arguments":{"size":{"ref":"user.size"}}}}.
 Supply exactly the named args referenced by that public rule. The current row,
 data and time remain in scope. Public rule definitions may not invoke other rules.

@@ -94,6 +94,16 @@ def validate_expr(expression, *, roots, depth=0):
         for item in value.values():
             validate_expr(item, roots=roots, depth=depth + 1)
         return
+    if op == 'walk':
+        if not isinstance(value, dict) or set(value) != {'items', 'start', 'key', 'next', 'max_nodes'}:
+            raise ContractError('invalid walk expression')
+        if any(not isinstance(value[field], str) or not value[field] for field in ('key', 'next')):
+            raise ContractError('walk key and next must be column names')
+        if type(value['max_nodes']) is not int or not 1 <= value['max_nodes'] <= 10000:
+            raise ContractError('walk max_nodes must be 1..10000')
+        for field in ('items', 'start'):
+            validate_expr(value[field], roots=roots, depth=depth + 1)
+        return
     raise ContractError(f'unsupported expression operator: {op}')
 
 
@@ -113,6 +123,37 @@ def evaluate(expression, context):
         if type(condition) is not bool:
             raise ContractError('condition must be boolean')
         return evaluate(value['then' if condition else 'else'], context)
+    if op == 'walk':
+        items = evaluate(value['items'], context)
+        current = evaluate(value['start'], context)
+        if not isinstance(items, list) or len(items) > 10000:
+            raise ContractError('walk requires at most 10000 rows')
+        def identity(key):
+            if type(key) not in {str, int, float, bool} or (type(key) is float and not math.isfinite(key)):
+                raise ContractError('walk requires non-null scalar keys')
+            return ('number' if type(key) in {int, float} else type(key).__name__, key)
+        index = {}
+        for row in items:
+            if not isinstance(row, dict) or value['key'] not in row or value['next'] not in row:
+                raise ContractError('walk requires key and next columns')
+            key = identity(row[value['key']])
+            if key in index:
+                raise ContractError('walk has duplicate keys')
+            index[key] = row
+        result, visited = [], set()
+        while current is not None:
+            key = identity(current)
+            if key in visited:
+                raise ContractError('walk cycle detected')
+            if key not in index:
+                raise ContractError('walk references missing key')
+            if len(result) >= value['max_nodes']:
+                raise ContractError('walk exceeds max_nodes')
+            visited.add(key)
+            row = index[key]
+            result.append(copy.deepcopy(row))
+            current = row[value['next']]
+        return result
     if op in {'filter', 'map'}:
         items = evaluate(value['items'], context)
         if not isinstance(items, list):

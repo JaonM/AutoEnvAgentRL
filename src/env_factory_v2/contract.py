@@ -118,6 +118,8 @@ def expression_children(expression):
         return []
     if op == 'rule':
         return value['arguments'].values()
+    if op == 'walk':
+        return [value['items'], value['start']]
     return value.values() if isinstance(value, dict) else value
 
 
