@@ -52,6 +52,13 @@ def _challenge(compiled, original_request, agent):
         'mutations_json are JSON strings; use {} to retain the original answer recipe. The verifier owns '
         'intentional-invalid-action expectations inherited from each referenced scenario; never invent runtime '
         'error strings. Include at least one positive and one negative. '
+        'For stateless direct tasks, empty data mutations are appropriate. Validate boundary predicates '
+        'by invoking the actual named public rule with boundary arguments in a conditional answer recipe: '
+        'return the independently correct original-task answer only when the boundary predicate has its '
+        'business-correct value, otherwise a wrong schema-valid answer. This is evaluator validation; '
+        'do not invent an extra agent explanation obligation. Assess evaluator coverage across the authored '
+        'probes AND your executable cases; a boundary covered by your own case does not require an extra '
+        'agent answer field or a duplicate authored probe. '
         'For generated tables the exact generator plan is authoritative; previews are concrete examples, not '
         'the whole table. Derive unshown values from the documented plan, never invent hidden rows. '
         'Unexecuted model opinions are not proof. Do not execute tools.',

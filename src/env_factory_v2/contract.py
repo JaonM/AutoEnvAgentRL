@@ -144,7 +144,7 @@ def compile_contract(source):
     for rule in rules.values():
         fields(rule, ['id', 'public', 'predicate'])
         require(isinstance(rule['public'], str) and rule['public'].strip(), 'public rule required')
-        validate_expr(rule['predicate'], roots={'row', 'args', 'data', 'initial', 'user', 'time'})
+        validate_expr(rule['predicate'], roots={'row', 'args', 'data', 'initial', 'user', 'user_state', 'time'})
         require(not contains_rule(rule['predicate']), 'public predicates cannot recursively invoke other rules')
     tables = named(source['tables'], 'table')
     for table in tables.values():
@@ -184,9 +184,9 @@ def compile_contract(source):
                 require(isinstance(operation['set'], dict) and operation['set'], 'empty write')
                 require(set(operation['set']) <= set(tables[operation['table']]['schema']['properties'])
                         and tables[operation['table']]['primary_key'] not in operation['set'], 'invalid write columns')
-                validate_expr(operation['key'], roots={'args', 'data', 'user', 'time'})
+                validate_expr(operation['key'], roots={'args', 'data', 'user', 'user_state', 'time'})
                 for expression in operation['set'].values():
-                    validate_expr(expression, roots={'args', 'row', 'data', 'user', 'time'})
+                    validate_expr(expression, roots={'args', 'row', 'data', 'user', 'user_state', 'time'})
         else:
             raise ContractError('unsupported tool kind; add a reviewed platform capability')
         validate_schema(tool['parameters'])
@@ -244,7 +244,7 @@ def compile_contract(source):
         require(isinstance(field['meaning'], str) and field['meaning'].strip(), 'answer meaning required')
         require(type(field['weight']) in {int, float} and 0 < field['weight'] <= 1, 'invalid answer weight')
         validate_schema(field['schema'])
-        validate_expr(field['expected'], roots={'data', 'initial', 'evidence', 'user', 'time'})
+        validate_expr(field['expected'], roots={'data', 'initial', 'evidence', 'user', 'user_state', 'time'})
         validate_rule_links(field['expected'], rules, shared_filters=True)
     explanations = named(source.get('explanations', []), 'explanation')
     require(not (set(answers) & set(explanations)), 'duplicate answer/explanation id')
@@ -263,12 +263,12 @@ def compile_contract(source):
     for invariant in source.get('invariants', []):
         fields(invariant, ['rule_id', 'predicate'])
         require(invariant['rule_id'] in rules, 'invariant must reference a public rule')
-        validate_expr(invariant['predicate'], roots={'data', 'initial', 'user', 'time'})
+        validate_expr(invariant['predicate'], roots={'data', 'initial', 'user', 'user_state', 'time'})
         validate_rule_links(invariant['predicate'], rules, shared_filters=True)
     for goal in named(source.get('goals', []), 'state goal').values():
         fields(goal, ['id', 'rule_ids', 'predicate'])
         require(bool(goal['rule_ids']) and set(goal['rule_ids']) <= set(rules), 'state goal rule provenance required')
-        validate_expr(goal['predicate'], roots={'data', 'initial', 'evidence', 'user', 'time'})
+        validate_expr(goal['predicate'], roots={'data', 'initial', 'evidence', 'user', 'user_state', 'time'})
         validate_rule_links(goal['predicate'], rules, shared_filters=True)
     require(not any(t['kind'] == 'transaction' for t in tools.values()) or source.get('goals'), 'writes require actual-state goals')
     fields(source['limits'], ['max_actions'])
@@ -292,7 +292,7 @@ def compile_contract(source):
         require(isinstance(scenario['answer'], dict)
                 and set(scenario['answer']) == set(answers) | set(explanations), 'scenario answer fields mismatch')
         for expression in scenario['answer'].values():
-            validate_expr(expression, roots={'data', 'initial', 'evidence', 'user', 'time'})
+            validate_expr(expression, roots={'data', 'initial', 'evidence', 'user', 'user_state', 'time'})
         call_ids = set()
         for step in scenario['steps']:
             require(isinstance(step, dict) and 'kind' in step, 'scenario action required')
@@ -328,7 +328,7 @@ def compile_contract(source):
         fields(branch, ['id', 'public', 'when', 'required_tools', 'required_stages'])
         require(isinstance(branch['public'], str) and branch['public'].strip(), 'branch meaning required')
         require(set(branch['required_tools']) <= set(tools) and set(branch['required_stages']) <= set(stages), 'unknown success dependency')
-        validate_expr(branch['when'], roots={'data', 'initial', 'evidence', 'user', 'time'})
+        validate_expr(branch['when'], roots={'data', 'initial', 'evidence', 'user', 'user_state', 'time'})
     digest = hashlib.sha256(canonical(source).encode()).hexdigest()
     from .user_simulator import statechart_spec
     public = {'task': source['task'], 'category': source['category'],

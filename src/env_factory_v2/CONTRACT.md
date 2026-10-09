@@ -98,6 +98,15 @@ Reward user bindings use actual disclosed choices/corrections, overriding initia
 preferences. A permitted fallback choice must not be graded against an unavailable
 original preference. Refusal/no-write success branches must also make state goals
 and answer targets conditional on that actual decision.
+Expressions also have root user_state, containing the same non-secret snapshot
+as GET /user-state: root, regions:{stage_id:state}, and transition history. Use
+user_state.regions.STAGE to distinguish consent.consumed (successful write),
+consent.declined or consent.revoked (legitimate refusal/no-write), and consent.authorized
+(approval exists but execution is unfinished). Initial approve_STAGE facts are
+preferences, not proof of current authorization or a committed write. A refusal
+branch must require an actual refusal/revocation state and unchanged business data;
+merely failing to execute an approved write must not earn refusal credit. Goals
+and answer targets must follow the same branch decision as success requirements.
 
 answers: [{id,meaning,expected:EXPR,weight,comparison:"exact"|"unordered",schema}].
 Expected roots: data,initial,evidence,user,time. Never reference submitted answer.
@@ -162,6 +171,16 @@ fetch pages through /tool, then /collect with {pages:[observed_page_id],id};
 collection rejects duplicate, mixed-query, out-of-order or incomplete pages.
 Answer recipes may reference data,initial,evidence,user,time. These are fixture
 recipes, never available as agent actions and never used as reward targets.
+Stateless direct tasks can test pure public-rule boundaries without adding tables,
+tools, private data or extra answer prose. In a positive probe's answer recipe,
+invoke the actual named public rule with boundary arguments. Use an if expression
+that returns the independently correct answer for the original task only when
+the boundary rule returns its business-correct value; otherwise return a wrong
+but schema-valid answer. This executes the rule at the boundary and fails if its
+predicate is wrong. Merely submitting another input's answer as a negative for
+the fixed original input does not verify that boundary. Empty data mutations are
+appropriate when there is no mutable data. Boundary tests are evaluator fixtures,
+not additional agent answer obligations unless the original request requires them.
 mutations: [{table,key,column,value}] apply to initial fixtures by primary key.
 
 probes: [{id,scenario,rule_ids,mutations,expect_success,answer?,expect_error?}].

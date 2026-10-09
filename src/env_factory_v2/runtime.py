@@ -54,6 +54,7 @@ class Sandbox:
         return {'data': self.data if data is None else data, 'initial': self.initial,
                 'args': args or {}, 'row': row or {}, 'evidence': self.evidence,
                 'user': {**self.user.facts, **self.user.disclosed} if private else self.user.disclosed,
+                'user_state': self.user.snapshot(),
                 'time': self.time(), '_rules': self.rules}
 
     def _row(self, data, table_id, key):
