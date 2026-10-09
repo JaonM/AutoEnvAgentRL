@@ -144,7 +144,7 @@ class NativeCodeAgent:
     def generate(self, request, *, feedback=None):
         grammar = (Path(__file__).parent / 'CONTRACT.md').read_text()
         if feedback is not None and feedback.get('previous_source') is not None:
-            from .repair import apply_edits
+            from .repair import apply_edits, recover_edit_values
             previous = feedback['previous_source']
             evidence = {key: value for key, value in feedback.items() if key != 'previous_source'}
             value, provenance = self.ask(
@@ -163,7 +163,9 @@ class NativeCodeAgent:
                      'op': {'type': 'string', 'enum': ['add', 'replace', 'remove']},
                      'path': {'type': 'string'}, 'value_json': {'type': 'string'}})}}))
             try:
-                return apply_edits(previous, value['edits']), provenance
+                edits, format_evidence = recover_edit_values(value['edits'], self)
+                return apply_edits(previous, edits), {**provenance,
+                    **({'format_repair': format_evidence} if format_evidence else {})}
             except json.JSONDecodeError as exc:
                 raise ContractError(f'repair value invalid JSON at line {exc.lineno}, column {exc.colno}: {exc.msg}') from exc
         value, provenance = self.ask('Generate a NEW business contract following the supplied grammar. '

@@ -9,6 +9,26 @@ from .contract import require
 from .expressions import canonical
 
 
+def recover_edit_values(edits, agent):
+    """Recover delimiters in all edit values with at most one native call."""
+    require(isinstance(edits, list) and 1 <= len(edits) <= 64, 'repair requires 1..64 edits')
+    for edit in edits:
+        require(set(edit) == {'op', 'path', 'value_json'} and isinstance(edit['value_json'], str),
+                'invalid repair edit fields')
+    try:
+        for edit in edits:
+            json.loads(edit['value_json'])
+        return edits, None
+    except json.JSONDecodeError:
+        from .json_syntax import recover_json
+        # Paths and operations stay outside recovery. All scalar tokens in all
+        # values must survive, including values after the first broken edit.
+        values, evidence = recover_json('[' + ','.join(e['value_json'] for e in edits) + ']', agent)
+        require(isinstance(values, list) and len(values) == len(edits),
+                'JSON syntax repair changed edit value count')
+        return [{**edit, 'value_json': canonical(value)} for edit, value in zip(edits, values)], evidence
+
+
 def apply_edits(source, edits):
     require(isinstance(edits, list) and 1 <= len(edits) <= 64, 'repair requires 1..64 edits')
     result = copy.deepcopy(source)

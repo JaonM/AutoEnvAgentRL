@@ -8,7 +8,38 @@ from env_factory_v2.code_agent import NativeCodeAgent
 from env_factory_v2.contract import ContractError, compile_contract
 from env_factory_v2.examples import direct, simple
 from env_factory_v2.pipeline import build
-from env_factory_v2.repair import apply_edits
+from env_factory_v2.repair import apply_edits, recover_edit_values
+
+
+def test_edit_syntax_recovery_preserves_paths_values_and_atomic_application():
+    edits = [{'op': 'replace', 'path': '/a', 'value_json': '{"x":1 "y":2}'},
+             {'op': 'replace', 'path': '/b', 'value_json': '[3 4]'}]
+    original = copy.deepcopy(edits)
+    agent = Mock()
+    agent.ask.return_value = ({'replacements': [
+        {'old': '1 "y"', 'new': '1, "y"'}, {'old': '[3 4]', 'new': '[3,4]'}]}, {'test': True})
+    recovered, evidence = recover_edit_values(edits, agent)
+    assert agent.ask.call_count == 1 and evidence['provenance'] == {'test': True}
+    assert edits == original
+    assert [(e['op'], e['path']) for e in recovered] == [('replace', '/a'), ('replace', '/b')]
+    assert apply_edits({'a': {}, 'b': []}, recovered) == {'a': {'x': 1, 'y': 2}, 'b': [3, 4]}
+
+
+def test_edit_recovery_rejects_business_value_change():
+    agent = Mock()
+    agent.ask.return_value = ({'replacements': [
+        {'old': '1 "y":2', 'new': '1,"y":200'}]}, {})
+    with pytest.raises(ContractError, match='changed business content'):
+        recover_edit_values([{'op': 'replace', 'path': '/a', 'value_json': '{"x":1 "y":2}'}], agent)
+
+
+def test_valid_edits_need_no_extra_call_and_unquoted_prose_is_not_recovered():
+    agent = Mock()
+    edits = [edit('replace', '/a', 'text')]
+    assert recover_edit_values(edits, agent) == (edits, None)
+    with pytest.raises(ContractError, match='unsupported JSON content repair'):
+        recover_edit_values([{'op': 'replace', 'path': '/a', 'value_json': 'unquoted prose'}], agent)
+    agent.ask.assert_not_called()
 
 
 def edit(op, path, value=None):
