@@ -140,6 +140,11 @@ class Sandbox:
                         and self.observations[value['$result']]['tool'] in providers
                         and re.fullmatch(re.escape(binding['path']).replace(r'\*', r'\d+'), value['path']),
                         'required observed-result dependency missing')
+                if binding.get('recency') == 'latest':
+                    latest = next((turn['id'] for turn in reversed(self.trace)
+                                   if turn.get('kind') == 'tool' and turn.get('status') == 'ok'), None)
+                    require(value['$result'] == latest,
+                            'required observed-result dependency missing: latest successful business result required')
             if tool['kind'] == 'query':
                 result = self._query(tool, resolved, cursor)
             else:

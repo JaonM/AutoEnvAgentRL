@@ -197,7 +197,8 @@ def compile_contract(source):
         require(tool['parameters']['type'] == 'object', 'tool parameters must be an object')
         require(isinstance(tool['rule_ids'], list) and set(tool['rule_ids']) <= set(rules), 'unknown public rule')
         for binding in tool.get('result_bindings', []):
-            fields(binding, ['argument', 'tool', 'path'])
+            fields(binding, ['argument', 'tool', 'path'], ['recency'])
+            require(binding.get('recency', 'any') in ('any', 'latest'), 'invalid dependency recency')
             providers = binding['tool'] if isinstance(binding['tool'], list) else [binding['tool']]
             require(providers and all(isinstance(provider, str) and provider in tools for provider in providers), 'invalid dependency')
             require(binding['argument'] in tool['parameters']['required'], 'dependency argument must be required')
@@ -381,4 +382,6 @@ def public_tool(tool, rules):
         + '. Parameter/result dependencies and authorization below are mandatory. '
         + ('Returns items, total and query-bound pagination cursors. Nulls sort last; ties retain fixture order.'
            if tool['kind'] == 'query' else 'Commits all declared updates atomically only after exact user approval.'))
+    if any(binding.get('recency') == 'latest' for binding in tool.get('result_bindings', [])):
+        published['description'] += ' Bindings with recency=latest must reference the most recent successful business tool call; user/time/state/collect events do not replace it.'
     return published

@@ -90,6 +90,13 @@ result_bindings require actual observed references, not matching literals;
 path may use '*' for a numeric result-array index, e.g. items.*.id.
 The binding tool can be a list of permitted providers. A tool may consume its own
 earlier result: runtime observations must already exist, preventing temporal cycles.
+Each result binding may specify recency="latest" (default "any"). latest requires
+the observation ID of the most recent successful business tool call, in addition
+to the provider and path constraints. User, time, wait, state and collect events
+do not replace that call; failed calls do not produce results. For a chain requiring
+only the previous result's next_id, use latest and include an executed negative
+trajectory that reuses an older capture after a successful successor query.
+Observation coverage alone does not enforce this succession constraint.
 Source parameters describe resolved business values. The compiler separately
 publishes wire schemas: a captured argument is a {$result,path} object, not a
 string. User-bound arguments may use their business value or a {$user,path}
