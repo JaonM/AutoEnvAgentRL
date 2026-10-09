@@ -54,14 +54,29 @@ def run_scenario(compiled, scenario, *, judge=None, recipes_only=False):
             'time': sandbox.time()}
 
 
+def authored_cases(compiled):
+    """Materialize the same authored cases for preflight and qualification."""
+    scenarios = {s['id']: s for s in compiled['source']['scenarios']}
+    for scenario in scenarios.values():
+        yield 'scenario', scenario, None
+    for probe in compiled['source']['probes']:
+        scenario = copy.deepcopy(scenarios[probe['scenario']])
+        scenario.update(id=probe['id'], mutations=scenario.get('mutations', []) + probe['mutations'],
+                        expect_success=probe['expect_success'])
+        for key in ('answer', 'expect_error'):
+            if key in probe:
+                scenario[key] = probe[key]
+        yield 'probe', scenario, probe['rule_ids']
+
+
 def preflight_recipes(compiled):
     """Cheap real trajectories and answer rendering; never fake semantic grades."""
     checks = []
-    for scenario in compiled['source']['scenarios']:
+    for kind, scenario, _ in authored_cases(compiled):
         run = run_scenario(compiled, scenario, recipes_only=True)
         expected_error = scenario.get('expect_error')
         passed = (run['error'] is not None and expected_error in run['error']) if expected_error else run['error'] is None
-        checks.append({'id': scenario['id'], 'passed': passed, 'error': run['error']})
+        checks.append({'id': scenario['id'], 'kind': kind, 'passed': passed, 'error': run['error']})
     return {'scope': 'trajectory_and_recipe_validation_no_semantic_judgment',
             'passed': all(check['passed'] for check in checks), 'checks': checks}
 
@@ -78,27 +93,14 @@ def expected_result(scenario, run):
 def qualify(source, *, judge=None, independent_judge=None, independent_review=None):
     compiled = compile_contract(source)
     records = []
-    for scenario in compiled['source']['scenarios']:
+    for kind, scenario, rule_ids in authored_cases(compiled):
         first = run_scenario(compiled, scenario, judge=judge)
         repeat = run_scenario(compiled, scenario, judge=independent_judge or judge)
-        records.append({'id': scenario['id'], 'kind': 'scenario',
+        records.append({'id': scenario['id'], 'kind': kind,
+                        **({'rule_ids': rule_ids} if rule_ids is not None else {}),
                         'passed': expected_result(scenario, first) and expected_result(scenario, repeat)
                             and replay_identity(first) == replay_identity(repeat),
                         'first': first, 'repeat': repeat})
-    scenarios = {s['id']: s for s in compiled['source']['scenarios']}
-    for probe in compiled['source']['probes']:
-        scenario = copy.deepcopy(scenarios[probe['scenario']])
-        scenario.update(id=probe['id'], mutations=scenario.get('mutations', []) + probe['mutations'],
-                        expect_success=probe['expect_success'])
-        if 'answer' in probe:
-            scenario['answer'] = probe['answer']
-        if 'expect_error' in probe:
-            scenario['expect_error'] = probe['expect_error']
-        first = run_scenario(compiled, scenario, judge=judge)
-        repeat = run_scenario(compiled, scenario, judge=independent_judge or judge)
-        records.append({'id': probe['id'], 'kind': 'probe', 'rule_ids': probe['rule_ids'],
-                        'passed': expected_result(scenario, first) and expected_result(scenario, repeat)
-                            and replay_identity(first) == replay_identity(repeat), 'first': first, 'repeat': repeat})
     execution_passed = all(record['passed'] for record in records)
     review_passed = (independent_review is not None and independent_review.get('passed') is True
                     and independent_review.get('contract_identity') == compiled['identity']
