@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import copy
+import json
+import re
 
 from .code_agent import object_schema
 from .contract import require
@@ -19,6 +21,52 @@ CHALLENGE_SCHEMA = object_schema({'business_consistent': {'type': 'boolean'},
 AUDIT_SCHEMA = object_schema({'business_consistent': {'type': 'boolean'}, 'reason': {'type': 'string'},
     'cases': {'type': 'array', 'items': object_schema({'id': {'type': 'string'},
               'expect_success': {'type': 'boolean'}, 'reason': {'type': 'string'}})}})
+
+
+def _json_content_tokens(raw):
+    """Allow delimiter repairs only; retain every key, literal and their order."""
+    pattern = r'"(?:[^"\\\x00-\x1f]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*"|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?|true|false|null'
+    tokens = []
+    end = 0
+    for match in re.finditer(pattern, raw):
+        require(not raw[end:match.start()].strip(' \t\r\n{}[]:,'), 'unsupported JSON content repair')
+        tokens.append(match.group())
+        end = match.end()
+    require(not raw[end:].strip(' \t\r\n{}[]:,'), 'unsupported JSON content repair')
+    return tokens
+
+
+def _repair_recipe_json(value, agent):
+    broken = []
+    for index, case in enumerate(value['cases']):
+        for field in ('mutations_json', 'answer_json'):
+            try:
+                json.loads(case[field])
+            except json.JSONDecodeError as exc:
+                _json_content_tokens(case[field])
+                broken.append({'index': index, 'field': field, 'json': case[field], 'error': str(exc)})
+    if not broken:
+        return value, None
+    schema = object_schema({'repairs': {'type': 'array', 'items': object_schema({
+        'index': {'type': 'integer'}, 'field': {'type': 'string'}, 'json': {'type': 'string'}})}})
+    repaired, provenance = agent.ask(
+        'Repair JSON delimiters ONLY in these malformed independent-review recipes. Preserve every key, '
+        'string, number, boolean and null token exactly and in the same order. Preserve business intent '
+        'and expression nesting. Return each requested index/field exactly once. Do not change labels, '
+        'cases, source, values or rules. Do not execute tools.', {'broken_recipes': broken}, schema)
+    expected = {(item['index'], item['field']): item for item in broken}
+    result = copy.deepcopy(value)
+    seen = set()
+    for item in repaired['repairs']:
+        key = (item['index'], item['field'])
+        require(key in expected and key not in seen, 'JSON repair must preserve requested fields exactly once')
+        seen.add(key)
+        require(_json_content_tokens(item['json']) == _json_content_tokens(expected[key]['json']),
+                'JSON repair changed business content')
+        json.loads(item['json'])
+        result['cases'][item['index']][item['field']] = item['json']
+    require(seen == set(expected), 'JSON repair omitted recipe')
+    return result, {'provenance': provenance, 'original_review': value, 'repairs': repaired}
 
 
 def challenge(compiled, original_request, agent):
@@ -66,6 +114,7 @@ def _challenge(compiled, original_request, agent):
          'compiled_public': compiled['public'], 'fixture_evidence': fixture_evidence,
          'grammar': (__import__('pathlib').Path(__file__).parent / 'CONTRACT.md').read_text()}, CHALLENGE_SCHEMA)
     require(2 <= len(value['cases']) <= 32, 'independent challenge requires 2..32 concrete cases')
+    value, format_repair = _repair_recipe_json(value, agent)
     require(any(c['expect_success'] for c in value['cases']) and any(not c['expect_success'] for c in value['cases']),
             'challenge needs positive and negative behavior')
     rules = {r['id'] for r in compiled['source']['rules']}
@@ -94,7 +143,8 @@ def _challenge(compiled, original_request, agent):
     return {'scope': 'native_independent_contract_challenge', 'contract_identity': compiled['identity'],
             'passed': value['business_consistent'] and all(r['passed'] for r in records),
             'business_consistent': value['business_consistent'], 'reason': value['reason'],
-            'provenance': provenance, 'records': records}
+            'provenance': provenance, 'records': records,
+            **({'format_repair': format_repair} if format_repair else {})}
 
 
 def _audit(compiled, original_request, agent, report):
