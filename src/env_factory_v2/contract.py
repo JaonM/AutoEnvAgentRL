@@ -357,7 +357,13 @@ def compile_contract(source):
         require(set(branch['required_tools']) <= set(tools) and set(branch['required_stages']) <= set(stages), 'unknown success dependency')
         validate_expr(branch['when'], roots={'data', 'initial', 'evidence', 'user', 'user_state', 'time'})
         for observation in named(branch.get('required_observations', []), 'required observation').values():
-            fields(observation, ['id', 'tools', 'columns', 'expected'])
+            fields(observation, ['id', 'tools', 'columns', 'expected'], ['after_tools'])
+            if 'after_tools' in observation:
+                after = observation['after_tools']
+                require(isinstance(after, list) and after and len(set(after)) == len(after)
+                        and set(after) <= set(branch['required_tools'])
+                        and all(tools[t]['kind'] == 'transaction' for t in after),
+                        'observation after_tools must name required transaction tools')
             require(isinstance(observation['tools'], list) and observation['tools']
                     and set(observation['tools']) <= set(branch['required_tools']), 'observation providers must be required tools')
             require(isinstance(observation['columns'], list) and observation['columns']

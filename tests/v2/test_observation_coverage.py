@@ -5,6 +5,27 @@ from env_factory_v2.examples import long_chain, lit, ref
 from env_factory_v2.verification import run_scenario
 
 
+def test_post_write_observation_requires_real_current_read_after_commit():
+    from env_factory_v2.examples import transaction
+    source = transaction()
+    source['success'] = [{'id': 'verified_transfer', 'public': 'Read actual balances after transfer.',
+        'when': lit(True), 'required_tools': ['accounts', 'transfer'], 'required_stages': ['approve'],
+        'required_observations': [{'id': 'final_balances', 'tools': ['accounts'],
+            'after_tools': ['transfer'], 'columns': ['id', 'balance'], 'expected': ref('data.accounts')}]}]
+    scenario = copy.deepcopy(source['scenarios'][0])
+    compiled = compile_contract(source)
+    before_only = run_scenario(compiled, scenario)
+    assert before_only['outcome']['reward'] == 0
+    assert all(c['passed'] for c in before_only['outcome']['components'].values())
+    scenario['steps'].append({'kind': 'call', 'tool': 'accounts', 'id': 'final', 'arguments': {}})
+    assert run_scenario(compiled, scenario)['outcome']['reward'] == 1
+    # Even unchanged ID columns require a new observation after the write.
+    source['success'][0]['required_observations'][0].update(columns=['id'],
+        expected={'map': {'items': ref('data.accounts'), 'value': {'object': {'id': ref('row.id')}}}})
+    scenario['steps'].pop()
+    assert run_scenario(compile_contract(source), scenario)['outcome']['reward'] == 0
+
+
 def linked_source():
     source = long_chain(3)
     source['tools'] = source['tools'][:2]

@@ -288,3 +288,12 @@ authorization stage with an actual false preference and a valid declined/no-writ
 trajectory. Revocation alone does not test user refusal. Enforce original minimum
 result counts in an unconditional goal, rather than only activating observations
 above that count. Exercise the exact threshold and one below it.
+
+For a requested executor verification after writing, add required_observations
+with after_tools:[TRANSACTION_ID,...]. These must name required transaction tools.
+Only actual query results after the last successful call of every named write,
+at the final current state_version, satisfy that observation. Earlier reads,
+correct guessed answers and evaluator-only state checks do not verify the write.
+For required insufficient-resource rejection/rollback tests, obtain exact consent
+and valid actual bindings, then attempt the real transaction. Read-only predicates
+are not evidence that a transaction was rejected or left all records unchanged.

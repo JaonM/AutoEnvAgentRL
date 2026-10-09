@@ -77,11 +77,18 @@ def assess_process(sandbox):
                     columns = set(requirement['columns'])
                     require(isinstance(expected, list) and all(isinstance(row, dict) and set(row) == columns
                             for row in expected), 'expected observations must be projected row objects')
+                    after = requirement.get('after_tools', [])
+                    positions = {tool: [i for i, turn in enumerate(sandbox.trace)
+                        if turn.get('tool') == tool and turn.get('status') == 'ok'] for tool in after}
+                    after_complete = all(positions.values())
+                    cutoff = max((max(p) for p in positions.values() if p), default=-1)
                     observed = [{column: row[column] for column in requirement['columns']}
-                        for turn in sandbox.trace if turn.get('status') == 'ok'
-                        and turn.get('tool') in requirement['tools'] for row in turn['result']['items']]
+                        for i, turn in enumerate(sandbox.trace) if turn.get('status') == 'ok'
+                        and turn.get('tool') in requirement['tools']
+                        and (not after or (i > cutoff and turn['result']['state_version'] == sandbox.version))
+                        for row in turn['result']['items']]
                     observed_keys = {_key(row) for row in observed}
-                    check['passed'] = all(_key(row) in observed_keys for row in expected)
+                    check['passed'] = after_complete and all(_key(row) in observed_keys for row in expected)
                     check['required_count'] = len(expected)
                 except ContractError as exc:
                     check['error'] = str(exc)
