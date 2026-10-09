@@ -137,6 +137,9 @@ def compile_contract(source):
         raise ContractError('contract must contain finite JSON data') from exc
     fields(source, ['version', 'id', 'category', 'task', 'rules', 'tables', 'tools', 'user',
                     'answers', 'scenarios', 'probes', 'limits', 'time'], ['explanations', 'invariants', 'events', 'success', 'goals'])
+    from .scenarios import expand_scenarios
+    source['scenarios'] = expand_scenarios(source['scenarios'])
+    require(len(canonical(source).encode()) <= 4 * 1024 * 1024, 'expanded contract size limit')
     require(source['version'] == '2.0', 'unsupported contract version')
     require(isinstance(source['id'], str) and source['id'], 'contract id required')
     require(source['category'] in {'direct_response', 'simple_agentic', 'multi_step_agentic'}, 'unsupported category')

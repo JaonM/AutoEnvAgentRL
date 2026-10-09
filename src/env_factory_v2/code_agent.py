@@ -165,8 +165,10 @@ class NativeCodeAgent:
             'business filters or freeze mutable facts in reasoning criteria. Include grounded positive/negative '
             'scenarios and data counterexamples. If repairing, address executable evidence without weakening '
             'the original goal. Keep descriptions concise, use seed generators for bulk data and probes '
-            'to reuse trajectories rather than duplicating long scenarios. Preserve all required negative '
-            'branches, dependencies, scale and transaction objects. Do not execute tools.',
+            'to reuse trajectories rather than duplicating long scenarios. '
+            'Use scenario extends and append_steps to share long reference trajectories and express only '
+            'the differences; each inherited case still executes in full. '
+            'Preserve all required negative branches, dependencies, scale and transaction objects. Do not execute tools.',
             {'original_request': request, 'grammar': grammar, 'repair_feedback': feedback},
             object_schema({'source_json': {'type': 'string'}}))
         try:

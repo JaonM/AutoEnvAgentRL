@@ -8,6 +8,15 @@ Required top-level keys: version="2.0", id, category (direct_response,
 simple_agentic, multi_step_agentic), task (original public business goal), rules,
 tables, tools, user, answers, scenarios, probes, limits, time.
 Optional: explanations, invariants, events, success, goals.
+Scenarios may reuse another scenario with extends=PARENT_ID. The child must
+declare its own id and expect_success. Other supplied fields replace inherited
+fields (answer and mutations replace completely); omitted fields are inherited.
+Optional append_steps adds actual steps after the inherited/replaced steps.
+Parents may appear later in the list. Cycles, unknown parents and more than 32
+inheritance levels fail. The compiler expands full scenarios before all validation,
+independent review, execution and replay. Use inheritance for wrong answers,
+revocations or stale captures instead of repeating long trajectories. Expectations
+must remain grounded in original business; inheritance never skips execution.
 
 Expressions have exactly one operator. Literals always use {"literal":VALUE};
 paths use {"ref":"data.accounts.0.balance"}. Roots depend on context. Operators:
