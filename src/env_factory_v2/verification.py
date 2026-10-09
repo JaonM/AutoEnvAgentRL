@@ -90,27 +90,41 @@ def expected_result(scenario, run):
     return run['error'] is None and run['outcome']['success'] is False and run['outcome']['reward'] < 1
 
 
-def qualify(source, *, judge=None, independent_judge=None, independent_review=None):
+def compact_evidence(value):
+    """Retain verdicts and reference answers without duplicating worlds/traces."""
+    if isinstance(value, list):
+        return [compact_evidence(item) for item in value]
+    if isinstance(value, dict):
+        is_run = {'outcome', 'trace', 'final_state', 'time'} <= value.keys()
+        return {key: compact_evidence(item) for key, item in value.items()
+                if not (is_run and key in {'trace', 'final_state'})}
+    return value
+
+
+def qualify(source, *, judge=None, independent_judge=None, independent_review=None, compact=False):
     compiled = compile_contract(source)
     records = []
     for kind, scenario, rule_ids in authored_cases(compiled):
         first = run_scenario(compiled, scenario, judge=judge)
         repeat = run_scenario(compiled, scenario, judge=independent_judge or judge)
-        records.append({'id': scenario['id'], 'kind': kind,
+        replay_passed = replay_identity(first) == replay_identity(repeat)
+        records.append({'id': scenario['id'], 'kind': kind, 'replay_passed': replay_passed,
                         **({'rule_ids': rule_ids} if rule_ids is not None else {}),
                         'passed': expected_result(scenario, first) and expected_result(scenario, repeat)
-                            and replay_identity(first) == replay_identity(repeat),
-                        'first': first, 'repeat': repeat})
+                            and replay_passed,
+                        'first': compact_evidence(first) if compact else first,
+                        'repeat': compact_evidence(repeat) if compact else repeat})
     execution_passed = all(record['passed'] for record in records)
     review_passed = (independent_review is not None and independent_review.get('passed') is True
                     and independent_review.get('contract_identity') == compiled['identity']
                     and independent_review.get('scope') == 'native_independent_contract_challenge')
     gates = {'structural_contract': True, 'joint_execution_and_counterexamples': execution_passed,
              'independent_business_challenge': review_passed,
-             'deterministic_reset_and_replay': all(replay_identity(r['first']) == replay_identity(r['repeat']) for r in records)}
+             'deterministic_reset_and_replay': all(r['replay_passed'] for r in records)}
     report = {'version': '2.0', 'basis': 'contract_execution_v2', 'contract_identity': compiled['identity'],
               'passed': all(gates.values()), 'gates': gates, 'records': records,
-              'independent_review': independent_review,
+              'independent_review': compact_evidence(independent_review) if compact else independent_review,
               'scope': 'executable_contract_not_learning_effectiveness', 'container_verified': False}
+    report['evidence_detail'] = 'verdicts_and_answers' if compact else 'full_execution'
     report['evidence_identity'] = hashlib.sha256(canonical(report).encode()).hexdigest()
     return compiled, report

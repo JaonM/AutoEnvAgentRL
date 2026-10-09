@@ -11,6 +11,7 @@ import tempfile
 
 from .contract import require
 from .expressions import canonical
+from .verification import compact_evidence
 
 
 def export_bundle(compiled, report, output, *, base_image='python:3.14-slim'):
@@ -25,7 +26,12 @@ def export_bundle(compiled, report, output, *, base_image='python:3.14-slim'):
             shutil.copyfile(path, package / path.name)
     (output / 'contract.json').write_text(canonical(compiled['source']) + '\n')
     (output / 'public.json').write_text(canonical(compiled['public']) + '\n')
-    (output / 'verification.json').write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
+    delivery_report = compact_evidence(report)
+    delivery_report['full_execution_evidence_identity'] = report['evidence_identity']
+    delivery_report['evidence_detail'] = 'verdicts_and_answers'
+    delivery_report.pop('evidence_identity', None)
+    delivery_report['evidence_identity'] = hashlib.sha256(canonical(delivery_report).encode()).hexdigest()
+    (output / 'verification.json').write_text(json.dumps(delivery_report, ensure_ascii=False, indent=2) + '\n')
     (output / 'Dockerfile').write_text(
         f'FROM {base_image}\nWORKDIR /sandbox\n'
         'COPY --chown=65532:65532 env_factory_v2 /sandbox/env_factory_v2\n'
@@ -79,8 +85,10 @@ def verify_container(output, *, image, agent=None):
         run = subprocess.run(args + [identity, 'python', '-m', 'env_factory_v2', 'container-check', '/sandbox/contract.json'],
                              capture_output=True, text=True, timeout=1800)
         (output.parent / f'{output.name}-container-check.log').write_text(run.stdout + run.stderr)
+        (output.parent / f'{output.name}-container-status.json').write_text(canonical({
+            'exit_code': run.returncode, 'image_id': identity, 'memory_limit': '256m'}) + '\n')
         if run.returncode:
-            raise RuntimeError('container execution verification failed; see sibling container log')
+            raise RuntimeError(f'container execution verification failed (exit {run.returncode}); see sibling container log and status')
         evidence = json.loads(run.stdout)
         require(evidence['passed'] is True and evidence['contract_identity'] == manifest['contract_identity'], 'container evidence mismatch')
     finally:

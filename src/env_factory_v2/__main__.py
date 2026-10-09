@@ -86,7 +86,8 @@ def main():
     if args.command == 'container-check':
         review = json.loads((args.contract.parent / 'verification.json').read_text()).get('independent_review')
     compiled, report = qualify(source, judge=agent.judge if agent else None,
-                              independent_judge=agent.independent_judge if agent else None, independent_review=review)
+                              independent_judge=agent.independent_judge if agent else None, independent_review=review,
+                              compact=args.command == 'container-check')
     executable = report['gates']['joint_execution_and_counterexamples'] and report['gates']['deterministic_reset_and_replay']
     if args.command == 'container-check':
         from .api_verification import verify_api
