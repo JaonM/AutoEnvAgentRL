@@ -64,7 +64,14 @@ def challenge(compiled, original_request, agent):
         if report['business_consistent'] != all_passed:
             report = _audit(compiled, original_request, agent, report)
         if not report['business_consistent'] and all(record['passed'] for record in report['records']):
-            raise RuntimeError('independent review is inconclusive: no executed counterexample supports its rejection')
+            # A structurally unsolvable answer or absent user branch need not be
+            # expressible by initial-record mutations. Preserve uncertainty and
+            # the failed gate; a candidate revision still needs a fresh review.
+            return {**report, 'passed': False, 'status': 'inconclusive',
+                    'rejection_proven': False,
+                    'instruction': 'Investigate these unresolved concerns against the original request. '
+                    'They are not proven counterexamples. Preserve original obligations and valid tests; '
+                    'any revised candidate must pass a fresh independent review and all execution gates.'}
         return report
     except (ContractError, ValueError, KeyError, TypeError) as exc:
         raise RuntimeError('independent challenge invalid; do not repair source from an ungrounded claim: ' + str(exc)) from exc

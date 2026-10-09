@@ -85,7 +85,8 @@ def build(request, *, agent, output, source=None, repairs=1, docker=True, base_i
             if not review['passed']:
                 rejected.add(compiled['identity'])
                 feedback = {'original_request': request, 'independent_challenge': review,
-                            'instruction': 'Repair the actual business contradictions without weakening the original goal.'}
+                            'instruction': review.get('instruction',
+                                'Repair the actual business contradictions without weakening the original goal.')}
                 raise ContractError('independent business challenge did not pass')
             phase('execution')
             phase_start = time.monotonic()

@@ -276,3 +276,15 @@ partial reward, but failed goal/process/safety never receives full success.
 
 Unsupported capabilities fail explicitly; do not approximate physical behavior,
 external effects or complex transactions with fabricated narrative feedback.
+
+Every mutable fact required in an agent answer must be accessible through actual
+permitted observations or actual user disclosures. Fixture answer recipes reading
+data are not agent capabilities. Preserve unrelated records through invariants,
+without requiring hidden unrelated balances in the answer. Transaction goals must
+select the actual authorized object IDs and compare unrelated objects against
+initial state; never require every existing row to become the selected row.
+When the request requires an actual authorization refusal, include a separate
+authorization stage with an actual false preference and a valid declined/no-write
+trajectory. Revocation alone does not test user refusal. Enforce original minimum
+result counts in an unconditional goal, rather than only activating observations
+above that count. Exercise the exact threshold and one below it.

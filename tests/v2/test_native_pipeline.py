@@ -103,14 +103,39 @@ def challenge_value(source):
          'mutations_json': '[]', 'answer_json': '{}', 'expect_success': False}]}
 
 
-def test_unexecuted_rejection_is_not_grounds_for_author_repair(tmp_path):
+def test_unexecuted_rejection_remains_unqualified_and_explicitly_unproven(tmp_path):
     source = direct()
     value = challenge_value(source)
     value['business_consistent'] = False
     agent = native(tmp_path)
     agent.ask = Mock(return_value=(value, {'unit_test': True}))
-    with pytest.raises(RuntimeError, match='inconclusive'):
-        challenge(compile_contract(source), {'goal': source['task']}, agent)
+    report = challenge(compile_contract(source), {'goal': source['task']}, agent)
+    assert report['status'] == 'inconclusive'
+    assert report['rejection_proven'] is False
+    assert report['passed'] is False
+    assert all(record['passed'] for record in report['records'])
+    assert 'fresh independent review' in report['instruction']
+
+
+def test_inconclusive_review_uses_only_bounded_revision_and_fresh_gate(tmp_path):
+    source = direct()
+    revised = copy.deepcopy(source)
+    revised['id'] += '_candidate'
+    value = challenge_value(source)
+    value['business_consistent'] = False
+    agent = native(tmp_path / 'native')
+    agent.ask = Mock(return_value=(value, {'unit_test': True}))
+    agent.generate = Mock(return_value=(revised, {'unit_test': True}))
+    result = build({'goal': source['task']}, agent=agent, source=source,
+                   output=tmp_path / 'run', repairs=1, docker=False)
+    assert not result.get('qualified', False)
+    assert len(result['attempts']) == 2
+    assert all(a['failed_phase'] == 'independent_challenge' for a in result['attempts'])
+    assert agent.generate.call_count == 1
+    assert agent.ask.call_count == 4  # Both candidates get review and audit.
+    feedback = agent.generate.call_args.kwargs['feedback']
+    assert feedback['independent_challenge']['rejection_proven'] is False
+    assert feedback['previous_source'] == source
 
 
 def test_contradictory_positive_label_is_audited_without_dropping_counterexample(tmp_path):
