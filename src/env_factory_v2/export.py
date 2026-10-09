@@ -45,7 +45,8 @@ def verify_bundle(output):
     output = Path(output)
     manifest = json.loads((output / 'manifest.json').read_text())
     actual = {str(p.relative_to(output)): hashlib.sha256(p.read_bytes()).hexdigest()
-              for p in sorted(output.rglob('*')) if p.is_file() and p.name not in {'manifest.json', 'delivery.json'}}
+              for p in sorted(output.rglob('*')) if p.is_file()
+              and str(p.relative_to(output)) not in {'manifest.json', 'delivery.json', 'training.json'}}
     require(actual == manifest['files'] and hashlib.sha256(canonical(actual).encode()).hexdigest() == manifest['bundle_identity'],
             'delivery content changed after export')
     return manifest

@@ -125,3 +125,42 @@ No graph sampling or RL trainer coupling is assumed in this first standalone V2.
 Executable qualification proves these tested obligations, not learning improvement
 or exhaustive semantic correctness. Offline examples and unit mocks never count
 toward native production yield.
+
+## RL delivery
+
+V2 now has a local HTTP AgentRuntime adapter, exact token/logprob trajectory
+recording through the existing PPO/GRPO runner, and a separate readiness certificate.
+First requalify the sandbox on the current V2 platform. Historical delivery
+reports are rejected after runtime changes; never upgrade a certificate by editing
+its passed flags. Then run:
+
+```sh
+.venv/bin/python -m env_factory_v2 certify-training output/new-build/sandbox/contract.json
+.venv/bin/python -m rl.train --sandbox output/new-build/sandbox \
+  --sandbox-backend local --environment-factory rl.environments.v2:V2Episode \
+  --model models/Qwen3-0.6B-4bit --tuning lora --thinking-mode no-thinking \
+  --algorithm ppo --rollout-workers 1 --rollout-concurrency 1 --rollout-group 2 \
+  --epochs 1 --updates 1 --output output/v2-rl-smoke
+```
+
+The trainable policy is the explicit local `--model`; generation/review/semantic
+judge remain native GPT-6.1-Sol. Semantic environments require
+ENVFACTORY_V2_CONNECTION pointing to the host bridge connection file.
+training.json binds delivery, adapter, platform and trajectory protocol identities.
+It certifies reference adapter conformance and policy-visible isolation, not
+learning effectiveness. Final answers must use v2_submit or the declared JSON
+fields; malformed answers and finite episodes without an answer get zero reward.
+Infrastructure/judge errors escape and never become invented policy rewards.
+Native business calls use the compiled public parameters directly. Queries add
+only the reserved optional _v2_cursor transport field; there is no extra business
+argument envelope. Native tool call IDs are assigned by the runtime when absent.
+Snapshots contain private world context in trainer-only continuations, never
+policy messages or loss targets. Rollout seeds identify policy groups; the world
+uses the contract's fixed fixtures and configured virtual epoch.
+
+The current supported training backend is local HTTP in isolated environment
+processes. The V1 Docker service manager is explicitly rejected for V2. Container
+qualification remains mandatory before readiness. A task manifest supports V2
+train/eval splits; mixing V1 and V2 in one run is currently rejected. Related task
+families must be kept in one split. A smoke update proves integration, not reward
+convergence or general task success.

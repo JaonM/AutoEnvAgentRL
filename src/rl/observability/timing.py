@@ -53,9 +53,9 @@ class StageTimes:
                 self.add('rollout_behavior_verification', action.get('verification_seconds', 0.))
             for entry in episode.get('trace', []):
                 path = entry['path']
-                kind = ('user_simulator' if path == '/v1/user_simulator' else
-                        'tool' if path.startswith('/v1/tools/') else
-                        'reward' if path == '/v1/reward' else 'other_environment')
+                kind = ('user_simulator' if path in {'/v1/user_simulator', '/user'} else
+                        'tool' if path.startswith('/v1/tools/') or path in {'/tool', '/collect'} else
+                        'reward' if path in {'/v1/reward', '/answer'} else 'other_environment')
                 self.add('rollout_' + kind, entry['seconds'])
 
 

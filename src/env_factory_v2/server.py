@@ -93,4 +93,6 @@ def serve(source, *, host='127.0.0.1', port=8080, agent=None):
                 self.reply(503, {'error': 'native service unavailable; no fallback'})
 
     server = ThreadingHTTPServer((host, port), Handler)
+    # Trusted in-process trainer continuation; not an HTTP endpoint.
+    server.episodes, server.episode_lock = episodes, lock
     return server

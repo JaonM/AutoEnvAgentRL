@@ -15,6 +15,21 @@ from rl.trainer.cli import parse_args
 
 def train(config: Config):
     config.validate()
+    candidates = [Path(config.sandbox)] if config.sandbox else []
+    if config.tasks and Path(config.tasks).is_file():
+        manifest_path = Path(config.tasks).resolve()
+        entries = json.loads(manifest_path.read_text()).get('tasks', [])
+        candidates = [manifest_path.parent / entry['sandbox'] for entry in entries]
+    if any((root / 'contract.json').is_file() and (root / 'delivery.json').is_file() for root in candidates):
+        from rl.data.tasks import load_tasks
+        tasks = load_tasks(sandbox=config.sandbox, manifest=config.tasks)
+        v2_tasks = [(Path(task.sandbox) / 'contract.json').is_file() for task in tasks]
+        if not all(v2_tasks) or config.sandbox_backend != 'local' or config.sandbox_services:
+            raise ValueError('V2 currently requires an all-V2 task set and --sandbox-backend local')
+        if config.environment_factory == 'rl.environment:SandboxEpisode':
+            config.environment_factory = 'rl.environments.v2:V2Episode'
+        if config.environment_factory != 'rl.environments.v2:V2Episode':
+            raise ValueError('V2 tasks require rl.environments.v2:V2Episode')
     manager = None
     try:
         if config.sandbox_backend == "docker" and (not config.sandbox_services):

@@ -39,7 +39,7 @@ def main():
         command.add_argument('--base-image', default='python:3.14-slim')
         if name == 'build':
             command.add_argument('--source', type=Path, required=True)
-    for name in ('verify', 'container-check', 'serve'):
+    for name in ('verify', 'container-check', 'serve', 'certify-training'):
         command = sub.add_parser(name)
         command.add_argument('contract', type=Path)
         if name == 'serve':
@@ -68,6 +68,10 @@ def main():
         print(canonical(result))
         return 0 if result.get('qualified') or result.get('gates', {}).get('joint_execution_and_counterexamples') and args.without_docker else 1
     source = json.loads(args.contract.read_text())
+    if args.command == 'certify-training':
+        from .training import certify
+        print(canonical(certify(args.contract.parent)))
+        return 0
     agent = environment_agent()
     if args.command == 'serve':
         server = serve(source, host=args.host, port=args.port, agent=agent)
