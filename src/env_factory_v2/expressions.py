@@ -94,6 +94,17 @@ def validate_expr(expression, *, roots, depth=0):
         for item in value.values():
             validate_expr(item, roots=roots, depth=depth + 1)
         return
+    if op == 'sort':
+        if not isinstance(value, dict) or set(value) != {'items', 'order_by'}:
+            raise ContractError('invalid sort expression')
+        orders = value['order_by']
+        if not isinstance(orders, list) or not orders or any(
+                not isinstance(order, dict) or set(order) != {'field', 'direction'}
+                or not isinstance(order['field'], str) or not order['field']
+                or order['direction'] not in {'asc', 'desc'} for order in orders):
+            raise ContractError('invalid sort order')
+        validate_expr(value['items'], roots=roots, depth=depth + 1)
+        return
     if op == 'walk':
         if not isinstance(value, dict) or set(value) != {'items', 'start', 'key', 'next', 'max_nodes'}:
             raise ContractError('invalid walk expression')
@@ -123,6 +134,23 @@ def evaluate(expression, context):
         if type(condition) is not bool:
             raise ContractError('condition must be boolean')
         return evaluate(value['then' if condition else 'else'], context)
+    if op == 'sort':
+        items = evaluate(value['items'], context)
+        if not isinstance(items, list) or len(items) > 10000:
+            raise ContractError('sort requires at most 10000 rows')
+        for order in reversed(value['order_by']):
+            field = order['field']
+            if any(not isinstance(row, dict) or field not in row for row in items):
+                raise ContractError('sort requires declared row fields')
+            present = [row for row in items if row[field] is not None]
+            absent = [row for row in items if row[field] is None]
+            kinds = {'number' if type(row[field]) in {int, float} else type(row[field]).__name__ for row in present}
+            if len(kinds) > 1 or not kinds <= {'number', 'str', 'bool'} or any(
+                    type(row[field]) is float and not math.isfinite(row[field]) for row in present):
+                raise ContractError('sort requires homogeneous finite scalar values')
+            present.sort(key=lambda row: row[field], reverse=order['direction'] == 'desc')
+            items = present + absent
+        return items
     if op == 'walk':
         items = evaluate(value['items'], context)
         current = evaluate(value['start'], context)

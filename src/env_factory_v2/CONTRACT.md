@@ -18,6 +18,12 @@ expressions; if takes {condition,then,else}; filter/map take {items,value} with
 row available while evaluating value. sum expects its single expression to return
 a numeric list. Type-strict comparisons; false and zero are real observations.
 at takes [collection_expression,index_expression].
+sort takes {items:EXPRESSION,order_by:[{field:COLUMN,direction:"asc"|"desc"}]}.
+It stably sorts up to 10000 row objects by the declared keys, with nulls last in
+either direction. Each key must contain one scalar type (int/float share numeric
+ordering); strings use case-sensitive lexical ordering. Mixed scalar types,
+missing fields and non-finite numbers fail. Use sort on authoritative filtered
+rows before mapping ordered answers; storage order is not business order.
 walk takes {items:EXPRESSION,start:EXPRESSION,key:COLUMN,next:COLUMN,max_nodes:INTEGER}.
 It returns current rows in linked order, following next from start until null;
 null start returns an empty list. Column names are literal strings, max_nodes is
