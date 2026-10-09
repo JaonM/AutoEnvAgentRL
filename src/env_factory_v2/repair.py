@@ -15,18 +15,37 @@ def recover_edit_values(edits, agent):
     for edit in edits:
         require(set(edit) == {'op', 'path', 'value_json'} and isinstance(edit['value_json'], str),
                 'invalid repair edit fields')
-    try:
-        for edit in edits:
+    broken = []
+    from .json_syntax import content_tokens
+    for index, edit in enumerate(edits):
+        try:
             json.loads(edit['value_json'])
+        except json.JSONDecodeError as exc:
+            content_tokens(edit['value_json'])
+            broken.append({'index': index, 'json': edit['value_json'], 'error': str(exc)})
+    if not broken:
         return edits, None
-    except json.JSONDecodeError:
-        from .json_syntax import recover_json
-        # Paths and operations stay outside recovery. All scalar tokens in all
-        # values must survive, including values after the first broken edit.
-        values, evidence = recover_json('[' + ','.join(e['value_json'] for e in edits) + ']', agent)
-        require(isinstance(values, list) and len(values) == len(edits),
-                'JSON syntax repair changed edit value count')
-        return [{**edit, 'value_json': canonical(value)} for edit, value in zip(edits, values)], evidence
+    from .code_agent import object_schema
+    value, provenance = agent.ask(
+        'Repair ONLY JSON structural punctuation in each malformed edit value. Return the complete '
+        'corrected JSON string for each requested index exactly once. Preserve every key, scalar token '
+        'and their order, intended nesting and business meaning. Do not change rules, values or labels. '
+        'Do not execute tools.', {'broken_values': broken}, object_schema({'repairs': {
+            'type': 'array', 'items': object_schema({'index': {'type': 'integer'}, 'json': {'type': 'string'}})}}))
+    expected = {entry['index']: entry['json'] for entry in broken}
+    result = copy.deepcopy(edits)
+    seen = set()
+    for entry in value['repairs']:
+        index = entry['index']
+        require(type(index) is int and index in expected and index not in seen,
+                'JSON syntax repair must preserve requested edit indices exactly once')
+        seen.add(index)
+        require(content_tokens(entry['json']) == content_tokens(expected[index]),
+                'JSON syntax repair changed business content')
+        canonical(json.loads(entry['json']))
+        result[index]['value_json'] = entry['json']
+    require(seen == set(expected), 'JSON syntax repair omitted edit values')
+    return result, {'provenance': provenance, 'original_values': broken, 'repairs': value}
 
 
 def apply_edits(source, edits):

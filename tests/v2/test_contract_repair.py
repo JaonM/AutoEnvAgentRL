@@ -16,8 +16,8 @@ def test_edit_syntax_recovery_preserves_paths_values_and_atomic_application():
              {'op': 'replace', 'path': '/b', 'value_json': '[3 4]'}]
     original = copy.deepcopy(edits)
     agent = Mock()
-    agent.ask.return_value = ({'replacements': [
-        {'old': '1 "y"', 'new': '1, "y"'}, {'old': '[3 4]', 'new': '[3,4]'}]}, {'test': True})
+    agent.ask.return_value = ({'repairs': [
+        {'index': 0, 'json': '{"x":1,"y":2}'}, {'index': 1, 'json': '[3,4]'}]}, {'test': True})
     recovered, evidence = recover_edit_values(edits, agent)
     assert agent.ask.call_count == 1 and evidence['provenance'] == {'test': True}
     assert edits == original
@@ -27,10 +27,19 @@ def test_edit_syntax_recovery_preserves_paths_values_and_atomic_application():
 
 def test_edit_recovery_rejects_business_value_change():
     agent = Mock()
-    agent.ask.return_value = ({'replacements': [
-        {'old': '1 "y":2', 'new': '1,"y":200'}]}, {})
+    agent.ask.return_value = ({'repairs': [{'index': 0, 'json': '{"x":1,"y":200}'}]}, {})
     with pytest.raises(ContractError, match='changed business content'):
         recover_edit_values([{'op': 'replace', 'path': '/a', 'value_json': '{"x":1 "y":2}'}], agent)
+
+
+@pytest.mark.parametrize('repairs', [[], [{'index': 1, 'json': '[1,2]'}],
+    [{'index': True, 'json': '[1,2]'}],
+    [{'index': 0, 'json': '[1,2]'}, {'index': 0, 'json': '[1,2]'}]])
+def test_edit_recovery_cannot_omit_duplicate_or_reassign_values(repairs):
+    agent = Mock()
+    agent.ask.return_value = ({'repairs': repairs}, {})
+    with pytest.raises(ContractError, match='edit'):
+        recover_edit_values([{'op': 'replace', 'path': '/a', 'value_json': '[1 2]'}], agent)
 
 
 def test_valid_edits_need_no_extra_call_and_unquoted_prose_is_not_recovered():
