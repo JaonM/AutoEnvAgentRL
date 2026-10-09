@@ -30,7 +30,7 @@ def test_positive_revocation_with_impossible_completion_is_caught_before_judgmen
     assert not preflight['passed']
     check = preflight['checks'][0]
     assert check['error'] is None
-    assert check['workflow']['process'] == [{'id': 'revoked', 'active': True, 'passed': False}]
+    assert check['deterministic_grade']['process'] == [{'id': 'revoked', 'active': True, 'passed': False}]
     assert run_scenario(compiled, compiled['source']['scenarios'][0])['outcome']['reward'] == 0
 
 
@@ -42,7 +42,7 @@ def test_correct_refusal_preflight_matches_final_process_without_semantic_grade(
     assert preflight['passed']
     run = run_scenario(compiled, compiled['source']['scenarios'][0])
     assert run['outcome']['success']
-    assert preflight['checks'][0]['workflow']['process'] == run['outcome']['process']
+    assert preflight['checks'][0]['deterministic_grade']['process'] == run['outcome']['process']
 
 
 def test_negative_workflow_failure_remains_a_valid_counterexample():

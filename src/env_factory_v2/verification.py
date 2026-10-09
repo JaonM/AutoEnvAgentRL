@@ -46,7 +46,9 @@ def run_scenario(compiled, scenario, *, judge=None, recipes_only=False):
                   for key, expression in scenario['answer'].items()}
         if recipes_only:
             outcome = {'pending_grade': True}
-            if scenario['expect_success']:
+            if not sandbox.source.get('explanations'):
+                outcome['deterministic_grade'] = grade(sandbox, answer)
+            elif scenario['expect_success']:
                 outcome['workflow'] = assess_process(sandbox)
         else:
             outcome = grade(sandbox, answer, judge=judge)
@@ -82,10 +84,14 @@ def preflight_recipes(compiled):
         expected_error = scenario.get('expect_error')
         passed = (run['error'] is not None and expected_error in run['error']) if expected_error else run['error'] is None
         workflow = run['outcome'].get('workflow')
-        if scenario['expect_success'] and run['error'] is None:
+        deterministic = run['outcome'].get('deterministic_grade')
+        if deterministic is not None:
+            passed = expected_result(scenario, {**run, 'outcome': deterministic})
+        elif scenario['expect_success'] and run['error'] is None:
             passed = passed and workflow['passed']
         checks.append({'id': scenario['id'], 'kind': kind, 'passed': passed, 'error': run['error'],
-                       **({'workflow': workflow} if workflow is not None else {})})
+                       **({'workflow': workflow} if workflow is not None else {}),
+                       **({'deterministic_grade': deterministic} if deterministic is not None else {})})
     return {'scope': 'trajectory_and_recipe_validation_no_semantic_judgment',
             'passed': all(check['passed'] for check in checks), 'checks': checks}
 

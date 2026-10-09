@@ -27,3 +27,14 @@ def test_preflight_rejects_stale_probe_expected_error_even_if_execution_succeeds
     check = next(item for item in report['checks'] if item['id'] == 'stale_size_answer')
     assert not check['passed']
     assert check['error'] is None
+
+
+def test_negative_probe_that_actually_gets_full_credit_is_rejected_before_model_review():
+    source = simple()
+    source['probes'][-1]['answer'] = source['scenarios'][0]['answer']
+    report = preflight_recipes(compile_contract(source))
+    check = next(item for item in report['checks'] if item['id'] == 'stale_size_answer')
+    assert not check['passed']
+    assert check['error'] is None
+    assert check['deterministic_grade']['reward'] == 1
+    assert check['deterministic_grade']['success']
