@@ -297,3 +297,16 @@ correct guessed answers and evaluator-only state checks do not verify the write.
 For required insufficient-resource rejection/rollback tests, obtain exact consent
 and valid actual bindings, then attempt the real transaction. Read-only predicates
 are not evidence that a transaction was rejected or left all records unchanged.
+
+Answer observability applies to EVERY success branch, including refusal/revocation:
+an unchanged receipt is still an exact mutable answer obligation. Provide real
+query access to required existing fields and record IDs, or restrict the answer
+to the original requested observable facts. A write result exposes only its
+changed fields and key, not unmodified hidden fields of a record.
+Empty-menu probes must still use actual $user bindings for disclosed values;
+mutate authoritative rows to remove candidates rather than replacing a bound
+argument with a fabricated literal. After a query is filtered to return no rows,
+never dereference items.0 as if a row existed. A stale-reference test must capture
+an actual earlier row and reach the intended binding/recency protection, rather
+than failing while resolving a nonexistent result. Do not relabel an accidental
+empty-result failure as proof of stale-reference protection.
