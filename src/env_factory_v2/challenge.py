@@ -110,10 +110,11 @@ def _challenge(compiled, original_request, agent):
     scenarios = {s['id']: s for s in compiled['source']['scenarios']}
     records = []
     identities = set()
+    mutation_repair_budget = [1]
     for case in value['cases']:
         require(case['id'] and case['id'] not in identities and case['scenario_id'] in scenarios, 'invalid challenge identity')
         identities.add(case['id'])
-        records.append(_execute_case(compiled, case, scenarios, agent))
+        records.append(_execute_case(compiled, case, scenarios, agent, mutation_repair_budget))
     return {'scope': 'native_independent_contract_challenge', 'contract_identity': compiled['identity'],
             'passed': value['business_consistent'] and all(r['passed'] for r in records),
             'business_consistent': value['business_consistent'], 'reason': value['reason'],
@@ -121,7 +122,8 @@ def _challenge(compiled, original_request, agent):
             **({'format_repair': format_repair} if format_repair else {})}
 
 
-def _execute_case(compiled, case, scenarios, agent):
+def _execute_case(compiled, case, scenarios, agent, mutation_repair_budget=None):
+    from .expressions import ContractError
     scenario = copy.deepcopy(scenarios[case['scenario_id']])
     mutations, answer = json.loads(case['mutations_json']), json.loads(case['answer_json'])
     require(isinstance(mutations, list) and isinstance(answer, dict), 'invalid challenge recipes')
@@ -129,11 +131,40 @@ def _execute_case(compiled, case, scenarios, agent):
                     expect_success=case['expect_success'])
     if answer:
         scenario['answer'] = answer
-    first = run_scenario(compiled, scenario, judge=agent.judge)
+    mutation_repair = None
+    try:
+        first = run_scenario(compiled, scenario, judge=agent.judge)
+    except ContractError as exc:
+        if ('write/mutation target must identify exactly one row' not in str(exc)
+                or mutation_repair_budget is None or mutation_repair_budget[0] == 0):
+            raise
+        mutation_repair_budget[0] -= 1
+        from .fixtures import review_contract
+        source, fixtures = review_contract(compiled['source'])
+        value, provenance = agent.ask(
+            'Repair ONLY the order of this independent case mutation list. Mutations execute sequentially; '
+            'renaming a primary key changes how later mutations identify that row. Preserve every mutation '
+            'exactly; return a permutation of 0-based indices. No additions, removals, edits, labels, answers '
+            'or source changes. Preserve the intended business changes; order independent non-key changes '
+            'before renaming their target. If reordering cannot resolve it, return the original order. '
+            'Do not execute tools.',
+            {'case': case, 'mutations': mutations, 'unchanged_scenario_mutations': scenario.get('mutations', [])[:-len(mutations)] if mutations else scenario.get('mutations', []),
+             'error': str(exc), 'contract': source, 'fixture_evidence': fixtures},
+            object_schema({'order': {'type': 'array', 'items': {'type': 'integer'}}}))
+        order = value['order']
+        require(len(order) == len(mutations) and all(type(index) is int for index in order)
+                and set(order) == set(range(len(mutations))), 'mutation repair must preserve every mutation exactly once')
+        reordered = [mutations[index] for index in order]
+        original_case = copy.deepcopy(case)
+        case = {**case, 'mutations_json': json.dumps(reordered, ensure_ascii=False)}
+        scenario['mutations'] = copy.deepcopy(scenarios[case['scenario_id']].get('mutations', [])) + reordered
+        first = run_scenario(compiled, scenario, judge=agent.judge)
+        mutation_repair = {'provenance': provenance, 'order': order, 'original_case': original_case}
     repeat = run_scenario(compiled, scenario, judge=agent.independent_judge)
     passed = expected_result(scenario, first) and expected_result(scenario, repeat)
     return {'case': case, 'passed': passed and replay_identity(first) == replay_identity(repeat),
-            'first': first, 'repeat': repeat}
+            'first': first, 'repeat': repeat,
+            **({'mutation_order_repair': mutation_repair} if mutation_repair else {})}
 
 
 def _audit(compiled, original_request, agent, report):
@@ -200,6 +231,7 @@ def _audit(compiled, original_request, agent, report):
         extra, format_repair = _repair_recipe_json(extra, agent)
         identities = {record['case']['id'] for record in records}
         rules = {rule['id'] for rule in compiled['source']['rules']}
+        mutation_repair_budget = [1]
         for case in extra['cases']:
             require(case['id'] and case['id'] not in identities and case['scenario_id'] in scenarios,
                     'invalid supplemental challenge identity')
@@ -207,7 +239,7 @@ def _audit(compiled, original_request, agent, report):
                     'supplemental challenge must use actual rules and reasons')
             require(case['expect_success'] in missing, 'supplemental challenge must restore missing label')
             identities.add(case['id'])
-            records.append(_execute_case(compiled, case, scenarios, agent))
+            records.append(_execute_case(compiled, case, scenarios, agent, mutation_repair_budget))
         supplement = {'provenance': extra_provenance, 'result': extra, 'format_repair': format_repair}
     require({record['case']['expect_success'] for record in records} == {True, False},
             'audit must preserve positive and negative coverage')
