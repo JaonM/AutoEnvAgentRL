@@ -212,7 +212,7 @@ def fill_projections(answer, entries, truth, *, name_aliases=None, set_membershi
             value = None if value is None else value + offset
         elif e.get('representation', 'native') == 'records':
             from v2_record_semantics import record_projection
-            require(len(e['selectors']) == 1 and e['packing'] == 'single', 'inverse records require one array selector')
+            require(len(e['selectors']) == 1 and e['packing'] in {'single', 'list'}, 'inverse records require one array selector')
             selector = e['selectors'][0]
             current = select(result[selector['field']], path_segments(selector['path']))
             descriptor = (record_roles or {}).get(e['role'])

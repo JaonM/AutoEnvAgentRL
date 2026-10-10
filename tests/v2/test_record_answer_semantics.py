@@ -74,3 +74,12 @@ def test_negative_projection_changes_business_value_inside_scoped_record():
     assert project(out)[0]['allowed'] is False
     assert out['report'][0]['permissions'][0] == A['report'][0]['permissions'][0]
     assert out['report'][0]['file_id'] == 'F1'
+
+
+@pytest.mark.parametrize('packing', ['single', 'list'])
+def test_single_array_record_packing_round_trips_and_supports_counterexamples(packing):
+    entry = copy.deepcopy(E)
+    entry['packing'] = packing
+    assert project(A,entry) == T
+    assert fill_projections(A,[entry],{'files':T},record_roles={'files':D}) == A
+    assert project(wrong_projection(A,entry,record_roles={'files':D}),entry)[0]['allowed'] is False
