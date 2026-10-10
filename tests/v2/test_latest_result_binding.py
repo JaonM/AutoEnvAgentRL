@@ -47,3 +47,37 @@ def test_invalid_recency_is_rejected():
     s['tools'][1]['result_bindings'][0]['recency'] = 'latest_provider_only'
     with pytest.raises(ContractError, match='dependency recency'):
         compile_contract(s)
+
+
+@pytest.mark.parametrize('multiple_pages', [False, True])
+def test_latest_accepts_verified_collection_of_current_query(multiple_pages):
+    s = source()
+    if multiple_pages:
+        s['rules'].append({'id': 'all_nodes', 'public': 'Return all nodes for entry N0.',
+                           'predicate': {'eq': [{'ref': 'args.node_id'}, {'literal': 'N0'}]}})
+        s['tools'][0].update(rule_ids=['all_nodes'], page_size=1)
+    sandbox = Sandbox(s)
+    result = sandbox.traverse('node_0', {'node_id': 'N0'}, call_id='start')
+    assert len(result['pages']) == (3 if multiple_pages else 1)
+    sandbox.call('node_1', {'node_id': {'$result': 'start', 'path': 'items.0.next_id'}}, call_id='second')
+    with pytest.raises(ContractError, match='latest successful business result'):
+        sandbox.call('node_1', {'node_id': {'$result': 'start', 'path': 'items.0.next_id'}}, call_id='stale')
+
+
+def test_recollecting_old_pages_after_successful_read_does_not_refresh_latest():
+    sandbox = Sandbox(source())
+    sandbox.traverse('node_0', {'node_id': 'N0'}, call_id='start')
+    sandbox.call('node_1', {'node_id': {'$result': 'start_page0', 'path': 'items.0.next_id'}}, call_id='second')
+    sandbox.collect(['start_page0'], call_id='recollected')
+    with pytest.raises(ContractError, match='latest successful business result'):
+        sandbox.call('node_1', {'node_id': {'$result': 'recollected', 'path': 'items.0.next_id'}}, call_id='stale')
+
+
+def test_failed_call_and_wait_do_not_invalidate_current_collection():
+    sandbox = Sandbox(source())
+    sandbox.traverse('node_0', {'node_id': 'N0'}, call_id='start')
+    with pytest.raises(ContractError, match='observed-result dependency'):
+        sandbox.call('node_1', {'node_id': 'N1'}, call_id='failed')
+    sandbox.wait(1)
+    sandbox.call('node_1', {'node_id': {'$result': 'start', 'path': 'items.0.next_id'}}, call_id='second')
+    assert sandbox.trace[-1]['status'] == 'ok'

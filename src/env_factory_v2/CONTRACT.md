@@ -130,7 +130,10 @@ earlier result: runtime observations must already exist, preventing temporal cyc
 Each result binding may specify recency="latest" (default "any"). latest requires
 the observation ID of the most recent successful business tool call, in addition
 to the provider and path constraints. User, time, wait, state and collect events
-do not replace that call; failed calls do not produce results. For a chain requiring
+do not replace that call; failed calls do not produce results.
+An observation produced by collect/traverse may satisfy latest when its verified
+final query page is that most recent successful business call. Collecting old pages
+after an intervening successful read does not make those pages current. For a chain requiring
 only the previous result's next_id, use latest and include an executed negative
 trajectory that reuses an older capture after a successful successor query.
 Observation coverage alone does not enforce this succession constraint.

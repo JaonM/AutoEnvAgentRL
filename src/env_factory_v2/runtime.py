@@ -159,7 +159,11 @@ class Sandbox:
                 if binding.get('recency') == 'latest':
                     latest = next((turn['id'] for turn in reversed(self.trace)
                                    if turn.get('kind') == 'tool' and turn.get('status') == 'ok'), None)
-                    require(value['$result'] == latest,
+                    observation = self.observations[value['$result']]
+                    # A collection is an alias for verified complete query pages,
+                    # not a new read. Only its actual final page may satisfy latest.
+                    pages = observation.get('page_ids', ())
+                    require(value['$result'] == latest or bool(pages and pages[-1] == latest),
                             'required observed-result dependency missing: latest successful business result required')
             if tool['kind'] == 'query':
                 result = self._query(tool, resolved, cursor)
@@ -279,7 +283,8 @@ class Sandbox:
             offset += len(page['items'])
         require(offset == total, 'incomplete page collection')
         result = {'items': items, 'total': total, 'next_cursor': None, 'query_identity': identity, 'pages': page_ids, 'state_version': version}
-        self.observations[call_id] = {'tool': tool, 'arguments': copy.deepcopy(observations[0]['arguments']), 'result': copy.deepcopy(result)}
+        self.observations[call_id] = {'tool': tool, 'arguments': copy.deepcopy(observations[0]['arguments']),
+                                     'result': copy.deepcopy(result), 'page_ids': tuple(page_ids)}
         self.evidence[call_id] = copy.deepcopy(result)
         self.trace.append({'kind': 'collect', 'id': call_id, 'pages': list(page_ids), 'time': self.time()})
         return result
