@@ -157,6 +157,9 @@ class NativeCodeAgent:
                 '(use null for remove). Paths refer to the result of earlier edits; - appends to arrays. '
                 'value_json must parse as JSON: string replacements include their JSON quotation marks; '
                 'never place unquoted prose in value_json. '
+                'For consent repairs distinguish direct refusal (consent.declined) from later withdrawal '
+                '(consent.revoked). Preserve separate executable no-write success paths and correct '
+                'submission answers for both; never substitute a revocation scenario for a decline. '
                 'Never execute tools.',
                 {'original_request': request, 'grammar': grammar, 'previous_source': previous,
                  'repair_feedback': evidence}, object_schema({'edits': {'type': 'array', 'items': object_schema({
@@ -177,6 +180,10 @@ class NativeCodeAgent:
             'Use scenario extends and append_steps to share long reference trajectories and express only '
             'the differences; each inherited case still executes in full. '
             'Preserve all required negative branches, dependencies, scale and transaction objects. '
+            'Authorization tasks must cover direct refusal (consent.declined) separately from later '
+            'withdrawal (consent.revoked). Include an executable positive no-write scenario for direct '
+            'refusal with approve_STAGE=false, unchanged business data, and a matching success branch. '
+            'For sequential transactions preserve earlier committed writes when later consent is refused. '
             'Use numeric comparison for scalar number answers derived from arithmetic; keep exact comparison for discrete values. '
             'Include user.profile describing communication style, disclosure boundaries and preferences, '
             'consistent with private facts and original request; never store computed answers there. Do not execute tools.',

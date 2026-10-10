@@ -12,6 +12,9 @@ from env_factory_v2.contract import require
 
 
 def schema(roles, fields):
+    if not roles:
+        return object_schema({'business_consistent': {'type': 'boolean'}, 'reason': {'type': 'string'},
+            'mapping': {'type': 'array', 'items': object_schema({})}})
     return object_schema({'business_consistent': {'type': 'boolean'}, 'reason': {'type': 'string'},
         'mapping': {'type': 'array', 'items': object_schema({
             'role': {'type': 'string', 'enum': list(roles)},
