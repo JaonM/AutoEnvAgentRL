@@ -25,6 +25,8 @@ def export_bundle(compiled, report, output, *, base_image='python:3.14-slim'):
         if path.suffix in {'.py', '.md'}:
             shutil.copyfile(path, package / path.name)
     (output / 'contract.json').write_text(canonical(compiled['source']) + '\n')
+    (output / 'user_profile.json').write_text(canonical({'facts': compiled['source']['user']['facts'],
+        'profile': compiled['source']['user'].get('profile', {})}) + '\n')
     (output / 'public.json').write_text(canonical(compiled['public']) + '\n')
     delivery_report = compact_evidence(report)
     delivery_report['full_execution_evidence_identity'] = report['evidence_identity']
@@ -35,7 +37,7 @@ def export_bundle(compiled, report, output, *, base_image='python:3.14-slim'):
     (output / 'Dockerfile').write_text(
         f'FROM {base_image}\nWORKDIR /sandbox\n'
         'COPY --chown=65532:65532 env_factory_v2 /sandbox/env_factory_v2\n'
-        'COPY --chown=65532:65532 contract.json public.json verification.json /sandbox/\n'
+        'COPY --chown=65532:65532 contract.json public.json user_profile.json verification.json /sandbox/\n'
         'USER 65532:65532\nEXPOSE 8080\n'
         'CMD ["python", "-m", "env_factory_v2", "serve", "/sandbox/contract.json", "--host", "0.0.0.0", "--port", "8080"]\n')
     files = {str(p.relative_to(output)): hashlib.sha256(p.read_bytes()).hexdigest()

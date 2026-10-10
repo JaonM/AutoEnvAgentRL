@@ -119,7 +119,9 @@ def certify(root):
                             'reward': outcome['final_reward'], 'scope': 'trusted_reference_adapter_check_not_policy_rollout'},
             'privacy': {'passed': True, 'scope': 'public_prompt_tools_and_actual_reference_messages'},
             'seed_semantics': 'contract-fixed initial world; seed identifies policy rollout group',
-            'learning_verified': False}
+            'learning_verified': False,
+            'user_simulation': {'runtime_default': 'free_dialogue',
+                'reference_certification': 'structured_only', 'free_dialogue_rollout_verified': False}}
         certificate['identity'] = hashlib.sha256(canonical(certificate).encode()).hexdigest()
         (root / 'training.json').write_text(json.dumps(certificate, ensure_ascii=False, indent=2) + '\n')
         return verify_training_bundle(root)

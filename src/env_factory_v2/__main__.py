@@ -46,6 +46,7 @@ def main():
         if name == 'serve':
             command.add_argument('--host', default='127.0.0.1')
             command.add_argument('--port', type=int, default=8080)
+            command.add_argument('--user-mode', choices=['structured', 'free_dialogue'], default='structured')
         if name == 'verify':
             command.add_argument('--connection', type=Path)
     args = parser.parse_args()
@@ -75,7 +76,7 @@ def main():
         return 0
     agent = environment_agent()
     if args.command == 'serve':
-        server = serve(source, host=args.host, port=args.port, agent=agent)
+        server = serve(source, host=args.host, port=args.port, agent=agent, user_mode=args.user_mode)
         try:
             server.serve_forever()
         finally:

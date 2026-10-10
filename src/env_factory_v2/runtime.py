@@ -96,8 +96,9 @@ class Sandbox:
             return [self.resolve(item) for item in value]
         return copy.deepcopy(value)
 
-    def interact(self, stage, *, question, proposal=None, source_id=None):
-        self._advance()
+    def interact(self, stage, *, question, proposal=None, source_id=None, _advance_time=True):
+        if _advance_time:
+            self._advance()
         require(isinstance(question, str) and question.strip(), 'a user question/proposal is required')
         resolved = self.resolve(proposal) if proposal is not None else None
         user_stage = self.user.stages.get(stage, {})
@@ -125,8 +126,9 @@ class Sandbox:
         self.trace.append({'kind': 'wait', 'seconds': seconds, 'time': self.time()})
         return self.time()
 
-    def revoke(self, stage):
-        self._advance()
+    def revoke(self, stage, *, _advance_time=True):
+        if _advance_time:
+            self._advance()
         self.user.revoke(stage)
         self.trace.append({'kind': 'revoke', 'stage': stage, 'time': self.time()})
 

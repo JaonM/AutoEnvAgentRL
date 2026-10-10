@@ -377,3 +377,40 @@ all required columns. Transaction and after-write phase obligations remain expli
 A partial projection cannot substitute for a required full projection. Business success
 with redundant reads is still success; training and reporting must use the `success`
 flag rather than a reward==1 shortcut.
+
+## Native free-dialogue user
+
+`user.profile` is an optional private object for communication and preferences. Its
+optional `disclosure` maps existing fact names to `never`, `on_request` or `when_needed`.
+Do not include computed task answers. The export includes a private `user_profile.json`;
+no private profile, event catalog or grading targets are published to the task policy.
+
+Formal V2Episode defaults to `free_dialogue`. It requires the local native connection
+for agentic tasks; no rule fallback is permitted. The old
+qualification/reference interface stays structured and its certificate explicitly
+states that free-dialogue rollout has not been verified by reference replay.
+
+The policy sends `v2_chat(message, proposal?, source_id?)`; it never supplies a stage ID.
+A separate native user context proposes zero or more private events and a natural reply.
+An independent model call checks reply/event agreement using server-validated event
+results. There is at most one correction. Events, messages and state changes commit
+atomically only after both checks. Model faults are infrastructure failures and mark
+trajectories non-trainable. This entails two native calls per successful interaction,
+up to four for a correction; semantic validation is model-based, not a formal proof.
+
+Each validated dialogue turn advances virtual time once, including clarification; composite
+events do not count as multiple turns. User state uses a ledger and business prerequisite checks, not HSM transitions. Existing
+stage declarations are a private event catalog for compatibility with business contracts.
+Legacy state labels are maintained for existing predicates, not exposed as a dialogue
+sequence. Follow-up questions and composite disclosure do not require fixed turns.
+Canonical `disclosed_facts` accompany natural replies so business arguments use exact
+values without guessing string normalization. Only already-disclosed values are returned.
+Actual complete menus and exact proposals are required for choices and authorization.
+Approved writes return tokens bound to exact tool/arguments. In free mode transactions
+require `_v2_authorization`; revoked, replaced or consumed tokens cannot be reused.
+Profile-controlled withdrawal cannot be manufactured by a policy tool.
+
+The private continuation captures dialogue, facts, ledger and tokens, and rejects mode
+mismatches. Free dialogue can be enabled on the standalone server using
+`--user-mode free_dialogue`. `validate_v2_free_dialogue.py` runs diagnostic native
+policy/user HTTP rollouts without claiming a fresh yield or training improvement.
