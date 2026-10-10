@@ -77,6 +77,11 @@ def fixture_alignment(source, row, business, user):
                 tools = [t for t in compiled['source']['tools'] if t.get('table') == table['id']]
                 cap = 64 if table['id'] == 'expenses' else 128
                 require(tools and all(t['page_size'] <= cap for t in tools), 'business pagination limit changed')
+    for relation in business.get('relations', []):
+        table = next(t for t in compiled['source']['tables'] if t['id'] == relation['source_table'])
+        require(any(fk['column'] == relation['source_column'] and fk['target_table'] == relation['target_table']
+                    and fk['target_column'] == relation['target_column'] for fk in table.get('foreign_keys', [])),
+                'generated contract omitted declared business relation')
     public_text = canonical(compiled['public'])
     allowed_text = row['raw_request'] + business['policy']
     for value in user['facts'].values():

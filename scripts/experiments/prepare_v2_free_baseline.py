@@ -32,12 +32,16 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--namespace', required=True)
     parser.add_argument('--heldout', action='store_true', help='Use new synthetic business instances of existing task families')
+    parser.add_argument('--business-relations', action='store_true', help='Declare and validate explicit object relationships in a new corpus')
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     entries = cases()
     if args.heldout:
         from v2_heldout_cases import heldout_cases
         entries = heldout_cases()
+    if args.business_relations:
+        from v2_business_relations import with_business_relations
+        entries = with_business_relations(entries)
     load_dotenv('.env')
     driver = GraphDatabase.driver(os.getenv('NEO4J_URI', 'bolt://localhost:7687'),
         auth=(os.getenv('NEO4J_USER', 'neo4j'), os.getenv('NEO4J_PASSWORD', 'password')))
@@ -57,7 +61,8 @@ def main():
         manifest.update(scope='native_natural_free_dialogue_heldout_instances',
             sampling='new synthetic business instances of known task families; independent model openings; not unseen domains or production population',
             preparation_source_sha256={name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
-                for name in ['prepare_v2_free_baseline.py', 'v2_heldout_cases.py', 'prepare_v2_natural_pilot.py']})
+                for name in ['prepare_v2_free_baseline.py', 'v2_heldout_cases.py', 'prepare_v2_natural_pilot.py'] +
+                    (['v2_business_relations.py'] if args.business_relations else [])})
     for index, (case, (situation, outcome)) in enumerate(zip(entries, SCENES, strict=True), 1):
         known = case['acceptance']['params'] if case['stratum'] == 'direct' else {}
         if case['acceptance']['kind'] == 'discount':

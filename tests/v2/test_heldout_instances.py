@@ -21,3 +21,19 @@ def test_heldout_instances_preserve_mix_and_change_actual_inputs():
         if new['acceptance']['mutation']:
             canonical_truth(new['acceptance'], new['business'], new['user'], mutation=new['acceptance']['mutation'])
     assert original == cases()
+
+
+def test_new_dossier_relations_are_explicit_complete_and_do_not_edit_old_cases():
+    import copy
+    from v2_business_relations import with_business_relations
+    source = heldout_cases()
+    before = copy.deepcopy(source)
+    enriched = with_business_relations(source)
+    assert source == before
+    assert len(enriched) == 20
+    assert sum(len(c['business']['relations']) for c in enriched) == 19
+    for case in enriched:
+        for relation in case['business']['relations']:
+            assert relation['policy_text'] in case['business']['policy']
+    assert len(enriched[12]['business']['relations']) == 3
+    assert len(enriched[19]['business']['relations']) == 3
