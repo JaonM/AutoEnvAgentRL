@@ -22,7 +22,7 @@ SCENES = [
  ('追踪申请进度', '知道审批环节顺序、累计耗时和最终负责人'), ('核算项目报销', '统计已批准且超过4900元的全部报销笔数和总额'),
  ('盘点可调配库存', '统计至少可拿出6件的SKU数量和合计件数'), ('当前设备不合适', '选择兼容且有空余容量的设备替换，并调整维护安排'),
  ('目标仓库存不足', '从源仓调拨12件指定SKU并更新调拨单'), ('活动尚未开放但想参加', '开放后有名额时登记参加'),
- ('寻找合适活动场地', '按自己的区域偏好选择并预订场地，允许改变主意'),
+ ('寻找合适活动场地', '提交预订前可能更改区域偏好，按最终确定的区域挑选并预订场地'),
  ('准备使用两个服务', '依次开启两个服务，如果第二个额度不足保留第一个')]
 
 
@@ -32,13 +32,14 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--namespace', required=True)
     parser.add_argument('--heldout', action='store_true', help='Use new synthetic business instances of existing task families')
+    parser.add_argument('--heldout-variant', type=int, default=1)
     parser.add_argument('--business-relations', action='store_true', help='Declare and validate explicit object relationships in a new corpus')
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     entries = cases()
     if args.heldout:
         from v2_heldout_cases import heldout_cases
-        entries = heldout_cases()
+        entries = heldout_cases(args.heldout_variant)
     if args.business_relations:
         from v2_business_relations import with_business_relations
         entries = with_business_relations(entries)
@@ -58,7 +59,7 @@ def main():
         'sampling': 'synthetic scene-designed; independent model opening, no production population claim',
         'mix': {'direct': 4, 'simple': 4, 'ordinary': 4, 'complex': 8}, 'samples': []}
     if args.heldout:
-        manifest.update(scope='native_natural_free_dialogue_heldout_instances',
+        manifest.update(scope='native_natural_free_dialogue_heldout_instances', heldout_variant=args.heldout_variant,
             sampling='new synthetic business instances of known task families; independent model openings; not unseen domains or production population',
             preparation_source_sha256={name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
                 for name in ['prepare_v2_free_baseline.py', 'v2_heldout_cases.py', 'prepare_v2_natural_pilot.py'] +
@@ -66,7 +67,9 @@ def main():
     for index, (case, (situation, outcome)) in enumerate(zip(entries, SCENES, strict=True), 1):
         known = case['acceptance']['params'] if case['stratum'] == 'direct' else {}
         if case['acceptance']['kind'] == 'discount':
-            known = {**known, 'membership': '我是会员，适用店内会员优惠'}
+            known = {'item_prices': known['prices'], 'membership': '会员',
+                     'member_order_discount': {'minimum_order_total': known['threshold'], 'rate': known['rate']},
+                     'coupon': {'amount': known['coupon'], 'minimum_order_total': 0}}
         if case['acceptance']['kind'] == 'duration':
             p = known
             known = {'start_time': f"{p['start_minutes']//60:02d}:{p['start_minutes']%60:02d}",

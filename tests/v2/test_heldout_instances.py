@@ -37,3 +37,17 @@ def test_new_dossier_relations_are_explicit_complete_and_do_not_edit_old_cases()
             assert relation['policy_text'] in case['business']['policy']
     assert len(enriched[12]['business']['relations']) == 3
     assert len(enriched[19]['business']['relations']) == 3
+
+
+def test_next_variant_changes_all_instances_and_preserves_scale_and_truth():
+    from v2_business_relations import with_business_relations
+    first, second = heldout_cases(), with_business_relations(heldout_cases(2))
+    for old, new in zip(first, second, strict=True):
+        assert old['acceptance']['kind'] == new['acceptance']['kind']
+        assert old['stratum'] == new['stratum']
+        if new['stratum'] == 'direct':
+            assert old['acceptance']['params'] != new['acceptance']['params']
+        else:
+            assert expand(old['business']) != expand(new['business'])
+        assert [len(rows) for rows in expand(old['business']).values()] == [len(rows) for rows in expand(new['business']).values()]
+        assert canonical_truth(new['acceptance'], new['business'], new['user']) is not None
