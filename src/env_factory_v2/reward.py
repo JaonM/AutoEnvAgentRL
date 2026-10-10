@@ -71,6 +71,19 @@ def complete_retrieval(sandbox, tool_id, *, query_identity=None, state_version=N
     return False
 
 
+
+def equivalent_query_tools(sandbox, tool_id, columns=None):
+    original = sandbox.tools[tool_id]
+    if original['kind'] != 'query':
+        return {tool_id}
+    needed = set(original['columns'] if columns is None else columns)
+    return {identity for identity, candidate in sandbox.tools.items()
+            if candidate['kind'] == 'query' and needed <= set(candidate['columns'])
+            and all(candidate.get(key, default) == original.get(key, default)
+                    for key, default in [('table', None), ('parameters', None), ('rule_ids', []),
+                                         ('user_bindings', {}), ('result_bindings', [])])}
+
+
 def assess_process(sandbox):
     """Deterministic workflow checks shared by preflight and final scoring."""
     context = sandbox.context(private=True)
@@ -82,11 +95,14 @@ def assess_process(sandbox):
             require(type(active) is bool, 'branch condition must be boolean')
         except ContractError:
             active = False
-        passed = (active and set(branch['required_tools']) <= used and set(branch['required_stages']) <= set(sandbox.user.completed)
+        tool_checks = {tool: bool(equivalent_query_tools(sandbox, tool) & used)
+                       for tool in branch['required_tools']}
+        passed = (active and all(tool_checks.values()) and set(branch['required_stages']) <= set(sandbox.user.completed)
                   and branch.get('min_business_calls', 0) <= sandbox.business_attempts
                   <= branch.get('max_business_calls', sandbox.source['limits']['max_actions']))
         if passed:
-            passed = all(not sandbox.tools[tool].get('complete_retrieval') or complete_retrieval(sandbox, tool)
+            passed = all(not sandbox.tools[tool].get('complete_retrieval') or any(complete_retrieval(sandbox, alternative)
+                             for alternative in equivalent_query_tools(sandbox, tool))
                          for tool in branch['required_tools'])
         observations = []
         for requirement in branch.get('required_observations', []):
@@ -102,9 +118,11 @@ def assess_process(sandbox):
                         if turn.get('tool') == tool and turn.get('status') == 'ok'] for tool in after}
                     after_complete = all(positions.values())
                     cutoff = max((max(p) for p in positions.values() if p), default=-1)
+                    providers = set().union(*(equivalent_query_tools(sandbox, tool, requirement['columns'])
+                        for tool in requirement['tools']))
                     observed = [{column: row[column] for column in requirement['columns']}
                         for i, turn in enumerate(sandbox.trace) if turn.get('status') == 'ok'
-                        and turn.get('tool') in requirement['tools']
+                        and turn.get('tool') in providers
                         and (not after or (i > cutoff and turn['result']['state_version'] == sandbox.version))
                         for row in turn['result']['items']]
                     observed_keys = {_key(row) for row in observed}
@@ -132,6 +150,31 @@ def assess_process(sandbox):
             'violations': copy.deepcopy(sandbox.violations), 'invariants': invariant_checks,
             'goals': goal_checks, 'category_valid': category_valid,
             'business_attempts': sandbox.business_attempts}
+
+
+
+def assess_efficiency(sandbox):
+    """Small auxiliary signal for duplicate reads of the same authoritative page.
+
+    First reads, pagination, changed snapshots, user interactions and retries after
+    errors are not waste. Tool names do not decide whether an observation is useful.
+    """
+    seen = set()
+    redundant = 0
+    for turn in sandbox.trace:
+        if turn.get('status') != 'ok' or turn.get('tool') not in sandbox.tools:
+            continue
+        tool = sandbox.tools[turn['tool']]
+        if tool['kind'] != 'query':
+            continue
+        result = turn['result']
+        key = canonical([result['query_identity'], result['state_version'],
+                         result['offset'], tool['columns']])
+        if key in seen:
+            redundant += 1
+        seen.add(key)
+    return {'score': 1 / (1 + redundant), 'redundant_reads': redundant,
+            'weight': 0.05, 'scope': 'duplicate successful reads only'}
 
 
 def grade(sandbox, answer, *, judge=None):
@@ -173,7 +216,13 @@ def grade(sandbox, answer, *, judge=None):
     # Evidence and safety are mandatory; correct guesses cannot earn outcome credit.
     reward = field_reward if process and safety else 0.0
     success = process and safety and all(item['passed'] for item in components.values())
+    business_reward = reward
+    efficiency = assess_efficiency(sandbox)
+    # Efficiency never creates credit for a wrong or unverified business outcome.
+    reward = 0.95 * business_reward
+    if success:
+        reward += 0.05 * efficiency['score']
     sandbox.closed = True
-    return {'reward': reward, 'success': success, 'components': components,
+    return {'reward': reward, 'business_reward': business_reward, 'efficiency': efficiency, 'success': success, 'components': components,
             **{key: value for key, value in assessment.items() if key != 'passed'},
             'semantic_evidence': semantic_evidence}

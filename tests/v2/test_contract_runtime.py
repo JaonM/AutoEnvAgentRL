@@ -148,7 +148,8 @@ def test_simple_route_allows_repeated_reads_without_an_invented_call_cap():
     world.call('find_items', {'size': 'M'}, call_id='one')
     world.call('find_items', {'size': 'M'}, call_id='two')
     result = grade(world, {'ids': ['I1']})
-    assert result['category_valid'] and result['reward'] == 1
+    assert result['category_valid'] and result['business_reward'] == 1
+    assert result['success'] and result['reward'] == pytest.approx(0.975)
 
 
 def test_explicit_one_call_business_requirement_still_prevents_multiple_calls():
@@ -374,7 +375,7 @@ def test_partial_reward_preserves_independent_correct_fields():
         scenario['answer']['unit'] = lit('摄氏度')
     world = Sandbox(source)
     result = grade(world, {'temperature': 19, 'unit': '摄氏度'})
-    assert result['reward'] == 0.5 and not result['success']
+    assert result['business_reward'] == 0.5 and result['reward'] == pytest.approx(0.475) and not result['success']
 
 
 def test_explanation_judge_receives_actual_mutated_facts_and_fresh_replay_calls():

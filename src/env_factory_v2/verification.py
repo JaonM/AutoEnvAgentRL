@@ -98,7 +98,7 @@ def preflight_recipes(compiled):
 
 def expected_result(scenario, run):
     if scenario['expect_success']:
-        return run['error'] is None and run['outcome']['success'] is True and abs(run['outcome']['reward'] - 1) < 1e-9
+        return run['error'] is None and run['outcome']['success'] is True
     if scenario.get('expect_error'):
         return run['error'] is not None and scenario['expect_error'] in run['error']
     # An invalid negative fixture is not evidence of reward discrimination.

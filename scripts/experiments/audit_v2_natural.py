@@ -109,7 +109,7 @@ def rollout(bundle, row, truth, entries, aliases, agent, root, business):
         outcome = env.finish()
         checks = value_checks(env.answer or {}, truth, entries, aliases) + audited_observations(world, truth, row['kind'], business)
         checks.append({'id': 'full_business_state', 'passed': canonical(sorted_data(world.data)) == canonical(sorted_data(truth['final_state']))})
-        return {'passed': env.terminated and outcome['final_reward'] == 1 and outcome['score']['success'] and all(c['passed'] for c in checks),
+        return {'passed': env.terminated and outcome['score']['success'] and all(c['passed'] for c in checks),
             'answer': env.answer, 'outcome': outcome, 'checks': checks, 'messages': env.messages,
             'seconds': time.monotonic() - start, 'scope': 'fresh_native_policy_on_unchanged_original_bundle_posthoc_audit'}
     finally:
@@ -181,7 +181,7 @@ def audit_sample(row, assets, original, root, connection, reuse=None):
                 fill_projections(reference_answer(world, selected), entries, changed_truth['answer'], name_aliases=aliases))
             outcome = grade(world, answer, judge=agent.judge)
             passed = outcome['reward'] < 1 and not outcome['success'] if stale else (
-                outcome['reward'] == 1 and outcome['success']
+                outcome['success'] is True
                 and all(c['passed'] for c in value_checks(answer, changed_truth, entries, aliases)))
             checks.append({'id': 'independent_stale_answer' if stale else 'independent_changed_fact', 'passed': passed, 'outcome': outcome})
     for label, scenario, literal in [('caller_id_invariance', rename_observations(selected), False),
@@ -191,7 +191,7 @@ def audit_sample(row, assets, original, root, connection, reuse=None):
         if literal:
             answer = scalar_literals(answer, truth, entries)
         outcome = grade(world, answer, judge=agent.judge)
-        check = {'id': label, 'passed': outcome['reward'] == 1 and outcome['success'], 'answer': answer, 'outcome': outcome}
+        check = {'id': label, 'passed': outcome['success'] is True, 'answer': answer, 'outcome': outcome}
         checks.append(check)
     # Use independently computed canonical answers for scalar fields during refusal;
     # retain independently inspected authored structures for nested fields.
@@ -207,7 +207,7 @@ def audit_sample(row, assets, original, root, connection, reuse=None):
         outcome = grade(world, answer, judge=agent.judge)
         checks.append({'id': 'actual_user_decline', 'passed': canonical(sorted_data(world.data)) == canonical(sorted_data(refused_truth['initial']))
             and all(c['passed'] for c in value_checks(answer, refused_truth, entries, aliases))
-            and outcome['reward'] == 1 and outcome['success'], 'answer': answer, 'outcome': outcome})
+            and outcome['success'] is True, 'answer': answer, 'outcome': outcome})
         # The adapter publishes a policy-callable revoke action. Without an
         # actual user withdrawal it can manufacture a no-write completion.
         for case in compiled['source']['scenarios']:
@@ -218,7 +218,7 @@ def audit_sample(row, assets, original, root, connection, reuse=None):
                 wrong_state = canonical(sorted_data(adverse.data)) != canonical(sorted_data(truth['final_state']))
                 manufactured = all(v is True for k, v in user['facts'].items() if k.startswith('approve_'))
                 checks.append({'id': 'policy_cannot_manufacture_user_revocation',
-                    'passed': not (manufactured and wrong_state and adverse_score['reward'] == 1 and adverse_score['success']),
+                    'passed': not (manufactured and wrong_state and adverse_score['success'] is True),
                     'outcome': adverse_score, 'state_differs_from_approved_request': wrong_state,
                     'scope': 'adversarial_public_policy_action_not_an_actual_user_withdrawal'})
     result['business_checks'] = checks
@@ -242,7 +242,7 @@ def audit_sample(row, assets, original, root, connection, reuse=None):
     if old_rollout.exists():
         old = read(old_rollout)
         result['policy_evidence'] = {'source': str(old_rollout), 'sha256': digest(old_rollout), 'reused': True}
-        policy_passed = old['outcome']['score']['success'] and old['outcome']['final_reward'] == 1
+        policy_passed = old['outcome']['score']['success']
         policy_passed = policy_passed and all(c['passed'] for c in value_checks(old['answer'] or {}, truth, entries, aliases))
         policy_passed = policy_passed and all(c['passed'] for c in old.get('independent_checks', old.get('checks', [])) if not c['id'].startswith('answer_'))
         result['policy_success'] = bool(policy_passed)

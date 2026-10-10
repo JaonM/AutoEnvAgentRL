@@ -359,3 +359,21 @@ explicitly described publicly. Existing explicit success obligations are preserv
 This first version covers partial-view selection; cross-domain distractors and independent
 measurement of robustness gains require separate evaluation. A successful build does not
 prove training improvement.
+
+## Business-first training reward
+
+Final `reward = 0.95 * business_reward + 0.05 * efficiency.score` when business success
+is complete; otherwise it is `0.95 * business_reward` with no efficiency credit.
+`business_reward` retains the original evidence/safety-gated weighted answer score.
+`success` depends entirely on business checks, never on efficiency or reward equalling 1.
+Efficiency is `1 / (1 + redundant_reads)`: duplicates of the same successful query page,
+projection and data version. First reads, required pagination, changed snapshots and
+failed-call retries are not penalized. This intentionally does not claim to measure
+all unnecessary work. No separate reward is granted for calling or avoiding a tool label.
+
+Equivalent query providers can satisfy required reads and observation requirements when
+they use the same table, rule IDs, parameter schema, user/result dependencies and return
+all required columns. Transaction and after-write phase obligations remain explicit.
+A partial projection cannot substitute for a required full projection. Business success
+with redundant reads is still success; training and reporting must use the `success`
+flag rather than a reward==1 shortcut.

@@ -180,7 +180,7 @@ def external_acceptance(compiled, row, business, user, spec, agent):
             authored_answer = {k: evaluate(e, world.context(private=True)) for k, e in scenario['answer'].items()}
             current = answer_checks(authored_answer, truth, mapping) + observation_checks(world, truth, spec['kind'])
             current.append({'id': 'full_business_state', 'passed': canonical(sorted_data(world.data)) == canonical(sorted_data(truth['final_state']))})
-            current.append({'id': 'positive_reward', 'passed': grade(world, authored_answer, judge=agent.judge)['reward'] == 1})
+            current.append({'id': 'positive_reward', 'passed': grade(world, authored_answer, judge=agent.judge)['success']})
             if all(c['passed'] for c in current):
                 selected, checks = scenario, current
                 break
@@ -209,7 +209,7 @@ def external_acceptance(compiled, row, business, user, spec, agent):
                     answer[field] = (truth if stale else changed)['answer'][role]
                 score = grade(world, answer, judge=agent.judge)
                 checks.append({'id': 'stale_changed_fact' if stale else 'correct_changed_fact',
-                    'passed': (score['reward'] < 1 and not score['success']) if stale else score['reward'] == 1 and score['success']})
+                    'passed': (score['reward'] < 1 and not score['success']) if stale else score['success'] is True})
         if any(t['kind'] == 'transaction' for t in compiled['source']['tools']):
             try:
                 world = execute_reference(compiled, selected, refuse=True)
@@ -219,7 +219,7 @@ def external_acceptance(compiled, row, business, user, spec, agent):
                     answer[field] = refused_truth['answer'][role]
                 outcome = grade(world, answer, judge=agent.judge)
                 checks.append({'id': 'actual_refusal_no_write', 'passed': canonical(sorted_data(world.data)) == canonical(sorted_data(refused_truth['initial']))
-                    and outcome['success'] is True and outcome['reward'] == 1})
+                    and outcome['success'] is True})
             except (ContractError, KeyError, TypeError, ValueError) as exc:
                 checks.append({'id': 'actual_refusal_no_write', 'passed': False, 'error': str(exc)})
             # Correct claimed final values without actual writes must fail.
@@ -273,7 +273,7 @@ def policy_rollout(bundle, row, business, user, spec, mapping, agent, root):
         truth = expected(spec, business, user)
         checks = answer_checks(env.answer or {}, truth, mapping) + observation_checks(world, truth, spec['kind'])
         checks.append({'id': 'full_business_state', 'passed': canonical(sorted_data(world.data)) == canonical(sorted_data(truth['final_state']))})
-        success = env.terminated and outcome['score']['success'] and outcome['final_reward'] == 1 and all(c['passed'] for c in checks)
+        success = env.terminated and outcome['score']['success'] and all(c['passed'] for c in checks)
         result = {'passed': bool(success), 'outcome': outcome, 'independent_checks': checks,
                   'messages': env.messages, 'tools': env.tools, 'answer': env.answer,
                   'seconds': time.monotonic() - started, 'policy_input_boundary': 'public_interface_and_actual_observations_only',

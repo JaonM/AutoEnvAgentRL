@@ -107,7 +107,7 @@ def certify(root):
         answer = {key: evaluate(expr, world.context(private=True)) for key, expr in scenario['answer'].items()}
         environment.step(json.dumps(answer, ensure_ascii=False))
         outcome = environment.finish()
-        require(outcome['final_reward'] == 1.0 and outcome['score']['success'] is True, 'V2 adapter reference conformance not full success')
+        require(outcome['score']['success'] is True, 'V2 adapter reference conformance not full success')
         privacy_errors = list(_forbidden_key_paths({'messages': environment.messages, 'tools': environment.tools}))
         require(not privacy_errors, 'V2 policy payload contains trainer-only fields')
         # The initial policy view is exactly compiler-owned public context plus

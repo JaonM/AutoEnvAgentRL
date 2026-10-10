@@ -50,7 +50,7 @@ def verify_api(source, report, *, agent=None):
             elif kind == 'revoke':
                 post('/revoke', {'stage': step['stage']})
         result = post('/answer', reference['answer'])
-        require(result['success'] is True and result['reward'] == 1, 'public HTTP reference failed')
+        require(result['success'] is True, 'public HTTP reference failed')
         with urlopen(Request(base + '/time', headers={'X-Episode': episode}), timeout=5) as response:
             clock = json.load(response)
         require(clock == reference['time'], 'HTTP and in-process virtual times disagree')
