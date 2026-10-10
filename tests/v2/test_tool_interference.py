@@ -30,6 +30,25 @@ def test_direct_and_disabled_preserve_tool_set():
     assert augment(simple(), count=0)[0] == simple()
 
 
+def test_paginated_interference_witness_checks_tool_pages_before_collection():
+    original = simple()
+    original['tables'][0]['rows'].append({'id': 'I3', 'size': 'M', 'display': '绿竹'})
+    original['tools'][0]['page_size'] = 1
+    for scenario in original['scenarios']:
+        for step in scenario['steps']:
+            if step['kind'] == 'call':
+                step['kind'] = 'traverse'
+    source, report = augment(original)
+    assert preflight_recipes(compile_contract(source))['passed']
+    for check in report['execution_checks']:
+        assert check['passed']
+        assert check['trace'][-1]['kind'] == 'collect'
+        pages = [event for event in check['trace']
+                 if event.get('tool') == check['tool']]
+        assert len(pages) > 1
+        assert all(event['status'] == 'ok' for event in pages)
+
+
 def test_distractor_cannot_be_a_write():
     source = transaction()
     tool = next(t for t in source['tools'] if t['kind'] == 'transaction')

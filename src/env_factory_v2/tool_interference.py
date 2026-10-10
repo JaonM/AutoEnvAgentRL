@@ -60,7 +60,10 @@ def augment(source, *, count=2):
                 sandbox.wait(step['seconds'])
             elif step['kind'] == 'revoke':
                 sandbox.revoke(step['stage'])
-        require(sandbox.trace[-1]['status'] == 'ok', 'interference query did not execute')
+        executions = [event for event in sandbox.trace
+                      if event.get('kind') == 'tool' and event.get('tool') == identity]
+        require(bool(executions) and all(event.get('status') == 'ok' for event in executions),
+                'interference query did not execute')
         checks.append({'tool': identity, 'passed': True, 'trace': sandbox.trace})
     return source, {'enabled': True, 'requested': count, 'added': added, 'execution_checks': checks,
                     'scope': 'read-only partial views; no unrelated tables or write tools fabricated'}

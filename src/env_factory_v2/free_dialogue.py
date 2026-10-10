@@ -36,6 +36,10 @@ class DialogueUser:
                 continue
             self.authorizations.pop(sid, None)
             self.completed.pop(sid, None)
+            for fact, owner in list(self.disclosure_owners.items()):
+                if owner == sid:
+                    self.disclosed.pop(fact, None)
+                    self.disclosure_owners.pop(fact, None)
             self.tokens = {k: v for k, v in self.tokens.items() if v != sid}
             self.states[sid] = 'consent.invalidated' if self.stages[sid]['kind'] == 'authorization' else 'waiting.ready'
 

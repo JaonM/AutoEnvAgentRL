@@ -25,6 +25,23 @@ def ok():
     return {'passed': True, 'reason': 'faithful'}
 
 
+def test_invalidation_removes_dependent_disclosures_and_tokens_only():
+    user = DialogueUser(simple())
+    user.stages['choice'] = {'kind': 'choice', 'depends_on': ['size']}
+    user.stages['consent'] = {'kind': 'authorization', 'depends_on': ['choice']}
+    user.states.update(choice='resolved.selected', consent='consent.authorized')
+    user.disclosed = {'size': 'M', 'item': 'I1', 'unrelated': 'keep'}
+    user.disclosure_owners = {'size': 'size', 'item': 'choice', 'unrelated': 'other'}
+    user.completed = {'size': {}, 'choice': {}, 'consent': {}}
+    user.authorizations = {'consent': 'old proposal'}
+    user.tokens = {'old-token': 'consent'}
+    user.invalidate(['choice'])
+    assert user.disclosed == {'size': 'M', 'unrelated': 'keep'}
+    assert user.disclosure_owners == {'size': 'size', 'unrelated': 'other'}
+    assert set(user.completed) == {'size'}
+    assert not user.authorizations and not user.tokens
+
+
 def test_free_conversation_discloses_only_after_validation_and_supports_followup():
     sandbox = world()
     agent = native({'reply': '我穿M码。', 'events': [{'stage': 'size', 'action': 'respond'}]}, ok(),
