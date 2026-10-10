@@ -94,6 +94,14 @@ def preflight_recipes(compiled):
         elif scenario['expect_success'] and run['error'] is None:
             passed = passed and workflow['passed']
         checks.append({'id': scenario['id'], 'kind': kind, 'passed': passed, 'error': run['error'],
+                       **({'failure_evidence': {
+                           'expected_success': scenario['expect_success'],
+                           'expected_error': expected_error,
+                           'user_overrides': copy.deepcopy(scenario.get('user_overrides', {})),
+                           'executed_tools': [{key: turn.get(key) for key in
+                               ('tool', 'arguments', 'status', 'error')} for turn in run['trace']
+                               if turn.get('kind') == 'tool'],
+                           'answer': run['answer']}} if not passed else {}),
                        **({'workflow': workflow} if workflow is not None else {}),
                        **({'deterministic_grade': deterministic} if deterministic is not None else {})})
     return {'scope': 'trajectory_and_recipe_validation_no_semantic_judgment',

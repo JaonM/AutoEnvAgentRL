@@ -60,3 +60,19 @@ def test_independent_challenge_executes_private_decline_and_rejects_unknown_key(
     case['user_overrides_json'] = '{"unknown":false}'
     with pytest.raises(ContractError, match='unknown private user override'):
         _execute_case(compiled, case, scenarios, agent)
+
+
+def test_preflight_reports_effective_inputs_for_invalid_negative_fixture():
+    from env_factory_v2.examples import simple
+    from env_factory_v2.verification import preflight_recipes
+    source = simple()
+    source['probes'].append({'id': 'invalid_mismatch', 'scenario': 'correct',
+        'rule_ids': ['size_matches'], 'mutations': [], 'user_overrides': {'size': 'L'},
+        'expect_success': False, 'expect_error': 'actual disclosed user value'})
+    report = preflight_recipes(compile_contract(source))
+    failed = next(c for c in report['checks'] if c['id'] == 'invalid_mismatch')
+    assert not failed['passed'] and failed['error'] is None
+    evidence = failed['failure_evidence']
+    assert evidence['user_overrides'] == {'size': 'L'}
+    assert evidence['executed_tools'][0]['arguments'] == {'size': 'L'}
+    assert evidence['expected_error'] == 'actual disclosed user value'
