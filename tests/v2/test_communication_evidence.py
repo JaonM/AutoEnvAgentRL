@@ -64,3 +64,28 @@ def test_model_sees_messages_and_directory_but_not_independent_expected_set():
 def test_tool_menu_or_generic_all_options_claim_does_not_prove_delivery():
     assert not validate_delivery([{'trace_index':0,'text':'以上是全部可选地点'}],
         {'clearly_offered':False,'offers':[]},SITES,['S2'])
+
+
+def test_identical_extraction_reused_but_changed_truth_is_rechecked():
+    class Agent:
+        scope='first'
+        calls=0
+        def ask(self,*args):
+            self.calls+=1
+            return verdict(), {'response_id':'actual'}
+    agent=Agent()
+    truth={'initial':{'sites':SITES},'communication':{'sites':{
+        'kind':'location_options_before_choice','expected':['S2']}}}
+    w=world([choice('可选公司附近')])
+    assert communication_checks(w,truth,agent)[0]['passed']
+    truth['communication']['sites']['expected']=['S1']
+    check=communication_checks(w,truth,agent)[0]
+    assert not check['passed']
+    assert check['provenance']['reused_identical_communication_evidence']
+    assert agent.calls==1
+    w.trace[0]['question']='仅可选公司附近'
+    communication_checks(w,truth,agent)
+    assert agent.calls==2
+    agent.scope='second'
+    communication_checks(w,truth,agent)
+    assert agent.calls==3

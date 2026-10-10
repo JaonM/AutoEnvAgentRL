@@ -207,7 +207,15 @@ binding updated by that disclosure. Planned corrections use a different private
 fact key and overwrite the same as_fact only after their prerequisites.
 choice stages have fact,source_tool,source_path (e.g.items),
 value_field (e.g.id),fallback (refuse|first_available). They decide ONLY from the
-actual observed menu; missing preference may legitimately refuse. Authorization
+actual observed menu; missing preference may legitimately refuse.
+An observed menu or source_id is evidence for the simulator, not proof that the
+assistant communicated choices to the user. When the public request asks to see
+options before choosing, actual assistant text must present the eligible objects
+with their public identifiers or names before selection. “All options are above”
+without actual displayed options does not satisfy that obligation. The reward
+contract must check this delivery and reject an otherwise correct transaction
+when delivery is omitted. Do not require duplicate final-answer fields for
+information already truthfully delivered in dialogue. Authorization
 stages have tool and facts must explicitly include approve_STAGE_ID:boolean.
 They receive {tool,arguments} proposals, authorize exact parameters once, and
 support revocation. Models cannot mutate facts, choices or authorizations.
