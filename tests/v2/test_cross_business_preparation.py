@@ -26,7 +26,12 @@ def test_all_twenty_reach_shared_truth_without_generated_score_reads():
         truth = expected(row['acceptance'], row['business'], user, **options)
         assert truth['answer']
         assert truth['initial'] == expand(row['business'])
-        assert set(truth) == {'answer', 'initial', 'final_state', 'observations'}
+        fields = {'answer', 'initial', 'final_state', 'observations'}
+        if row['acceptance']['kind'] == 'library_renewal_eligibility':
+            fields.add('set_memberships')
+            assert truth['set_memberships'] == {'eligible': {
+                'member': user['facts']['loan_id'], 'complete_set': ['L1']}}
+        assert set(truth) == fields
         refused = expected(row['acceptance'], row['business'], user, refuse=True, **options)
         assert refused['final_state'] == refused['initial']
 

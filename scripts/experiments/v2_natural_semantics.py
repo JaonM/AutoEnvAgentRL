@@ -1,7 +1,8 @@
-"""Closed answer projections for post-round measurement-error diagnosis.
+"""Closed answer projections governed by independently declared truth.
 
-This module is NOT used by the frozen first pilot. It cannot change business
-values, reorder answers, infer missing information or execute expressions.
+Membership equivalence requires an exact independently computed complete set;
+no model-supplied conversion code, guessed identity or partial set is accepted.
+Frozen historical measurements remain unchanged by subsequent revisions.
 """
 from __future__ import annotations
 
@@ -11,18 +12,21 @@ from env_factory_v2.code_agent import object_schema
 from env_factory_v2.contract import require
 
 
-def schema(roles, fields):
+def schema(roles, fields, *, set_memberships=None):
     if not roles:
         return object_schema({'business_consistent': {'type': 'boolean'}, 'reason': {'type': 'string'},
             'mapping': {'type': 'array', 'items': object_schema({})}})
-    return object_schema({'business_consistent': {'type': 'boolean'}, 'reason': {'type': 'string'},
-        'mapping': {'type': 'array', 'items': object_schema({
+    projection = {
             'role': {'type': 'string', 'enum': list(roles)},
             'selectors': {'type': 'array', 'items': object_schema({
                 'field': {'type': 'string', 'enum': list(fields)}, 'path': {'type': 'string'}})},
             'packing': {'type': 'string', 'enum': ['single', 'list']},
             'time_unit': {'type': 'string', 'enum': ['native', 'minutes', 'seconds']},
-            'names': {'type': 'string', 'enum': ['native', 'public_id_to_name']}})}})
+            'names': {'type': 'string', 'enum': ['native', 'public_id_to_name']}}
+    if set_memberships:
+        projection['representation'] = {'type': 'string', 'enum': ['native', 'set_membership']}
+    return object_schema({'business_consistent': {'type': 'boolean'}, 'reason': {'type': 'string'},
+        'mapping': {'type': 'array', 'items': object_schema(projection)}})
 
 
 def select(value, segments):
@@ -53,7 +57,7 @@ def path_segments(path):
     return segments
 
 
-def normalize(answer, entries, *, name_aliases=None, role_types=None):
+def normalize(answer, entries, *, name_aliases=None, role_types=None, set_memberships=None):
     output = {}
     for entry in entries:
         role = entry['role']
@@ -70,6 +74,17 @@ def normalize(answer, entries, *, name_aliases=None, role_types=None):
             value = values[0]
         else:
             value = [part for v in values for part in (v if isinstance(v, list) else [v])]
+        if entry.get('representation', 'native') == 'set_membership':
+            descriptor = (set_memberships or {}).get(role)
+            require(descriptor is not None and role_types and role_types.get(role) is bool,
+                    'set membership requires independently declared boolean role')
+            require(entry['time_unit'] == entry['names'] == 'native'
+                    and isinstance(value, list) and all(type(v) is str for v in value)
+                    and len(value) == len(set(value)), 'unique identifier set required')
+            require(set(value) == set(descriptor['complete_set']), 'independent complete qualification set mismatch')
+            value = descriptor['member'] in value
+        elif entry.get('representation', 'native') != 'native':
+            require(False, 'unknown closed answer representation')
         if role_types and role_types.get(role) is not list and isinstance(value, list):
             require(len(value) == 1, 'scalar semantic role requires exactly one observed value')
             value = value[0]
@@ -132,7 +147,7 @@ def wrong_projection(answer, entry):
     return result
 
 
-def fill_projections(answer, entries, truth, *, name_aliases=None):
+def fill_projections(answer, entries, truth, *, name_aliases=None, set_memberships=None):
     """Insert independently computed answers, keeping the declared layout."""
     result = copy.deepcopy(answer)
     def replace(current, segments, value):
@@ -151,6 +166,12 @@ def fill_projections(answer, entries, truth, *, name_aliases=None):
         return current
     for e in entries:
         value = copy.deepcopy(truth[e['role']])
+        if e.get('representation', 'native') == 'set_membership':
+            descriptor = (set_memberships or {}).get(e['role'])
+            require(descriptor is not None and type(value) is bool
+                    and value == (descriptor['member'] in descriptor['complete_set']),
+                    'independent membership truth required for inverse projection')
+            value = copy.deepcopy(descriptor['complete_set'])
         if e['names'] != 'native':
             inverse = {}
             for key, name in (name_aliases or {}).items():

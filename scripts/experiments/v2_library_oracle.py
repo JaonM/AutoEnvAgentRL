@@ -110,4 +110,11 @@ def expected(spec, data, facts, *, refuse=False, approvals=None):
         answer = {'committed': committed, 'available_site_ids': available_sites}
     else:
         raise ValueError('Unknown independent library business kind')
-    return {'answer': answer, 'initial': initial, 'final_state': final}
+    truth = {'answer': answer, 'initial': initial, 'final_state': final}
+    if kind == 'library_renewal_eligibility':
+        # A complete owned-loan qualification set can answer the selected loan's
+        # boolean question. Validate the entire set, not merely one membership.
+        truth['set_memberships'] = {'eligible': {'member': facts['loan_id'],
+            'complete_set': [loan['id'] for loan in final['loans']
+                if renewal_decision(final, loan['id'], facts['reader_id'], params['current_day'])[0]]}}
+    return truth

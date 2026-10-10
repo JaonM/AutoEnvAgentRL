@@ -38,7 +38,7 @@ def canonical_truth(spec, business, user, **kwargs):
 
 
 def value_checks(answer, truth, entries, aliases):
-    actual = normalize(answer, entries, name_aliases=aliases, role_types={k: type(v) for k, v in truth['answer'].items()})
+    actual = normalize(answer, entries, name_aliases=aliases, role_types={k: type(v) for k, v in truth['answer'].items()}, set_memberships=truth.get('set_memberships'))
     return [{'id': 'answer_' + k, 'passed': k in actual and equivalent(actual[k], v, unordered=k == 'ids')}
             for k, v in truth['answer'].items()]
 
