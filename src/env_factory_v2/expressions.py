@@ -5,6 +5,7 @@ import copy
 import json
 import math
 import re
+from fractions import Fraction
 
 
 class ContractError(ValueError):
@@ -40,7 +41,8 @@ def path(value, pointer):
 
 ARITY = {'eq': 2, 'ne': 2, 'lt': 2, 'le': 2, 'gt': 2, 'ge': 2,
          'in': 2, 'add': 2, 'sub': 2, 'mul': 2, 'not': 1,
-         'count': 1, 'sum': 1, 'unique': 1, 'contains': 2, 'at': 2}
+         'count': 1, 'sum': 1, 'unique': 1, 'contains': 2, 'at': 2,
+         'floor_div': 2, 'ceil_div': 2, 'rational_sum_floor': 1, 'is_integer': 1}
 
 
 def refs(expression):
@@ -240,6 +242,24 @@ def evaluate(expression, context):
     if op in {'eq', 'ne'}:
         equal = typed_equal(args[0], args[1])
         return equal if op == 'eq' else not equal
+    if op == 'is_integer':
+        return type(args[0]) is int
+    if op in {'floor_div', 'ceil_div'}:
+        if any(type(n) is not int for n in args) or args[1] == 0:
+            raise ContractError('integer operands and nonzero divisor required')
+        a, b = args
+        return a // b if op == 'floor_div' else -((-a) // b)
+    if op == 'rational_sum_floor':
+        terms = args[0]
+        if not isinstance(terms, list) or len(terms) > 10000:
+            raise ContractError('rational sum requires at most 10000 pairs')
+        total = Fraction(0)
+        for term in terms:
+            if (not isinstance(term, list) or len(term) != 2
+                    or any(type(n) is not int for n in term) or term[1] == 0):
+                raise ContractError('rational terms require integer numerator and nonzero integer denominator')
+            total += Fraction(*term)
+        return total.numerator // total.denominator
     if op in {'add', 'sub', 'mul', 'sum'}:
         numbers = args[0] if op == 'sum' else args
         if not isinstance(numbers, list) or any(type(n) not in {int, float} or not math.isfinite(n) for n in numbers):

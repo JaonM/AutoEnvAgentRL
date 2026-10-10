@@ -26,6 +26,17 @@ must remain grounded in original business; inheritance never skips execution.
 Expressions have exactly one operator. Literals always use {"literal":VALUE};
 paths use {"ref":"data.accounts.0.balance"}. Roots depend on context. Operators:
 eq/ne/lt/le/gt/ge/in/contains/add/sub/mul/at take two expression operands;
+floor_div/ceil_div take two integer operands with a nonzero divisor and return
+the exact integer floor/ceiling of their quotient, including negative values.
+is_integer takes one operand and accepts only an integer (never boolean or float).
+rational_sum_floor takes one expression returning a list of at most 10000
+[integer numerator, nonzero integer denominator] pairs. It sums exact rational
+terms before flooring once, returning integer JSON, without floating reciprocals.
+For prorated billing, map each segment to [price_cents * days, period_days], then
+apply rational_sum_floor to the complete list. Never floor each segment first.
+For refunds use floor_div([paid_cents * unused_days, period_days]); for carton
+coverage use ceil_div([required_units, pack_units]). These examples describe
+operand values; actual operands must use the expression objects below.
 and/or take nonempty expression lists; not/count/sum/unique take one expression
 operand in a list; list takes expression operands; object maps field names to
 expressions; if takes {condition,then,else}; filter/map take {items,value} with
