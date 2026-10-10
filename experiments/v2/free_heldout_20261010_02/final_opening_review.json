@@ -1,0 +1,120 @@
+{
+  "response": {
+    "checks": [
+      {
+        "id": 1,
+        "passed": true,
+        "reason": "功率、使用时长和电价完整准确，保留耗电量与电费估算目标，未提前计算。"
+      },
+      {
+        "id": 2,
+        "passed": true,
+        "reason": "会员满200元九折条件与无门槛15元券归属正确，商品价格及实付、节省金额目标完整。"
+      },
+      {
+        "id": 3,
+        "passed": true,
+        "reason": "起止时间和小时费率准确，询问时长及费用自然，未加入取整规则。"
+      },
+      {
+        "id": 4,
+        "passed": true,
+        "reason": "四位候选的报价与评分准确，保留前三名和总报价目标；可由代理应用排序政策。"
+      },
+      {
+        "id": 5,
+        "passed": true,
+        "reason": "自然表达查询维修进度及预计完成日期的需求，维修单编号缺失属于合理信息缺口。"
+      },
+      {
+        "id": 6,
+        "passed": true,
+        "reason": "保留积分及会员卡可用状态查询目标，未引入技术字段或排除有效零值。"
+      },
+      {
+        "id": 7,
+        "passed": true,
+        "reason": "保留合脚、有货款号的查询目标，尺码等信息可后续补充，未改变筛选含义。"
+      },
+      {
+        "id": 8,
+        "passed": true,
+        "reason": "自然询问未报销票据编号与总额，员工身份信息可后续补充，未违背政策。"
+      },
+      {
+        "id": 9,
+        "passed": true,
+        "reason": "准确表达配送进度及预计到达时间需求，订单编号可后续补充。"
+      },
+      {
+        "id": 10,
+        "passed": true,
+        "reason": "保留是否保修及检修费目标，未添加型号、保修期限或费用假设。"
+      },
+      {
+        "id": 11,
+        "passed": true,
+        "reason": "保留部门在职员工编号和人数统计目标，部门名称缺失属于合理信息缺口。"
+      },
+      {
+        "id": 12,
+        "passed": true,
+        "reason": "取消当前健身课预约的意图清楚自然，未编写执行步骤或增加操作范围。"
+      },
+      {
+        "id": 13,
+        "passed": true,
+        "reason": "审批环节顺序、累计耗时和最终负责人三个目标均完整保留。"
+      },
+      {
+        "id": 14,
+        "passed": true,
+        "reason": "已批准、金额超过4900元和全部统计的条件准确，笔数与总额目标完整。"
+      },
+      {
+        "id": 15,
+        "passed": true,
+        "reason": "准确保留至少可拿出6件的SKU数量及合计件数目标，未混淆阈值与总库存。"
+      },
+      {
+        "id": 16,
+        "passed": true,
+        "reason": "兼容性、空余容量和维护安排调整目标完整，未将可用容量改成设备性能。"
+      },
+      {
+        "id": 17,
+        "passed": true,
+        "reason": "源仓向目标仓调拨12件指定SKU并更新调拨单的目标准确，未添加执行细节。"
+      },
+      {
+        "id": 18,
+        "passed": true,
+        "reason": "准确保留开放后且有名额时登记的条件，未加入虚拟时间等技术细节。"
+      },
+      {
+        "id": 19,
+        "passed": true,
+        "reason": "保留提交前可能更改区域偏好及按最终偏好挑选、预订场地的目标，未扩大影响范围。"
+      },
+      {
+        "id": 20,
+        "passed": true,
+        "reason": "依次开通两个服务及第二个额度不足时保留第一个的要求准确，未擅自合并授权阶段。"
+      }
+    ]
+  },
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "1e919f970f0f4defb5b44e165b7dabf9",
+    "input_identity": "b3b6ba8b79f2356599b0d283640c5aec1024e3ebb249a62f20944e1bab865deb",
+    "usage": {
+      "input_tokens": 14637,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 776,
+      "reasoning_output_tokens": 34
+    },
+    "seconds": 28.402489624975715
+  }
+}

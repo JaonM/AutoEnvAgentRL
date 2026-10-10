@@ -1,0 +1,25 @@
+{
+  "kind": "correction",
+  "params": {},
+  "observations": {
+    "venues": [
+      "H19_V1",
+      "H19_V2",
+      "H19_V3",
+      "H19_V4",
+      "H19_V5",
+      "H19_V6",
+      "H19_V7",
+      "H19_V8",
+      "H19_V9",
+      "H19_V10",
+      "H19_V11",
+      "H19_V12"
+    ],
+    "bookings": [
+      "H19_BK1"
+    ]
+  },
+  "mutation": null,
+  "answer_obligations": []
+}

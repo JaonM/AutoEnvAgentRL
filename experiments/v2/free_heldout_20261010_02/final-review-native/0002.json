@@ -1,0 +1,25 @@
+{
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "87c3f74f59a24b2c9dfd2e3a99fc97d2",
+    "input_identity": "5c2f322bc39d61c04f9cd97376f7fe4941e1fe67dc04e4ca593ee8eb65f5ed0a",
+    "usage": {
+      "input_tokens": 11598,
+      "cached_input_tokens": 9216,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 74,
+      "reasoning_output_tokens": 17
+    },
+    "seconds": 8.455526083998848
+  },
+  "input": {
+    "situation": "寻找合适活动场地",
+    "desired_outcome": "预订提交前可能更改区域偏好；按最终区域偏好挑选并预订场地",
+    "known_information": {},
+    "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+  },
+  "response": {
+    "user_request": "帮我找个合适的活动场地。我可能会在提交预订前更改区域偏好，请按我最终确定的区域偏好挑选并预订场地。"
+  }
+}

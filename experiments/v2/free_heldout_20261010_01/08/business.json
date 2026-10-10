@@ -1,0 +1,95 @@
+{
+  "provenance": "held-out synthetic instance; frozen before contract generation",
+  "policy": "按用户employee_id筛选paid=false且cancelled=false的票据；返回完整编号集合与金额合计。",
+  "tables": [
+    {
+      "id": "receipts",
+      "rows": [
+        {
+          "id": "H08_R1",
+          "employee_id": "E2",
+          "paid": false,
+          "cancelled": false,
+          "amount": 21
+        },
+        {
+          "id": "H08_R2",
+          "employee_id": "E1",
+          "paid": false,
+          "cancelled": false,
+          "amount": 38
+        },
+        {
+          "id": "H08_R3",
+          "employee_id": "E2",
+          "paid": true,
+          "cancelled": false,
+          "amount": 55
+        },
+        {
+          "id": "H08_R4",
+          "employee_id": "E1",
+          "paid": false,
+          "cancelled": false,
+          "amount": 72
+        },
+        {
+          "id": "H08_R5",
+          "employee_id": "E2",
+          "paid": false,
+          "cancelled": true,
+          "amount": 89
+        },
+        {
+          "id": "H08_R6",
+          "employee_id": "E1",
+          "paid": false,
+          "cancelled": false,
+          "amount": 106
+        },
+        {
+          "id": "H08_R7",
+          "employee_id": "E2",
+          "paid": false,
+          "cancelled": false,
+          "amount": 123
+        },
+        {
+          "id": "H08_R8",
+          "employee_id": "E1",
+          "paid": false,
+          "cancelled": false,
+          "amount": 140
+        },
+        {
+          "id": "H08_R9",
+          "employee_id": "E2",
+          "paid": false,
+          "cancelled": false,
+          "amount": 157
+        },
+        {
+          "id": "H08_R10",
+          "employee_id": "E1",
+          "paid": false,
+          "cancelled": false,
+          "amount": 174
+        },
+        {
+          "id": "H08_R11",
+          "employee_id": "E2",
+          "paid": false,
+          "cancelled": false,
+          "amount": 191
+        },
+        {
+          "id": "H08_R12",
+          "employee_id": "E1",
+          "paid": false,
+          "cancelled": false,
+          "amount": 208
+        }
+      ]
+    }
+  ]
+}

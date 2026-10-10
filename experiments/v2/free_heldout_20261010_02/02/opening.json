@@ -1,0 +1,37 @@
+{
+  "response": {
+    "user_request": "我买了两件商品，价格分别是147元和109元。我是会员，可以享受店内会员九折优惠，还有一张满200元减15元的优惠券。最后实付多少，一共省了多少？"
+  },
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "08a7b7aeda8d42a099b7a2e0fc85395a",
+    "input_identity": "b02a42c6823308a31be1168a565f8c42f0b0cbd2149bbe2b2eb7d334dcb71031",
+    "usage": {
+      "input_tokens": 11618,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 65,
+      "reasoning_output_tokens": 0
+    },
+    "seconds": 9.023077374964487
+  },
+  "review": {
+    "passed": true,
+    "reason": "开场自然简洁，完整保留了两件商品价格、会员身份、九折优惠、满200减15优惠券，以及实付金额和节省金额两个目标；未添加事实、义务或执行步骤。优惠叠加顺序未说明，属于允许的合理澄清缺口。"
+  },
+  "review_provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "7e385dab49d24d5289fbc99c191e7722",
+    "input_identity": "8d29448811ad4996c3abc1698a3c671a675a00b3465d114f1003576ef72fbe26",
+    "usage": {
+      "input_tokens": 11707,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 112,
+      "reasoning_output_tokens": 24
+    },
+    "seconds": 12.975231958029326
+  }
+}

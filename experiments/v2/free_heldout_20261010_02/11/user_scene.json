@@ -1,0 +1,6 @@
+{
+  "situation": "准备部门人员统计",
+  "desired_outcome": "得到在职员工编号和人数",
+  "known_information": {},
+  "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+}

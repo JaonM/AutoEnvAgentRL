@@ -1,0 +1,29 @@
+{
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "8747fee4e6b843bdbee532f3921da30c",
+    "input_identity": "f70bd760da3272310d50aaa2a84e6489343d205538e21be6b7b1b23ffdde4a9b",
+    "usage": {
+      "input_tokens": 11646,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 79,
+      "reasoning_output_tokens": 21
+    },
+    "seconds": 11.676099541014992
+  },
+  "input": {
+    "scene": {
+      "situation": "准备买鞋",
+      "desired_outcome": "知道合脚且有货的款号",
+      "known_information": {},
+      "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+    },
+    "opening": "我准备买双鞋，想知道哪些款号合脚又有货。"
+  },
+  "response": {
+    "passed": true,
+    "reason": "开场自然简洁，保留了准备买鞋的情境及想知道合脚且有货款号的目标，没有新增事实、义务或平台执行步骤。"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "kind": "cancel",
+  "params": {},
+  "observations": {
+    "reservations": [
+      "H12_B1"
+    ],
+    "slots": [
+      "H12_L2"
+    ]
+  },
+  "mutation": null,
+  "answer_obligations": []
+}

@@ -1,0 +1,25 @@
+{
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "5ee3429260484adcb6bf5b7213614918",
+    "input_identity": "4aebc5745fbe6f80650de5c25dcddf1b3149a11c88f5eb3552acfb751c6419f5",
+    "usage": {
+      "input_tokens": 11584,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 40,
+      "reasoning_output_tokens": 0
+    },
+    "seconds": 11.17616062500747
+  },
+  "input": {
+    "situation": "准备整理报销",
+    "desired_outcome": "知道未报销票据编号与总额",
+    "known_information": {},
+    "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+  },
+  "response": {
+    "user_request": "我准备整理报销，想知道还有哪些票据没报销，票据编号分别是什么，总额是多少。"
+  }
+}

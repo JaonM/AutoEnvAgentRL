@@ -1,0 +1,47 @@
+{
+  "provenance": "held-out synthetic instance; frozen before contract generation",
+  "policy": "用户quota初始3，服务顺序F1再F2。每服务耗1单位，每笔分别原子更新用户quota-1、对应feature.active=true、对应既有log.completed=true。first和second是不同授权阶段，不可复用授权。第一笔后、第二笔前查询当前quota和功能状态。额度不足第二笔不写入但第一笔保留。",
+  "tables": [
+    {
+      "id": "accounts",
+      "rows": [
+        {
+          "id": "H20_AC1",
+          "quota": 3
+        }
+      ]
+    },
+    {
+      "id": "features",
+      "rows": [
+        {
+          "id": "F1",
+          "account_id": "H20_AC1",
+          "active": false,
+          "log_id": "H20_LG1"
+        },
+        {
+          "id": "F2",
+          "account_id": "H20_AC1",
+          "active": false,
+          "log_id": "H20_LG2"
+        }
+      ]
+    },
+    {
+      "id": "logs",
+      "rows": [
+        {
+          "id": "H20_LG1",
+          "feature_id": "F1",
+          "completed": false
+        },
+        {
+          "id": "H20_LG2",
+          "feature_id": "F2",
+          "completed": false
+        }
+      ]
+    }
+  ]
+}

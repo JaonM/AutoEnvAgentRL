@@ -1,0 +1,34 @@
+{
+  "provenance": "held-out synthetic instance; frozen before contract generation",
+  "policy": "读取预约及其slot_id实际时段。授权后同时把预约active和对应时段reserved设为false，保留其他记录；拒绝时不修改，提交后查询核验。",
+  "tables": [
+    {
+      "id": "reservations",
+      "rows": [
+        {
+          "id": "H12_B1",
+          "slot_id": "H12_L2",
+          "active": true
+        },
+        {
+          "id": "H12_B2",
+          "slot_id": "H12_L1",
+          "active": true
+        }
+      ]
+    },
+    {
+      "id": "slots",
+      "rows": [
+        {
+          "id": "H12_L1",
+          "reserved": true
+        },
+        {
+          "id": "H12_L2",
+          "reserved": true
+        }
+      ]
+    }
+  ]
+}

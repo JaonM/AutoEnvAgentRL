@@ -1,0 +1,54 @@
+{
+  "provenance": "held-out synthetic instance; frozen before contract generation",
+  "policy": "先按项目名称查project_id，再筛选该项目status=approved且amount>4900的报销。账本有6000条，每次查询最多64条。",
+  "tables": [
+    {
+      "id": "projects",
+      "rows": [
+        {
+          "id": "H14_P1",
+          "name": "远山"
+        },
+        {
+          "id": "H14_P2",
+          "name": "近水"
+        }
+      ]
+    },
+    {
+      "id": "expenses",
+      "generator": {
+        "count": 6000,
+        "seed": 21,
+        "columns": {
+          "id": {
+            "kind": "sequence",
+            "start": 1,
+            "step": 1,
+            "prefix": "H14_X"
+          },
+          "project_id": {
+            "kind": "cycle",
+            "values": [
+              "H14_P1",
+              "H14_P2"
+            ]
+          },
+          "status": {
+            "kind": "cycle",
+            "values": [
+              "approved",
+              "pending",
+              "denied"
+            ]
+          },
+          "amount": {
+            "kind": "sequence",
+            "start": 1,
+            "step": 1
+          }
+        }
+      }
+    }
+  ]
+}

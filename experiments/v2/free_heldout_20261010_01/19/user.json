@@ -1,0 +1,10 @@
+{
+  "facts": {
+    "region": "east",
+    "region_new": "west",
+    "venue_choice": "H19_V8",
+    "booking_id": "H19_BK1",
+    "approve_initial": true,
+    "approve_consent": true
+  }
+}

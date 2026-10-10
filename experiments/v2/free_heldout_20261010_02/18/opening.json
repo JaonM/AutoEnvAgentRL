@@ -1,0 +1,37 @@
+{
+  "response": {
+    "user_request": "我想参加这个活动，等开放后有名额的话，帮我登记参加。"
+  },
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "5563eaa9238f4d1fb33176d0c47812bf",
+    "input_identity": "dfc1b8c63084b54b57bf079865a85545cf3fa8484abd3a1359ee790d8501d2a0",
+    "usage": {
+      "input_tokens": 12367,
+      "cached_input_tokens": 11264,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 77,
+      "reasoning_output_tokens": 41
+    },
+    "seconds": 9.84928583400324
+  },
+  "review": {
+    "passed": true,
+    "reason": "开场自然、简洁，保留了活动开放后有名额时登记参加的期望，未添加事实、额外义务或平台执行步骤；未说明具体活动属于合理省略。"
+  },
+  "review_provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "fd4e898c0fd1404eb4326b1f9110066e",
+    "input_identity": "10c339e3644aa8b0a262a620db3addfeb688ec2b9ca8be43de0054194ec75dcb",
+    "usage": {
+      "input_tokens": 11651,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 82,
+      "reasoning_output_tokens": 17
+    },
+    "seconds": 7.661883916996885
+  }
+}

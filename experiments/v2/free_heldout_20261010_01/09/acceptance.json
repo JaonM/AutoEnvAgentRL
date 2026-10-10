@@ -1,0 +1,30 @@
+{
+  "kind": "shipment",
+  "params": {},
+  "observations": {
+    "orders": [
+      "H09_O1"
+    ],
+    "shipments": [
+      "H09_P2"
+    ]
+  },
+  "mutation": {
+    "table": "shipments",
+    "key": "H09_P2",
+    "column": "status",
+    "value": "delivered"
+  },
+  "answer_obligations": [
+    {
+      "role": "status",
+      "source": "user_request",
+      "text": "我的订单配送到哪儿了？预计什么时候能送到？"
+    },
+    {
+      "role": "eta",
+      "source": "user_request",
+      "text": "我的订单配送到哪儿了？预计什么时候能送到？"
+    }
+  ]
+}

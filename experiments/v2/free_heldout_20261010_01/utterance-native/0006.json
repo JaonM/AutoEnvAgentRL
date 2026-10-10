@@ -1,0 +1,33 @@
+{
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "fe6e94081e444a67b0ad22df216b6c65",
+    "input_identity": "2fa77e483a42917fd4c0d8e00e754240ccad32112e6101025e566257f4c24abc",
+    "usage": {
+      "input_tokens": 11668,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 89,
+      "reasoning_output_tokens": 26
+    },
+    "seconds": 10.495292540988885
+  },
+  "input": {
+    "scene": {
+      "situation": "会议室使用结束",
+      "desired_outcome": "知道使用时长和费用",
+      "known_information": {
+        "start_time": "10:15",
+        "end_time": "13:10",
+        "hourly_rate": 24
+      },
+      "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+    },
+    "opening": "会议室从10:15用到13:10，每小时24元，一共用了多久，费用是多少？"
+  },
+  "response": {
+    "passed": true,
+    "reason": "开场自然简洁，保留了10:15、13:10和每小时24元，明确询问使用时长与费用，未添加事实、额外要求或平台执行步骤。"
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "response": {
+    "user_request": "我在筹备课程，需要挑选讲师。甲报价631，评分4.8；乙报价862，评分4.9；丙报价793，评分4.9；丁报价724，评分4.8。请帮我选出前三名候选，并给出总报价。"
+  },
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "cb0766f366124e6ca397e3dc13df082c",
+    "input_identity": "eb2ed4f41a14c6cbb4a98c077a59dff50ca72e9ba5d6d9c221295bf4dceb1fc5",
+    "usage": {
+      "input_tokens": 11666,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 78,
+      "reasoning_output_tokens": 0
+    },
+    "seconds": 9.319118916988373
+  },
+  "review": {
+    "passed": true,
+    "reason": "开场保留了全部候选人的姓名、报价和评分，明确要求前三名候选及总报价，符合筹备课程挑选讲师的场景，表达自然简洁。排序标准未明确属于合理澄清空间，没有新增事实、义务或执行步骤。"
+  },
+  "review_provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "30e81f035e144fe18517e9203740cd3c",
+    "input_identity": "9b1dbb0e5aee2823029f09281a824aea384d208f44a2b4c88ca8a627b5246a5d",
+    "usage": {
+      "input_tokens": 12554,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 101,
+      "reasoning_output_tokens": 19
+    },
+    "seconds": 13.094553917006124
+  }
+}

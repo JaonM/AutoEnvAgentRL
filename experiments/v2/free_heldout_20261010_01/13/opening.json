@@ -1,0 +1,37 @@
+{
+  "response": {
+    "user_request": "我想查一下申请进度，了解各审批环节的顺序、累计耗时，以及最终负责人是谁。"
+  },
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "c9900ecf6d2f40cebbcf008662d67934",
+    "input_identity": "14ea52aa60f46e6dd39709189f0de975edffb2aa7dba71648e889ba70f2de361",
+    "usage": {
+      "input_tokens": 11592,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 40,
+      "reasoning_output_tokens": 0
+    },
+    "seconds": 7.837527957977727
+  },
+  "review": {
+    "passed": true,
+    "reason": "开场自然、简洁，完整保留了追踪申请进度及了解审批环节顺序、累计耗时和最终负责人的需求，没有虚构信息、增加义务或引入平台执行步骤。"
+  },
+  "review_provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "5fd28fb6164547e59be91a81dc8a502d",
+    "input_identity": "9227910db2c31e07061e9fae7b4353676e0c49373c63f85f10e7cdaba7e8fa21",
+    "usage": {
+      "input_tokens": 11660,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 88,
+      "reasoning_output_tokens": 21
+    },
+    "seconds": 8.84995591599727
+  }
+}
