@@ -20,6 +20,25 @@ def test_minutes_and_nested_fields_preserve_business_values():
     assert normalize(answer, entries) == {'hours': 2.75, 'status': 'repairing', 'eta': '2026-10-12'}
 
 
+def test_root_notation_is_consistent_for_read_write_and_negative_projections():
+    answer = {'cost': 3.5, 'ticket': {'active': True}}
+    entries = [entry('cost', [('cost', '$')]),
+               entry('active', [('ticket', '$.active')])]
+    assert normalize(answer, entries) == {'cost': 3.5, 'active': True}
+    assert fill_projections(answer, entries, {'cost': 7, 'active': False}) == {
+        'cost': 7, 'ticket': {'active': False}}
+    assert wrong_projection(answer, entries[1])['ticket']['active'] is False
+    for path in ['$..active', '$[0]', '$.active+1']:
+        with pytest.raises(ContractError, match='closed'):
+            normalize(answer, [entry('active', [('ticket', path)])])
+
+
+def test_conditional_scalar_alternatives_remain_ambiguous():
+    with pytest.raises(ContractError, match='exactly one selector'):
+        normalize({'member': 10, 'nonmember': 20},
+                  [entry('payable', [('member', '$'), ('nonmember', '$')])])
+
+
 def test_split_fields_and_array_records_keep_order_and_duplicates():
     entries = [entry('names', [('first', ''), ('second', ''), ('third', '')], packing='list')]
     assert normalize({'first': '丙', 'second': '乙', 'third': '甲'}, entries)['names'] == ['丙', '乙', '甲']

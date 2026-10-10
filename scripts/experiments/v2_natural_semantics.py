@@ -36,6 +36,20 @@ def select(value, segments):
     return select(value[int(token)], remaining)
 
 
+def path_segments(path):
+    """Accept root notation only; never evaluate JSONPath expressions."""
+    require(isinstance(path, str), 'closed answer projection path required')
+    if path == '$':
+        path = ''
+    elif path.startswith('$.'):
+        path = path[2:]
+    segments = path.split('.') if path else []
+    require(len(segments) <= 16 and all(
+        s and (s == '*' or s.isidentifier() or s.isdecimal()) for s in segments),
+        'closed answer projection path required')
+    return segments
+
+
 def normalize(answer, entries, *, name_aliases=None, role_types=None):
     output = {}
     for entry in entries:
@@ -46,9 +60,7 @@ def normalize(answer, entries, *, name_aliases=None, role_types=None):
         values = []
         for item in selectors:
             require(item['field'] in answer, 'declared answer field missing')
-            segments = item['path'].split('.') if item['path'] else []
-            require(len(segments) <= 16 and all(s and (s == '*' or s.isidentifier() or s.isdecimal()) for s in segments),
-                    'closed answer projection path required')
+            segments = path_segments(item['path'])
             values.append(select(answer[item['field']], segments))
         if entry['packing'] == 'single':
             require(len(values) == 1, 'single projection requires exactly one selector')
@@ -101,7 +113,7 @@ def wrong_projection(answer, entry):
     from v2_natural_oracle import wrong_value
     result = copy.deepcopy(answer)
     selected = entry['selectors'][0]
-    segments = selected['path'].split('.') if selected['path'] else []
+    segments = path_segments(selected['path'])
     def change(value, path):
         if not path:
             if isinstance(value, list):
@@ -153,6 +165,6 @@ def fill_projections(answer, entries, truth, *, name_aliases=None):
             replacements = value
         for selector, replacement in zip(selectors, replacements):
             field = selector['field']
-            segments = selector['path'].split('.') if selector['path'] else []
+            segments = path_segments(selector['path'])
             result[field] = replace(result[field], segments, replacement)
     return result

@@ -16,6 +16,10 @@ def accept(compiled, row, business, user, spec, agent):
     source, previews = review_contract(compiled['source'])
     review, provenance = agent.ask('Independently audit business obligations against the user request and dossier. '
         'Map every semantic role exactly once using closed paths into declared answer fields. Allow nested '
+        'Each selector field selects the top-level answer field; path is relative to its value: '
+        'use an empty string for the whole value, payable for a nested property, or items.*.id for array IDs. '
+        'Do not repeat the selected field name in path. single packing requires exactly one selector; '
+        'never select multiple conditional alternatives as one scalar. Allow nested '
         'objects, singleton scalar packing, minutes/seconds conversion for hours, and public lecturer ID aliases. '
         'Do not compute or invent values. Never require a particular answer layout. Check missing obligations, '
         'hidden requirements, privacy, unsupported restrictions and actual refusal handling. No tools.',
