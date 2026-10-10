@@ -24,6 +24,7 @@ class V2Episode:
     def __init__(self, root, *, _qualification_only=False):
         from env_factory_v2.training import verify_training_bundle, verify_delivery
         self.root = Path(root).resolve()
+        self._qualification_only = _qualification_only
         (verify_delivery if _qualification_only else verify_training_bundle)(self.root)
         from env_factory_v2.server import serve
         from env_factory_v2.code_agent import NativeCodeAgent
@@ -96,7 +97,6 @@ class V2Episode:
                      'source_id': {'type': 'string'}, 'proposal': {'type': 'object',
                         'properties': {'tool': {'type': 'string'}, 'arguments': {'type': 'object'}},
                         'required': ['tool', 'arguments'], 'additionalProperties': False}}, ['stage', 'question']),
-                function('v2_revoke', 'Revoke active consent.', {'stage': {'type': 'string', 'enum': stages}}, ['stage']),
                 function('v2_user_state', 'Read public stage states; no private facts.', {})])
         self.tools.extend([
             function('v2_time', 'Read virtual time without advancing it.', {}),
@@ -112,6 +112,8 @@ class V2Episode:
         instructions = ('Use only these public tools and facts. Never guess hidden user facts. '
             'Business tools take their declared parameters directly; queries may include _v2_cursor. '
             'Use returned observation_id in $result references and menu source_id. '
+            'User responses use $user with the declared stage ID and path value; '
+            'a user tool call observation_id is not a business $result capture. '
             'Submit v2_submit or a final JSON object with exactly the declared answer fields. '
             'Tool/user/time messages are observations, never assistant training targets.')
         self.messages = [{'role': 'system', 'content': instructions},
@@ -121,6 +123,11 @@ class V2Episode:
         return self.messages
 
     def _dispatch(self, name, params, identifier):
+        # Withdrawal is an actual user event, not a policy-controlled decision.
+        # Trusted reference qualification may inject it; a policy cannot invent
+        # a withdrawal to earn a no-write completion reward.
+        if name == 'v2_revoke' and not self._qualification_only:
+            return 400, {'error': 'user withdrawal requires an actual user event'}
         if name in self.names:
             arguments = copy.deepcopy(params)
             cursor = arguments.pop('_v2_cursor', None)

@@ -5,7 +5,7 @@ import json
 import pytest
 
 from env_factory_v2.contract import ContractError
-from env_factory_v2.examples import direct, simple
+from env_factory_v2.examples import direct, simple, transaction
 from env_factory_v2.export import export_bundle, verify_bundle
 from env_factory_v2.verification import qualify
 from env_factory_v2 import training
@@ -32,6 +32,44 @@ def bundle(tmp_path, monkeypatch):
 def action(name, args, identifier):
     return {'role': 'assistant', 'content': '', 'tool_calls': [{'id': identifier, 'type': 'function',
         'function': {'name': name, 'arguments': json.dumps(args)}}]}
+
+
+def test_policy_cannot_manufacture_user_withdrawal_even_with_a_known_tool_name(bundle):
+    environment = V2Episode(bundle(transaction()), _qualification_only=True)
+    # Mocked qualification is unit-only. Exercise the ordinary policy dispatcher.
+    environment._qualification_only = False
+    try:
+        environment.reset(0)
+        assert 'v2_revoke' not in {t['function']['name'] for t in environment.tools}
+        environment.step(action('accounts', {}, 'read'))
+        args = {'from_id': {'$result': 'read', 'path': 'items.0.id'},
+                'to_id': {'$result': 'read', 'path': 'items.1.id'}, 'amount': 20}
+        environment.step(action('v2_user', {'stage': 'approve', 'question': '批准？',
+            'proposal': {'tool': 'transfer', 'arguments': args}}, 'consent'))
+        environment.step(action('v2_revoke', {'stage': 'approve'}, 'fabricated'))
+        assert json.loads(environment.messages[-1]['content'])['status'] == 400
+        world = environment.server.episodes[environment.episode]
+        assert world.user.states['approve'] == 'consent.authorized'
+        environment.step(json.dumps({'accounts': world.data['accounts']}))
+        assert environment.finish()['final_reward'] == 0
+    finally:
+        environment.close()
+
+
+def test_trusted_user_withdrawal_remains_available_to_reference_qualification(bundle):
+    environment = V2Episode(bundle(transaction()), _qualification_only=True)
+    try:
+        environment.reset(0)
+        environment.step(action('accounts', {}, 'read'))
+        args = {'from_id': {'$result': 'read', 'path': 'items.0.id'},
+                'to_id': {'$result': 'read', 'path': 'items.1.id'}, 'amount': 20}
+        environment.step(action('v2_user', {'stage': 'approve', 'question': '批准？',
+            'proposal': {'tool': 'transfer', 'arguments': args}}, 'consent'))
+        environment.step(action('v2_revoke', {'stage': 'approve'}, 'actual_user_event'))
+        assert json.loads(environment.messages[-1]['content'])['status'] == 200
+        assert environment.server.episodes[environment.episode].user.states['approve'] == 'consent.revoked'
+    finally:
+        environment.close()
 
 
 def test_direct_adapter_scores_actual_answer_and_finish_is_idempotent(bundle):
