@@ -12,7 +12,7 @@ from env_factory_v2.code_agent import object_schema
 from env_factory_v2.contract import require
 
 
-def schema(roles, fields, *, set_memberships=None):
+def schema(roles, fields, *, set_memberships=None, quantity_offsets=None):
     if not roles:
         return object_schema({'business_consistent': {'type': 'boolean'}, 'reason': {'type': 'string'},
             'mapping': {'type': 'array', 'items': object_schema({})}})
@@ -23,8 +23,10 @@ def schema(roles, fields, *, set_memberships=None):
             'packing': {'type': 'string', 'enum': ['single', 'list']},
             'time_unit': {'type': 'string', 'enum': ['native', 'minutes', 'seconds']},
             'names': {'type': 'string', 'enum': ['native', 'public_id_to_name']}}
-    if set_memberships:
-        projection['representation'] = {'type': 'string', 'enum': ['native', 'set_membership']}
+    if set_memberships or quantity_offsets:
+        projection['representation'] = {'type': 'string', 'enum': ['native']
+            + (['set_membership'] if set_memberships else [])
+            + (['total_quantity'] if quantity_offsets else [])}
     return object_schema({'business_consistent': {'type': 'boolean'}, 'reason': {'type': 'string'},
         'mapping': {'type': 'array', 'items': object_schema(projection)}})
 
@@ -57,7 +59,7 @@ def path_segments(path):
     return segments
 
 
-def normalize(answer, entries, *, name_aliases=None, role_types=None, set_memberships=None):
+def normalize(answer, entries, *, name_aliases=None, role_types=None, set_memberships=None, quantity_offsets=None):
     output = {}
     for entry in entries:
         role = entry['role']
@@ -83,6 +85,17 @@ def normalize(answer, entries, *, name_aliases=None, role_types=None, set_member
                     and len(value) == len(set(value)), 'unique identifier set required')
             require(set(value) == set(descriptor['complete_set']), 'independent complete qualification set mismatch')
             value = descriptor['member'] in value
+        elif entry.get('representation', 'native') == 'total_quantity':
+            offset = (quantity_offsets or {}).get(role)
+            require(type(offset) is int and offset >= 0 and role_types
+                    and role_types.get(role) in (int, type(None)),
+                    'total quantity requires independently declared integer quantity role')
+            require(entry['time_unit'] == entry['names'] == 'native', 'quantity conversion cannot combine aliases or time units')
+            if isinstance(value, list):
+                require(len(value) == 1, 'quantity role requires exactly one value')
+                value = value[0]
+            require(value is None or type(value) is int, 'total quantity must be integer or null')
+            value = None if value is None else value - offset
         elif entry.get('representation', 'native') != 'native':
             require(False, 'unknown closed answer representation')
         if role_types and role_types.get(role) is not list and isinstance(value, list):
@@ -147,7 +160,7 @@ def wrong_projection(answer, entry):
     return result
 
 
-def fill_projections(answer, entries, truth, *, name_aliases=None, set_memberships=None):
+def fill_projections(answer, entries, truth, *, name_aliases=None, set_memberships=None, quantity_offsets=None):
     """Insert independently computed answers, keeping the declared layout."""
     result = copy.deepcopy(answer)
     def replace(current, segments, value):
@@ -172,6 +185,11 @@ def fill_projections(answer, entries, truth, *, name_aliases=None, set_membershi
                     and value == (descriptor['member'] in descriptor['complete_set']),
                     'independent membership truth required for inverse projection')
             value = copy.deepcopy(descriptor['complete_set'])
+        elif e.get('representation', 'native') == 'total_quantity':
+            offset = (quantity_offsets or {}).get(e['role'])
+            require(type(offset) is int and offset >= 0 and (value is None or type(value) is int),
+                    'independent quantity offset required for inverse projection')
+            value = None if value is None else value + offset
         if e['names'] != 'native':
             inverse = {}
             for key, name in (name_aliases or {}).items():

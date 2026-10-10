@@ -38,7 +38,7 @@ def canonical_truth(spec, business, user, **kwargs):
 
 
 def value_checks(answer, truth, entries, aliases):
-    actual = normalize(answer, entries, name_aliases=aliases, role_types={k: type(v) for k, v in truth['answer'].items()}, set_memberships=truth.get('set_memberships'))
+    actual = normalize(answer, entries, name_aliases=aliases, role_types={k: type(v) for k, v in truth['answer'].items()}, set_memberships=truth.get('set_memberships'), quantity_offsets=truth.get('quantity_offsets'))
     return [{'id': 'answer_' + k, 'passed': k in actual and equivalent(actual[k], v, unordered=k == 'ids')}
             for k, v in truth['answer'].items()]
 
@@ -144,13 +144,13 @@ def audit_sample(row, assets, original, root, connection, reuse=None):
         'field. Ordered results may be split across fields; packing=list concatenates in declared order. '
         'Duration may be minutes/seconds and converts to canonical hours. Public lecturer IDs may map '
         'to names using only the dossier aliases. Do not compute values, reorder results, invent missing '
-        'facts or edit the sandbox. Task did not require an extra committed/submitted boolean; actual '
+        'facts or edit the sandbox. Use representation=total_quantity only for offered quantity roles; the host subtracts the independently declared demand. Task did not require an extra committed/submitted boolean; actual '
         'commit correctness is independently checked against full state and trace. Do not require flat '
         'fields or one output layout. Identify genuine missing business obligations. No tools.',
         {'raw_request': row['raw_request'], 'business': business, 'private_user_fixture': user,
          'contract': source, 'fixture_previews': previews, 'public': compiled['public'],
-         'required_roles': [{'id': k, 'canonical_type': type(v).__name__} for k, v in truth['answer'].items()], 'public_name_aliases': aliases},
-        schema(truth['answer'], [f['id'] for f in compiled['source']['answers']]))
+         'required_roles': [{'id': k, 'canonical_type': type(v).__name__} for k, v in truth['answer'].items()], 'public_name_aliases': aliases, 'quantity_offsets': truth.get('quantity_offsets', {})},
+        schema(truth['answer'], [f['id'] for f in compiled['source']['answers']], quantity_offsets=truth.get('quantity_offsets')))
     save(root / 'mapping.json', {'response': review, 'provenance': provenance})
     entries = review['mapping']
     require(len(entries) == len(truth['answer']) and {e['role'] for e in entries} == set(truth['answer']), 'posthoc mapping incomplete')
@@ -178,7 +178,7 @@ def audit_sample(row, assets, original, root, connection, reuse=None):
             world = execute_reference(compiled, selected, mutation=spec['mutation'])
             changed_truth = canonical_truth(spec, business, user, mutation=spec['mutation'])
             answer = (reference_answer(execute_reference(compiled, selected), selected) if stale else
-                fill_projections(reference_answer(world, selected), entries, changed_truth['answer'], name_aliases=aliases))
+                fill_projections(reference_answer(world, selected), entries, changed_truth['answer'], name_aliases=aliases, quantity_offsets=changed_truth.get('quantity_offsets')))
             outcome = grade(world, answer, judge=agent.judge)
             passed = outcome['reward'] < 1 and not outcome['success'] if stale else (
                 outcome['success'] is True
@@ -198,7 +198,7 @@ def audit_sample(row, assets, original, root, connection, reuse=None):
     if any(t['kind'] == 'transaction' for t in compiled['source']['tools']):
         world = execute_reference(compiled, selected, refuse=True)
         refused_truth = canonical_truth(spec, business, user, refuse=True)
-        answer = fill_projections(reference_answer(world, selected), entries, refused_truth['answer'], name_aliases=aliases)
+        answer = fill_projections(reference_answer(world, selected), entries, refused_truth['answer'], name_aliases=aliases, quantity_offsets=refused_truth.get('quantity_offsets'))
         for field in compiled['source']['answers']:
             meaning = field['meaning'].lower()
             if (field['schema']['type'] == 'boolean' and ('本次' in meaning or 'this execution' in meaning)

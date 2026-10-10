@@ -177,4 +177,8 @@ def expected(spec, data, facts, *, now=None, refuse=False, authorized_snapshot=N
                   'overage': None if best is None else best['overage'], 'committed': committed}
     else:
         raise ValueError('Unsupported procurement requirement; do not silently narrow it')
-    return {'answer': answer, 'initial': initial, 'final_state': final, 'observations': {}}
+    result = {'answer': answer, 'initial': initial, 'final_state': final, 'observations': {}}
+    if kind in {'procurement_combination', 'procurement_large'}:
+        integer(facts['demand'], 1)
+        result['quantity_offsets'] = {'overage': facts['demand']}
+    return result

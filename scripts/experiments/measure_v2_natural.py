@@ -158,7 +158,7 @@ def observation_checks(world, truth, kind):
 def answer_checks(answer, truth, mapping):
     if isinstance(mapping, list):
         from v2_natural_semantics import normalize
-        actual = normalize(answer, mapping, name_aliases=truth.get('name_aliases', {}), role_types={k: type(v) for k, v in truth['answer'].items()}, set_memberships=truth.get('set_memberships'))
+        actual = normalize(answer, mapping, name_aliases=truth.get('name_aliases', {}), role_types={k: type(v) for k, v in truth['answer'].items()}, set_memberships=truth.get('set_memberships'), quantity_offsets=truth.get('quantity_offsets'))
         return [{'id': 'answer_' + k, 'passed': k in actual and equivalent(actual[k], v, unordered=k in UNORDERED)} for k,v in truth['answer'].items()]
     return [{'id': 'answer_' + role, 'passed': field in answer and equivalent(answer[field], value, unordered=role in UNORDERED)}
             for role, value in truth['answer'].items() for field in [mapping[role]]]
