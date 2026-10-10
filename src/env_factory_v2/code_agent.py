@@ -161,7 +161,27 @@ class NativeCodeAgent:
             text += ' 谢谢。' if zh else ' Thank you.'
         return {'event': event, 'text': text, 'provenance': provenance}
 
-    def generate(self, request, *, feedback=None, source_object=False, source_tree=False):
+    def generate(self, request, *, feedback=None, source_object=False, source_tree=False, author_tools=False):
+        require(type(author_tools) is bool, 'author tools selector must be boolean')
+        if author_tools:
+            require(not source_object and not source_tree, 'author tools use the workbench transport')
+            require(not self.base_url.startswith('http://host.docker.internal:'),
+                    'author sessions run only on the host')
+            from .author_session import generate_in_session
+            previous = feedback.get('previous_source') if feedback else None
+            candidate = isinstance(previous, dict) and bool(
+                {'task', 'tables', 'tools', 'answers', 'scenarios', 'rules'} & previous.keys())
+            source, provenance = generate_in_session(request,
+                evidence_root=self.evidence_root / 'author-sessions', timeout=min(self.timeout - 15, 600),
+                previous_source=previous if candidate else None,
+                feedback={k:v for k,v in (feedback or {}).items() if k != 'previous_source'})
+            self.provenance.append(provenance)
+            self.evidence_root.mkdir(parents=True, exist_ok=True)
+            (self.evidence_root / f'{len(self.provenance):04d}.json').write_text(
+                json.dumps({'provenance': provenance, 'input': request,
+                            'response': {'source_identity': provenance['source_identity']}},
+                           ensure_ascii=False, indent=2) + '\n')
+            return source, provenance
         require(type(source_object) is bool, 'source object selector must be boolean')
         require(type(source_tree) is bool and not (source_object and source_tree), 'invalid JSON tree selector')
         grammar = (Path(__file__).parent / 'CONTRACT.md').read_text()

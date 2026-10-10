@@ -379,6 +379,7 @@ def worker(args):
         author = NativeCodeAgent.from_connection(args.connection, evidence_root=root / 'author-native')
         tick = phase('sandbox_generation_and_delivery')
         delivery = build(request, agent=author, output=root / 'build', repairs=1, docker=True, base_image=args.base_image,
+                         author_tools=args.author_tools,
                          candidate_validator=lambda source: fixture_alignment(source, row, business, user))
         result['phases'][phase_name] = time.monotonic() - tick
         result['sandbox_qualified'] = delivery.get('qualified') is True
@@ -463,6 +464,7 @@ def main():
     parser.add_argument('--connection', type=Path, required=True)
     parser.add_argument('--base-image', default='docker.m.daocloud.io/library/python:3.14-slim')
     parser.add_argument('--sample-timeout', type=int, default=1800)
+    parser.add_argument('--author-tools', action='store_true', help='Use host-only author MCP contract checks in the native generation turn.')
     parser.add_argument('--worker', type=int, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.worker is not None:
@@ -473,6 +475,7 @@ def main():
     protocol = {'version': 2, 'user_mode': 'free_dialogue', 'measurement': 'predeclared_closed_semantic_projections_v2', 'scope': manifest['scope'], 'planned': 20, 'mix': manifest['mix'],
         'sampling': manifest['sampling'], 'model': 'gpt-6.1-sol', 'concurrency': 1, 'candidate_repairs': 1,
         'platform_identity': implementation_identity(), 'runner_identity': runner_identity(),
+        'author_tools': args.author_tools,
         'assets_identity': digest(args.assets / 'frozen.json'), 'base_image': args.base_image,
         'bridge_timeout_seconds': read(args.connection)['timeout_seconds'], 'sample_timeout_seconds': args.sample_timeout,
         'policy_turn_budget': 40, 'policy_calls_per_turn': 8,
@@ -496,6 +499,8 @@ def main():
         command = [sys.executable, str(Path(__file__).resolve()), '--assets', str(args.assets.resolve()),
             '--output', str(folder), '--connection', str(args.connection.resolve()), '--base-image', args.base_image,
             '--worker', str(sample['id'])]
+        if args.author_tools:
+            command.append('--author-tools')
         tick = time.monotonic()
         with (root / f'sample-{sample["id"]:02d}.log').open('w') as stream:
             try:
