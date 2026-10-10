@@ -49,6 +49,26 @@ def test_local_variables_are_not_available_outside_binding_scope():
         validate_expr({'ref': 'vars.key'}, roots={'data'})
 
 
+def test_record_row_cannot_be_used_as_outer_collection_index():
+    tables = {'items': {'schema': {'properties': {'id': {'type': 'string'}}}}}
+    wrong = {'filter': {'items': {'ref': 'initial.items'},
+                        'value': {'eq': [{'ref': 'row.id'},
+                                        {'at': [{'ref': 'user.ids'}, {'ref': 'row'}]}]}}}
+    with pytest.raises(ContractError, match='collection index is a record from table items'):
+        validate_rule_links(wrong, {}, tables=tables)
+    correct = {'map': {'items': {'range': {'start': {'literal': 0},
+                                         'stop': {'literal': 2}, 'max_items': 2}},
+                       'value': {'let': {'bindings': {'index': {'ref': 'row'}},
+                                        'value': {'filter': {
+                                            'items': {'ref': 'initial.items'},
+                                            'value': {'eq': [{'ref': 'row.id'}, {'at': [
+                                                {'ref': 'user.ids'}, {'ref': 'vars.index'}]}]}}}}}}}
+    validate_expr(correct, roots={'initial', 'user'})
+    validate_rule_links(correct, {}, tables=tables)
+    assert evaluate(correct, {'initial': {'items': [{'id': 'B'}, {'id': 'A'}]},
+                              'user': {'ids': ['A', 'B']}}) == [[{'id': 'A'}], [{'id': 'B'}]]
+
+
 def test_lexical_capture_around_public_filter_preserves_rule_and_boundary_semantics():
     rules = {'eligible': {'predicate': {'and': [
         {'eq': [{'ref': 'row.project_id'}, {'ref': 'args.project_id'}]},

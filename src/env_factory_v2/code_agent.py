@@ -212,6 +212,9 @@ class NativeCodeAgent:
             'satisfy the full business grammar. Wire encoding must not simplify any obligation. '
             if source_tree else '')
         value, provenance = self.ask('Generate a NEW business contract following the supplied grammar. '
+            'This is full generation, even when repair_feedback describes an earlier failure. '
+            'There is no editable previous contract in this branch: generate the complete source from '
+            'original_request and grammar; never return generation_incomplete or demand an omitted source. '
             'Preserve the original request and its category. No Python code. Model roles may not invent hidden '
             'business filters or freeze mutable facts in reasoning criteria. Include grounded positive/negative '
             'scenarios and data counterexamples. If repairing, address executable evidence without weakening '

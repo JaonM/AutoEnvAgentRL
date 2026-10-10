@@ -156,6 +156,11 @@ def validate_rule_links(expression, rules, *, shared_filters=False, row_scope=Fa
     tables, bindings = tables or {}, _bindings or {}
     if not isinstance(expression, dict) or set(expression) == {'literal'}:
         return
+    if 'at' in expression and _row_table in tables:
+        require(expression['at'][1] != {'ref': 'row'},
+                f'collection index is a record from table {_row_table}, not an integer; '
+                'nested filter/map replaces row; capture the outer index in a let '
+                'before entering the inner collection and use vars.INDEX')
     if 'rule' in expression:
         invocation = expression['rule']
         require(invocation['id'] in rules, 'unknown rule in expression')
@@ -482,8 +487,13 @@ def compile_contract(source):
         validate_user_overrides(source, scenario.get('user_overrides', {}))
         require(type(scenario['expect_success']) is bool and isinstance(scenario['steps'], list), 'invalid scenario')
         require(len(scenario['steps']) <= source['limits']['max_actions'], 'scenario action budget exceeded')
-        require(isinstance(scenario['answer'], dict)
-                and set(scenario['answer']) == set(answers) | set(explanations), 'scenario answer fields mismatch')
+        expected_fields = set(answers) | set(explanations)
+        actual_fields = set(scenario['answer']) if isinstance(scenario['answer'], dict) else set()
+        require(isinstance(scenario['answer'], dict) and actual_fields == expected_fields,
+                f"scenario answer fields mismatch: scenario={scenario['id']}; "
+                f"missing={sorted(expected_fields - actual_fields)}; "
+                f"unexpected={sorted(actual_fields - expected_fields)}; "
+                'include both structured answers and explanation fields')
         for expression in scenario['answer'].values():
             validate_expr(expression, roots={'data', 'initial', 'evidence', 'user', 'user_state', 'time'})
             validate_rule_links(expression, rules)

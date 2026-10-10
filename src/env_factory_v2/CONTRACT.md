@@ -81,6 +81,9 @@ Bindings evaluate in the outer scope simultaneously; the body reads vars.NAME.
 Nested lets shadow locally and do not mutate their caller. Capture an outer
 row key with let before a nested filter/map: inner row refers to the inner
 collection, while vars.project_id retains the captured outer project key.
+To capture an outer integer index, place let outside the inner filter and use
+vars.index as the second operand of at. If another binding needs that index,
+put it in a nested let body: sibling bindings cannot read one another.
 sort takes {items:EXPRESSION,order_by:[{field:COLUMN,direction:"asc"|"desc"}]}.
 It stably sorts up to 10000 row objects by the declared keys, with nulls last in
 either direction. Each key must contain one scalar type (int/float share numeric

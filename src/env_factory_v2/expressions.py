@@ -310,7 +310,11 @@ def evaluate(expression, context):
         return len(args[0])
     if op == 'at':
         if not isinstance(args[0], list) or type(args[1]) is not int or not 0 <= args[1] < len(args[0]):
-            raise ContractError('unresolved collection index')
+            raise ContractError('unresolved collection index: '
+                                f'collection_type={type(args[0]).__name__}; '
+                                f'index_type={type(args[1]).__name__}; '
+                                'at requires a list and an in-range integer; nested filter/map '
+                                'replaces row, so capture an outer index before entering it')
         return copy.deepcopy(args[0][args[1]])
     if op == 'unique':
         return list({canonical(item): item for item in args[0]}.values())

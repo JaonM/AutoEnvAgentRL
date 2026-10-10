@@ -17,3 +17,17 @@ def test_negative_probe_does_not_replace_negative_scenario():
     source['scenarios'] = [source['scenarios'][0]]
     with pytest.raises(ContractError, match='negative scenario required'):
         compile_contract(source)
+
+
+def test_scenario_field_error_identifies_case_and_missing_and_extra_fields():
+    source = simple()
+    scenario = source['scenarios'][0]
+    missing = next(iter(scenario['answer']))
+    scenario['answer'].pop(missing)
+    scenario['answer']['unexpected_field'] = {'literal': 0}
+    with pytest.raises(ContractError) as error:
+        compile_contract(source)
+    message = str(error.value)
+    assert f"scenario={scenario['id']}" in message
+    assert f"missing=['{missing}']" in message
+    assert "unexpected=['unexpected_field']" in message
