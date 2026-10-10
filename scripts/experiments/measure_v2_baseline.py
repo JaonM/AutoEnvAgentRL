@@ -7,6 +7,7 @@ import json
 import subprocess
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parents[2]
@@ -48,15 +49,37 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--connection', type=Path, required=True)
+    parser.add_argument('--requests', type=Path, help='Predeclared held-out request manifest; never select cases after execution')
     parser.add_argument('--sample-timeout', type=int, default=1200)
     parser.add_argument('--base-image', default='docker.m.daocloud.io/library/python:3.14-slim')
     args = parser.parse_args()
+    manifest = None
+    requests = REQUESTS
+    if args.requests:
+        manifest = json.loads(args.requests.read_text())
+        if (manifest.get('version') != 1 or manifest.get('scope') != 'held_out_blind_pilot_not_population_yield'
+                or not isinstance(manifest.get('samples'), list) or len(manifest['samples']) != 20):
+            raise ValueError('A predeclared 20-sample blind manifest is required')
+        rows = manifest['samples']
+        categories = {'direct': 'direct_response', 'simple': 'simple_agentic',
+                      'ordinary': 'multi_step_agentic', 'complex': 'multi_step_agentic'}
+        if (Counter(row.get('stratum') for row in rows) != {'direct': 4, 'simple': 4, 'ordinary': 4, 'complex': 8}
+                or any(row.get('category') != categories.get(row.get('stratum')) for row in rows)
+                or any(not isinstance(row.get(key), str) or not row[key].strip()
+                       for row in rows for key in ('title', 'goal', 'novelty'))
+                or len({row['goal'] for row in rows}) != 20):
+            raise ValueError('Blind requests must be distinct, nonempty and preserve 4:4:4:8 categories')
+        requests = [(row['category'], row['stratum'], row['title'], row['goal']) for row in rows]
+        if any(row[3] in {old[3] for old in REQUESTS} for row in requests):
+            raise ValueError('Blind requests cannot reuse baseline goals')
     root = args.output.resolve()
     root.mkdir(parents=True, exist_ok=False)
     frozen = implementation_identity()
     started = time.monotonic()
     samples = []
-    for index, (category, stratum, title, goal) in enumerate(REQUESTS, 1):
+    if manifest is not None:
+        write(root / 'held_out_manifest.json', manifest)
+    for index, (category, stratum, title, goal) in enumerate(requests, 1):
         request = {'category': category, 'goal': goal, 'title': title,
                    'requirements': '用当前 V2 明确支持的能力实现上述完整业务，不可降低规模或省略义务。任务说明面向执行者，只披露公开信息；私有事实通过 User Simulator 获取。生成有效成功和失败轨迹及变更数据反例。'}
         path = root / f'request-{index:02d}.json'
@@ -64,13 +87,17 @@ def main():
         samples.append({'id': index, 'category': category, 'stratum': stratum, 'title': title,
                         'request': str(path), 'request_sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
                         'status': 'pending', 'qualified': False})
-    protocol = {'version': 1, 'scope': 'fixed_requests_fresh_authoring_not_population_yield',
+    protocol = {'version': 1, 'scope': manifest['scope'] if manifest else 'fixed_requests_fresh_authoring_not_population_yield',
                 'planned': 20, 'mix': {'direct': 4, 'simple': 4, 'ordinary': 4, 'complex': 8},
                 'model': 'gpt-6.1-sol', 'concurrency': 1, 'repairs': 1, 'docker': True,
                 'sample_timeout_seconds': args.sample_timeout, 'platform_identity': frozen,
                 'bridge_timeout_seconds': json.loads(args.connection.read_text()).get('timeout_seconds', 180),
                 'base_image': args.base_image, 'runner_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                 'policy': 'No platform changes within round. All failures remain in planned denominator. No terminal sample reruns.'}
+    if manifest is not None:
+        protocol.update(held_out_manifest_sha256=hashlib.sha256((root / 'held_out_manifest.json').read_bytes()).hexdigest(),
+                        blindness='Requests predeclared before fresh generation; no test-driven platform updates or terminal reruns.',
+                        limitation='Operator-designed holdout pilot, not independent double-blind sampling or population proof.')
     write(root / 'protocol.json', protocol)
     def publish():
         terminal = sum(s['status'] in {'passed', 'failed'} for s in samples)
@@ -87,6 +114,8 @@ def main():
               'wall_seconds': time.monotonic() - started, 'samples': samples})
     publish()
     for sample in samples:
+        if manifest is not None and hashlib.sha256((root / 'held_out_manifest.json').read_bytes()).hexdigest() != protocol['held_out_manifest_sha256']:
+            raise RuntimeError('Predeclared blind manifest changed')
         if implementation_identity() != frozen:
             write(root / 'blocked.json', {'reason': 'platform_changed', 'sample': sample['id']})
             raise RuntimeError('Platform changed; do not mix this round with another version')
