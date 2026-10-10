@@ -1,0 +1,29 @@
+{
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "fa1b461c0aa8453d97a8d69d2b354c6d",
+    "input_identity": "771dc0355801520e3969763071106dc73e07564da0b77a18b7b1d548d100b968",
+    "usage": {
+      "input_tokens": 11642,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 88,
+      "reasoning_output_tokens": 25
+    },
+    "seconds": 9.766038082947489
+  },
+  "input": {
+    "scene": {
+      "situation": "等待收货",
+      "desired_outcome": "知道配送进度和预计到达时间",
+      "known_information": {},
+      "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+    },
+    "opening": "我的快递现在到哪儿了，预计什么时候能送到？"
+  },
+  "response": {
+    "passed": true,
+    "reason": "开场自然、简洁，完整表达了查询配送进度和预计到达时间的需求，符合等待收货的场景，未添加事实、额外义务或平台执行步骤。"
+  }
+}

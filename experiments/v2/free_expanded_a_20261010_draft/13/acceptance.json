@@ -1,0 +1,47 @@
+{
+  "kind": "chain",
+  "params": {},
+  "observations": {
+    "applications": [
+      "V3_H13_A1"
+    ],
+    "nodes": [
+      "V3_H13_N0",
+      "V3_H13_N1",
+      "V3_H13_N2",
+      "V3_H13_N3",
+      "V3_H13_N4",
+      "V3_H13_N5",
+      "V3_H13_N6",
+      "V3_H13_N7",
+      "V3_H13_N8",
+      "V3_H13_N9"
+    ],
+    "people": [
+      "V3_H13_U2"
+    ]
+  },
+  "mutation": {
+    "table": "nodes",
+    "key": "V3_H13_N4",
+    "column": "duration",
+    "value": 40
+  },
+  "answer_obligations": [
+    {
+      "role": "path",
+      "source": "user_request",
+      "text": "帮我查一下这份申请的进度，审批环节按什么顺序走，目前累计耗时多久，最终负责人是谁？"
+    },
+    {
+      "role": "total_duration",
+      "source": "user_request",
+      "text": "帮我查一下这份申请的进度，审批环节按什么顺序走，目前累计耗时多久，最终负责人是谁？"
+    },
+    {
+      "role": "owner_name",
+      "source": "user_request",
+      "text": "帮我查一下这份申请的进度，审批环节按什么顺序走，目前累计耗时多久，最终负责人是谁？"
+    }
+  ]
+}

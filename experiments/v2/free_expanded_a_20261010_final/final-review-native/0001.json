@@ -1,0 +1,399 @@
+{
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "e8ed9a8327914c519e860edb542eb3ff",
+    "input_identity": "d666c2c5299a991f9b1d040d8004ca7d8041fb17b3315b602b1d7e64ccee618e",
+    "usage": {
+      "input_tokens": 14989,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 843,
+      "reasoning_output_tokens": 33
+    },
+    "seconds": 27.118618083011825
+  },
+  "input": {
+    "samples": [
+      {
+        "id": 1,
+        "scene": {
+          "situation": "办公室设备开销",
+          "desired_outcome": "估算一天耗电与电费",
+          "known_information": {
+            "watts": [
+              1000,
+              95
+            ],
+            "hours": [
+              4,
+              6
+            ],
+            "price": 0.82
+          },
+          "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+        },
+        "user_request": "想估算一下办公室设备一天的耗电量和电费：一台1000瓦的设备每天用4小时，另一台95瓦的设备每天用6小时，电价每度0.82元，一天大概耗多少电、花多少钱？",
+        "public_business_policy": "1度电=1千瓦时，按实际功率乘时长计算，费用不另加服务费。"
+      },
+      {
+        "id": 2,
+        "scene": {
+          "situation": "购物结算",
+          "desired_outcome": "知道实付金额和节省金额",
+          "known_information": {
+            "item_prices": [
+              181,
+              131
+            ],
+            "membership": "会员",
+            "member_order_discount": {
+              "minimum_order_total": 200,
+              "rate": 0.9
+            },
+            "coupon": {
+              "amount": 15,
+              "minimum_order_total": 0
+            }
+          },
+          "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+        },
+        "user_request": "我是会员，买了两件商品，价格分别是181元和131元。会员满200元打9折，还有一张无门槛15元优惠券，最后实付多少，一共省了多少钱？",
+        "public_business_policy": "会员订单原价满200元打九折，然后减15元券；不满200元只减券。实付最低0元。"
+      },
+      {
+        "id": 3,
+        "scene": {
+          "situation": "会议室使用结束",
+          "desired_outcome": "知道使用时长和费用",
+          "known_information": {
+            "start_time": "10:25",
+            "end_time": "13:28",
+            "hourly_rate": 24
+          },
+          "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+        },
+        "user_request": "会议室用完了，从10:25用到13:28，每小时24元，一共用了多久，多少钱？",
+        "public_business_policy": "会议室每小时24元，按实际分钟比例计费，不向上取整。"
+      },
+      {
+        "id": 4,
+        "scene": {
+          "situation": "筹备课程挑选讲师",
+          "desired_outcome": "得到前三名候选与总报价",
+          "known_information": {
+            "candidates": [
+              {
+                "id": "A",
+                "name": "甲",
+                "rating": 4.8,
+                "price": 645
+              },
+              {
+                "id": "B",
+                "name": "乙",
+                "rating": 4.9,
+                "price": 890
+              },
+              {
+                "id": "C",
+                "name": "丙",
+                "rating": 4.9,
+                "price": 835
+              },
+              {
+                "id": "D",
+                "name": "丁",
+                "rating": 4.8,
+                "price": 780
+              }
+            ]
+          },
+          "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+        },
+        "user_request": "我在筹备课程，想挑选讲师。甲报价645，评分4.8；乙报价890，评分4.9；丙报价835，评分4.9；丁报价780，评分4.8。帮我选出前三名候选，并算一下总报价。",
+        "public_business_policy": "优先评分高，再选报价低；两者相同按姓名升序。姓名排序约定甲、乙、丙、丁对应编号A、B、C、D，最后以编号升序打破平局。"
+      },
+      {
+        "id": 5,
+        "scene": {
+          "situation": "送修后想安排取回",
+          "desired_outcome": "知道维修进度和预计完成日期",
+          "known_information": {},
+          "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+        },
+        "user_request": "我想安排取回送修的东西，想问下现在维修到哪一步了，预计什么时候能修好？",
+        "public_business_policy": "按用户提供的维修单编号精确查询当前状态和预计完成日期；标题和姓名不作为身份依据。"
+      },
+      {
+        "id": 6,
+        "scene": {
+          "situation": "准备使用会员卡",
+          "desired_outcome": "知道积分和可用状态",
+          "known_information": {},
+          "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+        },
+        "user_request": "我准备用会员卡，想查一下还有多少积分，卡现在能不能用。",
+        "public_business_policy": "按会员卡编号查询points与enabled，0积分和false启用状态都是有效结果。"
+      },
+      {
+        "id": 7,
+        "scene": {
+          "situation": "准备买鞋",
+          "desired_outcome": "知道合脚且有货的款号",
+          "known_information": {},
+          "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+        },
+        "user_request": "我准备买双鞋，想知道哪些款号适合我的脚，而且有货。",
+        "public_business_policy": "只选size等于用户尺码、active=true、stock>0的鞋款；款名不影响资格，给出全部款号。"
+      },
+      {
+        "id": 8,
+        "scene": {
+          "situation": "准备整理报销",
+          "desired_outcome": "知道未报销票据编号与总额",
+          "known_information": {},
+          "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+        },
+        "user_request": "我准备整理报销，想知道还有哪些票据没报销，票据编号和总额是多少。",
+        "public_business_policy": "按用户employee_id筛选paid=false且cancelled=false的票据；返回完整编号集合与金额合计。"
+      },
+      {
+        "id": 9,
+        "scene": {
+          "situation": "等待收货",
+          "desired_outcome": "知道配送进度和预计到达时间",
+          "known_information": {},
+          "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+        },
+        "user_request": "我还在等收货，想问下现在送到哪儿了，预计什么时候能到？",
+        "public_business_policy": "按订单编号读取其shipment_id，再查询该实际配送记录的status和eta；同名收件人不能串单。\n业务关联：orders.shipment_id 指向 shipments.id，必须关联已有记录。"
+      },
+      {
+        "id": 10,
+        "scene": {
+          "situation": "设备故障准备送修",
+          "desired_outcome": "知道是否保修以及检修费",
+          "known_information": {},
+          "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+        },
+        "user_request": "我的设备坏了，准备送修，想问一下还能保修吗？检修费是多少？",
+        "public_business_policy": "设备age_days<=实际关联型号warranty_days时保修且费用0，否则费用是该型号inspection_fee。先查设备，再查其model_id对应型号。\n业务关联：devices.model_id 指向 models.id，必须关联已有记录。"
+      },
+      {
+        "id": 11,
+        "scene": {
+          "situation": "准备部门人员统计",
+          "desired_outcome": "得到在职员工编号和人数",
+          "known_information": {},
+          "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+        },
+        "user_request": "我在准备部门人员统计，想查一下在职员工的编号和总人数。",
+        "public_business_policy": "先按用户部门名称确定真实部门编号，再查该部门active=true的全部员工；员工姓名不影响身份。\n业务关联：employees.department_id 指向 departments.id，必须关联已有记录。"
+      },
+      {
+        "id": 12,
+        "scene": {
+          "situation": "临时无法参加健身课程",
+          "desired_outcome": "取消当前预约",
+          "known_information": {},
+          "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+        },
+        "user_request": "我临时有事，没法参加健身课了，想取消当前预约。",
+        "public_business_policy": "读取预约及其slot_id实际时段。授权后同时把预约active和对应时段reserved设为false，保留其他记录；拒绝时不修改，提交后查询核验。\n业务关联：reservations.slot_id 指向 slots.id，必须关联已有记录。"
+      },
+      {
+        "id": 13,
+        "scene": {
+          "situation": "追踪申请进度",
+          "desired_outcome": "知道审批环节顺序、累计耗时和最终负责人",
+          "known_information": {},
+          "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+        },
+        "user_request": "帮我查一下这份申请的进度，审批环节按什么顺序走，目前累计耗时多久，最终负责人是谁？",
+        "public_business_policy": "申请关联entry_id；审批环节按实际next_id连接，null表示结束。最后环节owner_id关联人员。累计耗时为链上duration之和。\n业务关联：applications.entry_id 指向 nodes.id，必须关联已有记录。\n业务关联：nodes.next_id 指向 nodes.id，允许未关联的空值。\n业务关联：nodes.owner_id 指向 people.id，必须关联已有记录。"
+      },
+      {
+        "id": 14,
+        "scene": {
+          "situation": "核算项目报销",
+          "desired_outcome": "统计已批准且超过4900元的全部报销笔数和总额",
+          "known_information": {},
+          "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+        },
+        "user_request": "帮我统计一下项目报销中已批准且超过4900元的全部报销笔数和总额。",
+        "public_business_policy": "先按项目名称查project_id，再筛选该项目status=approved且amount>4900的报销。账本有6000条，每次查询最多64条。\n业务关联：expenses.project_id 指向 projects.id，必须关联已有记录。"
+      },
+      {
+        "id": 15,
+        "scene": {
+          "situation": "盘点可调配库存",
+          "desired_outcome": "统计至少可拿出6件的SKU数量和合计件数",
+          "known_information": {},
+          "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+        },
+        "user_request": "帮我统计一下可调配库存中，至少能拿出6件的SKU有多少个，合计多少件。",
+        "public_business_policy": "先按仓库名称查真实warehouse_id，筛选该仓库stock>=6的全部库存。账本8000条，每次最多128条，0库存不是缺失。\n业务关联：inventory.warehouse_id 指向 warehouses.id，必须关联已有记录。"
+      },
+      {
+        "id": 16,
+        "scene": {
+          "situation": "当前设备不合适",
+          "desired_outcome": "选择兼容且有空余容量的设备替换，并调整维护安排",
+          "known_information": {},
+          "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+        },
+        "user_request": "当前设备不太合适，想换成兼容且有空余容量的设备，并相应调整维护安排。",
+        "public_business_policy": "分配关联旧设备；候选需class_code匹配且capacity>0，完整展示。用户选新设备后读取新旧维护记录。一次更换同时旧capacity+1、新capacity-1、分配device_id改为新设备、旧维护scheduled=false、新维护scheduled=true；容量非负且总量守恒。提交后核验，拒绝不写入。\n业务关联：assignments.device_id 指向 equipment.id，必须关联已有记录。\n业务关联：maintenance.device_id 指向 equipment.id，必须关联已有记录。"
+      },
+      {
+        "id": 17,
+        "scene": {
+          "situation": "目标仓库存不足",
+          "desired_outcome": "从源仓调拨12件指定SKU并更新调拨单",
+          "known_information": {},
+          "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+        },
+        "user_request": "目标仓库存不足，帮我从源仓调拨12件指定SKU，并更新调拨单。",
+        "public_business_policy": "调拨单关联source_id和target_id。两个库存记录必须同SKU，源stock>=12。授权后一笔事务源stock-12、目标stock+12、调拨单completed=true；库存守恒且非负，失败或拒绝不写入，提交后核验。\n业务关联：transfers.source_id 指向 stocks.id，必须关联已有记录。\n业务关联：transfers.target_id 指向 stocks.id，必须关联已有记录。"
+      },
+      {
+        "id": 18,
+        "scene": {
+          "situation": "活动尚未开放但想参加",
+          "desired_outcome": "开放后有名额时登记参加",
+          "known_information": {},
+          "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+        },
+        "user_request": "我想参加这个活动，等开放后有名额的话，帮我登记一下。",
+        "public_business_policy": "活动关联登记记录。虚拟elapsed_seconds>=15才开放，开放前查询不显示可登记名额；每动作0秒，等待显式推进。开放后重新查，用户授权后原子activity.remaining-1、registration.enrolled=true；名额不足或拒绝不写入。基准2026-10-10T00:00:00+00:00。\n业务关联：activities.registration_id 指向 registrations.id，必须关联已有记录。\n业务关联：registrations.activity_id 指向 activities.id，必须关联已有记录。"
+      },
+      {
+        "id": 19,
+        "scene": {
+          "situation": "寻找合适活动场地",
+          "desired_outcome": "提交预订前可能更改区域偏好，按最终确定的区域挑选并预订场地",
+          "known_information": {},
+          "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+        },
+        "user_request": "我想找个合适的活动场地，提交预订前可能还会调整区域偏好，请按我最终确定的区域挑选并预订。",
+        "public_business_policy": "区域更正使旧选择与授权失效。每区域六个候选，完整展示available=true的菜单。用户最终选中场地并授权后，一笔事务venue.available=false、booking.venue_id改为该场地。只影响最终场地，拒绝不写入，提交后核验。\n业务关联：bookings.venue_id 指向 venues.id，允许未关联的空值。"
+      },
+      {
+        "id": 20,
+        "scene": {
+          "situation": "准备使用两个服务",
+          "desired_outcome": "依次开启两个服务，如果第二个额度不足保留第一个",
+          "known_information": {},
+          "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+        },
+        "user_request": "我准备使用两个服务，想依次开启。如果第二个额度不足，就保留第一个。",
+        "public_business_policy": "用户quota初始3，服务顺序F1再F2。每服务耗1单位，每笔分别原子更新用户quota-1、对应feature.active=true、对应既有log.completed=true。first和second是不同授权阶段，不可复用授权。第一笔后、第二笔前查询当前quota和功能状态。额度不足第二笔不写入但第一笔保留。\n业务关联：features.account_id 指向 accounts.id，必须关联已有记录。\n业务关联：features.log_id 指向 logs.id，必须关联已有记录。\n业务关联：logs.feature_id 指向 features.id，必须关联已有记录。"
+      }
+    ]
+  },
+  "response": {
+    "checks": [
+      {
+        "id": 1,
+        "passed": true,
+        "reason": "自然清晰，保留设备功率、使用时长、电价及耗电和费用估算目标，未给出计算答案。"
+      },
+      {
+        "id": 2,
+        "passed": true,
+        "reason": "保留商品价格和会员身份，满200元条件正确附于九折优惠，无门槛条件正确附于15元券。"
+      },
+      {
+        "id": 3,
+        "passed": true,
+        "reason": "保留起止时间和每小时费率，询问时长及费用，未加入取整等不符政策的条件。"
+      },
+      {
+        "id": 4,
+        "passed": true,
+        "reason": "完整保留候选人的报价和评分，要求前三名及总报价，可由代理应用政策排序。"
+      },
+      {
+        "id": 5,
+        "passed": true,
+        "reason": "符合送修后安排取回的场景，询问维修进度和预计完成时间；缺少维修单编号属于合理信息缺口。"
+      },
+      {
+        "id": 6,
+        "passed": true,
+        "reason": "自然表达查询积分和会员卡可用状态的需求，未误排除零积分或停用结果。"
+      },
+      {
+        "id": 7,
+        "passed": true,
+        "reason": "保留合脚、有货及款号查询目标，尺码缺失可后续补充，未添加不符资格规则的条件。"
+      },
+      {
+        "id": 8,
+        "passed": true,
+        "reason": "符合整理报销的场景，保留未报销票据编号及总额的目标，员工身份可后续补充。"
+      },
+      {
+        "id": 9,
+        "passed": true,
+        "reason": "自然询问配送进度和预计到达时间，订单编号缺失合理，未引入按同名收件人查询等错误要求。"
+      },
+      {
+        "id": 10,
+        "passed": true,
+        "reason": "忠实表达设备故障送修时查询保修资格和检修费的需求，未添加政策外条件。"
+      },
+      {
+        "id": 11,
+        "passed": true,
+        "reason": "保留部门统计场景及在职员工编号和人数的目标，具体部门可后续澄清。"
+      },
+      {
+        "id": 12,
+        "passed": true,
+        "reason": "自然表达因临时有事取消当前健身课预约的意图，未主动编写平台修改步骤。"
+      },
+      {
+        "id": 13,
+        "passed": true,
+        "reason": "保留审批环节顺序、累计耗时和最终负责人三个查询目标，申请标识缺失属于合理信息缺口。"
+      },
+      {
+        "id": 14,
+        "passed": true,
+        "reason": "准确保留已批准、金额超过4900元、统计全部笔数及总额的要求，未夹带查询技术细节。"
+      },
+      {
+        "id": 15,
+        "passed": true,
+        "reason": "保留至少6件的库存门槛及SKU数量、合计件数的目标，仓库信息可后续补充。"
+      },
+      {
+        "id": 16,
+        "passed": true,
+        "reason": "准确表达选择兼容且有空余容量的替换设备并调整维护安排，未把可用容量改成性能要求。"
+      },
+      {
+        "id": 17,
+        "passed": true,
+        "reason": "保留源仓向目标仓调拨12件指定SKU及更新调拨单的目标，未添加事务执行细节。"
+      },
+      {
+        "id": 18,
+        "passed": true,
+        "reason": "符合活动尚未开放的场景，明确开放后有名额才登记，未加入虚拟时间等技术 artifacts。"
+      },
+      {
+        "id": 19,
+        "passed": true,
+        "reason": "保留提交前可能调整区域偏好及按最终区域挑选并预订场地的目标，未要求沿用失效选择或授权。"
+      },
+      {
+        "id": 20,
+        "passed": true,
+        "reason": "自然表达依次开启两个服务及第二个额度不足时保留第一个的要求，未要求复用授权或加入技术步骤。"
+      }
+    ]
+  }
+}

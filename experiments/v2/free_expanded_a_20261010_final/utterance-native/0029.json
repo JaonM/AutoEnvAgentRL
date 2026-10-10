@@ -1,0 +1,25 @@
+{
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "8f92dd0ecf344b889c0f90e96d21e5e4",
+    "input_identity": "39de28b23ddea504c96d53f848ed2a461913ec3e4defffe2d8a38d11e7fc5432",
+    "usage": {
+      "input_tokens": 11593,
+      "cached_input_tokens": 9216,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 42,
+      "reasoning_output_tokens": 0
+    },
+    "seconds": 8.69189312501112
+  },
+  "input": {
+    "situation": "盘点可调配库存",
+    "desired_outcome": "统计至少可拿出6件的SKU数量和合计件数",
+    "known_information": {},
+    "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+  },
+  "response": {
+    "user_request": "帮我统计一下可调配库存中，至少能拿出6件的SKU有多少个，合计多少件。"
+  }
+}

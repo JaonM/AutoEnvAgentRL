@@ -1,0 +1,27 @@
+{
+  "kind": "ticket",
+  "params": {},
+  "observations": {
+    "tickets": [
+      "V3_H05_T07"
+    ]
+  },
+  "mutation": {
+    "table": "tickets",
+    "key": "V3_H05_T07",
+    "column": "status",
+    "value": "completed"
+  },
+  "answer_obligations": [
+    {
+      "role": "status",
+      "source": "user_request",
+      "text": "我想安排取回送修的东西，想问下现在维修到哪一步了，预计什么时候能修好？"
+    },
+    {
+      "role": "eta",
+      "source": "user_request",
+      "text": "我想安排取回送修的东西，想问下现在维修到哪一步了，预计什么时候能修好？"
+    }
+  ]
+}

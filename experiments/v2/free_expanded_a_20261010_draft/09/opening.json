@@ -1,0 +1,37 @@
+{
+  "response": {
+    "user_request": "我还在等收货，想问下现在送到哪儿了，预计什么时候能到？"
+  },
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "96283089fd0844f4ae9f944f5a6f1a29",
+    "input_identity": "4e78840ff063ce94eea94ee54eae056d3f69fdc9d05fdac4a1c0465eac641153",
+    "usage": {
+      "input_tokens": 11586,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 37,
+      "reasoning_output_tokens": 0
+    },
+    "seconds": 7.489782916032709
+  },
+  "review": {
+    "passed": true,
+    "reason": "开场自然简洁，符合等待收货的情境，保留了查询配送进度和预计到达时间的全部诉求，未编造事实或添加执行步骤。"
+  },
+  "review_provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "44954f024a3842318012ec53622b8447",
+    "input_identity": "4552cce5176301fe6da245b821af848e6f0f08286d92286bf2bad5c9be543f5b",
+    "usage": {
+      "input_tokens": 11651,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 82,
+      "reasoning_output_tokens": 22
+    },
+    "seconds": 8.028955125017092
+  }
+}

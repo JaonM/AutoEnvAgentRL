@@ -1,0 +1,14 @@
+{
+  "kind": "enroll",
+  "params": {},
+  "observations": {
+    "activities": [
+      "V4_H18_EV1"
+    ],
+    "registrations": [
+      "V4_H18_RG1"
+    ]
+  },
+  "mutation": null,
+  "answer_obligations": []
+}

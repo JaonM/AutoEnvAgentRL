@@ -1,0 +1,37 @@
+{
+  "response": {
+    "user_request": "帮我查一下这份申请的进度，审批环节按什么顺序走，目前累计耗时多久，最终负责人是谁？"
+  },
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "0afa9a70882347b8ab6dc5a860b2accd",
+    "input_identity": "14ea52aa60f46e6dd39709189f0de975edffb2aa7dba71648e889ba70f2de361",
+    "usage": {
+      "input_tokens": 11590,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 44,
+      "reasoning_output_tokens": 0
+    },
+    "seconds": 7.670693208987359
+  },
+  "review": {
+    "passed": true,
+    "reason": "开场自然、简洁，保留了审批环节顺序、累计耗时和最终负责人三个期望结果，符合追踪申请进度的场景；未虚构信息、增加义务或引入实现术语。未指明具体申请属于合理的澄清缺口。"
+  },
+  "review_provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "d9fb7a6c329e4c0fb6d18a77339e84ed",
+    "input_identity": "a6249919fa602db6cd3a53b78047a169ff1ca22e9728053196eee6a2e54bc52e",
+    "usage": {
+      "input_tokens": 11662,
+      "cached_input_tokens": 9216,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 114,
+      "reasoning_output_tokens": 28
+    },
+    "seconds": 9.195093290996738
+  }
+}

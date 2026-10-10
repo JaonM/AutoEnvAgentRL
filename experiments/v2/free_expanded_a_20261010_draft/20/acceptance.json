@@ -1,0 +1,19 @@
+{
+  "kind": "sequential",
+  "params": {},
+  "observations": {
+    "accounts": [
+      "V3_H20_AC1"
+    ],
+    "features": [
+      "F1",
+      "F2"
+    ],
+    "logs": [
+      "V3_H20_LG1",
+      "V3_H20_LG2"
+    ]
+  },
+  "mutation": null,
+  "answer_obligations": []
+}

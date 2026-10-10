@@ -1,0 +1,24 @@
+{
+  "kind": "shoes",
+  "params": {},
+  "observations": {
+    "shoes": [
+      "V4_H07_S1",
+      "V4_H07_S3",
+      "V4_H07_S9"
+    ]
+  },
+  "mutation": {
+    "table": "shoes",
+    "key": "V4_H07_S3",
+    "column": "stock",
+    "value": 0
+  },
+  "answer_obligations": [
+    {
+      "role": "ids",
+      "source": "user_request",
+      "text": "我准备买鞋，想知道哪些款号合脚而且有货。"
+    }
+  ]
+}

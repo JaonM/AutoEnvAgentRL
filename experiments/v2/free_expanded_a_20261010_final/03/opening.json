@@ -1,0 +1,37 @@
+{
+  "response": {
+    "user_request": "会议室用完了，从10:25用到13:28，每小时24元，一共用了多久，多少钱？"
+  },
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "2fcf2cdfb2e04402bc5ee76251fb7e94",
+    "input_identity": "74322de7340cbb8c134f9e28a82cb80c29e1aa529c27f7df1e82faa27e29a8eb",
+    "usage": {
+      "input_tokens": 11604,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 40,
+      "reasoning_output_tokens": 0
+    },
+    "seconds": 6.952007209009025
+  },
+  "review": {
+    "passed": true,
+    "reason": "开场自然简洁，保留了会议室使用结束的情境、10:25至13:28的时间和每小时24元的价格，明确询问使用时长与费用，没有引入额外事实、义务或执行步骤。"
+  },
+  "review_provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "82fdcf4db349499a8e35c82b9cdfe177",
+    "input_identity": "d05137171dd10d27e6663fc0a8d3006b85d5d08e95a3ed0b72aa690e738e011f",
+    "usage": {
+      "input_tokens": 11670,
+      "cached_input_tokens": 9216,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 99,
+      "reasoning_output_tokens": 24
+    },
+    "seconds": 9.32086270902073
+  }
+}

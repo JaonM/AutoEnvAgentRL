@@ -1,0 +1,22 @@
+{
+  "kind": "replace",
+  "params": {},
+  "observations": {
+    "assignments": [
+      "V3_H16_AS1"
+    ],
+    "equipment": [
+      "V3_H16_DV0",
+      "V3_H16_DV1",
+      "V3_H16_DV2",
+      "V3_H16_DV3",
+      "V3_H16_DV4"
+    ],
+    "maintenance": [
+      "V3_H16_MN0",
+      "V3_H16_MN3"
+    ]
+  },
+  "mutation": null,
+  "answer_obligations": []
+}

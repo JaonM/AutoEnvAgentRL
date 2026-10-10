@@ -1,0 +1,96 @@
+{
+  "provenance": "held-out synthetic instance; frozen before contract generation",
+  "policy": "分配关联旧设备；候选需class_code匹配且capacity>0，完整展示。用户选新设备后读取新旧维护记录。一次更换同时旧capacity+1、新capacity-1、分配device_id改为新设备、旧维护scheduled=false、新维护scheduled=true；容量非负且总量守恒。提交后核验，拒绝不写入。\n业务关联：assignments.device_id 指向 equipment.id，必须关联已有记录。\n业务关联：maintenance.device_id 指向 equipment.id，必须关联已有记录。",
+  "tables": [
+    {
+      "id": "assignments",
+      "rows": [
+        {
+          "id": "V3_H16_AS1",
+          "device_id": "V3_H16_DV0",
+          "class_code": "C"
+        }
+      ]
+    },
+    {
+      "id": "equipment",
+      "rows": [
+        {
+          "id": "V3_H16_DV0",
+          "class_code": "C",
+          "capacity": 9
+        },
+        {
+          "id": "V3_H16_DV1",
+          "class_code": "C",
+          "capacity": 10
+        },
+        {
+          "id": "V3_H16_DV2",
+          "class_code": "C",
+          "capacity": 11
+        },
+        {
+          "id": "V3_H16_DV3",
+          "class_code": "C",
+          "capacity": 12
+        },
+        {
+          "id": "V3_H16_DV4",
+          "class_code": "C",
+          "capacity": 13
+        }
+      ]
+    },
+    {
+      "id": "maintenance",
+      "rows": [
+        {
+          "id": "V3_H16_MN0",
+          "device_id": "V3_H16_DV0",
+          "scheduled": true
+        },
+        {
+          "id": "V3_H16_MN1",
+          "device_id": "V3_H16_DV1",
+          "scheduled": false
+        },
+        {
+          "id": "V3_H16_MN2",
+          "device_id": "V3_H16_DV2",
+          "scheduled": false
+        },
+        {
+          "id": "V3_H16_MN3",
+          "device_id": "V3_H16_DV3",
+          "scheduled": false
+        },
+        {
+          "id": "V3_H16_MN4",
+          "device_id": "V3_H16_DV4",
+          "scheduled": false
+        }
+      ]
+    }
+  ],
+  "relations": [
+    {
+      "id": "assignments_device_id",
+      "source_table": "assignments",
+      "source_column": "device_id",
+      "target_table": "equipment",
+      "target_column": "id",
+      "nullable": false,
+      "policy_text": "业务关联：assignments.device_id 指向 equipment.id，必须关联已有记录。"
+    },
+    {
+      "id": "maintenance_device_id",
+      "source_table": "maintenance",
+      "source_column": "device_id",
+      "target_table": "equipment",
+      "target_column": "id",
+      "nullable": false,
+      "policy_text": "业务关联：maintenance.device_id 指向 equipment.id，必须关联已有记录。"
+    }
+  ]
+}

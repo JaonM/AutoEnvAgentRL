@@ -1,0 +1,6 @@
+{
+  "provenance": "held-out synthetic instance; frozen before contract generation",
+  "policy": "会议室每小时24元，按实际分钟比例计费，不向上取整。",
+  "tables": [],
+  "relations": []
+}

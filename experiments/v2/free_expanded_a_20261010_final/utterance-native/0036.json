@@ -1,0 +1,29 @@
+{
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "15f929db965a4f119777a5d27551bccb",
+    "input_identity": "a86536c07e8ca6f7ba9f0488d9a47b2e294de5171b2acab44cb75ba81b0688c7",
+    "usage": {
+      "input_tokens": 11653,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 77,
+      "reasoning_output_tokens": 22
+    },
+    "seconds": 11.485667625034694
+  },
+  "input": {
+    "scene": {
+      "situation": "活动尚未开放但想参加",
+      "desired_outcome": "开放后有名额时登记参加",
+      "known_information": {},
+      "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+    },
+    "opening": "我想参加这个活动，等开放后有名额的话，帮我登记一下。"
+  },
+  "response": {
+    "passed": true,
+    "reason": "开场自然简洁，保留了活动开放后有名额时登记参加的期望，未添加事实、额外义务或平台执行步骤。"
+  }
+}

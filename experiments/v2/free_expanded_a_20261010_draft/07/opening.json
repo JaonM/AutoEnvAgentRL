@@ -1,0 +1,37 @@
+{
+  "response": {
+    "user_request": "我准备买双鞋，想知道哪些款号适合我的脚，而且有货。"
+  },
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "efc27eec50254d429f4b260986b2e65e",
+    "input_identity": "e7061a933af9f968426c1556100b7a2ccb37cf202c930d9defec4394b13ba343",
+    "usage": {
+      "input_tokens": 11588,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 34,
+      "reasoning_output_tokens": 0
+    },
+    "seconds": 6.869982292002533
+  },
+  "review": {
+    "passed": true,
+    "reason": "开场自然、简洁，保留了准备买鞋的情境及了解合脚且有货款号的目标，没有虚构信息、增加义务或平台执行步骤；脚型等信息可后续澄清。"
+  },
+  "review_provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "d0395eb49b1144679dc785f619dd34ab",
+    "input_identity": "266981c4ca168c44e9669420f0426153f39564fcf14d896e861a0a28ae66b0e1",
+    "usage": {
+      "input_tokens": 11650,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 91,
+      "reasoning_output_tokens": 20
+    },
+    "seconds": 8.57841279200511
+  }
+}

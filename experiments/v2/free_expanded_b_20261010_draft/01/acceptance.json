@@ -1,0 +1,28 @@
+{
+  "kind": "energy",
+  "params": {
+    "watts": [
+      1040,
+      100
+    ],
+    "hours": [
+      4,
+      6
+    ],
+    "price": 0.82
+  },
+  "observations": {},
+  "mutation": null,
+  "answer_obligations": [
+    {
+      "role": "energy_kwh",
+      "source": "user_request",
+      "text": "办公室有两台设备，功率分别是1040瓦和100瓦，每天分别开4小时和6小时，电价是每度0.82元。帮我估算一下一天耗多少电、电费多少钱。"
+    },
+    {
+      "role": "cost",
+      "source": "user_request",
+      "text": "办公室有两台设备，功率分别是1040瓦和100瓦，每天分别开4小时和6小时，电价是每度0.82元。帮我估算一下一天耗多少电、电费多少钱。"
+    }
+  ]
+}

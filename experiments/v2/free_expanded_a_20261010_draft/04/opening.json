@@ -1,0 +1,37 @@
+{
+  "response": {
+    "user_request": "我在筹备课程，想挑选讲师。甲报价645，评分4.8；乙报价890，评分4.9；丙报价835，评分4.9；丁报价780，评分4.8。帮我选出前三名候选，并算一下总报价。"
+  },
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "8d0264332a0648d9bafcb6a5cf41789c",
+    "input_identity": "dccf3d3c64dbf7b0dc9e36117102d6b5bedbcba9c2a775409db991600d653c9f",
+    "usage": {
+      "input_tokens": 11672,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 78,
+      "reasoning_output_tokens": 0
+    },
+    "seconds": 7.381805707991589
+  },
+  "review": {
+    "passed": true,
+    "reason": "开场保留了所有讲师的报价和评分，并明确要求前三名候选及总报价，符合筹备课程挑选讲师的场景。表达自然简洁，无新增事实、额外义务或实施术语；未明确排序规则属于允许的合理澄清缺口。"
+  },
+  "review_provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "ee44c1d877e44de7ac0b0787b4bf2c3b",
+    "input_identity": "b66adcc255357045f6e3d0af02d9852c13b530c9345baada61dec51e81a02789",
+    "usage": {
+      "input_tokens": 12558,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 84,
+      "reasoning_output_tokens": 0
+    },
+    "seconds": 8.512569207989145
+  }
+}

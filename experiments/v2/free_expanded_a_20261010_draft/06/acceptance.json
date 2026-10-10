@@ -1,0 +1,27 @@
+{
+  "kind": "member",
+  "params": {},
+  "observations": {
+    "members": [
+      "V3_H06_M03"
+    ]
+  },
+  "mutation": {
+    "table": "members",
+    "key": "V3_H06_M03",
+    "column": "points",
+    "value": 25
+  },
+  "answer_obligations": [
+    {
+      "role": "points",
+      "source": "user_request",
+      "text": "我准备用会员卡，想查一下还有多少积分，卡现在能不能用。"
+    },
+    {
+      "role": "enabled",
+      "source": "user_request",
+      "text": "我准备用会员卡，想查一下还有多少积分，卡现在能不能用。"
+    }
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "f6422b7cbf304ce786229bb02f21f84d",
+    "input_identity": "fcf7d81d28d695a36a0bb4f42f35f8b9adee6aa8a04bb449b695036daf3f0d3d",
+    "usage": {
+      "input_tokens": 11670,
+      "cached_input_tokens": 9216,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 106,
+      "reasoning_output_tokens": 19
+    },
+    "seconds": 8.990205666981637
+  },
+  "input": {
+    "situation": "筹备课程挑选讲师",
+    "desired_outcome": "得到前三名候选与总报价",
+    "known_information": {
+      "candidates": [
+        {
+          "id": "A",
+          "name": "甲",
+          "rating": 4.8,
+          "price": 652
+        },
+        {
+          "id": "B",
+          "name": "乙",
+          "rating": 4.9,
+          "price": 904
+        },
+        {
+          "id": "C",
+          "name": "丙",
+          "rating": 4.9,
+          "price": 856
+        },
+        {
+          "id": "D",
+          "name": "丁",
+          "rating": 4.8,
+          "price": 808
+        }
+      ]
+    },
+    "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+  },
+  "response": {
+    "user_request": "我在筹备课程，需要挑选讲师。目前有四位候选：甲报价652，评分4.8；乙报价904，评分4.9；丙报价856，评分4.9；丁报价808，评分4.8。帮我选出前三名候选，并算一下他们的总报价。"
+  }
+}

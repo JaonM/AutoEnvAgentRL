@@ -1,0 +1,33 @@
+{
+  "situation": "筹备课程挑选讲师",
+  "desired_outcome": "得到前三名候选与总报价",
+  "known_information": {
+    "candidates": [
+      {
+        "id": "A",
+        "name": "甲",
+        "rating": 4.8,
+        "price": 652
+      },
+      {
+        "id": "B",
+        "name": "乙",
+        "rating": 4.9,
+        "price": 904
+      },
+      {
+        "id": "C",
+        "name": "丙",
+        "rating": 4.9,
+        "price": 856
+      },
+      {
+        "id": "D",
+        "name": "丁",
+        "rating": 4.8,
+        "price": 808
+      }
+    ]
+  },
+  "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+}

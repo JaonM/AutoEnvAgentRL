@@ -1,0 +1,122 @@
+{
+  "provenance": "held-out synthetic instance; frozen before contract generation",
+  "policy": "申请关联entry_id；审批环节按实际next_id连接，null表示结束。最后环节owner_id关联人员。累计耗时为链上duration之和。\n业务关联：applications.entry_id 指向 nodes.id，必须关联已有记录。\n业务关联：nodes.next_id 指向 nodes.id，允许未关联的空值。\n业务关联：nodes.owner_id 指向 people.id，必须关联已有记录。",
+  "tables": [
+    {
+      "id": "applications",
+      "rows": [
+        {
+          "id": "V3_H13_A1",
+          "entry_id": "V3_H13_N0"
+        }
+      ]
+    },
+    {
+      "id": "nodes",
+      "rows": [
+        {
+          "id": "V3_H13_N0",
+          "next_id": "V3_H13_N1",
+          "duration": 12,
+          "owner_id": "V3_H13_U1"
+        },
+        {
+          "id": "V3_H13_N1",
+          "next_id": "V3_H13_N2",
+          "duration": 13,
+          "owner_id": "V3_H13_U1"
+        },
+        {
+          "id": "V3_H13_N2",
+          "next_id": "V3_H13_N3",
+          "duration": 14,
+          "owner_id": "V3_H13_U1"
+        },
+        {
+          "id": "V3_H13_N3",
+          "next_id": "V3_H13_N4",
+          "duration": 15,
+          "owner_id": "V3_H13_U1"
+        },
+        {
+          "id": "V3_H13_N4",
+          "next_id": "V3_H13_N5",
+          "duration": 16,
+          "owner_id": "V3_H13_U1"
+        },
+        {
+          "id": "V3_H13_N5",
+          "next_id": "V3_H13_N6",
+          "duration": 17,
+          "owner_id": "V3_H13_U1"
+        },
+        {
+          "id": "V3_H13_N6",
+          "next_id": "V3_H13_N7",
+          "duration": 18,
+          "owner_id": "V3_H13_U1"
+        },
+        {
+          "id": "V3_H13_N7",
+          "next_id": "V3_H13_N8",
+          "duration": 19,
+          "owner_id": "V3_H13_U1"
+        },
+        {
+          "id": "V3_H13_N8",
+          "next_id": "V3_H13_N9",
+          "duration": 20,
+          "owner_id": "V3_H13_U1"
+        },
+        {
+          "id": "V3_H13_N9",
+          "next_id": null,
+          "duration": 21,
+          "owner_id": "V3_H13_U2"
+        }
+      ]
+    },
+    {
+      "id": "people",
+      "rows": [
+        {
+          "id": "V3_H13_U1",
+          "name": "陈宁"
+        },
+        {
+          "id": "V3_H13_U2",
+          "name": "周青"
+        }
+      ]
+    }
+  ],
+  "relations": [
+    {
+      "id": "applications_entry_id",
+      "source_table": "applications",
+      "source_column": "entry_id",
+      "target_table": "nodes",
+      "target_column": "id",
+      "nullable": false,
+      "policy_text": "业务关联：applications.entry_id 指向 nodes.id，必须关联已有记录。"
+    },
+    {
+      "id": "nodes_next_id",
+      "source_table": "nodes",
+      "source_column": "next_id",
+      "target_table": "nodes",
+      "target_column": "id",
+      "nullable": true,
+      "policy_text": "业务关联：nodes.next_id 指向 nodes.id，允许未关联的空值。"
+    },
+    {
+      "id": "nodes_owner_id",
+      "source_table": "nodes",
+      "source_column": "owner_id",
+      "target_table": "people",
+      "target_column": "id",
+      "nullable": false,
+      "policy_text": "业务关联：nodes.owner_id 指向 people.id，必须关联已有记录。"
+    }
+  ]
+}

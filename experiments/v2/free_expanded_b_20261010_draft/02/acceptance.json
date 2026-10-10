@@ -1,0 +1,26 @@
+{
+  "kind": "discount",
+  "params": {
+    "prices": [
+      198,
+      142
+    ],
+    "threshold": 200,
+    "rate": 0.9,
+    "coupon": 15
+  },
+  "observations": {},
+  "mutation": null,
+  "answer_obligations": [
+    {
+      "role": "payable",
+      "source": "user_request",
+      "text": "我是会员，买了两件商品，分别是198元和142元，会员订单满200元打9折，还有一张无门槛15元优惠券。最后实付多少，一共省了多少？"
+    },
+    {
+      "role": "savings",
+      "source": "user_request",
+      "text": "我是会员，买了两件商品，分别是198元和142元，会员订单满200元打9折，还有一张无门槛15元优惠券。最后实付多少，一共省了多少？"
+    }
+  ]
+}

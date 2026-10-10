@@ -1,0 +1,47 @@
+{
+  "provenance": "held-out synthetic instance; frozen before contract generation",
+  "policy": "按订单编号读取其shipment_id，再查询该实际配送记录的status和eta；同名收件人不能串单。\n业务关联：orders.shipment_id 指向 shipments.id，必须关联已有记录。",
+  "tables": [
+    {
+      "id": "orders",
+      "rows": [
+        {
+          "id": "V3_H09_O1",
+          "shipment_id": "V3_H09_P2",
+          "recipient": "小林"
+        },
+        {
+          "id": "V3_H09_O2",
+          "shipment_id": "V3_H09_P1",
+          "recipient": "小林"
+        }
+      ]
+    },
+    {
+      "id": "shipments",
+      "rows": [
+        {
+          "id": "V3_H09_P1",
+          "status": "pending",
+          "eta": "2026-10-16"
+        },
+        {
+          "id": "V3_H09_P2",
+          "status": "out_for_delivery",
+          "eta": "2026-10-11"
+        }
+      ]
+    }
+  ],
+  "relations": [
+    {
+      "id": "orders_shipment_id",
+      "source_table": "orders",
+      "source_column": "shipment_id",
+      "target_table": "shipments",
+      "target_column": "id",
+      "nullable": false,
+      "policy_text": "业务关联：orders.shipment_id 指向 shipments.id，必须关联已有记录。"
+    }
+  ]
+}

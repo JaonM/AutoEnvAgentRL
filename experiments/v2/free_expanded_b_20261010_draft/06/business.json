@@ -1,0 +1,42 @@
+{
+  "provenance": "held-out synthetic instance; frozen before contract generation",
+  "policy": "按会员卡编号查询points与enabled，0积分和false启用状态都是有效结果。",
+  "tables": [
+    {
+      "id": "members",
+      "rows": [
+        {
+          "id": "V4_H06_M01",
+          "points": 21,
+          "enabled": true
+        },
+        {
+          "id": "V4_H06_M02",
+          "points": 31,
+          "enabled": true
+        },
+        {
+          "id": "V4_H06_M03",
+          "points": 11,
+          "enabled": false
+        },
+        {
+          "id": "V4_H06_M04",
+          "points": 51,
+          "enabled": true
+        },
+        {
+          "id": "V4_H06_M05",
+          "points": 61,
+          "enabled": true
+        },
+        {
+          "id": "V4_H06_M06",
+          "points": 71,
+          "enabled": true
+        }
+      ]
+    }
+  ],
+  "relations": []
+}

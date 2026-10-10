@@ -1,0 +1,95 @@
+{
+  "provenance": "held-out synthetic instance; frozen before contract generation",
+  "policy": "先按用户部门名称确定真实部门编号，再查该部门active=true的全部员工；员工姓名不影响身份。\n业务关联：employees.department_id 指向 departments.id，必须关联已有记录。",
+  "tables": [
+    {
+      "id": "departments",
+      "rows": [
+        {
+          "id": "V4_H11_DEP1",
+          "name": "研发"
+        },
+        {
+          "id": "V4_H11_DEP2",
+          "name": "运营"
+        }
+      ]
+    },
+    {
+      "id": "employees",
+      "rows": [
+        {
+          "id": "V4_H11_E1",
+          "department_id": "V4_H11_DEP1",
+          "active": true,
+          "name": "小林"
+        },
+        {
+          "id": "V4_H11_E2",
+          "department_id": "V4_H11_DEP2",
+          "active": true,
+          "name": "小林"
+        },
+        {
+          "id": "V4_H11_E3",
+          "department_id": "V4_H11_DEP1",
+          "active": true,
+          "name": "小林"
+        },
+        {
+          "id": "V4_H11_E4",
+          "department_id": "V4_H11_DEP2",
+          "active": true,
+          "name": "小林"
+        },
+        {
+          "id": "V4_H11_E5",
+          "department_id": "V4_H11_DEP1",
+          "active": false,
+          "name": "小林"
+        },
+        {
+          "id": "V4_H11_E6",
+          "department_id": "V4_H11_DEP2",
+          "active": true,
+          "name": "小林"
+        },
+        {
+          "id": "V4_H11_E7",
+          "department_id": "V4_H11_DEP1",
+          "active": true,
+          "name": "小林"
+        },
+        {
+          "id": "V4_H11_E8",
+          "department_id": "V4_H11_DEP2",
+          "active": true,
+          "name": "小林"
+        },
+        {
+          "id": "V4_H11_E9",
+          "department_id": "V4_H11_DEP1",
+          "active": true,
+          "name": "小林"
+        },
+        {
+          "id": "V4_H11_E10",
+          "department_id": "V4_H11_DEP2",
+          "active": true,
+          "name": "小林"
+        }
+      ]
+    }
+  ],
+  "relations": [
+    {
+      "id": "employees_department_id",
+      "source_table": "employees",
+      "source_column": "department_id",
+      "target_table": "departments",
+      "target_column": "id",
+      "nullable": false,
+      "policy_text": "业务关联：employees.department_id 指向 departments.id，必须关联已有记录。"
+    }
+  ]
+}

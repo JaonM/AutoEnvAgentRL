@@ -1,0 +1,45 @@
+{
+  "kind": "ranking",
+  "params": {
+    "candidates": [
+      {
+        "id": "A",
+        "name": "甲",
+        "rating": 4.8,
+        "price": 652
+      },
+      {
+        "id": "B",
+        "name": "乙",
+        "rating": 4.9,
+        "price": 904
+      },
+      {
+        "id": "C",
+        "name": "丙",
+        "rating": 4.9,
+        "price": 856
+      },
+      {
+        "id": "D",
+        "name": "丁",
+        "rating": 4.8,
+        "price": 808
+      }
+    ]
+  },
+  "observations": {},
+  "mutation": null,
+  "answer_obligations": [
+    {
+      "role": "names",
+      "source": "user_request",
+      "text": "我在筹备课程，需要挑选讲师。目前有四位候选：甲报价652，评分4.8；乙报价904，评分4.9；丙报价856，评分4.9；丁报价808，评分4.8。帮我选出前三名候选，并算一下他们的总报价。"
+    },
+    {
+      "role": "total_price",
+      "source": "user_request",
+      "text": "我在筹备课程，需要挑选讲师。目前有四位候选：甲报价652，评分4.8；乙报价904，评分4.9；丙报价856，评分4.9；丁报价808，评分4.8。帮我选出前三名候选，并算一下他们的总报价。"
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "kind": "expenses",
+  "params": {},
+  "observations": {},
+  "mutation": {
+    "table": "expenses",
+    "key": "V3_H14_X4903",
+    "column": "status",
+    "value": "pending"
+  },
+  "answer_obligations": [
+    {
+      "role": "count",
+      "source": "user_request",
+      "text": "帮我统计一下项目报销中已批准且超过4900元的全部报销笔数和总额。"
+    },
+    {
+      "role": "total_amount",
+      "source": "user_request",
+      "text": "帮我统计一下项目报销中已批准且超过4900元的全部报销笔数和总额。"
+    }
+  ]
+}
