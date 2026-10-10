@@ -78,4 +78,34 @@ def state_before_event(world, trace_index):
                 if event['result'].get('committed') is not True:
                     raise ValueError('Successful transaction lacks commit evidence')
                 for delta in event['result']['changes']:
-                    update(delta['table'], delta['key'], delta['set'])
+                    if delta.get('create'):
+                        table = delta['table']
+                        if any(canonical_key[keys[table]] == delta['key'] for canonical_key in state[table]):
+                            raise ValueError('Runtime creation duplicates an existing record')
+                        state[table].append({keys[table]: copy.deepcopy(delta['key']), **copy.deepcopy(delta['set'])})
+                    else:
+                        update(delta['table'], delta['key'], delta['set'])
+
+
+def authorized_call_context(world, call_id, authorization_index):
+    """Bind one actual committed call to its exact earlier approval and state."""
+    calls = [(index, event) for index, event in enumerate(world.trace)
+             if event.get('kind') == 'tool' and event.get('id') == call_id]
+    if len(calls) != 1 or calls[0][1].get('status') != 'ok':
+        raise ValueError('Authorized context requires one successful call')
+    call_index, call = calls[0]
+    decisions = [d for d in authorization_decisions(world) if d['trace_index'] == authorization_index]
+    if len(decisions) != 1 or not decisions[0]['approved'] or authorization_index >= call_index:
+        raise ValueError('Authorized context requires an earlier actual approval')
+    decision = decisions[0]
+    tool = world.tools[call['tool']]
+    if (tool['kind'] != 'transaction' or tool['authorization'] != decision['stage']
+            or decision['proposal'] != {'tool': call['tool'], 'arguments': call['arguments']}):
+        raise ValueError('Committed call differs from exact authorized proposal')
+    if any(event.get('kind') == 'revoke' and event.get('stage') == decision['stage']
+           for event in world.trace[authorization_index + 1:call_index]):
+        raise ValueError('Authorization was revoked before the call')
+    return {'call_time': event_time(call), 'authorization_time': decision['time'],
+            'authorized_state': state_before_event(world, authorization_index),
+            'precommit_state': state_before_event(world, call_index),
+            'proposal': copy.deepcopy(decision['proposal'])}

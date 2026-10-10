@@ -293,15 +293,20 @@ def compile_contract(source):
             fields(tool, common + ['operations'], optional)
             require(isinstance(tool['operations'], list) and 1 <= len(tool['operations']) <= 64, 'transaction operation limit')
             for operation in tool['operations']:
-                fields(operation, ['table', 'key', 'set'])
+                fields(operation, ['table', 'key', 'set'], ['create'])
+                require(type(operation.get('create', False)) is bool, 'create operation flag must be boolean')
                 require(operation['table'] in tables, 'unknown write table')
                 require(isinstance(operation['set'], dict) and operation['set'], 'empty write')
                 require(set(operation['set']) <= set(tables[operation['table']]['schema']['properties'])
                         and tables[operation['table']]['primary_key'] not in operation['set'], 'invalid write columns')
+                if operation.get('create'):
+                    required = set(tables[operation['table']]['schema']['required']) - {tables[operation['table']]['primary_key']}
+                    require(required <= set(operation['set']), 'create operation must supply every required non-key column')
                 validate_expr(operation['key'], roots={'args', 'data', 'user', 'user_state', 'time'})
                 validate_rule_links(operation['key'], rules)
                 for expression in operation['set'].values():
-                    validate_expr(expression, roots={'args', 'row', 'data', 'user', 'user_state', 'time'})
+                    validate_expr(expression, roots={'args', 'data', 'user', 'user_state', 'time'}
+                                  if operation.get('create') else {'args', 'row', 'data', 'user', 'user_state', 'time'})
                     validate_rule_links(expression, rules, row_scope=True)
         else:
             raise ContractError('unsupported tool kind; add a reviewed platform capability')

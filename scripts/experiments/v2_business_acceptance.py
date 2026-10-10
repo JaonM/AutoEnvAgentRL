@@ -6,8 +6,55 @@ from env_factory_v2.expressions import canonical
 from v2_natural_semantics import schema, fill_projections, wrong_projection, rename_observations
 
 
-def business_truth(spec, business, user, *, user_request, **kwargs):
+def runtime_business_truth(spec, business, user, *, user_request, world,
+                           time_call_id, authorization_index=None):
+    """Explicit runtime-to-oracle adapter; missing evidence never gets defaults."""
+    import copy
+    from v2_natural_oracle import expand
+    from v2_runtime_evidence import observed_time, authorized_call_context
+    initial = expand(business)
+    require(all(table in world.initial and canonical(sorted(world.initial[table], key=canonical))
+                == canonical(sorted(rows, key=canonical))
+                for table, rows in initial.items()), 'runtime initial business rows differ from independent fixture')
+    options = {'now': observed_time(world, time_call_id)}
+    private = copy.deepcopy(user)
+    evidence = {'time_call_id': time_call_id, 'virtual_seconds': options['now']}
+    if spec['kind'] == 'procurement_large':
+        require(authorization_index is not None, 'large purchase requires actual authorization evidence')
+        context = authorized_call_context(world, time_call_id, authorization_index)
+        snapshot = context['authorized_state']
+        require('quotes' in snapshot and len(snapshot.get('budgets', [])) == 1,
+                'authorized procurement snapshot lacks its quotes or budget')
+        options['authorized_snapshot'] = {'quotes': snapshot['quotes'],
+            'budget_cents': snapshot['budgets'][0]['remaining_cents']}
+        private['facts']['proposal_time'] = context['authorization_time']
+        evidence['authorization_index'] = authorization_index
+    truth = business_truth(spec, business, private, user_request=user_request, **options)
+    # Executable distractors may have their own tables. Preserve them in complete
+    # state comparison, rather than discarding unauthorized side effects there.
+    for table, rows in world.initial.items():
+        if table not in initial:
+            truth['initial'][table] = copy.deepcopy(rows)
+            truth['final_state'][table] = copy.deepcopy(rows)
+    truth['runtime_evidence'] = evidence
+    return truth
+
+
+TIMED_READ_TABLES = {'procurement_quote': {'quotes'}, 'procurement_combination': {'quotes'},
+                    'access_query': {'nodes', 'grants', 'memberships'},
+                    'access_compare': {'nodes', 'grants', 'memberships'}}
+
+
+def business_truth(spec, business, user, *, user_request, world=None, **kwargs):
     """Use predeclared public answer obligations without relaxing state checks."""
+    if world is not None and spec['kind'] in TIMED_READ_TABLES:
+        calls = [event for event in world.trace if event.get('kind') == 'tool'
+                 and event.get('status') == 'ok' and world.tools[event['tool']]['kind'] == 'query'
+                 and world.tools[event['tool']]['table'] in TIMED_READ_TABLES[spec['kind']]]
+        require(calls, 'timed business truth requires an actual relevant query')
+        require(not kwargs, 'timed read variants require their own executed runtime evidence')
+        return runtime_business_truth(spec, business, user, user_request=user_request,
+                                      world=world, time_call_id=calls[-1]['id'])
     from audit_v2_natural import canonical_truth
     truth = canonical_truth(spec, business, user, **kwargs)
     if 'answer_obligations' not in spec:
@@ -38,6 +85,14 @@ def state_counterexamples(compiled, scenario, truth, judge):
     for table, rows in truth['final_state'].items():
         initial = {row['id']: row for row in truth['initial'][table]}
         for row in rows:
+            if row['id'] not in initial:
+                world = execute_reference(compiled, scenario)
+                answer = reference_answer(world, scenario)
+                world.data[table] = [item for item in world.data[table] if item['id'] != row['id']]
+                score = grade(world, answer, judge=judge)
+                checks.append({'id': f"missing_created_record_{table}_{row['id']}",
+                               'passed': not score['success'], 'outcome': score})
+                continue
             before = initial[row['id']]
             for column, value in row.items():
                 if canonical(value) == canonical(before[column]):
@@ -57,7 +112,13 @@ def accept(compiled, row, business, user, spec, agent):
     # no old audit scores, model mappings or traces are reused in a new round.
     from audit_v2_natural import canonical_truth, value_checks, audited_observations, reference_answer
     from measure_v2_natural import execute_reference, sorted_data
-    truth = business_truth(spec, business, user, user_request=row['raw_request'])
+    initial_world = None
+    if spec['kind'] in TIMED_READ_TABLES:
+        first = next((scenario for scenario in compiled['source']['scenarios']
+            if scenario['expect_success'] and not scenario.get('mutations') and not scenario.get('user_overrides')), None)
+        require(first is not None, 'timed acceptance requires an executed positive scenario')
+        initial_world = execute_reference(compiled, first)
+    truth = business_truth(spec, business, user, user_request=row['raw_request'], world=initial_world)
     aliases = {r['id']: r['name'] for r in spec['params'].get('candidates', [])}
     source, previews = review_contract(compiled['source'])
     refusal_evidence = []
@@ -102,6 +163,8 @@ def accept(compiled, row, business, user, spec, agent):
             continue
         try:
             world = execute_reference(compiled, scenario)
+            if spec['kind'] in TIMED_READ_TABLES:
+                truth = business_truth(spec, business, user, user_request=row['raw_request'], world=world)
             answer = reference_answer(world, scenario)
             current = value_checks(answer, truth, entries, aliases) + audited_observations(world, truth, spec['kind'], business)
             current.append({'id': 'full_business_state', 'passed': canonical(sorted_data(world.data)) == canonical(sorted_data(truth['final_state']))})
