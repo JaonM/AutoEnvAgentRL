@@ -42,11 +42,11 @@ def library_cases():
         ('library_renewal_eligibility', dict(loan_id='L1', reader_id='R1'), dict(current_day=10),
          '本实验业务日固定为第10日，到期日当天未逾期；只处理本人有效借阅。次数上限来自借阅实际关联书目。', ['books', 'loans', 'holds']),
         ('library_queue', dict(hold_id='H3', reader_id='R1'), {},
-         '只查询本人有效预约；无本人有效预约时排位与前人数均为空。', ['holds']),
+         '按用户指定的本人预约编号查询；允许读取同书目其他读者有效预约以计算排位。无指定本人有效预约时排位与前人数均为空。', ['holds']),
         ('library_partial_renewal', dict(loan_ids=['L1', 'L2'], reader_id='R1', approve_first=True, approve_second=True), dict(current_day=10),
          '本实验业务日固定为第10日；仅本人有效借阅可续借，到期当天未逾期，次数未达实际关联书目上限且无其他读者有效预约。新到期日为原到期日加该书renewal_days，次数加1。对续不了的书报告同书目有效预约人数，保持预约不变。', ['books', 'loans', 'holds']),
         ('library_pickup_change', dict(hold_id='H1', reader_id='R1', copy_choice='K2', approve_change=True), {},
-         '仅本人有效预约可变更，原副本必须由该预约占用；新副本必须同书目且未占用，不允许选择原副本。展示所有符合条件的取书点。', ['holds', 'copies', 'sites']),
+         '仅本人有效预约可变更，原副本必须由该预约占用；未分配副本的预约不能使用本变更业务首次分配副本。新副本必须同书目且未占用，不允许选择原副本。展示所有符合条件的取书点。', ['holds', 'copies', 'sites']),
     ]
     result = []
     for blueprint, (kind, facts, params, extra, tables) in zip(blueprints, details):
@@ -98,7 +98,11 @@ def procurement_cases():
         policy = blueprint['public_business_policy']
         if quotes:
             policy += ('starts_at和ends_at使用虚拟累计秒数，交期使用业务日编号；'
+                       '报价起止边界均包含，使用统一虚拟时间接口判断，过期报价不参与任何组合。'
                        'box_cents为每箱价格（分），stock为可供件数。所有报价均对应本次同一商品。')
+        if blueprint['stratum'] == 'complex':
+            policy += ('用户有权操作预算P1；订单包含id、cost_cents及lines，每条明细包含quote_id与quantity件数；'
+                       '订单编号由用户指定，已有同编号订单时不得重复提交。')
         if kind == 'procurement_partial':
             policy += '提交前展示每笔具体报价编号、箱数和费用，授权只适用于展示的该笔方案。订单编号由用户选择。'
         if kind == 'procurement_large':
@@ -145,15 +149,20 @@ def subscription_cases():
     result = []
     for blueprint, (kind, facts, params, tables) in zip(blueprints, details):
         policy = blueprint['public_business_policy'] + ('账期包含起始日、不包含结束日；生效日当天使用新套餐。'
-            '所有金额以分表示，分段费用精确累加后统一向下取整为整数分；退款也向下取整。仅处理本人订阅。')
+            '所有金额以分表示，分段费用精确累加后统一向下取整为整数分；退款也向下取整。仅处理本人订阅。'
+            'cancelled为真的变更不生效，同一订阅同一生效日不得存在多条未撤销变更。')
         if kind == 'subscription_current':
             policy += '本实验业务日固定为第20日；报告指定变更的生效日及当前套餐。'
         if kind == 'subscription_bill':
-            policy += '列出各计费区间的起止日和套餐，以及总费用。'
+            policy += ('本次核对账期从第0日开始，到第30日结束（不含第30日）。'
+                       '列出各计费区间的起止日和套餐，以及总费用。')
         if kind == 'subscription_correction':
-            policy += '授权绑定最终日期和对应总费用；更新既有变更及账单，不新增重复账单。'
+            policy += ('授权绑定最终日期和对应总费用；更新既有变更及账单，不新增重复账单。'
+                       '本业务仅调整指定账期[start,end)内的生效日期，跨出该账期应拒绝并保持状态不变。')
         if kind == 'subscription_cancel':
-            policy += '无可退余额时不取消、不新增退款记录。逐项报告可退金额及实际退款结果。'
+            policy += ('退款为实付乘未用天数除账期天数，向下取整到分，并以实付减历史退款余额为上限。'
+                       '首次退款允许创建记录；每笔记录包含id、subscription_id、amount_cents，累计与记录合计必须一致。'
+                       '无可退余额时不取消、不新增退款记录。逐项报告可退金额及实际退款结果。')
         result.append({'id': blueprint['id'], 'business_family': blueprint['business_family'],
             'stratum': blueprint['stratum'], 'title': blueprint['title'], 'raw_request': blueprint['draft_user_request'],
             'business': {'provenance': 'operator-authored synthetic heldout preparation; not frozen',
@@ -198,9 +207,11 @@ def access_cases():
         if kind in ('access_query', 'access_compare'):
             policy += '报告有效允许与拒绝的记录编号，并说明无有效允许或显式拒绝的原因。'
         if kind == 'access_temporary':
-            policy += '两个对象分别检查，允许只授权可行对象；报告当前和截止时点的实际编辑权限。'
+            policy += ('本实验请求者是有权维护所指定记录的项目管理员；任何有效拒绝（包含文件级拒绝）均阻止临时授权。'
+                       '两个对象分别检查，允许只授权可行对象；报告当前和截止时点的实际编辑权限。')
         if kind == 'access_revoke':
-            policy += '授权仅针对明确确认的记录编号；报告原允许来源、剩余来源和最终编辑权限。'
+            policy += ('本实验请求者是有权撤销所指定个人或共享组授权记录的项目管理员，撤销共享组授权会影响该组全部成员，须在确认前告知。'
+                       '授权仅针对明确确认的记录编号；报告原允许来源、剩余来源和最终编辑权限。')
         result.append({'id': blueprint['id'], 'business_family': blueprint['business_family'],
             'stratum': blueprint['stratum'], 'title': blueprint['title'], 'raw_request': blueprint['draft_user_request'],
             'business': {'provenance': 'operator-authored synthetic heldout preparation; not frozen',
@@ -212,7 +223,35 @@ def access_cases():
 
 
 def cases():
-    return library_cases() + procurement_cases() + subscription_cases() + access_cases()
+    from env_factory_v2.business_graph import validate_relations
+    rows = library_cases() + procurement_cases() + subscription_cases() + access_cases()
+    # Explicit operator declarations, never inferred from similar field names.
+    declarations = [
+        ('loans', 'book_id', 'books', False), ('holds', 'book_id', 'books', False),
+        ('holds', 'copy_id', 'copies', True), ('copies', 'reserved_by', 'holds', True),
+        ('copies', 'site_id', 'sites', False), ('copies', 'book_id', 'books', False),
+        ('changes', 'subscription_id', 'subscriptions', False),
+        ('changes', 'plan_id', 'plans', False), ('subscriptions', 'base_plan_id', 'plans', False),
+        ('bills', 'subscription_id', 'subscriptions', False),
+        ('refunds', 'subscription_id', 'subscriptions', False),
+        ('nodes', 'parent_id', 'nodes', True), ('grants', 'node_id', 'nodes', False),
+    ]
+    for row in rows:
+        business = row['business']
+        tables = {table['id'] for table in business['tables']}
+        relations = []
+        for source, column, target, nullable in declarations:
+            if source not in tables or target not in tables:
+                continue
+            meaning = f'业务关联：{source}.{column} 指向 {target}.id' + (
+                '，允许未关联的空值。' if nullable else '，必须关联已有记录。')
+            business['policy'] += '\n' + meaning
+            relations.append(dict(id=source + '_' + column, source_table=source,
+                source_column=column, target_table=target, target_column='id', nullable=nullable,
+                policy_text=meaning))
+        business['relations'] = relations
+        validate_relations(business)
+    return rows
 
 
 def export_preparation(destination):

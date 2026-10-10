@@ -100,6 +100,7 @@ def test_five_subscription_cases_use_shared_acceptance_and_refusal_truth():
     from prepare_v2_cross_business import subscription_cases
     from v2_natural_oracle import expected
     rows = subscription_cases()
+    assert '第0日' in rows[2]['business']['policy'] and '第30日' in rows[2]['business']['policy']
     assert [r['id'] for r in rows] == [11, 12, 13, 14, 15]
     truths = [expected(r['acceptance'], r['business'], r['user']) for r in rows]
     assert truths[0]['answer'] == {'refund_cents': 5700}
@@ -114,3 +115,14 @@ def test_five_subscription_cases_use_shared_acceptance_and_refusal_truth():
     for row in rows:
         refused = expected(row['acceptance'], row['business'], row['user'], refuse=True)
         assert refused['final_state'] == refused['initial']
+
+
+@pytest.mark.parametrize('day', [30, 35])
+def test_corrected_date_outside_selected_period_cannot_change_bill(day):
+    from prepare_v2_cross_business import subscription_cases
+    from v2_natural_oracle import expected
+    row = subscription_cases()[3]
+    row['user']['facts'].update(final_day=day, authorized_day=day)
+    truth = expected(row['acceptance'], row['business'], row['user'])
+    assert not truth['answer']['committed']
+    assert truth['final_state'] == truth['initial']

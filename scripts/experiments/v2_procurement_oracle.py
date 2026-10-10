@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import math
 
 
 def integer(value, minimum=0):
@@ -114,7 +115,8 @@ def expected(spec, data, facts, *, now=None, refuse=False, authorized_snapshot=N
         return {'answer': answer, 'initial': initial, 'final_state': final, 'observations': {}}
     if now is None:
         raise ValueError('Timed procurement truth requires observed virtual time')
-    integer(now)
+    if type(now) not in (int, float) or not math.isfinite(now) or now < 0:
+        raise ValueError('Procurement truth requires finite nonnegative virtual time')
     if kind == 'procurement_quote':
         selected = [q for q in data['quotes'] if q['id'] == facts['quote_id']]
         if len(selected) != 1:

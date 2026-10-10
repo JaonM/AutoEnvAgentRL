@@ -57,8 +57,9 @@ def install(driver, namespace, documents, *, database='neo4j'):
             'sha256': hashlib.sha256(canonical(business).encode()).hexdigest(),
             'relations': validate_relations(business),
             'tables': [{'id': identity + ':' + table['id'], 'name': table['id'],
-                'columns': list(table.get('generator', {}).get('columns', {})) or
-                    list(table.get('rows', [{}])[0]), 'provenance': business['provenance']}
+                'columns': list(table.get('schema', {}).get('properties', {})) or
+                    list(table.get('generator', {}).get('columns', {})) or
+                    list((table.get('rows') or [{}])[0]), 'provenance': business['provenance']}
                 for table in business['tables']], 'provenance': business['provenance']})
     with driver.session(database=database) as session:
         existing = session.run('MATCH (d:EFV2BusinessDocument {namespace:$ns}) RETURN d.document_id AS id,d.sha256 AS sha', ns=namespace)

@@ -44,10 +44,18 @@ def change(data, mutation):
     candidates[0][mutation['column']] = copy.deepcopy(mutation['value'])
 
 
-def expected(spec, business, user, *, mutation=None, refuse=False):
+def expected(spec, business, user, *, mutation=None, refuse=False, now=None,
+             authorized_snapshot=None):
     data = expand(business)
     if mutation:
         change(data, mutation)
+    if spec['kind'].startswith('procurement_'):
+        from v2_procurement_oracle import expected as procurement_expected
+        return procurement_expected(spec, data, user['facts'], now=now, refuse=refuse,
+                                    authorized_snapshot=authorized_snapshot)
+    if spec['kind'].startswith('access_'):
+        from v2_access_oracle import expected as access_expected
+        return access_expected(spec, data, user['facts'], now=now, refuse=refuse)
     if spec['kind'].startswith('subscription_'):
         from v2_subscription_oracle import expected as subscription_expected
         return subscription_expected(spec, data, user['facts'], refuse=refuse)

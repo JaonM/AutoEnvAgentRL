@@ -1,5 +1,6 @@
 """Independent inherited-access truth. Expiry is exclusive, not wall-clock time."""
 import copy
+import math
 
 
 def indexed(rows):
@@ -62,7 +63,8 @@ def temporary_grant(data, grant_id, *, node_id, user_id, permission, now, expire
     """Update only an existing designated record, subject to effective denies."""
     if type(approved) is not bool:
         raise ValueError('Grant authorization must be boolean')
-    if type(now) is not int or type(expires_at) is not int or expires_at <= now:
+    if (type(now) not in (int, float) or type(expires_at) not in (int, float)
+            or not math.isfinite(now) or not math.isfinite(expires_at) or now < 0 or expires_at <= now):
         raise ValueError('Temporary access requires a future virtual expiry')
     final = copy.deepcopy(data)
     grants = indexed(final['grants'])
@@ -88,7 +90,7 @@ def expected(spec, data, facts, *, now=None, refuse=False):
                      and not any(r['permission'] == p and r['effect'] == 'deny' for r in rows)
                   for p in ('read', 'write')}
         return {'answer': answer, 'initial': initial, 'final_state': final, 'observations': {}}
-    if type(now) is not int or now < 0:
+    if type(now) not in (int, float) or not math.isfinite(now) or now < 0:
         raise ValueError('Access truth requires observed virtual time')
     if kind == 'access_query':
         answer = permissions(data, facts['node_id'], facts['user_id'], 'read', now)

@@ -98,7 +98,7 @@ def change_date(data, subscription_id, reader_id, *, change_id, plan_id, day,
     subscription = unique(final['subscriptions'], subscription_id)
     change = unique(final['changes'], change_id)
     invoice = unique(final['bills'], bill_id)
-    if (not approved or authorized_day != day or subscription['reader_id'] != reader_id
+    if (not approved or not start <= day < end or authorized_day != day or subscription['reader_id'] != reader_id
             or not subscription['active'] or change['subscription_id'] != subscription_id
             or invoice['subscription_id'] != subscription_id):
         return False, final
