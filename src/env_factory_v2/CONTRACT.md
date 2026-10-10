@@ -83,7 +83,10 @@ Transaction tools use operations=[{table,key:EXPR,set:{column:EXPR}}]. Their
 rule_ids are preconditions over the immutable state BEFORE this transaction,
 including the original target row. They are never reevaluated against partially
 written state. Write expressions evaluate in order on one isolated candidate
-state, then validate schemas, FKs and invariants before atomic commit. key
+state, then validate schemas, FKs and invariants before atomic commit. Invariants
+see the candidate post-commit user state, including consumption of this exact
+authorization. Data and consent consumption commit together; failed validation
+leaves both unchanged. Preconditions still see the live pre-commit user state. key
 identifies exactly one existing row; primary-key writes, insertion and deletion
 are currently unsupported.
 

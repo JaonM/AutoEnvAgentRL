@@ -107,6 +107,7 @@ def _challenge(compiled, original_request, agent):
         {'original_request': original_request, 'contract': review_source,
          'compiled_public': compiled['public'], 'fixture_evidence': fixture_evidence,
          'grammar': (__import__('pathlib').Path(__file__).parent / 'CONTRACT.md').read_text()}, CHALLENGE_SCHEMA)
+    value, completion = _complete_review(compiled, original_request, agent, value)
     require(2 <= len(value['cases']) <= 32, 'independent challenge requires 2..32 concrete cases')
     value, format_repair = _repair_recipe_json(value, agent)
     require(any(c['expect_success'] for c in value['cases']) and any(not c['expect_success'] for c in value['cases']),
@@ -126,7 +127,38 @@ def _challenge(compiled, original_request, agent):
             'passed': value['business_consistent'] and all(r['passed'] for r in records),
             'business_consistent': value['business_consistent'], 'reason': value['reason'],
             'provenance': provenance, 'records': records,
+            **({'completeness_recovery': completion} if completion else {}),
             **({'format_repair': format_repair} if format_repair else {})}
+
+
+def _complete_review(compiled, original_request, agent, value):
+    """One append-only recovery for incomplete review, never a source repair."""
+    rules = {r['id'] for r in compiled['source']['rules']}
+    cases = value['cases']
+    covered = {r for c in cases for r in c['rule_ids']}
+    require(len(cases) <= 32 and covered <= rules, 'invalid challenge size or unknown public rules')
+    complete = (len(cases) >= 2 and covered == rules
+                and any(c['expect_success'] for c in cases)
+                and any(not c['expect_success'] for c in cases))
+    if complete:
+        return value, None
+    from .fixtures import review_contract
+    source, fixtures = review_contract(compiled['source'])
+    supplement, provenance = agent.ask(
+        'Complete an incomplete independent business review by APPENDING concrete executable cases. '
+        'Preserve every existing case, business_consistent verdict and reason; never edit the contract. '
+        'The combined review must contain 2..32 cases, both positive and negative, and cover every '
+        'actual public rule. Use unique new IDs and actual scenario IDs. Recipes follow the supplied '
+        'grammar, mutations must reference actual records. Return only the additional cases. '
+        'All appended cases will execute independently; do not invent runtime error expectations. '
+        'Do not execute tools.',
+        {'original_request': original_request, 'existing_review': value, 'contract': source,
+         'fixture_evidence': fixtures, 'compiled_public': compiled['public'],
+         'grammar': (__import__('pathlib').Path(__file__).parent / 'CONTRACT.md').read_text()},
+        object_schema({'cases': {'type': 'array', 'items': CASE_SCHEMA}}))
+    result = {**value, 'cases': copy.deepcopy(cases) + supplement['cases']}
+    return result, {'provenance': provenance, 'original_review': value,
+                    'appended_cases': supplement['cases'], 'budget': 1}
 
 
 def _execute_case(compiled, case, scenarios, agent, mutation_repair_budget=None):

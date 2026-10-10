@@ -50,11 +50,12 @@ class Sandbox:
         return {'datetime': (base + timedelta(seconds=self.seconds)).isoformat(),
                 'tick': self.ticks, 'elapsed_seconds': self.seconds}
 
-    def context(self, *, args=None, data=None, row=None, private=False):
+    def context(self, *, args=None, data=None, row=None, private=False, user=None):
+        user = self.user if user is None else user
         return {'data': self.data if data is None else data, 'initial': self.initial,
                 'args': args or {}, 'row': row or {}, 'evidence': self.evidence,
-                'user': {**self.user.facts, **self.user.disclosed} if private else self.user.disclosed,
-                'user_state': self.user.snapshot(),
+                'user': {**user.facts, **user.disclosed} if private else user.disclosed,
+                'user_state': user.snapshot(),
                 'time': self.time(), '_rules': self.rules}
 
     def _row(self, data, table_id, key):
@@ -168,7 +169,6 @@ class Sandbox:
                     self.violations.append('unauthorized_write')
                     raise
                 result = self._transaction(tool, resolved)
-                self.user.consume(tool['authorization'])
             record.update(status='ok', result=copy.deepcopy(result))
             self.observations[call_id] = {'tool': tool_id, 'result': copy.deepcopy(result), 'arguments': copy.deepcopy(resolved)}
             self.evidence[call_id] = copy.deepcopy(result)
@@ -225,10 +225,16 @@ class Sandbox:
             row.update(updates)
             changes.append({'table': operation['table'], 'key': key, 'set': copy.deepcopy(updates)})
         validate_data(self.source, candidate)
+        # Invariants describe the complete post-commit state. Project consent
+        # consumption on an isolated simulator; failed validation commits neither
+        # data nor the user lifecycle transition.
+        candidate_user = copy.deepcopy(self.user)
+        candidate_user.consume(tool['authorization'])
         for invariant in self.source.get('invariants', []):
-            require(evaluate(invariant['predicate'], self.context(data=candidate)) is True,
+            require(evaluate(invariant['predicate'], self.context(data=candidate, user=candidate_user)) is True,
                     'transaction invariant violated: ' + invariant['rule_id'])
         self.data = candidate
+        self.user = candidate_user
         self.version += 1
         return {'committed': True, 'changes': changes}
 
