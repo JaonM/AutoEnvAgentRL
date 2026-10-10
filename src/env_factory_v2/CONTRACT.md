@@ -459,6 +459,15 @@ whole-document citations remain readable. Textual coverage proves origin, not th
 an executable rule faithfully implements every business meaning; independent review
 and counterexamples must still verify that interpretation.
 
+For a layered demand, the independent business challenge reviews each cited public
+clause exactly once. Its response links the clause to implementation locations from
+a finite contract-relative catalog and to actual independently executed case IDs.
+Unknown, missing, duplicate or private-fact citations cannot establish coverage.
+A failed clause interpretation remains inconclusive even if every proposed case
+passes or a subsequent case-label audit changes its overall verdict. This is
+model-reviewed semantic evidence, not a formal proof of business completeness;
+retain independent execution, reward counterexamples and held-out measurements.
+
 Business graph ingestion uses separate EFV2 labels and frozen namespaces, preserving
 existing scene nodes. Objects, policies and document hashes come from explicit dossiers;
 synthetic imports remain marked synthetic. Snapshot retrieval verifies document hashes

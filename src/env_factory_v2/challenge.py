@@ -64,6 +64,10 @@ def challenge(compiled, original_request, agent):
         all_passed = all(record['passed'] for record in report['records'])
         if report['business_consistent'] != all_passed:
             report = _audit(compiled, original_request, agent, report)
+        if report.get('requirement_review', {}).get('passed') is False:
+            return {**report, 'passed': False, 'status': 'inconclusive',
+                    'instruction': 'Resolve the independently identified public-clause discrepancies. '
+                    'Case relabeling cannot override a failed requirement interpretation review.'}
         if not report['business_consistent'] and all(record['passed'] for record in report['records']):
             # A structurally unsolvable answer or absent user branch need not be
             # expressible by initial-record mutations. Preserve uncertainty and
@@ -82,6 +86,8 @@ def _challenge(compiled, original_request, agent):
     import json
     from .fixtures import review_contract
     review_source, fixture_evidence = review_contract(compiled['source'])
+    from .requirement_review import obligations, review_schema, validate_review, implementation_paths
+    requirements = obligations(compiled)
     value, provenance = agent.ask(
         'Independently compare the ORIGINAL request with this proposed business contract. compiled_public '
         'is the actual agent-visible interface; authored tool descriptions are not independently published. Do not trust its '
@@ -117,10 +123,21 @@ def _challenge(compiled, original_request, agent):
         'agent answer field or a duplicate authored probe. '
         'For generated tables the exact generator plan is authoritative; previews are concrete examples, not '
         'the whole table. Derive unshown values from the documented plan, never invent hidden rows. '
+        'When public_requirements is nonempty, review EVERY listed clause exactly once in requirement_reviews. '
+        'For each clause explain whether executable behavior faithfully implements it, cite specific JSON '
+        'Pointer implementation_paths selected EXACTLY from implementation_citation_catalog, relative to '
+        'the contract itself (no /contract or /compiled_public prefix), '
+        'and actual independent case_ids which exercise that obligation. Private facts and the demand text '
+        'are not implementation evidence. Do not invent an implementation or omit an unmet obligation: '
+        'mark consistent false and explain the discrepancy. Trace communication and authorization obligations '
+        'to actual stages and trajectories too. A citation is not proof by itself: inspect semantics. '
         'Unexecuted model opinions are not proof. Do not execute tools.',
         {'original_request': original_request, 'contract': review_source,
          'compiled_public': compiled['public'], 'fixture_evidence': fixture_evidence,
-         'grammar': (__import__('pathlib').Path(__file__).parent / 'CONTRACT.md').read_text()}, CHALLENGE_SCHEMA)
+         'public_requirements': requirements,
+         'implementation_citation_catalog': implementation_paths(compiled['source']) if requirements else [],
+         'grammar': (__import__('pathlib').Path(__file__).parent / 'CONTRACT.md').read_text()},
+        review_schema(CHALLENGE_SCHEMA, requirements, compiled['source']))
     value, completion = _complete_review(compiled, original_request, agent, value)
     require(2 <= len(value['cases']) <= 32, 'independent challenge requires 2..32 concrete cases')
     value, format_repair = _repair_recipe_json(value, agent)
@@ -137,10 +154,13 @@ def _challenge(compiled, original_request, agent):
         require(case['id'] and case['id'] not in identities and case['scenario_id'] in scenarios, 'invalid challenge identity')
         identities.add(case['id'])
         records.append(_execute_case(compiled, case, scenarios, agent, mutation_repair_budget))
+    requirement_review = validate_review(compiled, requirements, value)
     return {'scope': 'native_independent_contract_challenge', 'contract_identity': compiled['identity'],
-            'passed': value['business_consistent'] and all(r['passed'] for r in records),
+            'passed': value['business_consistent'] and all(r['passed'] for r in records)
+                      and (requirement_review is None or requirement_review['passed']),
             'business_consistent': value['business_consistent'], 'reason': value['reason'],
             'provenance': provenance, 'records': records,
+            **({'requirement_review': requirement_review} if requirement_review else {}),
             **({'completeness_recovery': completion} if completion else {}),
             **({'format_repair': format_repair} if format_repair else {})}
 
