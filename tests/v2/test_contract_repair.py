@@ -169,3 +169,16 @@ def test_candidate_alignment_failure_retains_source_for_atomic_repair(tmp_path):
     assert feedback['error'] == 'frozen business records changed'
     assert feedback['failed_phase'] == 'compile'
     assert json.loads((tmp_path / 'alignment/attempt-1/source.json').read_text()) == source
+
+
+def test_mixed_scalar_private_plan_binding_compiles_without_stringification():
+    source = simple()
+    source['user']['facts']['size'] = [[['Q1', 2]], [['Q2', 3]]]
+    source['tools'][0]['parameters']['properties']['size'] = {
+        'type': 'array', 'items': {'type': 'array', 'items': {
+            'type': 'array', 'items': {'type': ['string', 'integer']}}}}
+    compiled = compile_contract(source)
+    assert compiled['source']['user']['facts']['size'] == [[['Q1', 2]], [['Q2', 3]]]
+    source['user']['facts']['size'][0][0][1] = True
+    with pytest.raises(ContractError, match='expected one of'):
+        compile_contract(source)

@@ -34,7 +34,16 @@ def named(items, label):
 def validate_schema(schema, depth=0):
     require(depth < 16, 'schema too deep')
     fields(schema, ['type'], ['properties', 'required', 'additionalProperties', 'items', 'enum', 'nullable'])
-    require(schema['type'] in {'string', 'integer', 'number', 'boolean', 'object', 'array'}, 'unsupported type')
+    kind = schema['type']
+    if isinstance(kind, list):
+        require(1 <= len(kind) <= 4 and all(type(item) is str and item in
+                {'string', 'integer', 'number', 'boolean'} for item in kind),
+                'type union requires bounded scalar type names')
+        require(len(set(kind)) == len(kind), 'duplicate union type')
+        require(not any(key in schema for key in ('properties', 'required', 'additionalProperties', 'items')),
+                'scalar union cannot declare structural fields')
+        return
+    require(type(kind) is str and kind in {'string', 'integer', 'number', 'boolean', 'object', 'array'}, 'unsupported type')
     if schema['type'] == 'object':
         require(schema.get('additionalProperties') is False, 'objects must forbid extra fields')
         require(isinstance(schema.get('properties'), dict) and isinstance(schema.get('required'), list), 'object schema incomplete')
@@ -74,6 +83,17 @@ def validate_value(value, schema, label='value'):
     if value is None and schema.get('nullable') is True:
         return
     kind = schema['type']
+    if isinstance(kind, list):
+        validate_schema(schema)
+        for option in kind:
+            try:
+                validate_value(value, {**schema, 'type': option}, label)
+                return
+            except ContractError:
+                pass
+        raise ContractError(f'{label}: expected one of {kind}')
+    require(type(kind) is str and kind in {'string', 'integer', 'number', 'boolean', 'object', 'array'},
+            f'{label}: unsupported type')
     valid = {'string': isinstance(value, str), 'integer': type(value) is int,
              'number': type(value) in {int, float}, 'boolean': type(value) is bool,
              'object': isinstance(value, dict), 'array': isinstance(value, list)}[kind]

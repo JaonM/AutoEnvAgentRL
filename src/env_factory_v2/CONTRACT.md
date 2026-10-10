@@ -116,7 +116,13 @@ an identity constraint without an original public requirement.
 tables: {id,schema,primary_key,rows,foreign_keys?}. Row object schemas declare
 properties, required, additionalProperties=false. Supported types string, integer,
 number, boolean, object, array; optional enum and nullable=true. Arrays require
-items schema. foreign_keys contain {column,target_table,target_column}. Unique
+items schema. Mixed scalar arrays such as [quote_id, boxes] can use
+{"type":"array","items":{"type":["string","integer"]}}. Scalar type unions
+allow string/integer/number/boolean only, require unique type names, and still
+reject booleans as integers. Keep public business rules responsible for tuple
+position and quantity constraints; a union alone does not enforce them.
+Use nullable=true for null; unions do not accept object/array/null variants.
+foreign_keys contain {column,target_table,target_column}. Unique
 non-null primary keys; all initial mutations retain schemas and foreign keys.
 For a foreign-key column declaring nullable=true, null means no relationship
 (for example a terminal next_id or an unselected purchase) and needs no target
