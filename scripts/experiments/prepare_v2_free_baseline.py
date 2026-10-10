@@ -31,9 +31,13 @@ def main():
     parser.add_argument('--connection', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--namespace', required=True)
+    parser.add_argument('--heldout', action='store_true', help='Use new synthetic business instances of existing task families')
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     entries = cases()
+    if args.heldout:
+        from v2_heldout_cases import heldout_cases
+        entries = heldout_cases()
     load_dotenv('.env')
     driver = GraphDatabase.driver(os.getenv('NEO4J_URI', 'bolt://localhost:7687'),
         auth=(os.getenv('NEO4J_USER', 'neo4j'), os.getenv('NEO4J_PASSWORD', 'password')))
@@ -49,8 +53,15 @@ def main():
     manifest = {'version': 2, 'scope': 'native_natural_free_dialogue_baseline',
         'sampling': 'synthetic scene-designed; independent model opening, no production population claim',
         'mix': {'direct': 4, 'simple': 4, 'ordinary': 4, 'complex': 8}, 'samples': []}
+    if args.heldout:
+        manifest.update(scope='native_natural_free_dialogue_heldout_instances',
+            sampling='new synthetic business instances of known task families; independent model openings; not unseen domains or production population',
+            preparation_source_sha256={name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
+                for name in ['prepare_v2_free_baseline.py', 'v2_heldout_cases.py', 'prepare_v2_natural_pilot.py']})
     for index, (case, (situation, outcome)) in enumerate(zip(entries, SCENES, strict=True), 1):
         known = case['acceptance']['params'] if case['stratum'] == 'direct' else {}
+        if case['acceptance']['kind'] == 'discount':
+            known = {**known, 'membership': '我是会员，适用店内会员优惠'}
         if case['acceptance']['kind'] == 'duration':
             p = known
             known = {'start_time': f"{p['start_minutes']//60:02d}:{p['start_minutes']%60:02d}",
@@ -74,6 +85,13 @@ def main():
             raise RuntimeError('opening fidelity review failed; assets not frozen')
         folder = args.output / f'{index:02d}'
         folder.mkdir()
+        if args.heldout:
+            from audit_v2_natural import canonical_truth
+            truth = canonical_truth(case['acceptance'], case['business'], case['user'])
+            writes = {'cancel', 'replace', 'transfer', 'enroll', 'correction', 'sequential'}
+            case['acceptance']['answer_obligations'] = [] if case['acceptance']['kind'] in writes else [
+                {'role': role, 'source': 'user_request', 'text': opening['user_request']}
+                for role in truth['answer']]
         for name, value in [('business', case['business']), ('user', case['user']), ('acceptance', case['acceptance'])]:
             write(folder / (name + '.json'), value)
         write(folder / 'user_scene.json', payload)
