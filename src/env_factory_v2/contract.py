@@ -49,8 +49,15 @@ def validate_question(question):
 
 def validate_schema(schema, depth=0):
     require(depth < 16, 'schema too deep')
-    fields(schema, ['type'], ['properties', 'required', 'additionalProperties', 'items', 'enum', 'nullable'])
+    fields(schema, ['type'], ['properties', 'required', 'additionalProperties', 'items', 'enum', 'nullable',
+                              'minItems', 'maxItems'])
     kind = schema['type']
+    if 'minItems' in schema or 'maxItems' in schema:
+        require(kind == 'array', 'item count constraints require array type')
+        minimum, maximum = schema.get('minItems', 0), schema.get('maxItems', 10000)
+        require(type(minimum) is int and type(maximum) is int
+                and 0 <= minimum <= maximum <= 10000,
+                'array item bounds require integers with 0 <= minItems <= maxItems <= 10000')
     if isinstance(kind, list):
         require(1 <= len(kind) <= 4 and all(type(item) is str and item in
                 {'string', 'integer', 'number', 'boolean'} for item in kind),
@@ -124,6 +131,8 @@ def validate_value(value, schema, label='value'):
             validate_value(item, schema['properties'][key], f'{label}.{key}')
     if kind == 'array':
         require(len(value) <= 10000, f'{label}: array limit')
+        require(len(value) >= schema.get('minItems', 0), f'{label}: below minItems')
+        require(len(value) <= schema.get('maxItems', 10000), f'{label}: exceeds maxItems')
         for item in value:
             validate_value(item, schema['items'], label)
 

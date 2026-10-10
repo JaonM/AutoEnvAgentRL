@@ -119,7 +119,11 @@ an identity constraint without an original public requirement.
 tables: {id,schema,primary_key,rows,foreign_keys?}. Row object schemas declare
 properties, required, additionalProperties=false. Supported types string, integer,
 number, boolean, object, array; optional enum and nullable=true. Arrays require
-items schema. Mixed scalar arrays such as [quote_id, boxes] can use
+items schema. Optional minItems/maxItems constrain array lengths; both are
+integers with 0 <= minItems <= maxItems <= 10000 (defaults 0 and 10000).
+Only arrays accept these keys. Do not impose a fixed result length when valid
+empty or different-size result sets are permitted by the public business rules.
+Mixed scalar arrays such as [quote_id, boxes] can use
 {"type":"array","items":{"type":["string","integer"]}}. Scalar type unions
 allow string/integer/number/boolean only, require unique type names, and still
 reject booleans as integers. Keep public business rules responsible for tuple
