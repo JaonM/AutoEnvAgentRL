@@ -105,6 +105,23 @@ def test_pipeline_passes_actual_failed_contract_and_current_error_to_repair(tmp_
     assert any(check['error'] for check in feedback['recipe_preflight']['checks'])
 
 
+def test_capability_refusal_retries_full_generation_with_original_evidence():
+    request = {'goal': '计算跨账期费用', 'category': 'ordinary_agentic'}
+    feedback = {'previous_source': {'unsupported': True, 'reason': 'integer division unavailable'},
+                'error': 'not a contract'}
+    before = copy.deepcopy(feedback)
+    agent = Mock()
+    agent.ask.return_value = ({'source_json': json.dumps(direct())}, {'test': True})
+    result, _ = NativeCodeAgent.generate(agent, request, feedback=feedback)
+    assert result == direct()
+    assert agent.ask.call_count == 1
+    payload = agent.ask.call_args.args[1]
+    assert payload['original_request'] == request
+    assert payload['repair_feedback'] == before
+    assert set(agent.ask.call_args.args[2]['properties']) == {'source_json'}
+    assert feedback == before
+
+
 @pytest.mark.parametrize('same_request', [True, False])
 def test_repair_payload_deduplicates_only_identical_request(same_request):
     request = {'goal': '查当前业务状态', 'category': 'direct_response'}

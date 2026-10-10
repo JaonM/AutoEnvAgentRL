@@ -160,7 +160,13 @@ class NativeCodeAgent:
         require(type(source_object) is bool, 'source object selector must be boolean')
         require(type(source_tree) is bool and not (source_object and source_tree), 'invalid JSON tree selector')
         grammar = (Path(__file__).parent / 'CONTRACT.md').read_text()
-        if feedback is not None and feedback.get('previous_source') is not None:
+        previous = feedback.get('previous_source') if feedback is not None else None
+        # Capability refusals are parsed JSON too, but contain no contract to edit.
+        # Retry generation within the existing attempt budget, retaining the refusal
+        # as feedback. Partial contracts still use atomic repair.
+        contract_candidate = isinstance(previous, dict) and bool(
+            {'task', 'tables', 'tools', 'answers', 'scenarios', 'rules'} & previous.keys())
+        if contract_candidate:
             from .repair import apply_edits, recover_edit_values
             previous = feedback['previous_source']
             evidence = {key: value for key, value in feedback.items() if key != 'previous_source'}
@@ -249,7 +255,9 @@ class NativeCodeAgent:
             'required_observations columns must be the minimum publicly required output or decision evidence, '
             'not every column returned by a tool. Eligibility enforced by the same named query rules need not '
             'be separately displayed when the user asks only for eligible IDs. Preserve necessary decision '
-            'fields, complete pagination, result dependencies and post-write verification. '
+            'fields, complete pagination and result dependencies. Accept committed transaction results '
+            'as write evidence when sufficient; require a post-write read only when a public business '
+            'obligation or missing result evidence makes it necessary. Do not require redundant reads. '
             'Use numeric comparison for scalar number answers derived from arithmetic; keep exact comparison for discrete values. '
             'Include user.profile describing communication style, disclosure boundaries and preferences, '
             'consistent with private facts and original request; never store computed answers there. Do not execute tools. '
