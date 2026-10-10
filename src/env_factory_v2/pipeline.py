@@ -14,6 +14,21 @@ from .expressions import canonical
 from .verification import qualify, preflight_recipes
 
 
+class InfrastructureError(RuntimeError):
+    """A failed delivery caused by transport or execution infrastructure."""
+
+
+def require_qualified_delivery(delivery):
+    if delivery.get('qualified') is True:
+        return
+    if delivery.get('status') == 'infrastructure_failed':
+        attempt = delivery.get('attempts', [{}])[-1]
+        error = InfrastructureError(attempt.get('error', 'sandbox infrastructure failed'))
+        error.upstream_phase = attempt.get('failed_phase')
+        raise error
+    raise ContractError('sandbox pipeline did not qualify')
+
+
 def save(path, value):
     Path(path).write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + '\n')
 
@@ -146,6 +161,8 @@ def build(request, *, agent, output, source=None, repairs=1, docker=True, base_i
             save(output / 'progress.json', delivery)
             return delivery
         except ContractError as exc:
+            if attempt.get('active_phase'):
+                attempt['phases'].setdefault(attempt['active_phase'], time.monotonic() - phase_start)
             attempt.update(status='failed', error=str(exc), failed_phase=attempt.pop('active_phase', None))
             feedback = {**(feedback or {}), 'error': str(exc),
                         'failed_phase': attempt['failed_phase'], 'original_request': request}
@@ -153,6 +170,8 @@ def build(request, *, agent, output, source=None, repairs=1, docker=True, base_i
             save(output / 'progress.json', {'qualified': False, 'attempts': attempts, 'status': 'repair_pending' if index < repairs else 'failed'})
         except Exception as exc:
             # Transport/container infrastructure is never repaired by weakening source.
+            if attempt.get('active_phase'):
+                attempt['phases'].setdefault(attempt['active_phase'], time.monotonic() - phase_start)
             attempt.update(status='infrastructure_failed', error=f'{type(exc).__name__}: {exc}', failed_phase=attempt.pop('active_phase', None))
             result = {'qualified': False, 'status': 'infrastructure_failed', 'attempts': attempts,
                       'elapsed_seconds': time.monotonic() - started}

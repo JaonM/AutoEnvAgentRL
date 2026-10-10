@@ -227,6 +227,7 @@ def test_native_transport_failure_never_triggers_author_repair(tmp_path):
     result = build({'category': 'direct_response', 'goal': 'test'}, agent=agent, output=tmp_path / 'run', repairs=2)
     assert agent.generate.call_count == 1
     assert result['qualified'] is False and result['status'] == 'infrastructure_failed'
+    assert result['attempts'][0]['phases']['generation'] >= 0
 
 
 def test_broken_negative_recipe_is_rejected_before_any_review_model_call(tmp_path):
@@ -237,6 +238,7 @@ def test_broken_negative_recipe_is_rejected_before_any_review_model_call(tmp_pat
     result = build({'goal': source['task']}, agent=agent, output=tmp_path / 'run', source=source, repairs=0, docker=False)
     assert not result['qualified']
     assert result['attempts'][0]['failed_phase'] == 'recipe_preflight'
+    assert result['attempts'][0]['phases']['recipe_preflight'] >= 0
     agent.ask.assert_not_called()
 
 

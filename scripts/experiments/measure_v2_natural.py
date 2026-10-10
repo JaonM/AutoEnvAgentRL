@@ -22,7 +22,7 @@ sys.path.insert(0, str(PROJECT / 'src'))
 from env_factory_v2.code_agent import NativeCodeAgent, object_schema
 from env_factory_v2.contract import compile_contract, require, validate_value
 from env_factory_v2.expressions import ContractError, canonical, evaluate
-from env_factory_v2.pipeline import build, implementation_identity
+from env_factory_v2.pipeline import build, implementation_identity, require_qualified_delivery
 from env_factory_v2.runtime import Sandbox
 from env_factory_v2.reward import grade
 from env_factory_v2.training import certify
@@ -382,7 +382,7 @@ def worker(args):
                          candidate_validator=lambda source: fixture_alignment(source, row, business, user))
         result['phases'][phase_name] = time.monotonic() - tick
         result['sandbox_qualified'] = delivery.get('qualified') is True
-        require(result['sandbox_qualified'], 'sandbox pipeline did not qualify')
+        require_qualified_delivery(delivery)
         bundle = root / 'build/sandbox'
         compiled = fixture_alignment(read(bundle / 'contract.json'), row, business, user)
         tick = phase('external_business_acceptance')
@@ -414,6 +414,8 @@ def worker(args):
         if 'tick' in locals():
             result['phases'].setdefault(phase_name, time.monotonic() - tick)
         result['user_simulation_fault'] = getattr(exc, 'user_simulation_fault', False)
+        if hasattr(exc, 'upstream_phase'):
+            result['upstream_failed_phase'] = exc.upstream_phase
         result['failure_class'] = 'user_simulation' if result['user_simulation_fault'] else 'infrastructure' if type(exc).__name__ in {'InfrastructureError', 'RuntimeError', 'URLError', 'TimeoutError'} else 'business_or_contract'
         result.update(status='failed', failed_phase=phase_name, error=f'{type(exc).__name__}: {exc}')
     result.pop('active_phase', None)
