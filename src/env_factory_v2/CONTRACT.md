@@ -57,7 +57,10 @@ agent tool observations, pagination or user authorization.
 Shared predicates use
 {"rule":{"id":"public_rule_id","arguments":{"size":{"ref":"user.size"}}}}.
 Supply exactly the named args referenced by that public rule. The current row,
-data and time remain in scope. Public rule definitions may not invoke other rules.
+data and time remain in scope. Public rules may invoke other named public rules
+with exact arguments. The dependency graph must be acyclic and at most 16 rules
+deep. Indirect operation-row fields are validated on every transaction table;
+collection-local rows remain local. Unknown rules and cycles fail compilation.
 
 rules: list of {id,public,predicate}. public explains an actual business condition;
 predicate can reference row,args,data,initial,user,time. Tool filters are ONLY references

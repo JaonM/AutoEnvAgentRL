@@ -145,8 +145,12 @@ def evaluate(expression, context):
     if op == 'rule':
         if value['id'] not in context.get('_rules', {}):
             raise ContractError('unknown executable public rule')
+        stack = context.get('_rule_stack', ())
+        if value['id'] in stack or len(stack) >= 16:
+            raise ContractError('public rule dependency cycle or depth limit')
         arguments = {key: evaluate(expression, context) for key, expression in value['arguments'].items()}
-        return evaluate(context['_rules'][value['id']]['predicate'], {**context, 'args': arguments})
+        return evaluate(context['_rules'][value['id']]['predicate'],
+                        {**context, 'args': arguments, '_rule_stack': (*stack, value['id'])})
     if op == 'if':
         condition = evaluate(value['condition'], context)
         if type(condition) is not bool:

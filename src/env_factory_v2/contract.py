@@ -153,14 +153,42 @@ def contains_rule(expression):
     return 'rule' in expression or any(contains_rule(child) for child in expression_children(expression))
 
 
-def free_row_fields(expression):
+def free_row_fields(expression, rules=None):
     """Fields of the operation/query row, excluding collection-local rows."""
     op, value = next(iter(expression.items()))
     if op == 'ref':
         return {value.split('.')[1]} if value.startswith('row.') else set()
     if op in {'filter', 'map'}:
-        return free_row_fields(value['items'])
-    return set().union(*(free_row_fields(child) for child in expression_children(expression)))
+        return free_row_fields(value['items'], rules)
+    nested = set().union(*(free_row_fields(child, rules) for child in expression_children(expression)))
+    if op == 'rule' and rules is not None:
+        nested |= free_row_fields(rules[value['id']]['predicate'], rules)
+    return nested
+
+
+def validate_rule_graph(rules):
+    """Allow shared acyclic predicates, rejecting cycles and excessive depth."""
+    def calls(expr):
+        result = {expr['rule']['id']} if 'rule' in expr else set()
+        for child in expression_children(expr):
+            result |= calls(child)
+        return result
+    graph = {name: calls(rule['predicate']) for name, rule in rules.items()}
+    depths = {}
+    def visit(name, active):
+        require(name in rules, 'unknown rule in expression')
+        require(name not in active, 'public rule dependency cycle')
+        if name in depths:
+            return depths[name]
+        require(len(active) < 16, 'public rule dependency depth limit')
+        depth = 1 + max((visit(child, active | {name}) for child in graph[name]), default=0)
+        require(depth <= 16, 'public rule dependency depth limit')
+        depths[name] = depth
+        return depth
+    for name in rules:
+        visit(name, set())
+    for rule in rules.values():
+        validate_rule_links(rule['predicate'], rules)
 
 
 def policy_independent_target(expression):
@@ -197,7 +225,7 @@ def compile_contract(source):
         fields(rule, ['id', 'public', 'predicate'])
         require(isinstance(rule['public'], str) and rule['public'].strip(), 'public rule required')
         validate_expr(rule['predicate'], roots={'row', 'args', 'data', 'initial', 'user', 'user_state', 'time'})
-        require(not contains_rule(rule['predicate']), 'public predicates cannot recursively invoke other rules')
+    validate_rule_graph(rules)
     tables = named(source['tables'], 'table')
     for table in tables.values():
         fields(table, ['id', 'schema', 'primary_key'], ['rows', 'generator', 'foreign_keys'])
@@ -258,7 +286,7 @@ def compile_contract(source):
             require(argument in tool['parameters']['required'] and isinstance(fact, str) and fact in available, 'invalid private fact binding')
         for rule_id in tool['rule_ids']:
             if tool['kind'] == 'transaction':
-                row_fields = free_row_fields(rules[rule_id]['predicate'])
+                row_fields = free_row_fields(rules[rule_id]['predicate'], rules)
                 for operation in tool['operations']:
                     missing = row_fields - set(tables[operation['table']]['schema']['properties'])
                     require(not missing, f"transaction rule {rule_id} references row fields absent from table "
