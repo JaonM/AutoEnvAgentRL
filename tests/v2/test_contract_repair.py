@@ -122,3 +122,19 @@ def test_repair_payload_deduplicates_only_identical_request(same_request):
         assert payload['repair_feedback']['original_request'] == included
     assert payload['repair_feedback']['recipe_preflight'] == feedback['recipe_preflight']
     assert feedback == before
+
+
+def test_candidate_alignment_failure_retains_source_for_atomic_repair(tmp_path):
+    source = simple()
+    agent = Mock()
+    agent.generate.side_effect = [(source, {'unit_test': True}), RuntimeError('stop after repair input')]
+    validator = Mock(side_effect=ContractError('frozen business records changed'))
+    result = build({'goal': source['task']}, agent=agent, output=tmp_path / 'alignment',
+                   repairs=1, candidate_validator=validator)
+    assert not result['qualified']
+    validator.assert_called_once()
+    feedback = agent.generate.call_args.kwargs['feedback']
+    assert feedback['previous_source'] == source
+    assert feedback['error'] == 'frozen business records changed'
+    assert feedback['failed_phase'] == 'compile'
+    assert json.loads((tmp_path / 'alignment/attempt-1/source.json').read_text()) == source

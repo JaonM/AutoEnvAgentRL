@@ -367,14 +367,10 @@ def worker(args):
             save(root / 'task_spec.json', row['demand']['task_spec'])
             save(root / 'agent_context.json', row['demand']['agent_context'])
         save(root / 'author_request.json', request)
-        class GroundedAuthor(NativeCodeAgent):
-            def generate(self, request, *, feedback=None):
-                source, provenance = super().generate(request, feedback=feedback)
-                fixture_alignment(source, row, business, user)
-                return source, provenance
-        author = GroundedAuthor.from_connection(args.connection, evidence_root=root / 'author-native')
+        author = NativeCodeAgent.from_connection(args.connection, evidence_root=root / 'author-native')
         tick = phase('sandbox_generation_and_delivery')
-        delivery = build(request, agent=author, output=root / 'build', repairs=1, docker=True, base_image=args.base_image)
+        delivery = build(request, agent=author, output=root / 'build', repairs=1, docker=True, base_image=args.base_image,
+                         candidate_validator=lambda source: fixture_alignment(source, row, business, user))
         result['phases'][phase_name] = time.monotonic() - tick
         result['sandbox_qualified'] = delivery.get('qualified') is True
         require(result['sandbox_qualified'], 'sandbox pipeline did not qualify')

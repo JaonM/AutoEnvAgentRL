@@ -24,7 +24,7 @@ def implementation_identity():
     return hashlib.sha256(canonical(files).encode()).hexdigest()
 
 
-def build(request, *, agent, output, source=None, repairs=1, docker=True, base_image='python:3.14-slim', tool_interference=2):
+def build(request, *, agent, output, source=None, repairs=1, docker=True, base_image='python:3.14-slim', tool_interference=2, candidate_validator=None):
     require(type(tool_interference) is int and 0 <= tool_interference <= 4, 'tool interference count must be 0..4')
     require(type(repairs) is int and 0 <= repairs <= 2, 'repair budget must be 0..2')
     output = Path(output)
@@ -65,6 +65,8 @@ def build(request, *, agent, output, source=None, repairs=1, docker=True, base_i
             phase('compile')
             phase_start = time.monotonic()
             compiled = compile_contract(candidate)
+            if candidate_validator is not None:
+                candidate_validator(candidate)
             require(request.get('category', compiled['source']['category']) == compiled['source']['category'], 'original category changed')
             require(compiled['identity'] not in rejected, 'unchanged rejected contract; no repeated model calls')
             attempt['contract_identity'] = compiled['identity']
@@ -86,6 +88,8 @@ def build(request, *, agent, output, source=None, repairs=1, docker=True, base_i
             previous_source = copy.deepcopy(candidate)
             save(folder / 'source.json', candidate)
             compiled = compile_contract(candidate)
+            if candidate_validator is not None:
+                candidate_validator(candidate)
             attempt['contract_identity'] = compiled['identity']
             require(compiled['identity'] not in rejected, 'unchanged rejected contract; no repeated model calls')
             augmented_recipes = preflight_recipes(compiled)
