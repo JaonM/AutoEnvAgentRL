@@ -140,6 +140,8 @@ def expression_children(expression):
         return []
     if op == 'rule':
         return value['arguments'].values()
+    if op == 'let':
+        return [*value['bindings'].values(), value['value']]
     if op == 'sort':
         return [value['items']]
     if op == 'walk':

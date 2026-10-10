@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import json
 import math
+import re
 
 
 class ContractError(ValueError):
@@ -73,6 +74,18 @@ def validate_expr(expression, *, roots, depth=0):
         for expression in value['arguments'].values():
             validate_expr(expression, roots=roots, depth=depth + 1)
         return
+    if op == 'let':
+        if not isinstance(value, dict) or set(value) != {'bindings', 'value'}:
+            raise ContractError('invalid local binding expression')
+        bindings = value['bindings']
+        if not isinstance(bindings, dict) or not 1 <= len(bindings) <= 16 or any(
+                not isinstance(name, str) or not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,63}', name)
+                for name in bindings):
+            raise ContractError('invalid local binding names')
+        for item in bindings.values():
+            validate_expr(item, roots=roots, depth=depth + 1)
+        validate_expr(value['value'], roots=roots | {'vars'}, depth=depth + 1)
+        return
     if op in {'and', 'or', 'list', 'object'} or op in ARITY:
         values = list(value.values()) if op == 'object' and isinstance(value, dict) else value
         if not isinstance(values, list) or (op in ARITY and len(values) != ARITY[op]):
@@ -124,6 +137,11 @@ def evaluate(expression, context):
         return copy.deepcopy(value)
     if op == 'ref':
         return path(context, value)
+    if op == 'let':
+        # All bindings evaluate in the outer scope. Collection-local row changes
+        # cannot change these captured values; nested lets may shadow locally.
+        bindings = {name: evaluate(item, context) for name, item in value['bindings'].items()}
+        return evaluate(value['value'], {**context, 'vars': {**context.get('vars', {}), **bindings}})
     if op == 'rule':
         if value['id'] not in context.get('_rules', {}):
             raise ContractError('unknown executable public rule')

@@ -32,6 +32,12 @@ expressions; if takes {condition,then,else}; filter/map take {items,value} with
 row available while evaluating value. sum expects its single expression to return
 a numeric list. Type-strict comparisons; false and zero are real observations.
 at takes [collection_expression,index_expression].
+let takes {bindings:{NAME:EXPRESSION},value:EXPRESSION}. Bind 1..16 names
+(ASCII letter followed by letters/digits/underscores, at most 64 characters).
+Bindings evaluate in the outer scope simultaneously; the body reads vars.NAME.
+Nested lets shadow locally and do not mutate their caller. Capture an outer
+row key with let before a nested filter/map: inner row refers to the inner
+collection, while vars.project_id retains the captured outer project key.
 sort takes {items:EXPRESSION,order_by:[{field:COLUMN,direction:"asc"|"desc"}]}.
 It stably sorts up to 10000 row objects by the declared keys, with nulls last in
 either direction. Each key must contain one scalar type (int/float share numeric
