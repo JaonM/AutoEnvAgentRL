@@ -46,7 +46,11 @@ def digest(path):
 
 
 def runner_identity():
-    return {p.name: digest(p) for p in [Path(__file__), Path(__file__).with_name('v2_natural_oracle.py'),
+    experiments = ['v2_natural_oracle.py', 'v2_business_acceptance.py', 'v2_runtime_evidence.py',
+        'v2_library_oracle.py', 'v2_procurement_oracle.py', 'v2_subscription_oracle.py', 'v2_access_oracle.py',
+        'v2_natural_semantics.py', 'audit_v2_natural.py']
+    return {p.name: digest(p) for p in [Path(__file__),
+        *(Path(__file__).with_name(name) for name in experiments),
         PROJECT / 'src/rl/environments/v2.py', PROJECT / 'src/rl/data/contracts.py',
         PROJECT / 'src/rl/data/trajectory.py']}
 

@@ -84,7 +84,7 @@ def procurement_cases():
         ('procurement_quote', basic, dict(quote_id='Q1'), {}),
         ('procurement_combination', basic, dict(demand=23), {}),
         ('procurement_partial', basic, dict(demand=23, purchase_plans=[[['Q1', 2]], [['Q2', 3]]],
-            approvals=[True, True], order_ids=['O1', 'O2']), {}),
+            approve_first=True, approve_second=True, order_ids=['O1', 'O2']), {}),
         ('procurement_large', large, dict(demand=23, deadline=12, minimum_quality=4,
             authorized_plan=[['V1', 2], ['V2', 3]], approve_purchase=True, order_id='O1'), {}),
     ]
@@ -144,7 +144,7 @@ def subscription_cases():
             comparison_days=[10, 15], final_day=15, authorized_day=15, authorized_cents=1500,
             approve_change=True, bill_id='I1'), dict(start=0, end=30), ['subscriptions', 'changes', 'plans', 'bills']),
         ('subscription_cancel', dict(subscription_ids=['S1', 'S2'], reader_id='R1', used_days=[11, 11],
-            approvals=[True, True], refund_ids=['F1', 'F2']), {}, ['subscriptions', 'refunds']),
+            approve_first=True, approve_second=True, refund_ids=['F1', 'F2']), {}, ['subscriptions', 'refunds']),
     ]
     result = []
     for blueprint, (kind, facts, params, tables) in zip(blueprints, details):
@@ -190,7 +190,7 @@ def access_cases():
         ('access_compare', dict(node_ids=['F1', 'F2'], user_id='R1'), {}),
         ('access_temporary', dict(node_ids=['F1', 'F2'], grant_ids=['T0', 'T1'], user_id='R2',
             expires_at=50, approve_grants=True), {}),
-        ('access_revoke', dict(node_id='F1', user_id='R1', grant_ids=['G1', 'G5'], approvals=[True, False]), {}),
+        ('access_revoke', dict(node_id='F1', user_id='R1', grant_ids=['G1', 'G5'], approve_first=True, approve_second=False), {}),
     ]
     result = []
     for blueprint, (kind, facts, params) in zip(blueprints, details):

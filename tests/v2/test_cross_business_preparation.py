@@ -102,3 +102,21 @@ def test_graph_install_handles_empty_tables_and_preserves_declared_schema():
     records = install(Driver(), 'test', [{'document_id': 'business', 'title': 'empty', 'business': business}])
     assert records[0]['tables'][0]['columns'] == ['id', 'amount']
     assert records[0]['tables'][1]['columns'] == []
+
+
+@pytest.mark.parametrize('identity', [9, 15, 20])
+def test_independent_consent_preferences_match_user_simulator_fact_interface(identity):
+    from env_factory_v2.user_simulator import UserSimulator
+    from env_factory_v2.examples import obj
+    row = cases()[identity - 1]
+    facts = row['user']['facts']
+    assert 'approvals' not in facts
+    source = {'user': {'facts': facts, 'stages': [
+        {'id': name, 'kind': 'authorization', 'tool': 'write_' + name, 'depends_on': []}
+        for name in ('first', 'second')]}}
+    simulator = UserSimulator(source)
+    for name in ('first', 'second'):
+        proposal = {'tool': 'write_' + name, 'arguments': {}}
+        result = simulator.respond(name, observations={}, tools={'write_' + name: {'parameters': obj({})}},
+                                   proposal=proposal)
+        assert result['approved'] is facts['approve_' + name]

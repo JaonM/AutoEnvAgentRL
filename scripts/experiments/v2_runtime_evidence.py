@@ -91,8 +91,8 @@ def authorized_call_context(world, call_id, authorization_index):
     """Bind one actual committed call to its exact earlier approval and state."""
     calls = [(index, event) for index, event in enumerate(world.trace)
              if event.get('kind') == 'tool' and event.get('id') == call_id]
-    if len(calls) != 1 or calls[0][1].get('status') != 'ok':
-        raise ValueError('Authorized context requires one successful call')
+    if len(calls) != 1 or calls[0][1].get('status') not in {'ok', 'error'}:
+        raise ValueError('Authorized context requires one actual transaction attempt')
     call_index, call = calls[0]
     decisions = [d for d in authorization_decisions(world) if d['trace_index'] == authorization_index]
     if len(decisions) != 1 or not decisions[0]['approved'] or authorization_index >= call_index:
@@ -109,3 +109,74 @@ def authorized_call_context(world, call_id, authorization_index):
             'authorized_state': state_before_event(world, authorization_index),
             'precommit_state': state_before_event(world, call_index),
             'proposal': copy.deepcopy(decision['proposal'])}
+
+
+def target_attempts(world, table_id, identity):
+    """Find actual transaction attempts targeting a specific independent record.
+
+    Successful calls use committed deltas. Failed calls have no deltas: only
+    a literal key or direct args key path can establish their intended target.
+    Other expressions are explicitly unresolved rather than executed as truth.
+    """
+    from env_factory_v2.expressions import canonical, path
+    attempts = []
+    for index, event in enumerate(world.trace):
+        if event.get('kind') != 'tool' or world.tools[event['tool']]['kind'] != 'transaction':
+            continue
+        tool = world.tools[event['tool']]
+        if not any(op['table'] == table_id for op in tool['operations']):
+            continue
+        if event.get('status') == 'ok':
+            matched = any(delta['table'] == table_id and canonical(delta['key']) == canonical(identity)
+                          for delta in event['result']['changes'])
+        else:
+            keys = []
+            for operation in tool['operations']:
+                if operation['table'] != table_id:
+                    continue
+                expression = operation['key']
+                if set(expression) == {'literal'}:
+                    keys.append(expression['literal'])
+                elif set(expression) == {'ref'} and expression['ref'].startswith('args.'):
+                    keys.append(path({'args': event['arguments']}, expression['ref']))
+                else:
+                    raise ValueError('Failed transaction target lacks unambiguous runtime evidence')
+            matched = any(canonical(key) == canonical(identity) for key in keys)
+        if matched:
+            attempts.append({'call_id': event['id'], 'trace_index': index,
+                             'time': event_time(event), 'status': event['status']})
+    return attempts
+
+
+def individual_submission_times(world, table_id, identities):
+    """Require one explicit actual attempt per requested transaction target."""
+    result = {}
+    for identity in identities:
+        attempts = target_attempts(world, table_id, identity)
+        if len(attempts) != 1:
+            raise ValueError('Each timed transaction target requires one actual attempt')
+        result[identity] = attempts[0]['time']
+    return result
+
+
+def target_authorizations(world, table_id, identity):
+    """Bind approvals/refusals to intended rows even when no write is attempted."""
+    from env_factory_v2.expressions import canonical, path
+    matched = []
+    for decision in authorization_decisions(world):
+        proposal = decision['proposal']
+        tool = world.tools[proposal['tool']]
+        keys = []
+        for operation in tool['operations']:
+            if operation['table'] != table_id:
+                continue
+            expression = operation['key']
+            if set(expression) == {'literal'}:
+                keys.append(expression['literal'])
+            elif set(expression) == {'ref'} and expression['ref'].startswith('args.'):
+                keys.append(path({'args': proposal['arguments']}, expression['ref']))
+            else:
+                raise ValueError('Authorization target lacks unambiguous runtime evidence')
+        if any(canonical(key) == canonical(identity) for key in keys):
+            matched.append(decision)
+    return matched

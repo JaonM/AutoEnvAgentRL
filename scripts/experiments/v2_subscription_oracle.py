@@ -144,7 +144,8 @@ def expected(spec, data, facts, *, refuse=False):
                 params['start'], params['end'])['amount_cents']})
         answer = {'estimates': estimates, 'committed': committed}
     elif kind == 'subscription_cancel':
-        ids, approvals = facts['subscription_ids'], facts['approvals']
+        ids = facts['subscription_ids']
+        approvals = facts['approvals'] if 'approvals' in facts else [facts['approve_first'], facts['approve_second']]
         if len(ids) != 2 or len(set(ids)) != 2 or len(approvals) != 2 or any(type(a) is not bool for a in approvals):
             raise ValueError('Cancellation requires two distinct subscriptions and independent authorizations')
         results = []

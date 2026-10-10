@@ -132,7 +132,8 @@ def expected(spec, data, facts, *, now=None, refuse=False, authorized_snapshot=N
         answer = {'cost_cents': None if best is None else best['cost_cents'],
                   'overage': None if best is None else best['overage']}
     elif kind == 'procurement_partial':
-        plans, approvals = facts['purchase_plans'], facts['approvals']
+        plans = facts['purchase_plans']
+        approvals = facts['approvals'] if 'approvals' in facts else [facts['approve_first'], facts['approve_second']]
         if len(plans) != 2 or len(approvals) != 2 or any(type(a) is not bool for a in approvals):
             raise ValueError('Two purchases require two independent boolean authorizations')
         if len(data['budgets']) != 1:

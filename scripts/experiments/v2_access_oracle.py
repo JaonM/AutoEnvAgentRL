@@ -115,7 +115,8 @@ def expected(spec, data, facts, *, now=None, refuse=False, submission_times=None
                 'allowed_at_expiry': permissions(final, node_id, facts['user_id'], 'write', facts['expires_at'])['allowed']})
         answer = {'results': results}
     elif kind == 'access_revoke':
-        targets, approvals = facts['grant_ids'], facts['approvals']
+        targets = facts['grant_ids']
+        approvals = facts['approvals'] if 'approvals' in facts else [facts['approve_first'], facts['approve_second']]
         if len(targets) != len(approvals) or any(type(a) is not bool for a in approvals):
             raise ValueError('Every revocation requires independent boolean authorization')
         before = permissions(data, facts['node_id'], facts['user_id'], 'write', now)

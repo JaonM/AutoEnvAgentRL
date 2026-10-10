@@ -7,28 +7,72 @@ from v2_natural_semantics import schema, fill_projections, wrong_projection, ren
 
 
 def runtime_business_truth(spec, business, user, *, user_request, world,
-                           time_call_id, authorization_index=None):
+                           time_call_id, authorization_index=None, refuse=False):
     """Explicit runtime-to-oracle adapter; missing evidence never gets defaults."""
     import copy
     from v2_natural_oracle import expand
-    from v2_runtime_evidence import observed_time, authorized_call_context
+    from v2_runtime_evidence import (observed_time, authorized_call_context, target_attempts,
+                                    target_authorizations, event_time, state_before_event)
     initial = expand(business)
     require(all(table in world.initial and canonical(sorted(world.initial[table], key=canonical))
                 == canonical(sorted(rows, key=canonical))
                 for table, rows in initial.items()), 'runtime initial business rows differ from independent fixture')
     options = {'now': observed_time(world, time_call_id)}
+    if refuse:
+        options['refuse'] = True
     private = copy.deepcopy(user)
     evidence = {'time_call_id': time_call_id, 'virtual_seconds': options['now']}
+    if spec['kind'] in ('procurement_partial', 'access_temporary'):
+        table = 'orders' if spec['kind'] == 'procurement_partial' else 'grants'
+        identities = private['facts']['order_ids' if table == 'orders' else 'grant_ids']
+        timings, sources = {}, {}
+        for identity in identities:
+            attempts = target_attempts(world, table, identity)
+            require(len(attempts) <= 1, 'multiple transaction attempts require explicit retry semantics')
+            decisions = target_authorizations(world, table, identity)
+            if attempts:
+                timings[identity] = attempts[0]['time']
+                sources[identity] = {'kind': 'actual_attempt', 'call_id': attempts[0]['call_id']}
+            elif decisions:
+                timings[identity] = decisions[-1]['time']
+                sources[identity] = {'kind': 'authorization_without_write', 'trace_index': decisions[-1]['trace_index']}
+            else:
+                # Eligibility may correctly prevent both consent and submission.
+                # Use an actual trace event; expected state still requires any
+                # eligible authorized write, so omission cannot fabricate success.
+                timings[identity] = event_time(world.trace[-1])
+                sources[identity] = {'kind': 'no_transaction_or_consent', 'trace_index': len(world.trace) - 1}
+        if table == 'orders':
+            options['now'] = [timings[identity] for identity in identities]
+        else:
+            options['submission_times'] = timings
+        evidence['individual_times'] = timings
+        evidence['individual_time_sources'] = sources
     if spec['kind'] == 'procurement_large':
-        require(authorization_index is not None, 'large purchase requires actual authorization evidence')
-        context = authorized_call_context(world, time_call_id, authorization_index)
-        snapshot = context['authorized_state']
+        identity = private['facts']['order_id']
+        attempts = target_attempts(world, 'orders', identity)
+        decisions = target_authorizations(world, 'orders', identity)
+        require(len(attempts) <= 1 and decisions, 'large purchase requires its actual proposal and unambiguous attempt evidence')
+        if authorization_index is None:
+            authorization_index = decisions[-1]['trace_index']
+        decision = next((d for d in decisions if d['trace_index'] == authorization_index), None)
+        require(decision is not None, 'large purchase authorization does not identify its order')
+        if attempts:
+            context = authorized_call_context(world, attempts[0]['call_id'], authorization_index)
+            snapshot = context['authorized_state']
+            options['now'] = context['call_time']
+            proposal_time = context['authorization_time']
+        else:
+            snapshot = state_before_event(world, authorization_index)
+            proposal_time = decision['time']
+            options['now'] = event_time(world.trace[-1])
         require('quotes' in snapshot and len(snapshot.get('budgets', [])) == 1,
                 'authorized procurement snapshot lacks its quotes or budget')
         options['authorized_snapshot'] = {'quotes': snapshot['quotes'],
             'budget_cents': snapshot['budgets'][0]['remaining_cents']}
-        private['facts']['proposal_time'] = context['authorization_time']
+        private['facts']['proposal_time'] = proposal_time
         evidence['authorization_index'] = authorization_index
+        evidence['submission_attempts'] = attempts
     truth = business_truth(spec, business, private, user_request=user_request, **options)
     # Executable distractors may have their own tables. Preserve them in complete
     # state comparison, rather than discarding unauthorized side effects there.
@@ -43,18 +87,23 @@ def runtime_business_truth(spec, business, user, *, user_request, world,
 TIMED_READ_TABLES = {'procurement_quote': {'quotes'}, 'procurement_combination': {'quotes'},
                     'access_query': {'nodes', 'grants', 'memberships'},
                     'access_compare': {'nodes', 'grants', 'memberships'}}
+TIMED_TRANSACTION_TABLES = {'procurement_partial': {'quotes', 'budgets', 'orders'},
+                            'procurement_large': {'quotes', 'budgets', 'orders'},
+                            'access_temporary': {'nodes', 'grants', 'memberships'},
+                            'access_revoke': {'nodes', 'grants', 'memberships'}}
+TIMED_TABLES = {**TIMED_READ_TABLES, **TIMED_TRANSACTION_TABLES}
 
 
 def business_truth(spec, business, user, *, user_request, world=None, **kwargs):
     """Use predeclared public answer obligations without relaxing state checks."""
-    if world is not None and spec['kind'] in TIMED_READ_TABLES:
+    if world is not None and spec['kind'] in TIMED_TABLES:
         calls = [event for event in world.trace if event.get('kind') == 'tool'
                  and event.get('status') == 'ok' and world.tools[event['tool']]['kind'] == 'query'
-                 and world.tools[event['tool']]['table'] in TIMED_READ_TABLES[spec['kind']]]
+                 and world.tools[event['tool']]['table'] in TIMED_TABLES[spec['kind']]]
         require(calls, 'timed business truth requires an actual relevant query')
-        require(not kwargs, 'timed read variants require their own executed runtime evidence')
+        require(set(kwargs) <= {'refuse'}, 'timed variants require their own executed runtime evidence')
         return runtime_business_truth(spec, business, user, user_request=user_request,
-                                      world=world, time_call_id=calls[-1]['id'])
+                                      world=world, time_call_id=calls[-1]['id'], **kwargs)
     from audit_v2_natural import canonical_truth
     truth = canonical_truth(spec, business, user, **kwargs)
     if 'answer_obligations' not in spec:
@@ -113,7 +162,7 @@ def accept(compiled, row, business, user, spec, agent):
     from audit_v2_natural import canonical_truth, value_checks, audited_observations, reference_answer
     from measure_v2_natural import execute_reference, sorted_data
     initial_world = None
-    if spec['kind'] in TIMED_READ_TABLES:
+    if spec['kind'] in TIMED_TABLES:
         first = next((scenario for scenario in compiled['source']['scenarios']
             if scenario['expect_success'] and not scenario.get('mutations') and not scenario.get('user_overrides')), None)
         require(first is not None, 'timed acceptance requires an executed positive scenario')
@@ -129,7 +178,7 @@ def accept(compiled, row, business, user, spec, agent):
             try:
                 refused_world = execute_reference(compiled, scenario, refuse=True)
                 refused_truth = business_truth(spec, business, user,
-                    user_request=row['raw_request'], refuse=True)
+                    user_request=row['raw_request'], refuse=True, world=refused_world)
                 refusal_evidence.append({'scenario': scenario['id'], 'trace': refused_world.trace,
                     'user_state': refused_world.user.snapshot(),
                     'state_unchanged': canonical(sorted_data(refused_world.data))
@@ -163,7 +212,7 @@ def accept(compiled, row, business, user, spec, agent):
             continue
         try:
             world = execute_reference(compiled, scenario)
-            if spec['kind'] in TIMED_READ_TABLES:
+            if spec['kind'] in TIMED_TABLES:
                 truth = business_truth(spec, business, user, user_request=row['raw_request'], world=world)
             answer = reference_answer(world, scenario)
             current = value_checks(answer, truth, entries, aliases) + audited_observations(world, truth, spec['kind'], business)
@@ -205,7 +254,7 @@ def accept(compiled, row, business, user, spec, agent):
                 and canonical(sorted_data(world.data)) == canonical(sorted_data(changed['final_state'])), 'outcome': score})
     if any(t['kind'] == 'transaction' for t in compiled['source']['tools']):
         world = execute_reference(compiled, selected, refuse=True)
-        refused = business_truth(spec, business, user, user_request=row['raw_request'], refuse=True)
+        refused = business_truth(spec, business, user, user_request=row['raw_request'], refuse=True, world=world)
         answer = fill_projections(reference_answer(world, selected), entries, refused['answer'], name_aliases=aliases)
         for field in compiled['source']['answers']:
             text = field['meaning'].lower()
