@@ -31,6 +31,22 @@ def named(items, label):
     return result
 
 
+def validate_question(question):
+    if isinstance(question, str):
+        require(0 < len(question.strip()) <= 8000, 'user question length limit')
+        return
+    fields(question, ['parts'])
+    require(isinstance(question['parts'], list) and 1 <= len(question['parts']) <= 32,
+            'bounded observed question parts required')
+    for part in question['parts']:
+        if isinstance(part, str):
+            require(len(part) <= 8000, 'question text part length limit')
+        else:
+            fields(part, ['$result', 'path'])
+            require(isinstance(part['$result'], str) and part['$result']
+                    and isinstance(part['path'], str), 'question requires an actual result reference')
+
+
 def validate_schema(schema, depth=0):
     require(depth < 16, 'schema too deep')
     fields(schema, ['type'], ['properties', 'required', 'additionalProperties', 'items', 'enum', 'nullable'])
@@ -482,6 +498,7 @@ def compile_contract(source):
             elif step['kind'] == 'user':
                 fields(step, ['kind', 'stage', 'question'], ['proposal', 'source_id'])
                 require(step['stage'] in stages, 'unknown scenario user stage')
+                validate_question(step['question'])
             elif step['kind'] == 'wait':
                 fields(step, ['kind', 'seconds'])
             elif step['kind'] == 'revoke':

@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import copy
+import json
 import hashlib
 import secrets
 import re
 from datetime import datetime, timedelta
 
-from .contract import compile_contract, require, validate_data, validate_value
+from .contract import compile_contract, require, validate_data, validate_value, validate_question
 from .expressions import ContractError, canonical, evaluate, path, typed_equal
 from .user_simulator import UserSimulator
 
@@ -99,7 +100,13 @@ class Sandbox:
     def interact(self, stage, *, question, proposal=None, source_id=None, _advance_time=True):
         if _advance_time:
             self._advance()
-        require(isinstance(question, str) and question.strip(), 'a user question/proposal is required')
+        validate_question(question)
+        if isinstance(question, dict):
+            question = ''.join(part if isinstance(part, str) else json.dumps(
+                self.resolve(part), ensure_ascii=False, allow_nan=False, separators=(',', ':'))
+                for part in question['parts'])
+        require(isinstance(question, str) and 0 < len(question.strip()) <= 8000,
+                'a bounded user question/proposal is required')
         resolved = self.resolve(proposal) if proposal is not None else None
         user_stage = self.user.stages.get(stage, {})
         if user_stage.get('kind') == 'choice' and self.tools[user_stage['source_tool']].get('complete_retrieval'):

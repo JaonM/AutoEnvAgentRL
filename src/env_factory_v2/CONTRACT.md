@@ -375,6 +375,15 @@ steps: call/traverse {kind,tool,id,arguments}; call optionally cursor.
 References inside arguments: {"$result":"previous_call_id","path":"items.0.id"}
 or {"$user":"completed_stage_id","path":"value"}.
 User steps: {kind:"user",stage,question,source_id?,proposal?}.
+question may be text or a closed observed template:
+{"parts":["当前可选地点：",{"$result":"sites_result","path":"items"},"。请选择。"]}.
+The runtime renders actual observed values as JSON text, retains the rendered
+question in the user trace, and rejects unknown observations or overlong text.
+Only literal text and $result/path references are allowed (at most 32 parts).
+No hidden data, undisclosed user facts, arbitrary expressions or template code.
+Use templates for dynamic menus in reference scenarios; final answers need not
+repeat choices already delivered before selection. Free policies still send
+ordinary text through v2_chat; templates do not add a new agent-visible tool.
 Wait steps: {kind:"wait",seconds}; revoke: {kind:"revoke",stage}.
 traverse executes all real pages, each consuming one action, and creates evidence
 under the traversal id with items,total,next_cursor=null,pages.
