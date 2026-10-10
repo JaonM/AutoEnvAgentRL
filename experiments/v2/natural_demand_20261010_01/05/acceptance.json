@@ -1,0 +1,15 @@
+{
+  "kind": "ticket",
+  "params": {},
+  "observations": {
+    "tickets": [
+      "T07"
+    ]
+  },
+  "mutation": {
+    "table": "tickets",
+    "key": "T07",
+    "column": "status",
+    "value": "completed"
+  }
+}

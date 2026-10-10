@@ -1,0 +1,11 @@
+{
+  "kind": "inventory",
+  "params": {},
+  "observations": {},
+  "mutation": {
+    "table": "inventory",
+    "key": "SKU3",
+    "column": "stock",
+    "value": 0
+  }
+}

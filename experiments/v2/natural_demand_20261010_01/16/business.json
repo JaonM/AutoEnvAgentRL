@@ -1,0 +1,76 @@
+{
+  "provenance": "operator-authored synthetic business dossier; frozen before generation",
+  "policy": "分配关联旧设备；候选需class_code匹配且capacity>0，完整展示。用户选新设备后读取新旧维护记录。一次更换同时旧capacity+1、新capacity-1、分配device_id改为新设备、旧维护scheduled=false、新维护scheduled=true；容量非负且总量守恒。提交后核验，拒绝不写入。",
+  "tables": [
+    {
+      "id": "assignments",
+      "rows": [
+        {
+          "id": "AS1",
+          "device_id": "DV0",
+          "class_code": "C"
+        }
+      ]
+    },
+    {
+      "id": "equipment",
+      "rows": [
+        {
+          "id": "DV0",
+          "class_code": "C",
+          "capacity": 1
+        },
+        {
+          "id": "DV1",
+          "class_code": "C",
+          "capacity": 2
+        },
+        {
+          "id": "DV2",
+          "class_code": "C",
+          "capacity": 3
+        },
+        {
+          "id": "DV3",
+          "class_code": "C",
+          "capacity": 4
+        },
+        {
+          "id": "DV4",
+          "class_code": "C",
+          "capacity": 5
+        }
+      ]
+    },
+    {
+      "id": "maintenance",
+      "rows": [
+        {
+          "id": "MN0",
+          "device_id": "DV0",
+          "scheduled": true
+        },
+        {
+          "id": "MN1",
+          "device_id": "DV1",
+          "scheduled": false
+        },
+        {
+          "id": "MN2",
+          "device_id": "DV2",
+          "scheduled": false
+        },
+        {
+          "id": "MN3",
+          "device_id": "DV3",
+          "scheduled": false
+        },
+        {
+          "id": "MN4",
+          "device_id": "DV4",
+          "scheduled": false
+        }
+      ]
+    }
+  ]
+}

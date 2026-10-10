@@ -1,0 +1,213 @@
+{
+  "version": 1,
+  "scope": "synthetic_natural_demand_end_to_end_pilot",
+  "sampling": "operator-authored; no production-user or double-blind population claim",
+  "mix": {
+    "direct": 4,
+    "simple": 4,
+    "ordinary": 4,
+    "complex": 8
+  },
+  "samples": [
+    {
+      "id": 1,
+      "stratum": "direct",
+      "title": "办公室电费",
+      "category": "direct_response",
+      "raw_request": "办公室暖风机1100瓦，每天开3小时，照明65瓦开5小时。电价每度0.9元，帮我算算一天用了几度电、花多少钱。",
+      "business": "01/business.json",
+      "user": "01/user.json",
+      "acceptance": "01/acceptance.json"
+    },
+    {
+      "id": 2,
+      "stratum": "direct",
+      "title": "优惠后的实付",
+      "category": "direct_response",
+      "raw_request": "我买了128元和96元的两件东西，有一张15元券，按店里的会员优惠最后要付多少？也告诉我总共省了多少。",
+      "business": "02/business.json",
+      "user": "02/user.json",
+      "acceptance": "02/acceptance.json"
+    },
+    {
+      "id": 3,
+      "stratum": "direct",
+      "title": "会议室计费",
+      "category": "direct_response",
+      "raw_request": "我今天9点20分到12点05分用了会议室，帮我算使用时长和费用。",
+      "business": "03/business.json",
+      "user": "03/user.json",
+      "acceptance": "03/acceptance.json"
+    },
+    {
+      "id": 4,
+      "stratum": "direct",
+      "title": "讲师候选排序",
+      "category": "direct_response",
+      "raw_request": "这四位讲师，甲评分4.8报价600，乙评分4.9报价800，丙评分4.9报价700，丁评分4.8报价600。按我们的选人规则列出前三位和他们的总报价。",
+      "business": "04/business.json",
+      "user": "04/user.json",
+      "acceptance": "04/acceptance.json"
+    },
+    {
+      "id": 5,
+      "stratum": "simple",
+      "title": "维修单进度",
+      "category": "simple_agentic",
+      "raw_request": "帮我看看我的维修单现在到哪一步了，预计哪天修好？",
+      "business": "05/business.json",
+      "user": "05/user.json",
+      "acceptance": "05/acceptance.json"
+    },
+    {
+      "id": 6,
+      "stratum": "simple",
+      "title": "会员积分",
+      "category": "simple_agentic",
+      "raw_request": "查一下我的会员卡还有多少积分，现在能不能使用？",
+      "business": "06/business.json",
+      "user": "06/user.json",
+      "acceptance": "06/acceptance.json"
+    },
+    {
+      "id": 7,
+      "stratum": "simple",
+      "title": "有货鞋款",
+      "category": "simple_agentic",
+      "raw_request": "看看有我尺码、现在还能买的鞋有哪些，给我款号就行。",
+      "business": "07/business.json",
+      "user": "07/user.json",
+      "acceptance": "07/acceptance.json"
+    },
+    {
+      "id": 8,
+      "stratum": "simple",
+      "title": "待报销票据",
+      "category": "simple_agentic",
+      "raw_request": "帮我找出我还没报销的票据，列一下编号，一共多少钱？",
+      "business": "08/business.json",
+      "user": "08/user.json",
+      "acceptance": "08/acceptance.json"
+    },
+    {
+      "id": 9,
+      "stratum": "ordinary",
+      "title": "订单配送追踪",
+      "category": "multi_step_agentic",
+      "raw_request": "我的订单现在配送到哪儿了？预计什么时候到？",
+      "business": "09/business.json",
+      "user": "09/user.json",
+      "acceptance": "09/acceptance.json"
+    },
+    {
+      "id": 10,
+      "stratum": "ordinary",
+      "title": "设备保修费用",
+      "category": "multi_step_agentic",
+      "raw_request": "这台设备维修还能走保修吗？如果不能，这次检修按对应型号要收多少？",
+      "business": "10/business.json",
+      "user": "10/user.json",
+      "acceptance": "10/acceptance.json"
+    },
+    {
+      "id": 11,
+      "stratum": "ordinary",
+      "title": "部门在职人员",
+      "category": "multi_step_agentic",
+      "raw_request": "帮我查一下这个部门现在有哪些在职同事，给我员工编号和人数。",
+      "business": "11/business.json",
+      "user": "11/user.json",
+      "acceptance": "11/acceptance.json"
+    },
+    {
+      "id": 12,
+      "stratum": "ordinary",
+      "title": "取消健身预约",
+      "category": "multi_step_agentic",
+      "raw_request": "帮我取消这次健身预约。先告诉我会改什么，我确认后再处理，处理完告诉我预约和时段的状态。",
+      "business": "12/business.json",
+      "user": "12/user.json",
+      "acceptance": "12/acceptance.json"
+    },
+    {
+      "id": 13,
+      "stratum": "complex",
+      "title": "审批链追踪",
+      "category": "multi_step_agentic",
+      "raw_request": "帮我从这份申请往下查，列出经过的审批环节顺序、累计耗时和最后负责人的名字，别跳过中间环节。",
+      "business": "13/business.json",
+      "user": "13/user.json",
+      "acceptance": "13/acceptance.json"
+    },
+    {
+      "id": 14,
+      "stratum": "complex",
+      "title": "项目大额报销统计",
+      "category": "multi_step_agentic",
+      "raw_request": "帮我把这个项目已批准、金额超过4900元的报销全部查完，告诉我有多少笔、总金额多少，别只算第一页。",
+      "business": "14/business.json",
+      "user": "14/user.json",
+      "acceptance": "14/acceptance.json"
+    },
+    {
+      "id": 15,
+      "stratum": "complex",
+      "title": "仓库补货资源统计",
+      "category": "multi_step_agentic",
+      "raw_request": "查一下这个仓库还能拿出至少6件的SKU，一共多少种、合计多少件？数据多也请全部核对。",
+      "business": "15/business.json",
+      "user": "15/user.json",
+      "acceptance": "15/acceptance.json"
+    },
+    {
+      "id": 16,
+      "stratum": "complex",
+      "title": "换设备并调整维护",
+      "category": "multi_step_agentic",
+      "raw_request": "我想把当前使用的设备换成兼容且有空余容量的那台。先给我可选设备，我选好并确认改动后再换，也把维护安排一起调整好。",
+      "business": "16/business.json",
+      "user": "16/user.json",
+      "acceptance": "16/acceptance.json"
+    },
+    {
+      "id": 17,
+      "stratum": "complex",
+      "title": "跨仓调拨",
+      "category": "multi_step_agentic",
+      "raw_request": "帮我从源仓给目标仓调拨12件这个SKU，先核实库存并让我确认。调完更新这张调拨单，再告诉我两边库存和单据状态。",
+      "business": "17/business.json",
+      "user": "17/user.json",
+      "acceptance": "17/acceptance.json"
+    },
+    {
+      "id": 18,
+      "stratum": "complex",
+      "title": "开放后登记活动",
+      "category": "multi_step_agentic",
+      "raw_request": "帮我盯一下这个活动，开放后重新确认有名额，再问我是否登记。确认后办好，告诉我有没有成功、还剩几个名额。",
+      "business": "18/business.json",
+      "user": "18/user.json",
+      "acceptance": "18/acceptance.json"
+    },
+    {
+      "id": 19,
+      "stratum": "complex",
+      "title": "预订前更正区域",
+      "category": "multi_step_agentic",
+      "raw_request": "帮我订个场地，先问我的区域偏好，再把可选场地给我选。提交前再跟我确认一次区域，如果我改了主意，就按新区域重新选，别沿用旧方案。",
+      "business": "19/business.json",
+      "user": "19/user.json",
+      "acceptance": "19/acceptance.json"
+    },
+    {
+      "id": 20,
+      "stratum": "complex",
+      "title": "逐项开启服务",
+      "category": "multi_step_agentic",
+      "raw_request": "帮我依次开启这两个服务，每开一个都先让我确认。第一个办完请重新查额度再办第二个；如果第二个额度不够，保留第一个的结果，别一起撤销。最后告诉我两个服务的状态和剩余额度。",
+      "business": "20/business.json",
+      "user": "20/user.json",
+      "acceptance": "20/acceptance.json"
+    }
+  ]
+}

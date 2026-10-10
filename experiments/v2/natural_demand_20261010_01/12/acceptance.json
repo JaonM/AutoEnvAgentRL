@@ -1,0 +1,13 @@
+{
+  "kind": "cancel",
+  "params": {},
+  "observations": {
+    "reservations": [
+      "B1"
+    ],
+    "slots": [
+      "L2"
+    ]
+  },
+  "mutation": null
+}

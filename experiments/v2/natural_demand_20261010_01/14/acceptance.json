@@ -1,0 +1,11 @@
+{
+  "kind": "expenses",
+  "params": {},
+  "observations": {},
+  "mutation": {
+    "table": "expenses",
+    "key": "X4903",
+    "column": "status",
+    "value": "pending"
+  }
+}

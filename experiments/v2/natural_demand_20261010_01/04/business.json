@@ -1,0 +1,5 @@
+{
+  "provenance": "operator-authored synthetic business dossier; frozen before generation",
+  "policy": "优先评分高，再选报价低；两者相同按姓名升序。姓名排序约定甲、乙、丙、丁对应编号A、B、C、D，最后以编号升序打破平局。",
+  "tables": []
+}

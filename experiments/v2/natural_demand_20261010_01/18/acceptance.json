@@ -1,0 +1,13 @@
+{
+  "kind": "enroll",
+  "params": {},
+  "observations": {
+    "activities": [
+      "EV1"
+    ],
+    "registrations": [
+      "RG1"
+    ]
+  },
+  "mutation": null
+}

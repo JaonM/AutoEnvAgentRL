@@ -1,0 +1,18 @@
+{
+  "kind": "shipment",
+  "params": {},
+  "observations": {
+    "orders": [
+      "O1"
+    ],
+    "shipments": [
+      "P2"
+    ]
+  },
+  "mutation": {
+    "table": "shipments",
+    "key": "P2",
+    "column": "status",
+    "value": "delivered"
+  }
+}

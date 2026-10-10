@@ -1,0 +1,10 @@
+{
+  "kind": "duration",
+  "params": {
+    "start_minutes": 560,
+    "end_minutes": 725,
+    "hourly_rate": 24
+  },
+  "observations": {},
+  "mutation": null
+}

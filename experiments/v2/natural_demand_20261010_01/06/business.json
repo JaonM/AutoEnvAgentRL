@@ -1,0 +1,41 @@
+{
+  "provenance": "operator-authored synthetic business dossier; frozen before generation",
+  "policy": "按会员卡编号查询points与enabled，0积分和false启用状态都是有效结果。",
+  "tables": [
+    {
+      "id": "members",
+      "rows": [
+        {
+          "id": "M01",
+          "points": 10,
+          "enabled": true
+        },
+        {
+          "id": "M02",
+          "points": 20,
+          "enabled": true
+        },
+        {
+          "id": "M03",
+          "points": 0,
+          "enabled": false
+        },
+        {
+          "id": "M04",
+          "points": 40,
+          "enabled": true
+        },
+        {
+          "id": "M05",
+          "points": 50,
+          "enabled": true
+        },
+        {
+          "id": "M06",
+          "points": 60,
+          "enabled": true
+        }
+      ]
+    }
+  ]
+}
