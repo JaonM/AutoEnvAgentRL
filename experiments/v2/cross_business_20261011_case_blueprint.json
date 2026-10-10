@@ -1,0 +1,304 @@
+{
+  "version": 1,
+  "status": "case_blueprint_not_frozen_or_measured",
+  "scope": "synthetic heldout business-family baseline preparation",
+  "mix": {
+    "direct": 4,
+    "simple": 4,
+    "ordinary": 4,
+    "complex": 8
+  },
+  "rules": "No old-family substitutions, no prototype use as yield evidence. Build independent fixtures/oracles, audit novelty and public provenance, obtain native natural openings, then freeze before measurement.",
+  "cases": [
+    {
+      "id": 1,
+      "business_family": "library_lending_with_renewal_and_hold_priority",
+      "stratum": "direct",
+      "title": "借阅罚金",
+      "draft_user_request": "这本书晚还了3天，前1天免罚，之后每天2元，单本最多收8元。帮我算一下该交多少。",
+      "public_business_policy": "免罚日按逾期总天数扣除后再计费；罚金不得超过单本上限。",
+      "novel_rule_dimensions": [
+        "grace_period",
+        "capped_penalty"
+      ],
+      "fixture_status": "not_implemented",
+      "independent_oracle_status": "not_implemented"
+    },
+    {
+      "id": 2,
+      "business_family": "library_lending_with_renewal_and_hold_priority",
+      "stratum": "simple",
+      "title": "续借资格",
+      "draft_user_request": "这本书还没看完，帮我看看现在还能不能续借。",
+      "public_business_policy": "续借必须同时满足未逾期、续借次数未达上限、没有其他读者的有效预约；查询当前借阅与实际预约情况，不按缓存标记判断。",
+      "novel_rule_dimensions": [
+        "renewal_limit",
+        "competing_hold"
+      ],
+      "fixture_status": "not_implemented",
+      "independent_oracle_status": "not_implemented"
+    },
+    {
+      "id": 3,
+      "business_family": "library_lending_with_renewal_and_hold_priority",
+      "stratum": "ordinary",
+      "title": "预约排队",
+      "draft_user_request": "我想借的那本书还没到手，帮我查查我排在第几位，前面还有多少个有效预约。",
+      "public_business_policy": "只计算同一书目的未撤销预约；按预约时间升序、ID升序打破平局；排位从1开始，无本人预约则明确告知。",
+      "novel_rule_dimensions": [
+        "active_queue",
+        "stable_priority"
+      ],
+      "fixture_status": "not_implemented",
+      "independent_oracle_status": "not_implemented"
+    },
+    {
+      "id": 4,
+      "business_family": "library_lending_with_renewal_and_hold_priority",
+      "stratum": "complex",
+      "title": "续借与候补",
+      "draft_user_request": "这两本我都想再借一阵子。先看看哪些能续借，每本分别问我确认；续不了的帮我查查候补情况，别把已经办好的那本撤销。",
+      "public_business_policy": "逐本执行资格检查与独立授权；允许部分成功。成功续借更新到期日与续借次数，拒绝或被有效预约阻拦时保持该借阅不变。不得使其他读者失去排队位置。",
+      "novel_rule_dimensions": [
+        "partial_success",
+        "separate_consent",
+        "competing_hold"
+      ],
+      "fixture_status": "not_implemented",
+      "independent_oracle_status": "not_implemented"
+    },
+    {
+      "id": 5,
+      "business_family": "library_lending_with_renewal_and_hold_priority",
+      "stratum": "complex",
+      "title": "预约改取书点",
+      "draft_user_request": "我想把预约的书改到离公司近的取书点。先给我能选的地方，确认改动后再办；取书点没改成功的话，原来的预约要保留。",
+      "public_business_policy": "候选取书点需有该书的可分配副本且支持预约取书。授权后原子释放旧副本、占用新副本并修改预约关联；保留原有排队时间，容量守恒，失败全部不写入。",
+      "novel_rule_dimensions": [
+        "queue_priority_preservation",
+        "copy_reservation",
+        "atomic_reassignment"
+      ],
+      "fixture_status": "not_implemented",
+      "independent_oracle_status": "not_implemented"
+    },
+    {
+      "id": 6,
+      "business_family": "procurement_with_supplier_minimum_orders_and_split_fulfilment",
+      "stratum": "direct",
+      "title": "供应商最低起订",
+      "draft_user_request": "我需要买23件，供应商每箱6件，只按整箱卖，最低两箱。最少要订几箱、会多出几件？",
+      "public_business_policy": "订单必须满足整箱约束和最低箱数，选择覆盖需求的最小箱数，不把最低箱数当作额外加购量。",
+      "novel_rule_dimensions": [
+        "pack_integrality",
+        "minimum_order"
+      ],
+      "fixture_status": "not_implemented",
+      "independent_oracle_status": "not_implemented"
+    },
+    {
+      "id": 7,
+      "business_family": "procurement_with_supplier_minimum_orders_and_split_fulfilment",
+      "stratum": "simple",
+      "title": "报价有效性",
+      "draft_user_request": "帮我看看这份报价现在还能不能下单，最低要买多少。",
+      "public_business_policy": "报价有效期含结束边界；查询当前报价日期与起订量，过期不得当作可下单报价；模拟时间从统一虚拟时间接口获取。",
+      "novel_rule_dimensions": [
+        "quotation_expiry",
+        "minimum_order"
+      ],
+      "fixture_status": "not_implemented",
+      "independent_oracle_status": "not_implemented"
+    },
+    {
+      "id": 8,
+      "business_family": "procurement_with_supplier_minimum_orders_and_split_fulfilment",
+      "stratum": "ordinary",
+      "title": "分供应商采购比较",
+      "draft_user_request": "这批东西一家未必供得齐，帮我比较一下哪些供应商组合能满足数量、最便宜要多少钱。",
+      "public_business_policy": "每供应商独立起订量和箱规，受可供数量上限约束；总覆盖需求，计算有效组合的总费用并按费用、超购量排序，不用单价排序代替组合优化。",
+      "novel_rule_dimensions": [
+        "split_fulfilment",
+        "integer_optimization"
+      ],
+      "fixture_status": "not_implemented",
+      "independent_oracle_status": "not_implemented"
+    },
+    {
+      "id": 9,
+      "business_family": "procurement_with_supplier_minimum_orders_and_split_fulfilment",
+      "stratum": "complex",
+      "title": "分批采购提交",
+      "draft_user_request": "帮我分两家把这批东西买齐。先把每家的数量和费用给我确认，第一家办完再确认第二家；第二家办不了就保留第一笔，并说清楚还缺多少。",
+      "public_business_policy": "每笔采购分别校验报价有效期、箱规、起订量、当前预算与可供量并独立授权；提交原子扣预算和供货量，记录订单；后一笔失败或拒绝不撤销前一笔。",
+      "novel_rule_dimensions": [
+        "budget_allocation",
+        "partial_success",
+        "separate_consent"
+      ],
+      "fixture_status": "not_implemented",
+      "independent_oracle_status": "not_implemented"
+    },
+    {
+      "id": 10,
+      "business_family": "procurement_with_supplier_minimum_orders_and_split_fulfilment",
+      "stratum": "complex",
+      "title": "大批量采购方案",
+      "draft_user_request": "报价很多，帮我把符合交期和质量要求的都查全，再找出能满足这批需求的最低总价采购方案。我确认以后再提交。",
+      "public_business_policy": "完整读取分页报价；排除过期、超交期和质量不达标报价。按供应商箱规、起订量和库存求可行组合；确认后原子执行预算、库存与订单更新，任一条件变化则不写入。",
+      "novel_rule_dimensions": [
+        "large_search",
+        "combinatorial_plan",
+        "atomic_multi_supplier_order"
+      ],
+      "fixture_status": "not_implemented",
+      "independent_oracle_status": "not_implemented"
+    },
+    {
+      "id": 11,
+      "business_family": "subscription_proration_with_effective_dates_and_refund_limits",
+      "stratum": "direct",
+      "title": "订阅按天退款",
+      "draft_user_request": "这个月按30天计费，我付了90元，已经用了11天。按天退款的话能退多少？",
+      "public_business_policy": "未使用天数为账期天数减已用天数；按实际付费比例退款，金额按分取整且不得超过实付。",
+      "novel_rule_dimensions": [
+        "proration",
+        "refund_cap"
+      ],
+      "fixture_status": "not_implemented",
+      "independent_oracle_status": "not_implemented"
+    },
+    {
+      "id": 12,
+      "business_family": "subscription_proration_with_effective_dates_and_refund_limits",
+      "stratum": "simple",
+      "title": "变更生效时间",
+      "draft_user_request": "我之前申请了套餐变更，帮我看看什么时候生效，现在用的还是哪个套餐。",
+      "public_business_policy": "当前套餐按已生效的最近变更确定；未来生效的待处理变更不能覆盖当前套餐，撤销记录不生效。",
+      "novel_rule_dimensions": [
+        "effective_dated_state",
+        "cancelled_changes"
+      ],
+      "fixture_status": "not_implemented",
+      "independent_oracle_status": "not_implemented"
+    },
+    {
+      "id": 13,
+      "business_family": "subscription_proration_with_effective_dates_and_refund_limits",
+      "stratum": "ordinary",
+      "title": "跨账期费用核对",
+      "draft_user_request": "我月中换过一次套餐，帮我核对这期费用怎么算的，别把新套餐算满整个月。",
+      "public_business_policy": "按变更生效日分割账期，每日恰属于一个有效套餐；分段计费后统一按分取整，跨账期变更只影响相应账期。",
+      "novel_rule_dimensions": [
+        "interval_partition",
+        "single_rounding"
+      ],
+      "fixture_status": "not_implemented",
+      "independent_oracle_status": "not_implemented"
+    },
+    {
+      "id": 14,
+      "business_family": "subscription_proration_with_effective_dates_and_refund_limits",
+      "stratum": "complex",
+      "title": "更正变更日期",
+      "draft_user_request": "我想调整套餐，生效日期可能还要改。先告诉我不同日期对费用的影响，按我最后确认的日期提交，别沿用前面的日期。",
+      "public_business_policy": "更正日期使旧报价与授权失效；按最终日期重新计算分段费用并获得精确授权；原子更新变更记录及对应账单，不重复扣费，提交后核验。",
+      "novel_rule_dimensions": [
+        "correction_invalidation",
+        "effective_dates",
+        "idempotent_billing"
+      ],
+      "fixture_status": "not_implemented",
+      "independent_oracle_status": "not_implemented"
+    },
+    {
+      "id": 15,
+      "business_family": "subscription_proration_with_effective_dates_and_refund_limits",
+      "stratum": "complex",
+      "title": "取消与退款处理",
+      "draft_user_request": "帮我取消这两项订阅，分别算清楚能退多少再问我确认。一项已办好、另一项不能退的话，不要把第一项恢复。",
+      "public_business_policy": "每项独立授权；退款受实付减已退款余额限制，不能重复退款。原子更新订阅状态、退款累计和既有退款记录；拒绝或无可退余额时保留正确状态，允许部分成功。",
+      "novel_rule_dimensions": [
+        "refund_ledger",
+        "no_double_refund",
+        "partial_success"
+      ],
+      "fixture_status": "not_implemented",
+      "independent_oracle_status": "not_implemented"
+    },
+    {
+      "id": 16,
+      "business_family": "document_access_grants_with_expiry_and_inherited_permissions",
+      "stratum": "direct",
+      "title": "继承权限判断",
+      "draft_user_request": "上层文件夹允许我读，子文件夹明确拒绝读；文件本身允许我写。按拒绝优先的规则，我到底能读、能写吗？",
+      "public_business_policy": "读写分别判断；同一权限的任一有效显式拒绝优先于允许，写权限不自动授予读权限。",
+      "novel_rule_dimensions": [
+        "deny_precedence",
+        "independent_permissions"
+      ],
+      "fixture_status": "not_implemented",
+      "independent_oracle_status": "not_implemented"
+    },
+    {
+      "id": 17,
+      "business_family": "document_access_grants_with_expiry_and_inherited_permissions",
+      "stratum": "simple",
+      "title": "文件权限查询",
+      "draft_user_request": "帮我看看我现在能不能打开这个文件，不能的话告诉我是哪里挡住的。",
+      "public_business_policy": "沿实际父目录链检查当前用户及其组的有效授权，过期授权无效；同一权限拒绝优先，缺少有效允许则默认拒绝。",
+      "novel_rule_dimensions": [
+        "inheritance",
+        "expiry",
+        "default_deny"
+      ],
+      "fixture_status": "not_implemented",
+      "independent_oracle_status": "not_implemented"
+    },
+    {
+      "id": 18,
+      "business_family": "document_access_grants_with_expiry_and_inherited_permissions",
+      "stratum": "ordinary",
+      "title": "权限差异定位",
+      "draft_user_request": "同一目录下这两个文件，我一个能改、一个不能改。帮我查清楚差在哪里。",
+      "public_business_policy": "分别计算每个文件实际祖先链与文件级有效授权；依据用户组匹配、授权期限和拒绝优先解释差异，不以同目录推断权限相同。",
+      "novel_rule_dimensions": [
+        "ancestry_comparison",
+        "group_membership",
+        "deny_precedence"
+      ],
+      "fixture_status": "not_implemented",
+      "independent_oracle_status": "not_implemented"
+    },
+    {
+      "id": 19,
+      "business_family": "document_access_grants_with_expiry_and_inherited_permissions",
+      "stratum": "complex",
+      "title": "临时授权",
+      "draft_user_request": "我想让同事临时编辑这个目录里的两个文件。先检查有没有上层拒绝限制，把可行的权限和截止时间给我确认后再办。",
+      "public_business_policy": "新授权必须遵守祖先拒绝，不能提升被拒绝权限；仅更新指定对象的既有授权记录，保留其他授权。精确确认对象、权限与有效期；当前虚拟时间达到期限后失效，提交后核验。",
+      "novel_rule_dimensions": [
+        "bounded_grant",
+        "ancestor_constraints",
+        "virtual_expiry"
+      ],
+      "fixture_status": "not_implemented",
+      "independent_oracle_status": "not_implemented"
+    },
+    {
+      "id": 20,
+      "business_family": "document_access_grants_with_expiry_and_inherited_permissions",
+      "stratum": "complex",
+      "title": "长链撤权核验",
+      "draft_user_request": "帮我撤掉这位同事对项目资料的临时编辑权限。目录层级多，请把继承来源查清楚，再问我确认，办完检查有没有其他授权还让他能编辑。",
+      "public_business_policy": "沿完整父目录链及有效组成员关系找出授权来源；只撤销明确确认的授权记录，不能修改无关用户或组。分别提交有独立授权的撤权事务，保留已提交结果并重新计算有效权限。",
+      "novel_rule_dimensions": [
+        "long_chain",
+        "multiple_grant_sources",
+        "separate_revocations"
+      ],
+      "fixture_status": "not_implemented",
+      "independent_oracle_status": "not_implemented"
+    }
+  ]
+}
