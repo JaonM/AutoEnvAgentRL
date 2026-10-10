@@ -31,6 +31,11 @@ def implementation_paths(source):
         prefix = f'/user/stages/{index}'
         paths.append(prefix)
         paths.extend(prefix + '/' + key.replace('~', '~0').replace('/', '~1') for key in stage)
+    # Declared integrity constraints are executable evidence. Fixture rows and
+    # generators are deliberately excluded: example values cannot prove rules.
+    for index, table in enumerate(source.get('tables', [])):
+        paths.extend(f'/tables/{index}/{key}' for key in ('schema', 'primary_key', 'foreign_keys')
+                     if key in table)
     return paths
 
 

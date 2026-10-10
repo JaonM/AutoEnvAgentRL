@@ -7,7 +7,7 @@ from env_factory_v2.challenge import challenge
 from env_factory_v2.contract import ContractError, compile_contract
 from env_factory_v2.demand import layered_demand
 from env_factory_v2.examples import direct
-from env_factory_v2.requirement_review import obligations, validate_review
+from env_factory_v2.requirement_review import obligations, validate_review, implementation_at
 
 
 def fixture():
@@ -84,3 +84,12 @@ def test_case_label_audit_cannot_override_failed_requirement_review():
     assert 'review_audit' in result
     assert not result['passed']
     assert result['status'] == 'inconclusive'
+
+
+def test_declared_integrity_constraints_are_evidence_but_fixture_rows_are_not():
+    source = {'tables': [{'schema': {'type': 'object'}, 'primary_key': 'id',
+                         'foreign_keys': [], 'data': [{'id': 'P1'}]}]}
+    assert implementation_at(source, '/tables/0/primary_key') == 'id'
+    assert implementation_at(source, '/tables/0/foreign_keys') == []
+    with pytest.raises(ContractError):
+        implementation_at(source, '/tables/0/data')

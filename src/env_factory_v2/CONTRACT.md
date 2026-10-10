@@ -462,6 +462,9 @@ and counterexamples must still verify that interpretation.
 For a layered demand, the independent business challenge reviews each cited public
 clause exactly once. Its response links the clause to implementation locations from
 a finite contract-relative catalog and to actual independently executed case IDs.
+Declared table schemas, primary keys and foreign keys may support integrity
+obligations; fixture rows and seed generators cannot establish implementation
+coverage. They remain input data for independent execution.
 Unknown, missing, duplicate or private-fact citations cannot establish coverage.
 A failed clause interpretation remains inconclusive even if every proposed case
 passes or a subsequent case-label audit changes its overall verdict. This is
