@@ -67,3 +67,23 @@ def test_exact_billing_contract_rewards_correct_integer_and_rejects_early_roundi
     world = Sandbox(source)
     assert grade(world, {'cents': 1666})['success']
     assert not grade(Sandbox(source), {'cents': 1665})['success']
+
+
+@pytest.mark.parametrize('operator', ['is_integer', 'rational_sum_floor'])
+def test_unary_shape_error_gives_exact_operand_array_requirement(operator):
+    with pytest.raises(ContractError, match='expected a JSON array of 1 expression operand'):
+        validate_expr({operator: {'ref': 'args.value'}}, roots={'args'})
+
+
+def test_published_rational_map_grammar_executes_exactly():
+    import json
+    from pathlib import Path
+    import re
+    grammar = Path('src/env_factory_v2/CONTRACT.md').read_text()
+    text = re.search(r'An inline map must also be inside the operand array:\n(.*?)\.\nThe outer array',
+        grammar, re.S).group(1)
+    expression = json.loads(text)
+    validate_expr(expression, roots={'vars'})
+    assert evaluate(expression, {'vars': {'segments': [
+        {'price_cents': 1000, 'days': 10, 'period_days': 30},
+        {'price_cents': 2000, 'days': 20, 'period_days': 30}]}}) == 1666

@@ -49,12 +49,23 @@ paths use {"ref":"data.accounts.0.balance"}. Roots depend on context. Operators:
 eq/ne/lt/le/gt/ge/in/contains/add/sub/mul/at take two expression operands;
 floor_div/ceil_div take two integer operands with a nonzero divisor and return
 the exact integer floor/ceiling of their quotient, including negative values.
+Every fixed-arity operator requires a JSON ARRAY of expression objects, even
+when its arity is one. Never write {"is_integer":{"ref":"args.boxes"}}.
+Correct unary syntax is {"is_integer":[{"ref":"args.boxes"}]}.
 is_integer takes one operand and accepts only an integer (never boolean or float).
 rational_sum_floor takes one expression returning a list of at most 10000
 [integer numerator, nonzero integer denominator] pairs. It sums exact rational
 terms before flooring once, returning integer JSON, without floating reciprocals.
 For prorated billing, map each segment to [price_cents * days, period_days], then
 apply rational_sum_floor to the complete list. Never floor each segment first.
+For example, a precomputed segment-pair list uses
+{"rational_sum_floor":[{"ref":"vars.segment_pairs"}]}.
+An inline map must also be inside the operand array:
+{"rational_sum_floor":[{"map":{"items":{"ref":"vars.segments"},"value":
+{"list":[{"mul":[{"ref":"row.price_cents"},{"ref":"row.days"}]},
+{"ref":"row.period_days"}]}}}]}.
+The outer array contains ONE expression; the inner returned list contains the
+rational pairs. Do not remove the outer array or wrap each pair as an operand.
 For refunds use floor_div([paid_cents * unused_days, period_days]); for carton
 coverage use ceil_div([required_units, pack_units]). These examples describe
 operand values; actual operands must use the expression objects below.

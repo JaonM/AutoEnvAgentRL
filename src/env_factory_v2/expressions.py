@@ -91,6 +91,8 @@ def validate_expr(expression, *, roots, depth=0):
     if op in {'and', 'or', 'list', 'object'} or op in ARITY:
         values = list(value.values()) if op == 'object' and isinstance(value, dict) else value
         if not isinstance(values, list) or (op in ARITY and len(values) != ARITY[op]):
+            if op in ARITY:
+                raise ContractError(f'invalid operands: {op}; expected a JSON array of {ARITY[op]} expression operand(s), including unary operators')
             raise ContractError(f'invalid operands: {op}')
         if op in {'and', 'or'} and not values:
             raise ContractError('empty boolean expression')
