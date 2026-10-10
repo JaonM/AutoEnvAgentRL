@@ -185,6 +185,10 @@ class NativeCodeAgent:
             'refusal using scenario user_overrides={approve_STAGE:false}, unchanged business data, and a matching '
             'success branch. Keep base user.facts exactly unchanged; overrides are qualification-only. '
             'For sequential transactions preserve earlier committed writes when later consent is refused. '
+            'required_observations columns must be the minimum publicly required output or decision evidence, '
+            'not every column returned by a tool. Eligibility enforced by the same named query rules need not '
+            'be separately displayed when the user asks only for eligible IDs. Preserve necessary decision '
+            'fields, complete pagination, result dependencies and post-write verification. '
             'Use numeric comparison for scalar number answers derived from arithmetic; keep exact comparison for discrete values. '
             'Include user.profile describing communication style, disclosure boundaries and preferences, '
             'consistent with private facts and original request; never store computed answers there. Do not execute tools.',

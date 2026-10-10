@@ -95,14 +95,22 @@ def assess_process(sandbox):
             require(type(active) is bool, 'branch condition must be boolean')
         except ContractError:
             active = False
-        tool_checks = {tool: bool(equivalent_query_tools(sandbox, tool) & used)
+        def providers_for(tool):
+            # Explicit business observation obligations define the projection.
+            # Without them retain the original full-projection requirement.
+            requirements = [item for item in branch.get('required_observations', [])
+                            if tool in item['tools']]
+            columns = sorted({column for item in requirements for column in item['columns']}) if requirements else None
+            return equivalent_query_tools(sandbox, tool, columns)
+
+        tool_checks = {tool: bool(providers_for(tool) & used)
                        for tool in branch['required_tools']}
         passed = (active and all(tool_checks.values()) and set(branch['required_stages']) <= set(sandbox.user.completed)
                   and branch.get('min_business_calls', 0) <= sandbox.business_attempts
                   <= branch.get('max_business_calls', sandbox.source['limits']['max_actions']))
         if passed:
             passed = all(not sandbox.tools[tool].get('complete_retrieval') or any(complete_retrieval(sandbox, alternative)
-                             for alternative in equivalent_query_tools(sandbox, tool))
+                             for alternative in providers_for(tool))
                          for tool in branch['required_tools'])
         observations = []
         for requirement in branch.get('required_observations', []):

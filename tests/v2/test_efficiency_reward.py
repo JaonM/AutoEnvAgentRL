@@ -64,3 +64,25 @@ def test_partial_view_cannot_replace_required_full_evidence():
     sandbox.interact('size', question='尺码？')
     sandbox.call('find_items_view_id', {'size': 'M'}, call_id='q')
     assert grade(sandbox, {'ids': ['I1']})['reward'] == 0
+
+
+def test_partial_query_satisfies_explicit_id_obligation_but_not_missing_pages():
+    from env_factory_v2.examples import lit, ref
+    from env_factory_v2.tool_interference import augment
+    source = simple()
+    source['tables'][0]['rows'].append({'id': 'I3', 'size': 'M', 'display': '另一款'})
+    source['tools'][0].update(page_size=1, complete_retrieval=True)
+    selected = source['answers'][0]['expected']['map']['items']
+    source['success'] = [{'id': 'ids_observed', 'public': '读取全部合尺码款号。',
+        'when': lit(True), 'required_tools': ['find_items'], 'required_stages': ['size'],
+        'required_observations': [{'id': 'all_ids', 'tools': ['find_items'], 'columns': ['id'],
+            'expected': {'map': {'items': selected, 'value': {'object': {'id': ref('row.id')}}}}}]}]
+    source, _ = augment(source)
+    sandbox = Sandbox(source)
+    sandbox.interact('size', question='尺码？')
+    page = sandbox.call('find_items_view_id', {'size': 'M'}, call_id='q1')
+    import copy
+    assert not grade(copy.deepcopy(sandbox), {'ids': ['I1', 'I3']})['success']
+    sandbox.call('find_items_view_id', {'size': 'M'}, call_id='q2', cursor=page['next_cursor'])
+    assert grade(copy.deepcopy(sandbox), {'ids': ['I1', 'I3']})['success']
+    assert not grade(sandbox, {'ids': ['I1']})['success']
