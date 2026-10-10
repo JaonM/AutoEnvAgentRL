@@ -58,7 +58,17 @@ def linked(left, right, tables):
         return tables[target]['primary_key'] == target_column and any(
             fk['column'] == column and fk['target_table'] == target
             and fk['target_column'] == target_column for fk in tables[source].get('foreign_keys', []))
-    return forward(a, column_a, b, column_b) or forward(b, column_b, a, column_a)
+    def targets(source, column):
+        # Two absent optional relationships do not identify a common entity.
+        # Nullable sibling associations need an explicit public rule instead.
+        if tables[source]['schema']['properties'][column].get('nullable'):
+            return set()
+        return {(fk['target_table'], fk['target_column'])
+                for fk in tables[source].get('foreign_keys', [])
+                if fk['column'] == column
+                and tables[fk['target_table']]['primary_key'] == fk['target_column']}
+    return (forward(a, column_a, b, column_b) or forward(b, column_b, a, column_a)
+            or bool(targets(a, column_a) & targets(b, column_b)))
 
 
 def relational_predicate(expression, table, bindings, tables):

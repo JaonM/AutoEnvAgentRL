@@ -130,19 +130,30 @@ def validate_rule_links(expression, rules, *, shared_filters=False, row_scope=Fa
                 f"public rule {invocation['id']} requires collection/operation row scope: {', '.join(sorted(row_fields))}")
     if 'filter' in expression and shared_filters:
         table = row_table(expression['filter']['items'], tables)
-        def shared(predicate, environment):
+        def shared(predicate, environment, scope_table=table):
             if set(predicate) == {'rule'}:
                 return True
             if set(predicate) == {'let'}:
                 # Capturing lexical values does not add an eligibility clause.
                 # The selected predicate must still be wholly public-rule based;
                 # recursive validation below checks every binding expression too.
-                captured = {name: key_origin(value, table, environment, tables)
+                captured = {name: key_origin(value, scope_table, environment, tables)
                             for name, value in predicate['let']['bindings'].items()}
-                return shared(predicate['let']['value'], {**environment, **captured})
+                return shared(predicate['let']['value'], {**environment, **captured}, scope_table)
             if set(predicate) <= {'and', 'or', 'not'}:
-                return all(shared(item, environment) for values in predicate.values() for item in values)
-            return relational_predicate(predicate, table, environment, tables)
+                return all(shared(item, environment, scope_table) for values in predicate.values() for item in values)
+            # Existence of a publicly selected relation is a join, not a new
+            # quantity threshold. Recursive validation still checks the items,
+            # every nested filter, rule arguments and captured key provenance.
+            if set(predicate) == {'gt'}:
+                left, right = predicate['gt']
+                if (set(right) == {'literal'} and type(right['literal']) is int
+                        and right['literal'] == 0 and set(left) == {'count'}
+                        and set(left['count'][0]) == {'filter'}):
+                    selected = left['count'][0]['filter']
+                    return shared(selected['value'], environment,
+                                  row_table(selected['items'], tables))
+            return relational_predicate(predicate, scope_table, environment, tables)
         require(shared(expression['filter']['value'], bindings), 'reward eligibility filters must invoke named public rules')
     if 'let' in expression:
         value = expression['let']

@@ -211,6 +211,12 @@ and comparison are public. Weights including explanations sum to one.
 Every eligibility filter in reward targets, invariants and actual-state goals MUST invoke
 named public rules (or boolean combinations of them). Declared foreign-key to
 primary-key equality joins may additionally use scalar lexical captures. Membership
+joins also support two nonnullable foreign keys to the same declared primary key.
+Existence joins may use gt(count(filter(...)), literal 0), including nested lexical
+captures, when every inner filter obeys these public-rule/relationship restrictions.
+Other count thresholds are business conditions and require their own public rule.
+Nullable sibling keys never establish a common entity merely by both being null.
+Membership
 joins require a key collection selected by public-rule filters. Matching values or
 column names alone never establish a relationship; literal keys, undeclared joins,
 and additional unshared business conditions remain invalid. A let wrapper may capture
