@@ -18,7 +18,7 @@ from pathlib import Path
 from measure_v2_natural import (PROJECT, read, save, digest, verify_assets, fixture_alignment,
     execute_reference, observation_checks, NativeCodeAgent, require, compile_contract,
     evaluate, grade, certify, V2Episode, expected, equivalent, canonical, sorted_data)
-from v2_natural_semantics import schema, normalize, rename_observations, wrong_projection
+from v2_natural_semantics import schema, normalize, rename_observations, wrong_projection, fill_projections
 
 
 def canonical_truth(spec, business, user, **kwargs):
@@ -38,7 +38,7 @@ def canonical_truth(spec, business, user, **kwargs):
 
 
 def value_checks(answer, truth, entries, aliases):
-    actual = normalize(answer, entries, name_aliases=aliases)
+    actual = normalize(answer, entries, name_aliases=aliases, role_types={k: type(v) for k, v in truth['answer'].items()})
     return [{'id': 'answer_' + k, 'passed': k in actual and equivalent(actual[k], v, unordered=k == 'ids')}
             for k, v in truth['answer'].items()]
 
@@ -54,11 +54,37 @@ def scalar_literals(answer, truth, entries):
             value = truth['answer'][e['role']]
             if e['time_unit'] != 'native':
                 value *= 60 if e['time_unit'] == 'minutes' else 3600
+            if type(answer[e['selectors'][0]['field']]) is int and type(value) is float and value.is_integer():
+                value = int(value)
             answer[e['selectors'][0]['field']] = copy.deepcopy(value)
     return answer
 
 
-def rollout(bundle, row, truth, entries, aliases, agent, root):
+def audited_observations(world, truth, kind, business):
+    checks = observation_checks(world, truth, kind)
+    # An atomic receipt is authoritative evidence of a committed update unless
+    # the dossier explicitly requires a post-commit query. No invented read gate.
+    if '提交后查询' in business['policy'] or '提交后核验' in business['policy']:
+        return checks
+    for check in checks:
+        if not check['id'].startswith('post_commit_') or check['passed']:
+            continue
+        for table, rows in truth['final_state'].items():
+            for row in rows:
+                if check['id'] != 'post_commit_' + table + '_' + row['id']:
+                    continue
+                before = next(r for r in truth['initial'][table] if r['id'] == row['id'])
+                changes = {k: v for k, v in row.items() if v != before[k]}
+                receipt = any(t.get('kind') == 'tool' and t.get('status') == 'ok' and
+                    world.tools[t['tool']]['kind'] == 'transaction' and any(c['table'] == table and c['key'] == row['id']
+                    and all(k in c['set'] and equivalent(c['set'][k], v) for k, v in changes.items())
+                    for c in t['result']['changes']) for t in world.trace)
+                if receipt:
+                    check.update(passed=True, evidence='actual_atomic_commit_receipt_no_postquery_obligation')
+    return checks
+
+
+def rollout(bundle, row, truth, entries, aliases, agent, root, business):
     from measure_v2_natural import ACTION_SCHEMA
     env = V2Episode(bundle)
     start = time.monotonic()
@@ -81,7 +107,7 @@ def rollout(bundle, row, truth, entries, aliases, agent, root):
                 break
         world = env.server.episodes[env.episode]
         outcome = env.finish()
-        checks = value_checks(env.answer or {}, truth, entries, aliases) + observation_checks(world, truth, row['kind'])
+        checks = value_checks(env.answer or {}, truth, entries, aliases) + audited_observations(world, truth, row['kind'], business)
         checks.append({'id': 'full_business_state', 'passed': canonical(sorted_data(world.data)) == canonical(sorted_data(truth['final_state']))})
         return {'passed': env.terminated and outcome['final_reward'] == 1 and outcome['score']['success'] and all(c['passed'] for c in checks),
             'answer': env.answer, 'outcome': outcome, 'checks': checks, 'messages': env.messages,
@@ -90,7 +116,7 @@ def rollout(bundle, row, truth, entries, aliases, agent, root):
         env.close()
 
 
-def audit_sample(row, assets, original, root, connection):
+def audit_sample(row, assets, original, root, connection, reuse=None):
     business, user, spec = (read(assets / row[k]) for k in ('business', 'user', 'acceptance'))
     progress = read(original / 'result.json')
     result = {'id': row['id'], 'stratum': row['stratum'], 'title': row['title'], 'qualified': False,
@@ -106,7 +132,12 @@ def audit_sample(row, assets, original, root, connection):
     from env_factory_v2.fixtures import review_contract
     source, previews = review_contract(compiled['source'])
     agent = NativeCodeAgent.from_connection(connection, evidence_root=root / 'native')
-    review, provenance = agent.ask(
+    mapping_path = reuse / f'sample-{row["id"]:02d}/mapping.json' if reuse else None
+    if mapping_path is not None and mapping_path.exists():
+        old = read(mapping_path)
+        review, provenance = old['response'], {**old['provenance'], 'reused_mapping_sha256': digest(mapping_path)}
+    else:
+        review, provenance = agent.ask(
         'Audit business meaning against the natural request and external dossier. Map every required '
         'semantic role exactly once using declared answer fields and closed dot paths (numeric array '
         'indices or * for array projection). Multiple roles may use different paths of the SAME object '
@@ -118,7 +149,7 @@ def audit_sample(row, assets, original, root, connection):
         'fields or one output layout. Identify genuine missing business obligations. No tools.',
         {'raw_request': row['raw_request'], 'business': business, 'private_user_fixture': user,
          'contract': source, 'fixture_previews': previews, 'public': compiled['public'],
-         'required_roles': list(truth['answer']), 'public_name_aliases': aliases},
+         'required_roles': [{'id': k, 'canonical_type': type(v).__name__} for k, v in truth['answer'].items()], 'public_name_aliases': aliases},
         schema(truth['answer'], [f['id'] for f in compiled['source']['answers']]))
     save(root / 'mapping.json', {'response': review, 'provenance': provenance})
     entries = review['mapping']
@@ -129,7 +160,7 @@ def audit_sample(row, assets, original, root, connection):
             continue
         world = execute_reference(compiled, scenario)
         answer = reference_answer(world, scenario)
-        current = value_checks(answer, truth, entries, aliases) + observation_checks(world, truth, spec['kind'])
+        current = value_checks(answer, truth, entries, aliases) + audited_observations(world, truth, spec['kind'], business)
         current.append({'id': 'full_business_state', 'passed': canonical(sorted_data(world.data)) == canonical(sorted_data(truth['final_state']))})
         if all(c['passed'] for c in current):
             selected, checks = scenario, current
@@ -146,7 +177,8 @@ def audit_sample(row, assets, original, root, connection):
         for stale in [False, True]:
             world = execute_reference(compiled, selected, mutation=spec['mutation'])
             changed_truth = canonical_truth(spec, business, user, mutation=spec['mutation'])
-            answer = (reference_answer(execute_reference(compiled, selected), selected) if stale else reference_answer(world, selected))
+            answer = (reference_answer(execute_reference(compiled, selected), selected) if stale else
+                fill_projections(reference_answer(world, selected), entries, changed_truth['answer'], name_aliases=aliases))
             outcome = grade(world, answer, judge=agent.judge)
             passed = outcome['reward'] < 1 and not outcome['success'] if stale else (
                 outcome['reward'] == 1 and outcome['success']
@@ -166,11 +198,29 @@ def audit_sample(row, assets, original, root, connection):
     if any(t['kind'] == 'transaction' for t in compiled['source']['tools']):
         world = execute_reference(compiled, selected, refuse=True)
         refused_truth = canonical_truth(spec, business, user, refuse=True)
-        answer = reference_answer(world, selected)
+        answer = fill_projections(reference_answer(world, selected), entries, refused_truth['answer'], name_aliases=aliases)
+        for field in compiled['source']['answers']:
+            meaning = field['meaning'].lower()
+            if (field['schema']['type'] == 'boolean' and ('本次' in meaning or 'this execution' in meaning)
+                    and ('提交' in meaning or 'commit' in meaning or '登记' in meaning)):
+                answer[field['id']] = False
         outcome = grade(world, answer, judge=agent.judge)
         checks.append({'id': 'actual_user_decline', 'passed': canonical(sorted_data(world.data)) == canonical(sorted_data(refused_truth['initial']))
             and all(c['passed'] for c in value_checks(answer, refused_truth, entries, aliases))
             and outcome['reward'] == 1 and outcome['success'], 'answer': answer, 'outcome': outcome})
+        # The adapter publishes a policy-callable revoke action. Without an
+        # actual user withdrawal it can manufacture a no-write completion.
+        for case in compiled['source']['scenarios']:
+            if case['expect_success'] and not case.get('mutations') and any(s['kind'] == 'revoke' for s in case['steps']):
+                adverse = execute_reference(compiled, case)
+                adverse_answer = reference_answer(adverse, case)
+                adverse_score = grade(adverse, adverse_answer, judge=agent.judge)
+                wrong_state = canonical(sorted_data(adverse.data)) != canonical(sorted_data(truth['final_state']))
+                manufactured = all(v is True for k, v in user['facts'].items() if k.startswith('approve_'))
+                checks.append({'id': 'policy_cannot_manufacture_user_revocation',
+                    'passed': not (manufactured and wrong_state and adverse_score['reward'] == 1 and adverse_score['success']),
+                    'outcome': adverse_score, 'state_differs_from_approved_request': wrong_state,
+                    'scope': 'adversarial_public_policy_action_not_an_actual_user_withdrawal'})
     result['business_checks'] = checks
     result['semantic_review'] = review
     result['external_qualified'] = review['business_consistent'] and all(c['passed'] for c in checks)
@@ -185,15 +235,19 @@ def audit_sample(row, assets, original, root, connection):
     certificate = certify(copy_bundle)
     result['training_ready'] = certificate['training_ready'] is True
     old_rollout = original / 'rollout.json'
+    if not old_rollout.exists() and reuse:
+        alternative = reuse / f'sample-{row["id"]:02d}/rollout.json'
+        if alternative.exists():
+            old_rollout = alternative
     if old_rollout.exists():
         old = read(old_rollout)
         result['policy_evidence'] = {'source': str(old_rollout), 'sha256': digest(old_rollout), 'reused': True}
         policy_passed = old['outcome']['score']['success'] and old['outcome']['final_reward'] == 1
         policy_passed = policy_passed and all(c['passed'] for c in value_checks(old['answer'] or {}, truth, entries, aliases))
-        policy_passed = policy_passed and all(c['passed'] for c in old['independent_checks'] if not c['id'].startswith('answer_'))
+        policy_passed = policy_passed and all(c['passed'] for c in old.get('independent_checks', old.get('checks', [])) if not c['id'].startswith('answer_'))
         result['policy_success'] = bool(policy_passed)
     else:
-        policy = rollout(copy_bundle, {**row, 'kind': spec['kind']}, truth, entries, aliases, agent, root)
+        policy = rollout(copy_bundle, {**row, 'kind': spec['kind']}, truth, entries, aliases, agent, root, business)
         save(root / 'rollout.json', policy)
         result['policy_evidence'] = {'source': str(root / 'rollout.json'), 'reused': False}
         result['policy_success'] = policy['passed']
@@ -208,23 +262,31 @@ def main():
     parser.add_argument('--assets', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--connection', type=Path, required=True)
+    parser.add_argument('--reuse-mappings', type=Path, help='Reuse sealed semantic mapping and actual policy evidence, no repeat native review')
     args = parser.parse_args()
     seal = read(args.round / 'sealed_manifest.json')
     require(all(digest(args.round / p) == h for p, h in seal['files'].items()), 'original seal changed')
     manifest = verify_assets(args.assets)
+    if args.reuse_mappings:
+        reuse_seal = read(args.reuse_mappings / 'sealed_manifest.json')
+        require(all(digest(args.reuse_mappings / p) == h for p, h in reuse_seal['files'].items()), 'previous audit seal changed')
     args.output.mkdir(parents=True, exist_ok=False)
     protocol = {'scope': 'posthoc_exploratory_measurement_correction_not_fresh_blind_yield',
         'original_seal_sha256': digest(args.round / 'sealed_manifest.json'), 'planned': 20,
         'source_repairs': 0, 'changes': ['closed nested/split answer projections', 'duration unit normalization',
             'public lecturer ID aliases', 'no unrequested submission boolean', 'decimal canonical scalar positives',
             'caller-owned observation-ID invariance', 'actual user-decline verification'],
+        'representation_revision': 3, 'reuse_mappings': str(args.reuse_mappings) if args.reuse_mappings else None,
+        'additional_calibration': ['typed singleton projection', 'preserve integer answer schema during unit inversion',
+            'independent changed-data and decline answers replace fixed reference answers',
+            'commit receipts accepted when dossier has no post-query obligation', 'adversarial policy-controlled revocation guard'],
         'limitation': 'Extra independent audit and some additional policy calls occur after viewing results; exploratory evidence only.'}
     save(args.output / 'protocol.json', protocol)
     results, started = [], time.monotonic()
     for row in manifest['samples']:
         folder = args.output / f'sample-{row["id"]:02d}'
         try:
-            result = audit_sample(row, args.assets, args.round / f'sample-{row["id"]:02d}', folder, args.connection)
+            result = audit_sample(row, args.assets, args.round / f'sample-{row["id"]:02d}', folder, args.connection, args.reuse_mappings)
         except Exception as exc:
             folder.mkdir(exist_ok=True)
             result = {'id': row['id'], 'stratum': row['stratum'], 'title': row['title'], 'qualified': False,

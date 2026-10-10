@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts/experiments'))
-from v2_natural_semantics import normalize, rename_observations, wrong_projection
+from v2_natural_semantics import normalize, rename_observations, wrong_projection, fill_projections
 from env_factory_v2.contract import ContractError
 
 
@@ -59,3 +59,35 @@ def test_wrong_value_changes_only_one_projected_leaf():
     changed = wrong_projection(answer, entry('active', [('ticket', 'active')]))
     assert changed == {'ticket': {'active': True, 'id': 'T1'}, 'fee': 20}
     assert answer['ticket']['active'] is False
+
+
+def test_scalar_projection_requires_one_record_and_never_drops_extra_records():
+    mapping = [entry('active', [('rows', '*.active')], packing='list')]
+    assert normalize({'rows': [{'active': False}]}, mapping, role_types={'active': bool}) == {'active': False}
+    with pytest.raises(ContractError, match='exactly one'):
+        normalize({'rows': [{'active': False}, {'active': True}]}, mapping, role_types={'active': bool})
+
+
+def test_correct_changed_answer_preserves_nested_layout_and_integer_schema():
+    mapping = [entry('covered', [('assessment', 'covered')]), entry('fee', [('assessment', 'fee')]),
+               entry('hours', [('minutes', '')], time_unit='minutes')]
+    answer = {'assessment': {'covered': True, 'fee': 0}, 'minutes': 100}
+    result = fill_projections(answer, mapping, {'covered': False, 'fee': 120, 'hours': 2.75})
+    assert result == {'assessment': {'covered': False, 'fee': 120}, 'minutes': 165}
+    assert type(result['minutes']) is int
+    assert answer['assessment']['covered'] is True
+
+
+def test_receipt_evidence_does_not_override_explicit_postquery_requirement():
+    from audit_v2_natural import audited_observations
+    from env_factory_v2.examples import transaction
+    from env_factory_v2.runtime import Sandbox
+    world = Sandbox(transaction())
+    world.call('accounts', {}, call_id='before')
+    args = {'from_id': {'$result': 'before', 'path': 'items.0.id'},
+            'to_id': {'$result': 'before', 'path': 'items.1.id'}, 'amount': 20}
+    world.interact('approve', question='批准？', proposal={'tool': 'transfer', 'arguments': args})
+    world.call('transfer', args, call_id='write')
+    truth = {'initial': world.initial, 'final_state': world.data, 'observations': {'accounts': ['A', 'B']}}
+    assert all(c['passed'] for c in audited_observations(world, truth, 'transfer', {'policy': '原子提交并报告结果。'}))
+    assert not all(c['passed'] for c in audited_observations(world, truth, 'transfer', {'policy': '提交后查询核验。'}))

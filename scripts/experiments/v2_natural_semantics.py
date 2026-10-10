@@ -36,7 +36,7 @@ def select(value, segments):
     return select(value[int(token)], remaining)
 
 
-def normalize(answer, entries, *, name_aliases=None):
+def normalize(answer, entries, *, name_aliases=None, role_types=None):
     output = {}
     for entry in entries:
         role = entry['role']
@@ -55,6 +55,9 @@ def normalize(answer, entries, *, name_aliases=None):
             value = values[0]
         else:
             value = [part for v in values for part in (v if isinstance(v, list) else [v])]
+        if role_types and role_types.get(role) is not list and isinstance(value, list):
+            require(len(value) == 1, 'scalar semantic role requires exactly one observed value')
+            value = value[0]
         if entry['time_unit'] != 'native':
             require(role == 'hours' and type(value) in {int, float}, 'time conversion applies only to numeric duration')
             value /= 60 if entry['time_unit'] == 'minutes' else 3600
@@ -111,4 +114,45 @@ def wrong_projection(answer, entry):
         value[key] = change(value[key], rest)
         return value
     result[selected['field']] = change(result[selected['field']], segments)
+    return result
+
+
+def fill_projections(answer, entries, truth, *, name_aliases=None):
+    """Insert independently computed answers, keeping the declared layout."""
+    result = copy.deepcopy(answer)
+    def replace(current, segments, value):
+        if not segments:
+            if type(current) is int and type(value) is float and value.is_integer():
+                return int(value)
+            return copy.deepcopy(value)
+        token, *rest = segments
+        if token == '*':
+            require(isinstance(current, list), 'inverse wildcard needs an actual array')
+            values = value if isinstance(value, list) else [value]
+            require(len(current) == len(values), 'inverse projection cannot add or omit records')
+            return [replace(v, rest, replacement) for v, replacement in zip(current, values)]
+        key = int(token) if isinstance(current, list) else token
+        current[key] = replace(current[key], rest, value)
+        return current
+    for e in entries:
+        value = copy.deepcopy(truth[e['role']])
+        if e['names'] != 'native':
+            inverse = {}
+            for key, name in (name_aliases or {}).items():
+                require(name not in inverse, 'inverse aliases must be unambiguous')
+                inverse[name] = key
+            value = [inverse[v] for v in value]
+        if e['time_unit'] != 'native':
+            value *= 60 if e['time_unit'] == 'minutes' else 3600
+        selectors = e['selectors']
+        if len(selectors) == 1:
+            replacements = [value]
+        else:
+            require(e['packing'] == 'list' and isinstance(value, list) and len(value) == len(selectors),
+                    'inverse split projection shape mismatch')
+            replacements = value
+        for selector, replacement in zip(selectors, replacements):
+            field = selector['field']
+            segments = selector['path'].split('.') if selector['path'] else []
+            result[field] = replace(result[field], segments, replacement)
     return result
