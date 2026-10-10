@@ -142,13 +142,26 @@ def test_direct_answer_cannot_get_full_credit_after_unnecessary_tool_attempt():
     assert grade(world, {'temperature': 18})['reward'] == 0
 
 
-def test_simple_route_cannot_be_certified_with_multiple_business_calls():
+def test_simple_route_allows_repeated_reads_without_an_invented_call_cap():
     world = Sandbox(simple())
     world.interact('size', question='尺码？')
     world.call('find_items', {'size': 'M'}, call_id='one')
     world.call('find_items', {'size': 'M'}, call_id='two')
     result = grade(world, {'ids': ['I1']})
-    assert not result['category_valid'] and result['reward'] == 0
+    assert result['category_valid'] and result['reward'] == 1
+
+
+def test_explicit_one_call_business_requirement_still_prevents_multiple_calls():
+    source = simple()
+    source['success'] = [{'id': 'once', 'public': '只允许一次业务查询。', 'when': {'literal': True},
+        'required_tools': ['find_items'], 'required_stages': ['size'],
+        'min_business_calls': 1, 'max_business_calls': 1}]
+    world = Sandbox(source)
+    assert world.compiled['public']['business_call_limit'] == 1
+    world.interact('size', question='尺码？')
+    world.call('find_items', {'size': 'M'}, call_id='one')
+    world.call('find_items', {'size': 'M'}, call_id='two')
+    assert grade(world, {'ids': ['I1']})['reward'] == 0
 
 
 def test_literal_matching_value_does_not_replace_required_result_dependency():

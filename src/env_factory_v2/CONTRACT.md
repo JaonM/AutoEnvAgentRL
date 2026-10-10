@@ -167,8 +167,14 @@ branch must require an actual refusal/revocation state and unchanged business da
 merely failing to execute an approved write must not earn refusal credit. Goals
 and answer targets must follow the same branch decision as success requirements.
 
-answers: [{id,meaning,expected:EXPR,weight,comparison:"exact"|"unordered",schema}].
-Expected roots: data,initial,evidence,user,time. Never reference submitted answer.
+answers: [{id,meaning,expected:EXPR,weight,comparison:"exact"|"unordered"|"numeric",schema}].
+Expected roots: data,initial,user,user_state,time. Never reference submitted answer
+or caller-chosen observation IDs. evidence is ONLY for scenario answer recipes;
+reward targets, state goals, branch conditions and required observation targets
+must remain valid when a policy uses different IDs for the same actual calls.
+Use numeric for scalar decimal calculations. It accepts at most eight binary
+floating-point ULPs, capped at 1e-9 absolute error; this is representation cleanup,
+not a business rounding rule. Integers remain exact and booleans are not numbers.
 Current record facts must follow actual records, not fixture literals. Meaning
 and comparison are public. Weights including explanations sum to one.
 Every eligibility filter in reward targets, invariants and actual-state goals MUST invoke
@@ -183,11 +189,18 @@ not immutable wording or mutable fixture content. Code Agent grades explanations
 only against authoritative evaluated context_fields and actual user turns.
 
 invariants: [{rule_id,predicate:EXPR}], roots data,initial,user,time.
-goals: [{id,rule_ids,predicate:EXPR}], roots data,initial,evidence,user,time.
+goals: [{id,rule_ids,predicate:EXPR}], roots data,initial,user,user_state,time.
 Goals enforce real world outcomes separately from answer accuracy. Writes require
 at least one goal. Example: actual destination balance equals initial balance+20.
 success: [{id,public,when:EXPR,required_tools:[id],required_stages:[id]}].
 required_stages means stages still completed in the current simulator state.
+Simple agentic means one business tool, not a mandatory single call. Optional
+min_business_calls/max_business_calls explicitly bound attempts for a success
+branch, only when justified by the original request or business dossier. Publish
+the limit in branch public text. Do not invent call caps from a category label.
+Actual consent.declined and consent.revoked are different user outcomes. Cover
+real declines; do not use a revoke trajectory as a substitute for user rejection.
+User withdrawal is a trusted user event, never a policy tool to manufacture.
 Optional required_observations on a success branch is a list of
 {id,tools:[QUERY_ID],columns:[COLUMN],expected:EXPRESSION}. expected returns a list
 of row objects with exactly those columns, derived from current authoritative

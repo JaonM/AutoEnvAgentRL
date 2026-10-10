@@ -139,6 +139,11 @@ def free_row_fields(expression):
     return set().union(*(free_row_fields(child) for child in expression_children(expression)))
 
 
+def policy_independent_target(expression):
+    require(not any(ref == 'evidence' or ref.startswith('evidence.') for ref in refs(expression)),
+            'reward targets cannot depend on policy-chosen observation IDs; derive from authoritative data, user state or time')
+
+
 def compile_contract(source):
     source = copy.deepcopy(source)
     try:
@@ -265,10 +270,13 @@ def compile_contract(source):
     require(bool(answers), 'answer contract required')
     for field in answers.values():
         fields(field, ['id', 'meaning', 'expected', 'weight', 'comparison', 'schema'])
-        require(field['comparison'] in {'exact', 'unordered'}, 'unsupported answer comparison')
+        require(field['comparison'] in {'exact', 'unordered', 'numeric'}, 'unsupported answer comparison')
         require(isinstance(field['meaning'], str) and field['meaning'].strip(), 'answer meaning required')
         require(type(field['weight']) in {int, float} and 0 < field['weight'] <= 1, 'invalid answer weight')
         validate_schema(field['schema'])
+        require(field['comparison'] != 'numeric' or field['schema']['type'] in {'integer', 'number'},
+                'numeric comparison requires a scalar numeric answer')
+        policy_independent_target(field['expected'])
         validate_expr(field['expected'], roots={'data', 'initial', 'evidence', 'user', 'user_state', 'time'})
         validate_rule_links(field['expected'], rules, shared_filters=True)
     explanations = named(source.get('explanations', []), 'explanation')
@@ -293,6 +301,7 @@ def compile_contract(source):
     for goal in named(source.get('goals', []), 'state goal').values():
         fields(goal, ['id', 'rule_ids', 'predicate'])
         require(bool(goal['rule_ids']) and set(goal['rule_ids']) <= set(rules), 'state goal rule provenance required')
+        policy_independent_target(goal['predicate'])
         validate_expr(goal['predicate'], roots={'data', 'initial', 'evidence', 'user', 'user_state', 'time'})
         validate_rule_links(goal['predicate'], rules, shared_filters=True)
     require(not any(t['kind'] == 'transaction' for t in tools.values()) or source.get('goals'), 'writes require actual-state goals')
@@ -352,9 +361,16 @@ def compile_contract(source):
         'when': {'literal': True}, 'required_tools': list(tools), 'required_stages': list(stages)}])
     require(bool(success), 'success branches required')
     for branch in named(success, 'success branch').values():
-        fields(branch, ['id', 'public', 'when', 'required_tools', 'required_stages'], ['required_observations'])
+        fields(branch, ['id', 'public', 'when', 'required_tools', 'required_stages'],
+               ['required_observations', 'min_business_calls', 'max_business_calls'])
         require(isinstance(branch['public'], str) and branch['public'].strip(), 'branch meaning required')
         require(set(branch['required_tools']) <= set(tools) and set(branch['required_stages']) <= set(stages), 'unknown success dependency')
+        for bound in ('min_business_calls', 'max_business_calls'):
+            if bound in branch:
+                require(type(branch[bound]) is int and 0 <= branch[bound] <= source['limits']['max_actions'], 'invalid business call bound')
+        require(branch.get('min_business_calls', 0) <= branch.get('max_business_calls', source['limits']['max_actions']),
+                'business call bounds inverted')
+        policy_independent_target(branch['when'])
         validate_expr(branch['when'], roots={'data', 'initial', 'evidence', 'user', 'user_state', 'time'})
         for observation in named(branch.get('required_observations', []), 'required observation').values():
             fields(observation, ['id', 'tools', 'columns', 'expected'], ['after_tools'])
@@ -372,11 +388,13 @@ def compile_contract(source):
                 require(tools[provider]['kind'] == 'query'
                         and set(observation['columns']) <= set(tools[provider]['columns']), 'observation columns must be actual query results')
             validate_expr(observation['expected'], roots={'data', 'initial', 'evidence', 'user', 'user_state', 'time'})
+            policy_independent_target(observation['expected'])
             validate_rule_links(observation['expected'], rules, shared_filters=True)
     digest = hashlib.sha256(canonical(source).encode()).hexdigest()
     from .user_simulator import statechart_spec
     public = {'task': source['task'], 'category': source['category'],
-              'business_call_limit': 0 if category == 'direct_response' else 1 if category == 'simple_agentic' else None,
+              'business_call_limit': 0 if category == 'direct_response' else
+                  max(b['max_business_calls'] for b in success) if all('max_business_calls' in b for b in success) else None,
               'rules': [{'id': r['id'], 'text': r['public']} for r in rules.values()],
               'answer_fields': [{k: v for k, v in a.items() if k not in {'expected', 'weight'}} for a in answers.values()],
               'explanations': [{k: v for k, v in e.items() if k != 'weight'} for e in explanations.values()],

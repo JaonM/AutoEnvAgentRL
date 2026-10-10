@@ -2,13 +2,29 @@
 from __future__ import annotations
 
 import copy
+import math
 from collections import Counter
+from fractions import Fraction
 
 from .contract import require, validate_value
 from .expressions import ContractError, canonical, evaluate, typed_equal
 
 
 def equivalent(actual, expected, comparison):
+    if comparison == 'numeric':
+        if type(actual) not in {int, float} or type(expected) not in {int, float}:
+            return False
+        if actual == expected:
+            return True
+        if type(actual) is int and type(expected) is int:
+            return False
+        try:
+            if not math.isfinite(actual) or not math.isfinite(expected):
+                return False
+            tolerance = min(8 * max(math.ulp(actual), math.ulp(expected)), 1e-9)
+            return abs(Fraction(actual) - Fraction(expected)) <= Fraction(tolerance)
+        except OverflowError:
+            return False
     if comparison == 'unordered':
         if not isinstance(actual, list) or not isinstance(expected, list) or len(actual) != len(expected):
             return False
@@ -66,7 +82,9 @@ def assess_process(sandbox):
             require(type(active) is bool, 'branch condition must be boolean')
         except ContractError:
             active = False
-        passed = active and set(branch['required_tools']) <= used and set(branch['required_stages']) <= set(sandbox.user.completed)
+        passed = (active and set(branch['required_tools']) <= used and set(branch['required_stages']) <= set(sandbox.user.completed)
+                  and branch.get('min_business_calls', 0) <= sandbox.business_attempts
+                  <= branch.get('max_business_calls', sandbox.source['limits']['max_actions']))
         if passed:
             passed = all(not sandbox.tools[tool].get('complete_retrieval') or complete_retrieval(sandbox, tool)
                          for tool in branch['required_tools'])
@@ -108,7 +126,7 @@ def assess_process(sandbox):
             passed = False
         goal_checks.append({'id': goal['id'], 'passed': passed})
     process = any(branch['passed'] for branch in branch_checks) and all(invariant_checks) and all(g['passed'] for g in goal_checks)
-    category_valid = (sandbox.source['category'] != 'simple_agentic' or sandbox.business_attempts == 1)
+    category_valid = sandbox.source['category'] != 'direct_response' or sandbox.business_attempts == 0
     process = process and category_valid
     return {'passed': process and safety, 'process': branch_checks, 'safety': safety,
             'violations': copy.deepcopy(sandbox.violations), 'invariants': invariant_checks,
