@@ -48,6 +48,11 @@ def expected(spec, business, user, *, mutation=None, refuse=False):
     data = expand(business)
     if mutation:
         change(data, mutation)
+    if spec['kind'].startswith('library_'):
+        from v2_library_oracle import expected as library_expected
+        truth = library_expected(spec, data, user['facts'], refuse=refuse)
+        truth['observations'] = copy.deepcopy(spec['observations'])
+        return truth
     final = copy.deepcopy(data)
     facts, kind, p = user['facts'], spec['kind'], spec['params']
     observation = copy.deepcopy(spec['observations'])
