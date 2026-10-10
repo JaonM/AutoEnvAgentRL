@@ -165,7 +165,7 @@ def validate_rule_links(expression, rules, *, shared_filters=False, row_scope=Fa
         validate_rule_links(value['value'], rules, shared_filters=shared_filters, row_scope=row_scope,
                             tables=tables, _row_table=_row_table, _bindings={**bindings, **captured})
         return
-    if 'filter' in expression or 'map' in expression:
+    if 'filter' in expression or 'map' in expression or 'flat_map' in expression:
         value = next(iter(expression.values()))
         validate_rule_links(value['items'], rules, shared_filters=shared_filters, row_scope=row_scope,
                             tables=tables, _row_table=_row_table, _bindings=bindings)
@@ -189,6 +189,8 @@ def expression_children(expression):
         return [value['items']]
     if op == 'walk':
         return [value['items'], value['start']]
+    if op == 'range':
+        return [value['start'], value['stop']]
     return value.values() if isinstance(value, dict) else value
 
 
@@ -201,7 +203,7 @@ def free_row_fields(expression, rules=None):
     op, value = next(iter(expression.items()))
     if op == 'ref':
         return {value.split('.')[1]} if value.startswith('row.') else set()
-    if op in {'filter', 'map'}:
+    if op in {'filter', 'map', 'flat_map'}:
         return free_row_fields(value['items'], rules)
     nested = set().union(*(free_row_fields(child, rules) for child in expression_children(expression)))
     if op == 'rule' and rules is not None:

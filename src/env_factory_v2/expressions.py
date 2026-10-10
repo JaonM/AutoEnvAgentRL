@@ -97,11 +97,19 @@ def validate_expr(expression, *, roots, depth=0):
         for item in values:
             validate_expr(item, roots=roots, depth=depth + 1)
         return
-    if op in {'filter', 'map'}:
+    if op in {'filter', 'map', 'flat_map'}:
         if not isinstance(value, dict) or set(value) != {'items', 'value'}:
             raise ContractError(f'invalid {op} expression')
         validate_expr(value['items'], roots=roots, depth=depth + 1)
         validate_expr(value['value'], roots=roots | {'row'}, depth=depth + 1)
+        return
+    if op == 'range':
+        if not isinstance(value, dict) or set(value) != {'start', 'stop', 'max_items'}:
+            raise ContractError('invalid range expression')
+        if type(value['max_items']) is not int or not 1 <= value['max_items'] <= 10000:
+            raise ContractError('range max_items must be 1..10000')
+        for field in ('start', 'stop'):
+            validate_expr(value[field], roots=roots, depth=depth + 1)
         return
     if op == 'if':
         if not isinstance(value, dict) or set(value) != {'condition', 'then', 'else'}:
@@ -206,14 +214,29 @@ def evaluate(expression, context):
             result.append(copy.deepcopy(row))
             current = row[value['next']]
         return result
-    if op in {'filter', 'map'}:
+    if op == 'range':
+        start, stop = (evaluate(value[field], context) for field in ('start', 'stop'))
+        if type(start) is not int or type(stop) is not int:
+            raise ContractError('range endpoints must be integers')
+        if max(0, stop - start) > value['max_items']:
+            raise ContractError('range exceeds max_items')
+        return list(range(start, stop))
+    if op in {'filter', 'map', 'flat_map'}:
         items = evaluate(value['items'], context)
         if not isinstance(items, list):
             raise ContractError('collection expression requires a list')
+        if op == 'flat_map' and len(items) > 10000:
+            raise ContractError('flat_map exceeds 10000 input items')
         result = []
         for item in items:
             computed = evaluate(value['value'], {**context, 'row': item})
-            if op == 'map':
+            if op == 'flat_map':
+                if not isinstance(computed, list):
+                    raise ContractError('flat_map body must return a list')
+                if len(result) + len(computed) > 10000:
+                    raise ContractError('flat_map exceeds 10000 output items')
+                result.extend(computed)
+            elif op == 'map':
                 result.append(computed)
             elif type(computed) is not bool:
                 raise ContractError('filter condition must be boolean')

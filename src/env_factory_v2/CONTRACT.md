@@ -24,6 +24,14 @@ revocations or stale captures instead of repeating long trajectories. Expectatio
 must remain grounded in original business; inheritance never skips execution.
 
 Expressions have exactly one operator. Literals always use {"literal":VALUE};
+range:{start:EXPR,stop:EXPR,max_items:1..10000} constructs integers from start
+inclusive to stop exclusive, with integer endpoints. Empty/reversed intervals
+return []. Exceeding max_items raises an error; candidates are never truncated.
+flat_map:{items:EXPR,value:EXPR} evaluates value with each item as row and
+concatenates the resulting lists (at most 10000 output items). Non-list bodies
+and budget overflow fail explicitly. Nested flat_map/map with lexical captures
+can construct bounded Cartesian products from actual dynamic stock ranges;
+keep business eligibility in named public rules and use sort for public ranking.
 paths use {"ref":"data.accounts.0.balance"}. Roots depend on context. Operators:
 eq/ne/lt/le/gt/ge/in/contains/add/sub/mul/at take two expression operands;
 floor_div/ceil_div take two integer operands with a nonzero divisor and return
