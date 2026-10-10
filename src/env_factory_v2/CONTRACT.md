@@ -290,7 +290,11 @@ BEFORE that user turn. The source_id must identify a complete menu from the
 current state and the same query; later reads cannot repair an earlier choice.
 An incomplete or stale menu raises `choice requires the complete current observed menu before selection`.
 Tools without complete_retrieval retain their declared partial-menu behavior.
-Direct has zero business tools, stages and tables; simple has one tool; multistep has at least two tools and an
+Direct has zero business tools, stages and tables; simple requires at least one
+business tool and may use multiple necessary reads for the same user goal.
+The task category is preserved from the request; table normalization or splitting
+a read into tools must not force recategorization or hidden fixture shortcuts.
+Multistep has at least two tools and an
 actual result_binding. No padding to satisfy these requirements.
 
 Answer meanings distinguish CURRENT STATE from THIS EXECUTION. A historical

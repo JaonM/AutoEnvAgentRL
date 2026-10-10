@@ -477,7 +477,8 @@ def compile_contract(source):
                 validate_rule_links(expression, rules)
     category = source['category']
     require((category != 'direct_response' or not tools and not stages and not tables and not source['user']['facts']), 'direct response must be stateless and have no private facts')
-    require((category != 'simple_agentic' or sum(t.get('selection_role', 'task') == 'task' for t in tools.values()) == 1), 'simple agentic requires one business tool')
+    require((category != 'simple_agentic' or any(t.get('selection_role', 'task') == 'task'
+            for t in tools.values())), 'simple agentic requires a business tool')
     require((category != 'multi_step_agentic' or len(tools) >= 2
              and any(t.get('result_bindings') for t in tools.values())), 'multistep requires actual result dependencies')
     success = source.setdefault('success', [{'id': 'complete', 'public': 'Complete all declared business tools and user stages.',
