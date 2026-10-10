@@ -192,7 +192,7 @@ def accept(compiled, row, business, user, spec, agent):
         'Do not repeat the selected field name in path. single packing requires exactly one selector; '
         'never select multiple conditional alternatives as one scalar. Allow nested '
         'objects, singleton scalar packing, minutes/seconds conversion for hours, and public lecturer ID aliases. '
-        'Use representation=set_membership only for the independently offered boolean roles when a complete identifier set answers that question; the checker validates the entire set before membership. Use representation=total_quantity only for an independently offered quantity role when the selected value is the total supplied quantity; the host subtracts the declared demand. Otherwise use native. Do not compute or invent values. Never require a particular answer layout. Check missing obligations, '
+        'Use representation=set_membership only for the independently offered boolean roles when a complete identifier set answers that question; the checker validates the entire set before membership. Use representation=total_quantity only for an independently offered quantity role when the selected value is the total supplied quantity; the host subtracts the declared demand. For offered record roles use representation=records and record_layout: identity_path selects the object ID, details_path selects the detail object or array, scope_field selects the permission in each detail (empty for flat records), columns maps each canonical field to a detail-relative path. The host selects the independently declared scope and enum aliases. For other representations provide empty record_layout paths and columns. Otherwise use native. Do not compute or invent values. Never require a particular answer layout. Check missing obligations, '
         'hidden requirements, privacy, unsupported restrictions and actual refusal handling. '
         'Direct refusal is consent.declined; withdrawal after approval is consent.revoked. '
         'A revoked-only success branch does not cover direct refusal. Verify an actual declined '
@@ -203,7 +203,7 @@ def accept(compiled, row, business, user, spec, agent):
          'contract': source, 'fixture_previews': previews, 'public': compiled['public'],
          'executed_direct_refusal': refusal_evidence,
          'required_roles': [{'id': k, 'canonical_type': type(v).__name__} for k,v in truth['answer'].items()],
-         'quantity_offsets': truth.get('quantity_offsets', {}), 'public_name_aliases': aliases, 'set_membership_roles': list(truth.get('set_memberships', {}))}, schema(truth['answer'], [f['id'] for f in source['answers']], set_memberships=truth.get('set_memberships'), quantity_offsets=truth.get('quantity_offsets')))
+         'record_roles': truth.get('record_roles', {}), 'quantity_offsets': truth.get('quantity_offsets', {}), 'public_name_aliases': aliases, 'set_membership_roles': list(truth.get('set_memberships', {}))}, schema(truth['answer'], [f['id'] for f in source['answers']], set_memberships=truth.get('set_memberships'), quantity_offsets=truth.get('quantity_offsets'), record_roles=truth.get('record_roles')))
     entries = review['mapping']
     require(len(entries) == len(truth['answer']) and {e['role'] for e in entries} == set(truth['answer']), 'incomplete semantic mapping')
     selected, checks, reference_attempts = None, [], []
@@ -235,7 +235,7 @@ def accept(compiled, row, business, user, spec, agent):
     checks.extend(state_counterexamples(compiled, selected, truth, agent.judge))
     for entry in entries:
         world = execute_reference(compiled, selected)
-        score = grade(world, wrong_projection(reference_answer(world, selected), entry), judge=agent.judge)
+        score = grade(world, wrong_projection(reference_answer(world, selected), entry, record_roles=truth.get('record_roles')), judge=agent.judge)
         checks.append({'id': 'wrong_' + entry['role'], 'passed': not score['success'], 'outcome': score})
     world = execute_reference(compiled, rename_observations(selected))
     score = grade(world, reference_answer(world, rename_observations(selected)), judge=agent.judge)
@@ -246,7 +246,7 @@ def accept(compiled, row, business, user, spec, agent):
         answer_changed = canonical(changed['answer']) != canonical(truth['answer'])
         for stale in ([False, True] if answer_changed else [False]):
             world = execute_reference(compiled, selected, mutation=spec['mutation'])
-            answer = baseline_answer if stale else fill_projections(reference_answer(world, selected), entries, changed['answer'], name_aliases=aliases, set_memberships=changed.get('set_memberships'), quantity_offsets=changed.get('quantity_offsets'))
+            answer = baseline_answer if stale else fill_projections(reference_answer(world, selected), entries, changed['answer'], name_aliases=aliases, set_memberships=changed.get('set_memberships'), quantity_offsets=changed.get('quantity_offsets'), record_roles=changed.get('record_roles'))
             score = grade(world, answer, judge=agent.judge)
             checks.append({'id': 'stale_answer' if stale else 'changed_answer',
                 'passed': not score['success'] if stale else score['success']
@@ -255,7 +255,7 @@ def accept(compiled, row, business, user, spec, agent):
     if any(t['kind'] == 'transaction' for t in compiled['source']['tools']):
         world = execute_reference(compiled, selected, refuse=True)
         refused = business_truth(spec, business, user, user_request=row['raw_request'], refuse=True, world=world)
-        answer = fill_projections(reference_answer(world, selected), entries, refused['answer'], name_aliases=aliases, set_memberships=refused.get('set_memberships'), quantity_offsets=refused.get('quantity_offsets'))
+        answer = fill_projections(reference_answer(world, selected), entries, refused['answer'], name_aliases=aliases, set_memberships=refused.get('set_memberships'), quantity_offsets=refused.get('quantity_offsets'), record_roles=refused.get('record_roles'))
         for field in compiled['source']['answers']:
             text = field['meaning'].lower()
             if field['schema']['type'] == 'boolean' and ('本次' in text or 'this execution' in text) and any(w in text for w in ['提交', 'commit', '登记']):

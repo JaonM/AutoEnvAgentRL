@@ -12,7 +12,7 @@ from env_factory_v2.code_agent import object_schema
 from env_factory_v2.contract import require
 
 
-def schema(roles, fields, *, set_memberships=None, quantity_offsets=None):
+def schema(roles, fields, *, set_memberships=None, quantity_offsets=None, record_roles=None):
     if not roles:
         return object_schema({'business_consistent': {'type': 'boolean'}, 'reason': {'type': 'string'},
             'mapping': {'type': 'array', 'items': object_schema({})}})
@@ -23,10 +23,15 @@ def schema(roles, fields, *, set_memberships=None, quantity_offsets=None):
             'packing': {'type': 'string', 'enum': ['single', 'list']},
             'time_unit': {'type': 'string', 'enum': ['native', 'minutes', 'seconds']},
             'names': {'type': 'string', 'enum': ['native', 'public_id_to_name']}}
-    if set_memberships or quantity_offsets:
+    if record_roles:
+        projection['record_layout'] = object_schema({
+            'identity_path': {'type': 'string'}, 'details_path': {'type': 'string'},
+            'scope_field': {'type': 'string'}, 'columns': {'type': 'array', 'items': object_schema({
+                'name': {'type': 'string'}, 'path': {'type': 'string'}})}})
+    if set_memberships or quantity_offsets or record_roles:
         projection['representation'] = {'type': 'string', 'enum': ['native']
             + (['set_membership'] if set_memberships else [])
-            + (['total_quantity'] if quantity_offsets else [])}
+            + (['total_quantity'] if quantity_offsets else []) + (['records'] if record_roles else [])}
     return object_schema({'business_consistent': {'type': 'boolean'}, 'reason': {'type': 'string'},
         'mapping': {'type': 'array', 'items': object_schema(projection)}})
 
@@ -59,7 +64,7 @@ def path_segments(path):
     return segments
 
 
-def normalize(answer, entries, *, name_aliases=None, role_types=None, set_memberships=None, quantity_offsets=None):
+def normalize(answer, entries, *, name_aliases=None, role_types=None, set_memberships=None, quantity_offsets=None, record_roles=None):
     output = {}
     for entry in entries:
         role = entry['role']
@@ -96,6 +101,12 @@ def normalize(answer, entries, *, name_aliases=None, role_types=None, set_member
                 value = value[0]
             require(value is None or type(value) is int, 'total quantity must be integer or null')
             value = None if value is None else value - offset
+        elif entry.get('representation', 'native') == 'records':
+            from v2_record_semantics import record_projection
+            descriptor = (record_roles or {}).get(role)
+            require(descriptor and role_types and role_types.get(role) is list
+                    and entry['time_unit'] == entry['names'] == 'native', 'independent record role required')
+            value = record_projection(value, entry['record_layout'], descriptor)
         elif entry.get('representation', 'native') != 'native':
             require(False, 'unknown closed answer representation')
         if role_types and role_types.get(role) is not list and isinstance(value, list):
@@ -139,9 +150,18 @@ def rename_observations(scenario, prefix='independent_'):
     return rewrite(scenario)
 
 
-def wrong_projection(answer, entry):
+def wrong_projection(answer, entry, *, record_roles=None):
     """Change one actual projected value, preserving the surrounding layout."""
     from v2_natural_oracle import wrong_value
+    if entry.get('representation', 'native') == 'records':
+        roles = {entry['role']: list}
+        canonical = normalize(answer, [entry], role_types=roles, record_roles=record_roles)
+        rows = canonical[entry['role']]
+        require(rows, 'negative record projection requires a nonempty array')
+        descriptor = (record_roles or {})[entry['role']]
+        field = descriptor['fields'][0]
+        rows[0][field] = wrong_value(rows[0][field])
+        return fill_projections(answer, [entry], canonical, record_roles=record_roles)
     result = copy.deepcopy(answer)
     selected = entry['selectors'][0]
     segments = path_segments(selected['path'])
@@ -160,7 +180,7 @@ def wrong_projection(answer, entry):
     return result
 
 
-def fill_projections(answer, entries, truth, *, name_aliases=None, set_memberships=None, quantity_offsets=None):
+def fill_projections(answer, entries, truth, *, name_aliases=None, set_memberships=None, quantity_offsets=None, record_roles=None):
     """Insert independently computed answers, keeping the declared layout."""
     result = copy.deepcopy(answer)
     def replace(current, segments, value):
@@ -190,6 +210,14 @@ def fill_projections(answer, entries, truth, *, name_aliases=None, set_membershi
             require(type(offset) is int and offset >= 0 and (value is None or type(value) is int),
                     'independent quantity offset required for inverse projection')
             value = None if value is None else value + offset
+        elif e.get('representation', 'native') == 'records':
+            from v2_record_semantics import record_projection
+            require(len(e['selectors']) == 1 and e['packing'] == 'single', 'inverse records require one array selector')
+            selector = e['selectors'][0]
+            current = select(result[selector['field']], path_segments(selector['path']))
+            descriptor = (record_roles or {}).get(e['role'])
+            require(descriptor, 'independent record role required')
+            value = record_projection(current, e['record_layout'], descriptor, replacement=value)
         if e['names'] != 'native':
             inverse = {}
             for key, name in (name_aliases or {}).items():

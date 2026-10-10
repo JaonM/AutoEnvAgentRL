@@ -129,4 +129,9 @@ def expected(spec, data, facts, *, now=None, refuse=False, submission_times=None
                   'allowed': after['allowed']}
     else:
         raise ValueError('Unknown independent access requirement')
-    return {'answer': answer, 'initial': initial, 'final_state': final, 'observations': {}}
+    result = {'answer': answer, 'initial': initial, 'final_state': final, 'observations': {}}
+    if kind == 'access_compare':
+        result['record_roles'] = {'files': {'identity': 'node_id', 'scope': 'write',
+            'fields': ['allowed', 'allow_sources', 'deny_sources', 'reason'],
+            'aliases': {'reason': {'allowed': 'effective_allow', 'no_allow': 'no_effective_allow'}}}}
+    return result

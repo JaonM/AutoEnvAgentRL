@@ -38,7 +38,7 @@ def canonical_truth(spec, business, user, **kwargs):
 
 
 def value_checks(answer, truth, entries, aliases):
-    actual = normalize(answer, entries, name_aliases=aliases, role_types={k: type(v) for k, v in truth['answer'].items()}, set_memberships=truth.get('set_memberships'), quantity_offsets=truth.get('quantity_offsets'))
+    actual = normalize(answer, entries, name_aliases=aliases, role_types={k: type(v) for k, v in truth['answer'].items()}, set_memberships=truth.get('set_memberships'), quantity_offsets=truth.get('quantity_offsets'), record_roles=truth.get('record_roles'))
     return [{'id': 'answer_' + k, 'passed': k in actual and equivalent(actual[k], v, unordered=k == 'ids')}
             for k, v in truth['answer'].items()]
 
@@ -144,13 +144,13 @@ def audit_sample(row, assets, original, root, connection, reuse=None):
         'field. Ordered results may be split across fields; packing=list concatenates in declared order. '
         'Duration may be minutes/seconds and converts to canonical hours. Public lecturer IDs may map '
         'to names using only the dossier aliases. Do not compute values, reorder results, invent missing '
-        'facts or edit the sandbox. Use representation=total_quantity only for offered quantity roles; the host subtracts the independently declared demand. Task did not require an extra committed/submitted boolean; actual '
+        'facts or edit the sandbox. Use representation=total_quantity only for offered quantity roles; the host subtracts the independently declared demand. For offered record roles representation=records uses identity_path, details_path, scope_field (empty for flat records), and columns of canonical name and detail-relative path; the host owns scope and enum aliases. Other representations use empty record_layout paths and columns. Task did not require an extra committed/submitted boolean; actual '
         'commit correctness is independently checked against full state and trace. Do not require flat '
         'fields or one output layout. Identify genuine missing business obligations. No tools.',
         {'raw_request': row['raw_request'], 'business': business, 'private_user_fixture': user,
          'contract': source, 'fixture_previews': previews, 'public': compiled['public'],
-         'required_roles': [{'id': k, 'canonical_type': type(v).__name__} for k, v in truth['answer'].items()], 'public_name_aliases': aliases, 'quantity_offsets': truth.get('quantity_offsets', {})},
-        schema(truth['answer'], [f['id'] for f in compiled['source']['answers']], quantity_offsets=truth.get('quantity_offsets')))
+         'required_roles': [{'id': k, 'canonical_type': type(v).__name__} for k, v in truth['answer'].items()], 'public_name_aliases': aliases, 'quantity_offsets': truth.get('quantity_offsets', {}), 'record_roles': truth.get('record_roles', {})},
+        schema(truth['answer'], [f['id'] for f in compiled['source']['answers']], quantity_offsets=truth.get('quantity_offsets'), record_roles=truth.get('record_roles')))
     save(root / 'mapping.json', {'response': review, 'provenance': provenance})
     entries = review['mapping']
     require(len(entries) == len(truth['answer']) and {e['role'] for e in entries} == set(truth['answer']), 'posthoc mapping incomplete')
@@ -169,7 +169,7 @@ def audit_sample(row, assets, original, root, connection, reuse=None):
     from env_factory_v2.contract import ContractError
     for entry in entries:
         world = execute_reference(compiled, selected)
-        answer = wrong_projection(reference_answer(world, selected), entry)
+        answer = wrong_projection(reference_answer(world, selected), entry, record_roles=truth.get('record_roles'))
         outcome = grade(world, answer, judge=agent.judge)
         checks.append({'id': 'independent_wrong_' + entry['role'],
                        'passed': outcome['reward'] < 1 and not outcome['success'], 'outcome': outcome})
@@ -178,7 +178,7 @@ def audit_sample(row, assets, original, root, connection, reuse=None):
             world = execute_reference(compiled, selected, mutation=spec['mutation'])
             changed_truth = canonical_truth(spec, business, user, mutation=spec['mutation'])
             answer = (reference_answer(execute_reference(compiled, selected), selected) if stale else
-                fill_projections(reference_answer(world, selected), entries, changed_truth['answer'], name_aliases=aliases, quantity_offsets=changed_truth.get('quantity_offsets')))
+                fill_projections(reference_answer(world, selected), entries, changed_truth['answer'], name_aliases=aliases, quantity_offsets=changed_truth.get('quantity_offsets'), record_roles=changed_truth.get('record_roles')))
             outcome = grade(world, answer, judge=agent.judge)
             passed = outcome['reward'] < 1 and not outcome['success'] if stale else (
                 outcome['success'] is True
@@ -198,7 +198,7 @@ def audit_sample(row, assets, original, root, connection, reuse=None):
     if any(t['kind'] == 'transaction' for t in compiled['source']['tools']):
         world = execute_reference(compiled, selected, refuse=True)
         refused_truth = canonical_truth(spec, business, user, refuse=True)
-        answer = fill_projections(reference_answer(world, selected), entries, refused_truth['answer'], name_aliases=aliases, quantity_offsets=refused_truth.get('quantity_offsets'))
+        answer = fill_projections(reference_answer(world, selected), entries, refused_truth['answer'], name_aliases=aliases, quantity_offsets=refused_truth.get('quantity_offsets'), record_roles=refused_truth.get('record_roles'))
         for field in compiled['source']['answers']:
             meaning = field['meaning'].lower()
             if (field['schema']['type'] == 'boolean' and ('本次' in meaning or 'this execution' in meaning)

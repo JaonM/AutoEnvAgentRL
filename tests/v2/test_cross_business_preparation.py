@@ -34,6 +34,9 @@ def test_all_twenty_reach_shared_truth_without_generated_score_reads():
         if row['acceptance']['kind'] in {'procurement_combination', 'procurement_large'}:
             fields.add('quantity_offsets')
             assert truth['quantity_offsets'] == {'overage': user['facts']['demand']}
+        if row['acceptance']['kind'] == 'access_compare':
+            fields.add('record_roles')
+            assert truth['record_roles']['files']['scope'] == 'write'
         assert set(truth) == fields
         refused = expected(row['acceptance'], row['business'], user, refuse=True, **options)
         assert refused['final_state'] == refused['initial']
