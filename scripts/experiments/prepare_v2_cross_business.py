@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import copy
+import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -111,3 +113,140 @@ def procurement_cases():
             'acceptance': {'kind': kind, 'params': params, 'observations': {}, 'mutation': None},
             'integration_status': 'requires runtime clock and authorization evidence adapter'})
     return result
+
+
+def subscription_cases():
+    blueprints = json.loads(BLUEPRINT.read_text())['cases'][10:15]
+    data = {
+        'subscriptions': [dict(id='S1', reader_id='R1', base_plan_id='A', active=True,
+            paid_cents=9000, period_days=30, refunded_cents=0),
+            dict(id='S2', reader_id='R1', base_plan_id='A', active=True,
+            paid_cents=9000, period_days=30, refunded_cents=9000)],
+        'changes': [dict(id='C1', subscription_id='S1', plan_id='B', effective_day=10, cancelled=False),
+            dict(id='C2', subscription_id='S1', plan_id='A', effective_day=35, cancelled=False),
+            dict(id='C3', subscription_id='S1', plan_id='A', effective_day=20, cancelled=True),
+            dict(id='C4', subscription_id='S2', plan_id='A', effective_day=0, cancelled=False)],
+        'plans': [dict(id='A', period_cents=1000, period_days=30), dict(id='B', period_cents=2000, period_days=30)],
+        'bills': [dict(id='I1', subscription_id='S1', amount_cents=1666, period_start=0, period_end=30)],
+        'refunds': [dict(id='F0', subscription_id='S2', amount_cents=9000)],
+    }
+    details = [
+        ('subscription_refund', {}, dict(paid_cents=9000, period_days=30, used_days=11), []),
+        ('subscription_current', dict(subscription_id='S1', reader_id='R1', change_id='C2'),
+         dict(current_day=20), ['subscriptions', 'changes']),
+        ('subscription_bill', dict(subscription_id='S1', reader_id='R1'), dict(start=0, end=30),
+         ['subscriptions', 'changes', 'plans']),
+        ('subscription_correction', dict(subscription_id='S1', reader_id='R1', change_id='C1', plan_id='B',
+            comparison_days=[10, 15], final_day=15, authorized_day=15, authorized_cents=1500,
+            approve_change=True, bill_id='I1'), dict(start=0, end=30), ['subscriptions', 'changes', 'plans', 'bills']),
+        ('subscription_cancel', dict(subscription_ids=['S1', 'S2'], reader_id='R1', used_days=[11, 11],
+            approvals=[True, True], refund_ids=['F1', 'F2']), {}, ['subscriptions', 'refunds']),
+    ]
+    result = []
+    for blueprint, (kind, facts, params, tables) in zip(blueprints, details):
+        policy = blueprint['public_business_policy'] + ('账期包含起始日、不包含结束日；生效日当天使用新套餐。'
+            '所有金额以分表示，分段费用精确累加后统一向下取整为整数分；退款也向下取整。仅处理本人订阅。')
+        if kind == 'subscription_current':
+            policy += '本实验业务日固定为第20日；报告指定变更的生效日及当前套餐。'
+        if kind == 'subscription_bill':
+            policy += '列出各计费区间的起止日和套餐，以及总费用。'
+        if kind == 'subscription_correction':
+            policy += '授权绑定最终日期和对应总费用；更新既有变更及账单，不新增重复账单。'
+        if kind == 'subscription_cancel':
+            policy += '无可退余额时不取消、不新增退款记录。逐项报告可退金额及实际退款结果。'
+        result.append({'id': blueprint['id'], 'business_family': blueprint['business_family'],
+            'stratum': blueprint['stratum'], 'title': blueprint['title'], 'raw_request': blueprint['draft_user_request'],
+            'business': {'provenance': 'operator-authored synthetic heldout preparation; not frozen',
+                'policy': policy, 'tables': [{'id': key, 'rows': copy.deepcopy(data[key])} for key in tables]},
+            'user': {'facts': facts}, 'acceptance': {'kind': kind, 'params': params, 'observations': {}, 'mutation': None}})
+    return result
+
+
+def access_cases():
+    blueprints = json.loads(BLUEPRINT.read_text())['cases'][15:20]
+    def grant(identity, node, principal='R1', kind='user', permission='write', effect='allow', active=True):
+        return dict(id=identity, node_id=node, principal_id=principal, principal_kind=kind,
+            permission=permission, effect=effect, active=active, starts_at=0, expires_at=None)
+    base = {'nodes': [dict(id='N0', parent_id=None), dict(id='N1', parent_id='N0'),
+                     dict(id='F1', parent_id='N1'), dict(id='F2', parent_id='N1')],
+        'grants': [grant('G1', 'N0', 'T1', 'group'), grant('G2', 'F2', effect='deny'),
+                   grant('G3', 'F1', permission='read'), grant('G4', 'N1', permission='read', effect='deny'),
+                   grant('T0', 'F1', 'R2', active=False), grant('T1', 'F2', 'R2', active=False),
+                   grant('D1', 'N1', 'R2', effect='deny')],
+        'memberships': [dict(id='M1', user_id='R1', group_id='T1', active=True, starts_at=0, expires_at=100)]}
+    details = [
+        ('access_direct', {}, {'effects': [{'permission': 'read', 'effect': 'allow'},
+            {'permission': 'read', 'effect': 'deny'}, {'permission': 'write', 'effect': 'allow'}]}),
+        ('access_query', dict(node_id='F1', user_id='R1'), {}),
+        ('access_compare', dict(node_ids=['F1', 'F2'], user_id='R1'), {}),
+        ('access_temporary', dict(node_ids=['F1', 'F2'], grant_ids=['T0', 'T1'], user_id='R2',
+            expires_at=50, approve_grants=True), {}),
+        ('access_revoke', dict(node_id='F1', user_id='R1', grant_ids=['G1', 'G5'], approvals=[True, False]), {}),
+    ]
+    result = []
+    for blueprint, (kind, facts, params) in zip(blueprints, details):
+        data = copy.deepcopy(base)
+        if kind == 'access_temporary':
+            # One target is feasible, the other has a file-level denial.
+            next(g for g in data['grants'] if g['id'] == 'D1')['node_id'] = 'F2'
+        if kind == 'access_revoke':
+            data['nodes'] = [dict(id=f'N{i}', parent_id=f'N{i-1}' if i else None) for i in range(120)]
+            data['nodes'] += [dict(id='F1', parent_id='N119'), dict(id='F2', parent_id='N119')]
+            data['grants'].append(grant('G5', 'N80'))
+        policy = blueprint['public_business_policy'] + ('授权和组成员关系均在active为真、虚拟累计秒数不小于starts_at、'
+            '且小于expires_at时有效；expires_at为空表示永久有效。权限沿实际parent_id继承，读写独立，拒绝优先，默认拒绝。')
+        if kind in ('access_query', 'access_compare'):
+            policy += '报告有效允许与拒绝的记录编号，并说明无有效允许或显式拒绝的原因。'
+        if kind == 'access_temporary':
+            policy += '两个对象分别检查，允许只授权可行对象；报告当前和截止时点的实际编辑权限。'
+        if kind == 'access_revoke':
+            policy += '授权仅针对明确确认的记录编号；报告原允许来源、剩余来源和最终编辑权限。'
+        result.append({'id': blueprint['id'], 'business_family': blueprint['business_family'],
+            'stratum': blueprint['stratum'], 'title': blueprint['title'], 'raw_request': blueprint['draft_user_request'],
+            'business': {'provenance': 'operator-authored synthetic heldout preparation; not frozen',
+                'policy': policy, 'tables': [] if kind == 'access_direct' else
+                [{'id': key, 'rows': rows} for key, rows in data.items()]},
+            'user': {'facts': facts}, 'acceptance': {'kind': kind, 'params': params, 'observations': {}, 'mutation': None},
+            'integration_status': 'requires runtime clock and authorization evidence adapter'})
+    return result
+
+
+def cases():
+    return library_cases() + procurement_cases() + subscription_cases() + access_cases()
+
+
+def export_preparation(destination):
+    """Materialize reviewable source assets. This is deliberately not a freeze."""
+    rows = cases()
+    destination.mkdir(parents=True, exist_ok=False)
+    manifest = {'version': 1, 'status': 'preparation_only_not_measurement_ready',
+        'scope': 'synthetic cross-business heldout preparation',
+        'mix': {'direct': 4, 'simple': 4, 'ordinary': 4, 'complex': 8},
+        'measurement_ready': False, 'samples': [],
+        'remaining': ['runtime clock and exact authorization evidence integration',
+                      'public provenance and actual novelty audit',
+                      'native natural openings and profile review',
+                      'isolated knowledge graph installation and readback',
+                      'full corpus and fixed protocol freeze']}
+    def save(path, value):
+        path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n')
+    for row in rows:
+        folder = destination / f"{row['id']:02d}"
+        folder.mkdir()
+        for name in ('business', 'user', 'acceptance'):
+            save(folder / f'{name}.json', row[name])
+        save(folder / 'draft_request.json', {'draft_user_request': row['raw_request'],
+            'provenance': 'operator blueprint; not native natural opening'})
+        manifest['samples'].append({key: row[key] for key in ('id', 'business_family', 'stratum', 'title')})
+        manifest['samples'][-1]['assets'] = {name: f"{row['id']:02d}/{name}.json"
+                                           for name in ('business', 'user', 'acceptance', 'draft_request')}
+    save(destination / 'manifest.json', manifest)
+    save(destination / 'preparation_checksums.json', {'is_measurement_freeze': False,
+        'files': {str(path.relative_to(destination)): hashlib.sha256(path.read_bytes()).hexdigest()
+                  for path in sorted(destination.rglob('*.json'))}})
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output', type=Path, required=True)
+    export_preparation(parser.parse_args().output)

@@ -108,3 +108,56 @@ def change_date(data, subscription_id, reader_id, *, change_id, plan_id, day,
         return False, copy.deepcopy(data)
     invoice.update(amount_cents=amount, period_start=start, period_end=end)
     return True, final
+
+
+def expected(spec, data, facts, *, refuse=False):
+    initial = copy.deepcopy(data)
+    final = copy.deepcopy(data)
+    kind, params = spec['kind'], spec['params']
+    if kind == 'subscription_refund':
+        answer = {'refund_cents': refund(params['paid_cents'], params['period_days'], params['used_days'])}
+    elif kind == 'subscription_current':
+        subscription = unique(data['subscriptions'], facts['subscription_id'])
+        if subscription['reader_id'] != facts['reader_id']:
+            raise ValueError('Subscription query identity differs from its owner')
+        selected = unique(data['changes'], facts['change_id'])
+        if selected['subscription_id'] != subscription['id']:
+            raise ValueError('Requested change belongs to a different subscription')
+        answer = {'plan_id': effective_plan(subscription, data['changes'], params['current_day']),
+                  'effective_day': selected['effective_day']}
+    elif kind == 'subscription_bill':
+        subscription = unique(data['subscriptions'], facts['subscription_id'])
+        answer = bill(subscription, data['changes'], data['plans'], params['start'], params['end'])
+    elif kind == 'subscription_correction':
+        common = dict(change_id=facts['change_id'], plan_id=facts['plan_id'], start=params['start'],
+                      end=params['end'], bill_id=facts['bill_id'])
+        committed, final = change_date(data, facts['subscription_id'], facts['reader_id'],
+            day=facts['final_day'], authorized_day=facts['authorized_day'],
+            authorized_cents=facts['authorized_cents'], approved=facts['approve_change'] and not refuse, **common)
+        # Price alternatives independently even when submission is refused.
+        subscription = unique(data['subscriptions'], facts['subscription_id'])
+        estimates = []
+        for day in facts['comparison_days']:
+            altered = copy.deepcopy(data['changes'])
+            unique(altered, facts['change_id']).update(effective_day=day, plan_id=facts['plan_id'], cancelled=False)
+            estimates.append({'day': day, 'amount_cents': bill(subscription, altered, data['plans'],
+                params['start'], params['end'])['amount_cents']})
+        answer = {'estimates': estimates, 'committed': committed}
+    elif kind == 'subscription_cancel':
+        ids, approvals = facts['subscription_ids'], facts['approvals']
+        if len(ids) != 2 or len(set(ids)) != 2 or len(approvals) != 2 or any(type(a) is not bool for a in approvals):
+            raise ValueError('Cancellation requires two distinct subscriptions and independent authorizations')
+        results = []
+        for index, (identity, approved) in enumerate(zip(ids, approvals)):
+            subscription = unique(final['subscriptions'], identity)
+            refundable = refund(subscription['paid_cents'], subscription['period_days'],
+                                facts['used_days'][index], subscription['refunded_cents'])
+            committed, amount, final = cancel_refund(final, identity, facts['reader_id'],
+                used_days=facts['used_days'][index], approved=approved and not refuse,
+                refund_id=facts['refund_ids'][index])
+            results.append({'subscription_id': identity, 'refundable_cents': refundable,
+                            'refunded_cents': amount, 'committed': committed})
+        answer = {'results': results}
+    else:
+        raise ValueError('Unknown subscription business requirement')
+    return {'answer': answer, 'initial': initial, 'final_state': final, 'observations': {}}

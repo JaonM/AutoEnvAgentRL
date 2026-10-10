@@ -48,6 +48,9 @@ def expected(spec, business, user, *, mutation=None, refuse=False):
     data = expand(business)
     if mutation:
         change(data, mutation)
+    if spec['kind'].startswith('subscription_'):
+        from v2_subscription_oracle import expected as subscription_expected
+        return subscription_expected(spec, data, user['facts'], refuse=refuse)
     if spec['kind'].startswith('library_'):
         from v2_library_oracle import expected as library_expected
         truth = library_expected(spec, data, user['facts'], refuse=refuse)

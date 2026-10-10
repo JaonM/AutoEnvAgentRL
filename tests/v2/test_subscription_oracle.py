@@ -94,3 +94,23 @@ def test_date_correction_invalidates_old_authorization_and_updates_bill_once(
         assert change_date(final, 'S1', 'R1', **kwargs)[1] == final
     else:
         assert final == data
+
+
+def test_five_subscription_cases_use_shared_acceptance_and_refusal_truth():
+    from prepare_v2_cross_business import subscription_cases
+    from v2_natural_oracle import expected
+    rows = subscription_cases()
+    assert [r['id'] for r in rows] == [11, 12, 13, 14, 15]
+    truths = [expected(r['acceptance'], r['business'], r['user']) for r in rows]
+    assert truths[0]['answer'] == {'refund_cents': 5700}
+    assert truths[1]['answer'] == {'plan_id': 'B', 'effective_day': 35}
+    assert truths[2]['answer'] == {'amount_cents': 1666, 'intervals': [
+        {'start': 0, 'end': 10, 'plan_id': 'A'}, {'start': 10, 'end': 30, 'plan_id': 'B'}]}
+    assert truths[3]['answer'] == {'estimates': [{'day': 10, 'amount_cents': 1666},
+        {'day': 15, 'amount_cents': 1500}], 'committed': True}
+    assert truths[4]['answer']['results'] == [
+        {'subscription_id': 'S1', 'refundable_cents': 5700, 'refunded_cents': 5700, 'committed': True},
+        {'subscription_id': 'S2', 'refundable_cents': 0, 'refunded_cents': 0, 'committed': False}]
+    for row in rows:
+        refused = expected(row['acceptance'], row['business'], row['user'], refuse=True)
+        assert refused['final_state'] == refused['initial']
