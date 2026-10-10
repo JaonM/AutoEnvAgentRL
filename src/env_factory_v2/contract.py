@@ -48,6 +48,28 @@ def validate_schema(schema, depth=0):
         validate_schema(schema['items'], depth + 1)
 
 
+def validate_user_overrides(source, overrides):
+    """Bound qualification variants to existing typed private facts."""
+    require(isinstance(overrides, dict), 'user overrides must be an object')
+    facts = source['user']['facts']
+    require(set(overrides) <= set(facts), 'unknown private user override')
+    def same_shape(value, original):
+        require(type(value) is type(original), 'private user override type mismatch')
+        if isinstance(value, dict):
+            require(set(value) == set(original), 'private user override fields mismatch')
+            for key in value:
+                same_shape(value[key], original[key])
+        elif isinstance(value, list):
+            require(len(value) <= 10000, 'private user override array limit')
+            require(not value or bool(original), 'private user override lacks item type')
+            for item in value:
+                same_shape(item, original[0])
+        elif isinstance(value, float):
+            require(math.isfinite(value), 'private user override must be finite')
+    for key, value in overrides.items():
+        same_shape(value, facts[key])
+
+
 def validate_value(value, schema, label='value'):
     if value is None and schema.get('nullable') is True:
         return
@@ -325,12 +347,13 @@ def compile_contract(source):
         require(set(event['set']) <= set(tables[event['table']]['schema']['properties']), 'unknown event field')
         require(tables[event['table']]['primary_key'] not in event['set'], 'events cannot change primary keys')
     scenarios = named(source['scenarios'], 'scenario')
-    require(any(s.get('expect_success') is True and not s.get('mutations') for s in scenarios.values()),
+    require(any(s.get('expect_success') is True and not s.get('mutations') and not s.get('user_overrides') for s in scenarios.values()),
             'baseline success scenario required: expect_success=true without initial mutations; use probes for changed-data success')
     require(any(s.get('expect_success') is False for s in scenarios.values()),
             'negative scenario required: expect_success=false; negative probes alone are insufficient')
     for scenario in scenarios.values():
-        fields(scenario, ['id', 'steps', 'answer', 'expect_success'], ['mutations', 'expect_error'])
+        fields(scenario, ['id', 'steps', 'answer', 'expect_success'], ['mutations', 'expect_error', 'user_overrides'])
+        validate_user_overrides(source, scenario.get('user_overrides', {}))
         require(type(scenario['expect_success']) is bool and isinstance(scenario['steps'], list), 'invalid scenario')
         require(len(scenario['steps']) <= source['limits']['max_actions'], 'scenario action budget exceeded')
         require(isinstance(scenario['answer'], dict)
@@ -356,7 +379,8 @@ def compile_contract(source):
                 raise ContractError('unsupported scenario action')
     require(isinstance(source['probes'], list), 'probes must be a list')
     for probe in source['probes']:
-        fields(probe, ['id', 'scenario', 'rule_ids', 'mutations', 'expect_success'], ['answer', 'expect_error'])
+        fields(probe, ['id', 'scenario', 'rule_ids', 'mutations', 'expect_success'], ['answer', 'expect_error', 'user_overrides'])
+        validate_user_overrides(source, probe.get('user_overrides', {}))
         require(probe['scenario'] in scenarios and set(probe['rule_ids']) <= set(rules)
                 and probe['rule_ids'], 'probe must identify actual rules and a scenario')
         require(type(probe['expect_success']) is bool and isinstance(probe['mutations'], list), 'invalid probe')

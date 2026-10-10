@@ -14,6 +14,7 @@ CASE_SCHEMA = object_schema({
     'id': {'type': 'string'}, 'rule_ids': {'type': 'array', 'items': {'type': 'string'}},
     'scenario_id': {'type': 'string'}, 'reason': {'type': 'string'},
     'mutations_json': {'type': 'string'}, 'answer_json': {'type': 'string'},
+    'user_overrides_json': {'type': 'string'},
     'expect_success': {'type': 'boolean'},
 })
 CHALLENGE_SCHEMA = object_schema({'business_consistent': {'type': 'boolean'},
@@ -26,9 +27,9 @@ AUDIT_SCHEMA = object_schema({'business_consistent': {'type': 'boolean'}, 'reaso
 def _repair_recipe_json(value, agent):
     broken = []
     for index, case in enumerate(value['cases']):
-        for field in ('mutations_json', 'answer_json'):
+        for field in ('mutations_json', 'answer_json', 'user_overrides_json'):
             try:
-                json.loads(case[field])
+                json.loads(case.get(field, '{}'))
             except json.JSONDecodeError as exc:
                 _json_content_tokens(case[field])
                 broken.append({'index': index, 'field': field, 'json': case[field], 'error': str(exc)})
@@ -89,9 +90,11 @@ def _challenge(compiled, original_request, agent):
         'mutable selected-record facts, ordering, absence, actual menu choices, authorization and transactions '
         'including private-information leakage and unnecessary user questions '
         'where applicable. Stay within declared data schemas, foreign keys and actual user stages; no invented '
-        'user values. Each case reuses an actual scenario, changes initial records by primary key, and supplies '
+        'user keys or incompatible fact types. user_overrides_json is a JSON object of existing private fact '
+        'overrides for this qualification case only; use {} to retain inherited facts. You may vary approval '
+        'booleans to exercise real refusal. Never change the base fixture or public request. Each case reuses an actual scenario, changes initial records by primary key, and supplies '
         'an independently correct answer recipe (the expression grammar is provided). answer_json and '
-        'mutations_json are JSON strings; use {} to retain the original answer recipe. The verifier owns '
+        'mutations_json and user_overrides_json are JSON strings; use {} to retain the original answer recipe. The verifier owns '
         'intentional-invalid-action expectations inherited from each referenced scenario; never invent runtime '
         'error strings. Include at least one positive and one negative. '
         'For stateless direct tasks, empty data mutations are appropriate. Validate boundary predicates '
@@ -168,6 +171,10 @@ def _execute_case(compiled, case, scenarios, agent, mutation_repair_budget=None)
     require(isinstance(mutations, list) and isinstance(answer, dict), 'invalid challenge recipes')
     scenario.update(id=case['id'], mutations=scenario.get('mutations', []) + mutations,
                     expect_success=case['expect_success'])
+    overrides = json.loads(case.get('user_overrides_json', '{}'))
+    from .contract import validate_user_overrides
+    validate_user_overrides(compiled['source'], overrides)
+    scenario['user_overrides'] = {**scenario.get('user_overrides', {}), **overrides}
     if answer:
         scenario['answer'] = answer
     mutation_repair = None

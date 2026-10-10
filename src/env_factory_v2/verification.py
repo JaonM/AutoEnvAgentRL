@@ -4,7 +4,7 @@ from __future__ import annotations
 import copy
 import hashlib
 
-from .contract import compile_contract, require
+from .contract import compile_contract, require, validate_user_overrides
 from .expressions import ContractError, canonical, evaluate
 from .reward import assess_process, grade
 from .runtime import Sandbox
@@ -24,6 +24,9 @@ def replay_identity(run):
 def run_scenario(compiled, scenario, *, judge=None, recipes_only=False):
     sandbox = Sandbox(compiled)
     sandbox.reset(scenario.get('mutations', []))
+    overrides = scenario.get('user_overrides', {})
+    validate_user_overrides(sandbox.source, overrides)
+    sandbox.user.facts.update(copy.deepcopy(overrides))
     error = None
     try:
         for step in scenario['steps']:
@@ -70,6 +73,7 @@ def authored_cases(compiled):
         scenario = copy.deepcopy(scenarios[probe['scenario']])
         scenario.update(id=probe['id'], mutations=scenario.get('mutations', []) + probe['mutations'],
                         expect_success=probe['expect_success'])
+        scenario['user_overrides'] = {**scenario.get('user_overrides', {}), **probe.get('user_overrides', {})}
         for key in ('answer', 'expect_error'):
             if key in probe:
                 scenario[key] = probe[key]

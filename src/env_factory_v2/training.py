@@ -65,7 +65,7 @@ def certify(root):
     root = Path(root)
     delivery = verify_delivery(root)
     source = compile_contract(json.loads((root / 'contract.json').read_text()))['source']
-    scenario = next(s for s in source['scenarios'] if s['expect_success'] and not s.get('mutations'))
+    scenario = next(s for s in source['scenarios'] if s['expect_success'] and not s.get('mutations') and not s.get('user_overrides'))
     environment = V2Episode(root, _qualification_only=True)
     steps = []
     def call(name, params, identifier):

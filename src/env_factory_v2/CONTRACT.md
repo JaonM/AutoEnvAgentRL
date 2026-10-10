@@ -9,7 +9,7 @@ simple_agentic, multi_step_agentic), task (original public business goal), rules
 tables, tools, user, answers, scenarios, probes, limits, time.
 Optional: explanations, invariants, events, success, goals.
 At least one positive scenario must succeed on the original seeded data without
-any initial mutations, including inherited mutations. Changed-data positives
+any initial mutations or user_overrides, including inherited variants. Changed-data positives
 belong in probes or additional scenarios. Include a negative scenario as well;
 negative probes alone do not replace it. A repair must fix the specific missing
 baseline or negative trajectory, preserving the other valid tests.
@@ -258,7 +258,7 @@ Reading time does not advance it. wait advances virtual time without sleeping.
 events: [{at_seconds,table,key:literal_primary_key,set:{column:literal_value}}].
 Events apply deterministically before actions at their scheduled virtual time.
 
-scenarios: [{id,steps,answer:{answer_id:EXPR},expect_success:boolean,mutations?,expect_error?}].
+scenarios: [{id,steps,answer:{answer_id:EXPR},expect_success:boolean,mutations?,expect_error?,user_overrides?}].
 Provide at least one successful and one failed valid-answer trajectory. An
 intentional invalid-action negative must name expect_error substring explicitly;
 an accidentally broken negative is not evidence of reward discrimination.
@@ -299,7 +299,7 @@ appropriate when there is no mutable data. Boundary tests are evaluator fixtures
 not additional agent answer obligations unless the original request requires them.
 mutations: [{table,key,column,value}] apply to initial fixtures by primary key.
 
-probes: [{id,scenario,rule_ids,mutations,expect_success,answer?,expect_error?}].
+probes: [{id,scenario,rule_ids,mutations,expect_success,answer?,expect_error?,user_overrides?}].
 Cover correct changed-data answers AND wrong stale answers, display-field
 invariance, missing/wrong dependencies, menu absence, exact consent, rollback,
 time boundaries where applicable. Correct independent partial fields may retain
@@ -429,3 +429,12 @@ existing scene nodes. Objects, policies and document hashes come from explicit d
 synthetic imports remain marked synthetic. Snapshot retrieval verifies document hashes
 against the frozen dossiers. It does not claim production knowledge or original scene
 coverage merely because the records are stored in Neo4j.
+
+Qualification-only user_overrides is an object mapping existing private fact keys
+to values with the same exact types and object shape as the base fixture. Unknown
+keys and boolean/numeric substitutions are rejected. A scenario replaces inherited
+overrides; probes and independent cases overlay their explicitly supplied keys.
+Use {"approve_STAGE":false} to exercise direct refusal without changing base
+user.facts. Baseline and training-reference scenarios cannot contain overrides.
+These variants never become public reset parameters or initial agent context.
+Independent review cases carry user_overrides_json="{}" when unchanged.

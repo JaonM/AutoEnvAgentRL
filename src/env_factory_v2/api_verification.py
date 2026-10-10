@@ -10,7 +10,7 @@ from .server import serve
 
 
 def verify_api(source, report, *, agent=None):
-    scenario = next(s for s in source['scenarios'] if s['expect_success'] and not s.get('mutations'))
+    scenario = next(s for s in source['scenarios'] if s['expect_success'] and not s.get('mutations') and not s.get('user_overrides'))
     reference = next(r['first'] for r in report['records'] if r['kind'] == 'scenario' and r['id'] == scenario['id'])
     # This verifier is trusted and can use the reference answer. The agent-facing
     # service never publishes that answer recipe or the private source tables.
