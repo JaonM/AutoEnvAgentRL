@@ -30,6 +30,26 @@ def test_empty_answer_mapping_uses_supported_native_schema():
     validate_value({'business_consistent': True, 'reason': 'state-only task', 'mapping': []}, output_schema)
 
 
+def test_failed_positive_reference_retains_business_evidence():
+    source = direct()
+    source['answers'] = [answer('result', '实付金额', lit(186.6), {'type': 'number'})]
+    source['scenarios'] = [scenario('incorrect_reference', [], {'result': lit(1)}),
+                           scenario('negative', [], {'result': lit(2)}, False)]
+    entries = [{'role': 'payable', 'selectors': [{'field': 'result', 'path': ''}],
+                'packing': 'single', 'time_unit': 'native', 'names': 'native'}]
+    agent = Mock()
+    agent.ask.return_value = ({'business_consistent': True, 'reason': 'reviewed', 'mapping': entries}, {})
+    spec = {'kind': 'discount', 'params': {'prices': [128, 96], 'threshold': 200,
+            'rate': 0.9, 'coupon': 15}, 'observations': {}, 'mutation': None,
+            'answer_obligations': [{'role': 'payable', 'source': 'user_request', 'text': source['task']}]}
+    result = accept(compile_contract(source), {'raw_request': source['task']},
+                    {'policy': '优惠规则', 'tables': []}, {'facts': {}}, spec, agent)
+    assert result['passed'] is False
+    assert result['error'] == 'no independently correct positive reference'
+    assert result['reference_attempts'][0]['scenario'] == 'incorrect_reference'
+    assert any(c['id'] == 'answer_payable' and not c['passed'] for c in result['checks'])
+
+
 def test_predeclared_answer_scope_keeps_complete_transaction_state():
     import copy
     import pytest

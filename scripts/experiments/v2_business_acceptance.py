@@ -96,9 +96,9 @@ def accept(compiled, row, business, user, spec, agent):
          'public_name_aliases': aliases}, schema(truth['answer'], [f['id'] for f in source['answers']]))
     entries = review['mapping']
     require(len(entries) == len(truth['answer']) and {e['role'] for e in entries} == set(truth['answer']), 'incomplete semantic mapping')
-    selected, checks = None, []
+    selected, checks, reference_attempts = None, [], []
     for scenario in compiled['source']['scenarios']:
-        if not scenario['expect_success'] or scenario.get('mutations'):
+        if not scenario['expect_success'] or scenario.get('mutations') or scenario.get('user_overrides'):
             continue
         try:
             world = execute_reference(compiled, scenario)
@@ -108,12 +108,18 @@ def accept(compiled, row, business, user, spec, agent):
             score = grade(world, answer, judge=agent.judge)
             current.append({'id': 'positive_reward', 'passed': score['success'], 'outcome': score})
             checks = current
+            reference_attempts.append({'scenario': scenario['id'], 'checks': current})
             if all(c['passed'] for c in current):
                 selected = scenario
                 break
         except (ValueError, KeyError, TypeError) as error:
             checks = [{'id': 'positive_execution', 'passed': False, 'error': str(error)}]
-    require(selected is not None, 'no independently correct positive reference')
+            reference_attempts.append({'scenario': scenario['id'], 'checks': checks})
+    if selected is None:
+        return {'passed': False, 'mapping': entries, 'review': review, 'provenance': provenance,
+                'checks': checks, 'reference_attempts': reference_attempts,
+                'error': 'no independently correct positive reference',
+                'scope': 'predeclared_independent_business_checks_not_posthoc'}
     checks.extend(state_counterexamples(compiled, selected, truth, agent.judge))
     for entry in entries:
         world = execute_reference(compiled, selected)
