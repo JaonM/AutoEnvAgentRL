@@ -1,7 +1,7 @@
 import json
 import pytest
 
-from env_factory_v2.author_workbench import AuthorWorkbench
+from env_factory_v2.author_workbench import AuthorWorkbench, author_feedback
 from env_factory_v2.contract import ContractError
 from env_factory_v2.examples import direct, simple
 
@@ -48,3 +48,18 @@ def test_unknown_tool_budget_and_snapshot_do_not_grant_other_access():
     assert not bench.call('shell', {'cmd': 'anything'})['passed']
     with pytest.raises(ContractError, match='budget exceeded'):
         bench.call('check_contract', {})
+
+
+def test_compact_feedback_preserves_all_failure_evidence_and_case_counts():
+    report = {'passed': False, 'checks': [
+        {'id': 'good', 'kind': 'scenario', 'passed': True, 'error': None,
+         'workflow': {'process': [{'long_passed_evidence': 'x'*1000}]}},
+        {'id': 'bad', 'kind': 'probe', 'passed': False, 'error': None,
+         'failure_evidence': {'answer': {'actual': 7}}, 'workflow': {'passed': False}}]}
+    compact = author_feedback(report)
+    assert compact['checks'][1] == report['checks'][1]
+    assert compact['checks'][0] == {'id': 'good', 'kind': 'scenario', 'passed': True, 'error': None}
+    assert compact['check_count'] == 2 and compact['failed_count'] == 1
+    assert len(json.dumps(compact)) < len(json.dumps(report))
+    compact['checks'][1]['failure_evidence']['answer']['actual'] = 9
+    assert report['checks'][1]['failure_evidence']['answer']['actual'] == 7

@@ -15,6 +15,18 @@ SECTIONS = frozenset({'version', 'id', 'category', 'task', 'rules', 'tables', 't
     'probes', 'limits', 'time', 'events', 'demand'})
 
 
+def author_feedback(report):
+    """Shorten passing cases only; retain every failing case and its evidence."""
+    result = copy.deepcopy(report)
+    result['checks'] = [
+        {key: check[key] for key in ('id', 'kind', 'passed', 'error') if key in check}
+        if check['passed'] else copy.deepcopy(check)
+        for check in report['checks']]
+    result['check_count'] = len(report['checks'])
+    result['failed_count'] = sum(not check['passed'] for check in report['checks'])
+    return result
+
+
 def decode_json(text):
     require(isinstance(text, str) and len(text.encode()) <= 4 * 1024 * 1024,
             'author JSON size limit')
@@ -40,6 +52,7 @@ class AuthorWorkbench:
         self._replace(source if source is not None else {})
         self.max_operations = max_operations
         self.operations = 0
+        self.last_check = None
 
     def call(self, tool, arguments):
         require(self.operations < self.max_operations, 'author operation budget exceeded')
@@ -58,11 +71,13 @@ class AuthorWorkbench:
                 self._replace(apply_edits(self.source, arguments['edits']))
                 return {'passed': True, 'sections': sorted(self.source)}
             require(tool == 'check_contract' and not arguments, 'unknown author tool')
+            self.last_check = None
             compiled = compile_contract(copy.deepcopy(self.source))
             recipes = preflight_recipes(compiled)
-            return {'passed': recipes['passed'], 'phase': 'recipe_preflight',
-                    'checks': recipes['checks'],
-                    'scope': 'authored_recipe_validation_not_business_acceptance'}
+            self.last_check = {'passed': recipes['passed'], 'phase': 'recipe_preflight',
+                               'checks': recipes['checks'],
+                               'scope': 'authored_recipe_validation_not_business_acceptance'}
+            return author_feedback(self.last_check)
         except ContractError as exc:
             return {'passed': False, 'error': str(exc)}
 
@@ -72,6 +87,7 @@ class AuthorWorkbench:
         require(len(canonical(candidate).encode()) <= 4 * 1024 * 1024,
                 'author contract size limit')
         self.source = copy.deepcopy(candidate)
+        self.last_check = None
 
     def snapshot(self):
         return copy.deepcopy(self.source)

@@ -16,6 +16,9 @@ def test_receipt_tracks_current_draft_and_never_reuses_stale_pass(tmp_path):
     server = AuthorMCP(tmp_path, source=direct())
     assert call(server, 'check_contract', {})['passed']
     first = json.loads((tmp_path/'latest_operation.json').read_text())
+    full = json.loads((tmp_path/'check-0001.json').read_text())
+    assert full['source_identity'] == first['result']['source_identity']
+    assert len(full['result']['checks']) == first['result']['check_count']
     assert call(server, 'put_section', {'section': 'answers', 'value_json': '[]'})['passed']
     latest = json.loads((tmp_path/'latest_operation.json').read_text())
     assert latest['tool'] == 'put_section'

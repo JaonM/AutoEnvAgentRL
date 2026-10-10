@@ -55,6 +55,9 @@ class AuthorMCP:
             digest = hashlib.sha256(canonical(source).encode()).hexdigest()
             value['source_identity'] = digest
             self._save('draft.json', source)
+            if params.get('name') == 'check_contract' and self.workbench.last_check is not None:
+                self._save(f'check-{self.workbench.operations:04d}.json',
+                           {'source_identity': digest, 'result': self.workbench.last_check})
             # This receipt always describes the current draft, never an older
             # successful check after the model has changed a section.
             self._save('latest_operation.json', {'tool': params.get('name'), 'result': value,
