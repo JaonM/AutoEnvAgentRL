@@ -1,7 +1,7 @@
 import copy
 
 from env_factory_v2.contract import compile_contract
-from env_factory_v2.examples import simple
+from env_factory_v2.examples import simple, direct
 from env_factory_v2.verification import preflight_recipes
 
 
@@ -38,3 +38,35 @@ def test_negative_probe_that_actually_gets_full_credit_is_rejected_before_model_
     assert check['error'] is None
     assert check['deterministic_grade']['reward'] == 1
     assert check['deterministic_grade']['success']
+
+
+def explained_direct():
+    source = direct()
+    source['answers'][0]['weight'] = 0.8
+    source['explanations'] = [{'id': 'reason', 'meaning': '解释实际温度', 'weight': 0.2,
+        'criteria': [{'id': 'fact', 'rule_id': 'fixed_fact', 'obligation': '说明实际温度。'}],
+        'context_fields': ['temperature']}]
+    for scenario in source['scenarios']:
+        scenario['answer']['reason'] = {'literal': '温度依据实际规则。'}
+    return source
+
+
+def test_explanation_does_not_hide_wrong_structured_positive_recipe():
+    source = explained_direct()
+    positive = next(s for s in source['scenarios'] if s['expect_success'])
+    positive['answer']['temperature'] = {'literal': 19}
+    report = preflight_recipes(compile_contract(source))
+    record = next(c for c in report['checks'] if c['id'] == positive['id'])
+    assert not record['passed']
+    assert not record['structured_components']['temperature']['passed']
+    assert 'semantic_evidence' not in record and 'deterministic_grade' not in record
+
+
+def test_invalid_reward_target_is_distinct_from_incorrect_submitted_fact():
+    source = explained_direct()
+    source['answers'][0]['expected'] = {'ref': 'data.missing'}
+    report = preflight_recipes(compile_contract(source))
+    record = next(c for c in report['checks'] if c['id'] == 'correct')
+    assert not record['passed']
+    component = record['structured_components']['temperature']
+    assert component['target_error'] and 'unresolved path' in component['error']

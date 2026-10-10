@@ -6,7 +6,7 @@ import hashlib
 
 from .contract import compile_contract, require, validate_user_overrides
 from .expressions import ContractError, canonical, evaluate
-from .reward import assess_process, grade
+from .reward import assess_process, assess_answer_fields, grade
 from .runtime import Sandbox
 
 
@@ -53,6 +53,7 @@ def run_scenario(compiled, scenario, *, judge=None, recipes_only=False):
                 outcome['deterministic_grade'] = grade(sandbox, answer)
             elif scenario['expect_success']:
                 outcome['workflow'] = assess_process(sandbox)
+                outcome['structured_components'] = assess_answer_fields(sandbox, answer)[0]
         else:
             outcome = grade(sandbox, answer, judge=judge)
     except ContractError as exc:
@@ -92,7 +93,8 @@ def preflight_recipes(compiled):
         if deterministic is not None:
             passed = expected_result(scenario, {**run, 'outcome': deterministic})
         elif scenario['expect_success'] and run['error'] is None:
-            passed = passed and workflow['passed']
+            passed = passed and workflow['passed'] and all(
+                item['passed'] for item in run['outcome']['structured_components'].values())
         checks.append({'id': scenario['id'], 'kind': kind, 'passed': passed, 'error': run['error'],
                        **({'failure_evidence': {
                            'expected_success': scenario['expect_success'],
@@ -103,6 +105,8 @@ def preflight_recipes(compiled):
                                if turn.get('kind') == 'tool'],
                            'answer': run['answer']}} if not passed else {}),
                        **({'workflow': workflow} if workflow is not None else {}),
+                       **({'structured_components': run['outcome']['structured_components']}
+                          if 'structured_components' in run['outcome'] else {}),
                        **({'deterministic_grade': deterministic} if deterministic is not None else {})})
     return {'scope': 'trajectory_and_recipe_validation_no_semantic_judgment',
             'passed': all(check['passed'] for check in checks), 'checks': checks}

@@ -185,24 +185,35 @@ def assess_efficiency(sandbox):
             'weight': 0.05, 'scope': 'duplicate successful reads only'}
 
 
+def assess_answer_fields(sandbox, answer):
+    """Deterministic facts only; does not judge prose or finalize an episode."""
+    context = sandbox.context(private=True)
+    components, targets = {}, {}
+    for field in sandbox.source['answers']:
+        try:
+            expected = evaluate(field['expected'], context)
+            validate_value(expected, field['schema'], 'target')
+            targets[field['id']] = expected
+        except ContractError as exc:
+            components[field['id']] = {'passed': False, 'weight': field['weight'],
+                                       'error': str(exc), 'target_error': True}
+            continue
+        try:
+            validate_value(answer[field['id']], field['schema'], field['id'])
+            passed = equivalent(answer[field['id']], expected, field['comparison'])
+            components[field['id']] = {'passed': passed, 'weight': field['weight']}
+        except ContractError as exc:
+            components[field['id']] = {'passed': False, 'weight': field['weight'], 'error': str(exc)}
+    return components, targets
+
+
 def grade(sandbox, answer, *, judge=None):
     require(not sandbox.closed, 'episode already finalized')
     require(isinstance(answer, dict), 'final answer must be an object')
     fields = sandbox.source['answers']
     explanations = sandbox.source.get('explanations', [])
     require(set(answer) == {field['id'] for field in [*fields, *explanations]}, 'final answer fields mismatch')
-    context = sandbox.context(private=True)
-    components, targets = {}, {}
-    for field in fields:
-        try:
-            validate_value(answer[field['id']], field['schema'], field['id'])
-            expected = evaluate(field['expected'], context)
-            validate_value(expected, field['schema'], 'target')
-            targets[field['id']] = expected
-            passed = equivalent(answer[field['id']], expected, field['comparison'])
-            components[field['id']] = {'passed': passed, 'weight': field['weight']}
-        except ContractError as exc:
-            components[field['id']] = {'passed': False, 'weight': field['weight'], 'error': str(exc)}
+    components, targets = assess_answer_fields(sandbox, answer)
     semantic_evidence = {}
     observations = copy.deepcopy([
         turn for turn in sandbox.trace
