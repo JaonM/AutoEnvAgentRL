@@ -25,6 +25,9 @@ def export_bundle(compiled, report, output, *, base_image='python:3.14-slim'):
         if path.suffix in {'.py', '.md'}:
             shutil.copyfile(path, package / path.name)
     (output / 'contract.json').write_text(canonical(compiled['source']) + '\n')
+    if 'demand' in compiled['source']:
+        (output / 'task_spec.json').write_text(canonical(compiled['source']['demand']['task_spec']) + '\n')
+        (output / 'agent_context.json').write_text(canonical(compiled['source']['demand']['agent_context']) + '\n')
     (output / 'user_profile.json').write_text(canonical({'facts': compiled['source']['user']['facts'],
         'profile': compiled['source']['user'].get('profile', {})}) + '\n')
     (output / 'public.json').write_text(canonical(compiled['public']) + '\n')

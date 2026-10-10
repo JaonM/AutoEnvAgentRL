@@ -151,7 +151,7 @@ def compile_contract(source):
     except (ValueError, TypeError) as exc:
         raise ContractError('contract must contain finite JSON data') from exc
     fields(source, ['version', 'id', 'category', 'task', 'rules', 'tables', 'tools', 'user',
-                    'answers', 'scenarios', 'probes', 'limits', 'time'], ['explanations', 'invariants', 'events', 'success', 'goals'])
+                    'answers', 'scenarios', 'probes', 'limits', 'time'], ['explanations', 'invariants', 'events', 'success', 'goals', 'demand'])
     from .scenarios import expand_scenarios
     source['scenarios'] = expand_scenarios(source['scenarios'])
     require(len(canonical(source).encode()) <= 4 * 1024 * 1024, 'expanded contract size limit')
@@ -415,6 +415,9 @@ def compile_contract(source):
                               'time': 'Read virtual datetime/tick/elapsed_seconds without advancing time.',
                               'user-state': 'Read stage states and transition history only; no private facts or proposals; does not advance time.'},
               'limits': source['limits'], 'time': source['time']}
+    if 'demand' in source:
+        from .demand import validate_demand
+        public['agent_context'] = validate_demand(source['demand'], source['task'])
     return {'version': '2.0', 'identity': digest, 'source': source, 'public': public}
 
 

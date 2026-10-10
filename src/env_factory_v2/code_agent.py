@@ -177,6 +177,7 @@ class NativeCodeAgent:
             'Use scenario extends and append_steps to share long reference trajectories and express only '
             'the differences; each inherited case still executes in full. '
             'Preserve all required negative branches, dependencies, scale and transaction objects. '
+            'Use numeric comparison for scalar number answers derived from arithmetic; keep exact comparison for discrete values. '
             'Include user.profile describing communication style, disclosure boundaries and preferences, '
             'consistent with private facts and original request; never store computed answers there. Do not execute tools.',
             {'original_request': request, 'grammar': grammar, 'repair_feedback': feedback},

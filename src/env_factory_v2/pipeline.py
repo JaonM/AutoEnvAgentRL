@@ -57,6 +57,8 @@ def build(request, *, agent, output, source=None, repairs=1, docker=True, base_i
                 attempt['generation_provenance'] = provenance
             else:
                 candidate = copy.deepcopy(source)
+            if 'demand' in request:
+                candidate['demand'] = copy.deepcopy(request['demand'])
             previous_source = copy.deepcopy(candidate)
             attempt['phases']['generation'] = time.monotonic() - phase_start
             save(folder / 'source.json', candidate)

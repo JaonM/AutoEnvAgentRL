@@ -414,3 +414,18 @@ The private continuation captures dialogue, facts, ledger and tokens, and reject
 mismatches. Free dialogue can be enabled on the standalone server using
 `--user-mode free_dialogue`. `validate_v2_free_dialogue.py` runs diagnostic native
 policy/user HTTP rollouts without claiming a fresh yield or training improvement.
+
+## Demand provenance
+
+Optional `demand` separates immutable `user_request`, private `task_spec` and public
+`agent_context`. Task wording must equal the original user request. Every task-spec
+requirement cites the exact user expression or publicly available business policy;
+hidden or invented requirements cannot compile. The graph evidence is private provenance,
+not vocabulary injected into user openings. The public agent context includes the complete
+applicable policy, so the agent is not scored against inaccessible business instructions.
+
+Business graph ingestion uses separate EFV2 labels and frozen namespaces, preserving
+existing scene nodes. Objects, policies and document hashes come from explicit dossiers;
+synthetic imports remain marked synthetic. Snapshot retrieval verifies document hashes
+against the frozen dossiers. It does not claim production knowledge or original scene
+coverage merely because the records are stored in Neo4j.
