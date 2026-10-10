@@ -104,9 +104,13 @@ def normalize(answer, entries, *, name_aliases=None, role_types=None, set_member
         elif entry.get('representation', 'native') == 'records':
             from v2_record_semantics import record_projection
             descriptor = (record_roles or {}).get(role)
-            require(descriptor and role_types and role_types.get(role) is list
+            boolean_records = descriptor and descriptor.get('kind') == 'selected_boolean'
+            require(descriptor and role_types and role_types.get(role) is (bool if boolean_records else list)
                     and entry['time_unit'] == entry['names'] == 'native', 'independent record role required')
             value = record_projection(value, entry['record_layout'], descriptor)
+            if boolean_records:
+                from v2_record_semantics import selected_boolean
+                value = selected_boolean(value, descriptor)
         elif entry.get('representation', 'native') != 'native':
             require(False, 'unknown closed answer representation')
         if role_types and role_types.get(role) is not list and isinstance(value, list):
@@ -154,6 +158,11 @@ def wrong_projection(answer, entry, *, record_roles=None):
     """Change one actual projected value, preserving the surrounding layout."""
     from v2_natural_oracle import wrong_value
     if entry.get('representation', 'native') == 'records':
+        descriptor = (record_roles or {})[entry['role']]
+        if descriptor.get('kind') == 'selected_boolean':
+            canonical = normalize(answer, [entry], role_types={entry['role']: bool}, record_roles=record_roles)
+            canonical[entry['role']] = not canonical[entry['role']]
+            return fill_projections(answer, [entry], canonical, record_roles=record_roles)
         roles = {entry['role']: list}
         canonical = normalize(answer, [entry], role_types=roles, record_roles=record_roles)
         rows = canonical[entry['role']]
@@ -217,6 +226,9 @@ def fill_projections(answer, entries, truth, *, name_aliases=None, set_membershi
             current = select(result[selector['field']], path_segments(selector['path']))
             descriptor = (record_roles or {}).get(e['role'])
             require(descriptor, 'independent record role required')
+            if descriptor.get('kind') == 'selected_boolean':
+                from v2_record_semantics import boolean_replacement
+                value = boolean_replacement(value, descriptor)
             value = record_projection(current, e['record_layout'], descriptor, replacement=value)
         if e['names'] != 'native':
             inverse = {}

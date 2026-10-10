@@ -77,3 +77,27 @@ def record_projection(rows, layout, descriptor, *, replacement=None):
         require(identities == set(replacements), 'replacement cannot add or omit records')
         return originals
     return results
+
+
+def selected_boolean(rows, descriptor):
+    """Validate the entire independently scoped record set before selection."""
+    from env_factory_v2.expressions import canonical
+    identity, field = descriptor['identity'], descriptor['fields'][0]
+    expected = descriptor['complete_records']
+    require(all(type(row[field]) is bool for row in rows), 'record qualification requires strict booleans')
+    require(sorted(canonical(row) for row in rows) == sorted(canonical(row) for row in expected),
+            'independent complete qualification records mismatch')
+    selected = [row[field] for row in rows if row[identity] == descriptor['member']]
+    require(len(selected) <= 1, 'selected qualification record must be unique')
+    return selected[0] if selected else False
+
+
+def boolean_replacement(value, descriptor):
+    require(type(value) is bool, 'selected qualification replacement must be boolean')
+    rows = copy.deepcopy(descriptor['complete_records'])
+    selected = [row for row in rows if row[descriptor['identity']] == descriptor['member']]
+    require(len(selected) <= 1 and (selected or value is False),
+            'cannot invent an eligible record outside the independent scope')
+    if selected:
+        selected[0][descriptor['fields'][0]] = value
+    return rows

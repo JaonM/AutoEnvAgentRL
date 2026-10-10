@@ -29,6 +29,10 @@ def test_all_twenty_reach_shared_truth_without_generated_score_reads():
         fields = {'answer', 'initial', 'final_state', 'observations'}
         if row['acceptance']['kind'] == 'library_renewal_eligibility':
             fields.add('set_memberships')
+            fields.add('record_roles')
+            assert truth['record_roles']['eligible']['kind'] == 'selected_boolean'
+            assert truth['record_roles']['eligible']['complete_records'] == [
+                {'loan_id': 'L1', 'eligible': True}, {'loan_id': 'L2', 'eligible': False}]
             assert truth['set_memberships'] == {'eligible': {
                 'member': user['facts']['loan_id'], 'complete_set': ['L1']}}
         if row['acceptance']['kind'] in {'procurement_combination', 'procurement_large'}:

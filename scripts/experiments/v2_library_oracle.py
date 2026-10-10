@@ -115,6 +115,12 @@ def expected(spec, data, facts, *, refuse=False, approvals=None):
         truth['communication'] = {'available_site_ids': {
             'kind': 'location_options_before_choice', 'expected': available_sites}}
     if kind == 'library_renewal_eligibility':
+        truth['record_roles'] = {'eligible': {
+            'kind': 'selected_boolean', 'identity': 'loan_id', 'fields': ['eligible'],
+            'member': facts['loan_id'], 'complete_records': [
+                {'loan_id': loan['id'], 'eligible': renewal_decision(
+                    final, loan['id'], facts['reader_id'], params['current_day'])[0]}
+                for loan in final['loans'] if loan['reader_id'] == facts['reader_id']]}}
         # A complete owned-loan qualification set can answer the selected loan's
         # boolean question. Validate the entire set, not merely one membership.
         truth['set_memberships'] = {'eligible': {'member': facts['loan_id'],
