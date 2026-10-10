@@ -438,3 +438,10 @@ Use {"approve_STAGE":false} to exercise direct refusal without changing base
 user.facts. Baseline and training-reference scenarios cannot contain overrides.
 These variants never become public reset parameters or initial agent context.
 Independent review cases carry user_overrides_json="{}" when unchanged.
+
+Business relation robustness: resolve associated records by declared keys, not
+array positions. State goals and invariants must survive schema-valid reorderings
+and reciprocal association changes. Include executable probes for those changes.
+A linked entry may itself be terminal; its observed terminal identifier must be
+a valid provider for subsequent owner lookup. Success branches must not require
+a successor call when no successor exists. Retain observed-result provenance.
