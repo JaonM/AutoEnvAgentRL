@@ -387,13 +387,20 @@ def test_explanation_judge_receives_actual_mutated_facts_and_fresh_replay_calls(
         scenario['answer']['reason'] = lit('按实际用户尺码筛选。')
     source['probes'][-1]['answer']['reason'] = lit('按实际用户尺码筛选。')
     contexts = []
+    observations = []
     def judge(payload):
         contexts.append(payload['authoritative_facts'])
+        observations.append(payload['runtime_observations'])
+        assert 'evaluation_time' in payload
+        assert 'data' not in payload and 'initial' not in payload
+        assert all(turn['status'] == 'ok' and turn['kind'] == 'tool'
+                   and 'arguments' in turn and 'time' in turn for turn in payload['runtime_observations'])
         return {'criteria': {'actual_ids': True}, 'provenance': {'id': len(contexts)}}
     _, report = qualify(source, judge=judge)
     assert report['gates']['joint_execution_and_counterexamples']
     assert len(contexts) == 2 * len(report['records'])
     assert {'ids': []} in contexts and {'ids': ['I1']} in contexts
+    assert any(turn['result'].get('items') for turns in observations for turn in turns)
     with pytest.raises(ContractError, match='native semantic judge required'):
         grade(Sandbox(source), {'ids': ['I1'], 'reason': '解释'})
 

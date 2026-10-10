@@ -204,6 +204,14 @@ def grade(sandbox, answer, *, judge=None):
         except ContractError as exc:
             components[field['id']] = {'passed': False, 'weight': field['weight'], 'error': str(exc)}
     semantic_evidence = {}
+    observations = copy.deepcopy([
+        turn for turn in sandbox.trace
+        if turn.get('kind') == 'tool' and turn.get('status') == 'ok'
+        and turn.get('tool') in sandbox.tools])
+    for observation in observations:
+        result = observation['result']
+        if isinstance(result, dict) and result.get('next_cursor') is not None:
+            result['next_cursor'] = '<opaque cursor>'
     for explanation in explanations:
         require(isinstance(answer[explanation['id']], str), 'explanation must be a string')
         require(judge is not None, 'native semantic judge required; no mock or fallback in qualification')
@@ -211,6 +219,8 @@ def grade(sandbox, answer, *, judge=None):
                    'text': answer[explanation['id']],
                    'authoritative_facts': {key: targets[key] for key in explanation['context_fields'] if key in targets},
                    'unresolved_fields': [key for key in explanation['context_fields'] if key not in targets],
+                   'runtime_observations': copy.deepcopy(observations),
+                   'evaluation_time': sandbox.time(),
                    'user_turns': [turn for turn in sandbox.trace if turn['kind'] == 'user']}
         result = judge(payload)
         require(set(result) == {'criteria', 'provenance'}, 'invalid semantic judgment')

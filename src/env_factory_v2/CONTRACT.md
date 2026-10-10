@@ -281,7 +281,13 @@ recipes may use independent expressions to challenge the rule itself.
 explanations: [{id,meaning,criteria:[{id,rule_id,obligation}],context_fields:[answer_id],weight}].
 Criteria describe invariant reasoning obligations over actual runtime facts,
 not immutable wording or mutable fixture content. Code Agent grades explanations
-only against authoritative evaluated context_fields and actual user turns.
+against authoritative evaluated context_fields, actual user turns, and successful
+executed business tool observations (actual arguments, results, times and snapshot
+versions). No undisclosed table or private user facts are supplied to the judge.
+Observations support explanations of actual relationships, validity intervals and
+verification; stale observations cannot override the evaluated current target.
+Declare obligations that have such evidence; do not require reciting unused
+general rules or facts absent from both context_fields and actual observations.
 
 invariants: [{rule_id,predicate:EXPR}], roots data,initial,user,time.
 goals: [{id,rule_ids,predicate:EXPR}], roots data,initial,user,user_state,time.
