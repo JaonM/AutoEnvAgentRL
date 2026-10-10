@@ -198,7 +198,11 @@ not a business rounding rule. Integers remain exact and booleans are not numbers
 Current record facts must follow actual records, not fixture literals. Meaning
 and comparison are public. Weights including explanations sum to one.
 Every eligibility filter in reward targets, invariants and actual-state goals MUST invoke
-named public rules (or boolean combinations of them). A let wrapper may capture
+named public rules (or boolean combinations of them). Declared foreign-key to
+primary-key equality joins may additionally use scalar lexical captures. Membership
+joins require a key collection selected by public-rule filters. Matching values or
+column names alone never establish a relationship; literal keys, undeclared joins,
+and additional unshared business conditions remain invalid. A let wrapper may capture
 arguments before invoking those rules; its value still obeys the same restriction.
 Never duplicate a tool's
 eligibility predicate manually in an expected expression. Use filter/map with

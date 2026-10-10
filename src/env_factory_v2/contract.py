@@ -114,7 +114,10 @@ def validate_data(contract, data):
                 require(canonical(row[fk['column']]) in targets, f'{name}: foreign key violation')
 
 
-def validate_rule_links(expression, rules, *, shared_filters=False, row_scope=False):
+def validate_rule_links(expression, rules, *, shared_filters=False, row_scope=False,
+                        tables=None, _row_table=None, _bindings=None):
+    from .key_provenance import key_origin, row_table, relational_predicate
+    tables, bindings = tables or {}, _bindings or {}
     if not isinstance(expression, dict) or set(expression) == {'literal'}:
         return
     if 'rule' in expression:
@@ -126,25 +129,41 @@ def validate_rule_links(expression, rules, *, shared_filters=False, row_scope=Fa
         require(row_scope or not row_fields,
                 f"public rule {invocation['id']} requires collection/operation row scope: {', '.join(sorted(row_fields))}")
     if 'filter' in expression and shared_filters:
-        def shared(predicate):
+        table = row_table(expression['filter']['items'], tables)
+        def shared(predicate, environment):
             if set(predicate) == {'rule'}:
                 return True
             if set(predicate) == {'let'}:
                 # Capturing lexical values does not add an eligibility clause.
                 # The selected predicate must still be wholly public-rule based;
                 # recursive validation below checks every binding expression too.
-                return shared(predicate['let']['value'])
+                captured = {name: key_origin(value, table, environment, tables)
+                            for name, value in predicate['let']['bindings'].items()}
+                return shared(predicate['let']['value'], {**environment, **captured})
             if set(predicate) <= {'and', 'or', 'not'}:
-                return all(shared(item) for values in predicate.values() for item in values)
-            return False
-        require(shared(expression['filter']['value']), 'reward eligibility filters must invoke named public rules')
+                return all(shared(item, environment) for values in predicate.values() for item in values)
+            return relational_predicate(predicate, table, environment, tables)
+        require(shared(expression['filter']['value'], bindings), 'reward eligibility filters must invoke named public rules')
+    if 'let' in expression:
+        value = expression['let']
+        for child in value['bindings'].values():
+            validate_rule_links(child, rules, shared_filters=shared_filters, row_scope=row_scope,
+                                tables=tables, _row_table=_row_table, _bindings=bindings)
+        captured = {name: key_origin(child, _row_table, bindings, tables)
+                    for name, child in value['bindings'].items()}
+        validate_rule_links(value['value'], rules, shared_filters=shared_filters, row_scope=row_scope,
+                            tables=tables, _row_table=_row_table, _bindings={**bindings, **captured})
+        return
     if 'filter' in expression or 'map' in expression:
         value = next(iter(expression.values()))
-        validate_rule_links(value['items'], rules, shared_filters=shared_filters, row_scope=row_scope)
-        validate_rule_links(value['value'], rules, shared_filters=shared_filters, row_scope=True)
+        validate_rule_links(value['items'], rules, shared_filters=shared_filters, row_scope=row_scope,
+                            tables=tables, _row_table=_row_table, _bindings=bindings)
+        validate_rule_links(value['value'], rules, shared_filters=shared_filters, row_scope=True,
+                            tables=tables, _row_table=row_table(value['items'], tables), _bindings=bindings)
     else:
         for child in expression_children(expression):
-            validate_rule_links(child, rules, shared_filters=shared_filters, row_scope=row_scope)
+            validate_rule_links(child, rules, shared_filters=shared_filters, row_scope=row_scope,
+                                tables=tables, _row_table=_row_table, _bindings=bindings)
 
 
 def expression_children(expression):
@@ -356,7 +375,7 @@ def compile_contract(source):
                 'numeric comparison requires a scalar numeric answer')
         policy_independent_target(field['expected'])
         validate_expr(field['expected'], roots={'data', 'initial', 'evidence', 'user', 'user_state', 'time'})
-        validate_rule_links(field['expected'], rules, shared_filters=True)
+        validate_rule_links(field['expected'], rules, shared_filters=True, tables=tables)
     explanations = named(source.get('explanations', []), 'explanation')
     require(not (set(answers) & set(explanations)), 'duplicate answer/explanation id')
     for explanation in explanations.values():
@@ -375,13 +394,13 @@ def compile_contract(source):
         fields(invariant, ['rule_id', 'predicate'])
         require(invariant['rule_id'] in rules, 'invariant must reference a public rule')
         validate_expr(invariant['predicate'], roots={'data', 'initial', 'user', 'user_state', 'time'})
-        validate_rule_links(invariant['predicate'], rules, shared_filters=True)
+        validate_rule_links(invariant['predicate'], rules, shared_filters=True, tables=tables)
     for goal in named(source.get('goals', []), 'state goal').values():
         fields(goal, ['id', 'rule_ids', 'predicate'])
         require(bool(goal['rule_ids']) and set(goal['rule_ids']) <= set(rules), 'state goal rule provenance required')
         policy_independent_target(goal['predicate'])
         validate_expr(goal['predicate'], roots={'data', 'initial', 'evidence', 'user', 'user_state', 'time'})
-        validate_rule_links(goal['predicate'], rules, shared_filters=True)
+        validate_rule_links(goal['predicate'], rules, shared_filters=True, tables=tables)
     require(not any(t['kind'] == 'transaction' for t in tools.values()) or source.get('goals'), 'writes require actual-state goals')
     fields(source['limits'], ['max_actions'])
     require(type(source['limits']['max_actions']) is int and 1 <= source['limits']['max_actions'] <= 4096, 'invalid action budget')
@@ -476,7 +495,7 @@ def compile_contract(source):
                         and set(observation['columns']) <= set(tools[provider]['columns']), 'observation columns must be actual query results')
             validate_expr(observation['expected'], roots={'data', 'initial', 'evidence', 'user', 'user_state', 'time'})
             policy_independent_target(observation['expected'])
-            validate_rule_links(observation['expected'], rules, shared_filters=True)
+            validate_rule_links(observation['expected'], rules, shared_filters=True, tables=tables)
     digest = hashlib.sha256(canonical(source).encode()).hexdigest()
     from .user_simulator import statechart_spec
     public = {'task': source['task'], 'category': source['category'],
