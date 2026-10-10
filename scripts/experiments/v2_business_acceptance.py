@@ -192,7 +192,7 @@ def accept(compiled, row, business, user, spec, agent):
         'Do not repeat the selected field name in path. single packing requires exactly one selector; '
         'never select multiple conditional alternatives as one scalar. Allow nested '
         'objects, singleton scalar packing, minutes/seconds conversion for hours, and public lecturer ID aliases. '
-        'Use representation=set_membership only for the independently offered boolean roles when a complete identifier set answers that question; the checker validates the entire set before membership. Use representation=total_quantity only for an independently offered quantity role when the selected value is the total supplied quantity; the host subtracts the declared demand. For offered record roles use representation=records and record_layout: identity_path selects the object ID, details_path selects the detail object or array, scope_field selects the permission in each detail (empty for flat records), columns maps each canonical field to a detail-relative path. The host selects the independently declared scope and enum aliases. For other representations provide empty record_layout paths and columns. Otherwise use native. Do not compute or invent values. Never require a particular answer layout. Check missing obligations, '
+        'Use representation=set_membership only for the independently offered boolean roles when a complete identifier set answers that question; the checker validates the entire set before membership. Use representation=total_quantity only for an independently offered quantity role when the selected value is the total supplied quantity; the host subtracts the declared demand. For offered record roles use representation=records and record_layout: identity_path selects the object ID, details_path selects the detail object or array, scope_field selects the permission in each detail (empty for flat records), columns maps each canonical field to a detail-relative path. The host selects the independently declared scope and enum aliases. For other representations provide empty record_layout paths and columns. Otherwise use native. Do not compute or invent values. Never require a particular answer layout. Communication obligations are independently checked against actual messages before choice; do not require their contents to be repeated as final answer fields. Check missing obligations, '
         'hidden requirements, privacy, unsupported restrictions and actual refusal handling. '
         'Direct refusal is consent.declined; withdrawal after approval is consent.revoked. '
         'A revoked-only success branch does not cover direct refusal. Verify an actual declined '
@@ -202,7 +202,7 @@ def accept(compiled, row, business, user, spec, agent):
         {'user_request': row['raw_request'], 'business': business, 'private_user_fixture': user,
          'contract': source, 'fixture_previews': previews, 'public': compiled['public'],
          'executed_direct_refusal': refusal_evidence,
-         'required_roles': [{'id': k, 'canonical_type': type(v).__name__} for k,v in truth['answer'].items()],
+         'communication_obligations': {k: {'kind': v['kind']} for k,v in truth.get('communication', {}).items()}, 'required_roles': [{'id': k, 'canonical_type': type(v).__name__} for k,v in truth['answer'].items()],
          'record_roles': truth.get('record_roles', {}), 'quantity_offsets': truth.get('quantity_offsets', {}), 'public_name_aliases': aliases, 'set_membership_roles': list(truth.get('set_memberships', {}))}, schema(truth['answer'], [f['id'] for f in source['answers']], set_memberships=truth.get('set_memberships'), quantity_offsets=truth.get('quantity_offsets'), record_roles=truth.get('record_roles')))
     entries = review['mapping']
     require(len(entries) == len(truth['answer']) and {e['role'] for e in entries} == set(truth['answer']), 'incomplete semantic mapping')
@@ -215,7 +215,7 @@ def accept(compiled, row, business, user, spec, agent):
             if spec['kind'] in TIMED_TABLES:
                 truth = business_truth(spec, business, user, user_request=row['raw_request'], world=world)
             answer = reference_answer(world, scenario)
-            current = value_checks(answer, truth, entries, aliases) + audited_observations(world, truth, spec['kind'], business)
+            current = value_checks(answer, truth, entries, aliases) + audited_observations(world, truth, spec['kind'], business, agent)
             current.append({'id': 'full_business_state', 'passed': canonical(sorted_data(world.data)) == canonical(sorted_data(truth['final_state']))})
             score = grade(world, answer, judge=agent.judge)
             current.append({'id': 'positive_reward', 'passed': score['success'], 'outcome': score})
@@ -233,6 +233,18 @@ def accept(compiled, row, business, user, spec, agent):
                 'error': 'no independently correct positive reference',
                 'scope': 'predeclared_independent_business_checks_not_posthoc'}
     checks.extend(state_counterexamples(compiled, selected, truth, agent.judge))
+    if truth.get('communication'):
+        # Preserve business state and consent events, remove only assistant delivery.
+        # A sandbox that still grants success has an exploitable reward contract.
+        missing_delivery = execute_reference(compiled, selected)
+        for event in missing_delivery.trace:
+            if event.get('kind') == 'user':
+                event['question'] = '请继续。'
+            elif event.get('kind') == 'user_dialogue':
+                event['message'] = '请继续。'
+        missing_score = grade(missing_delivery, reference_answer(missing_delivery, selected), judge=agent.judge)
+        checks.append({'id': 'missing_prechoice_communication_reward',
+                       'passed': not missing_score['success'], 'outcome': missing_score})
     for entry in entries:
         world = execute_reference(compiled, selected)
         score = grade(world, wrong_projection(reference_answer(world, selected), entry, record_roles=truth.get('record_roles')), judge=agent.judge)

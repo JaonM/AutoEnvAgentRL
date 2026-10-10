@@ -107,10 +107,13 @@ def expected(spec, data, facts, *, refuse=False, approvals=None):
             old['reserved_by'] = None
             target['reserved_by'] = hold['id']
             hold['copy_id'] = target['id']
-        answer = {'committed': committed, 'available_site_ids': available_sites}
+        answer = {'committed': committed}
     else:
         raise ValueError('Unknown independent library business kind')
     truth = {'answer': answer, 'initial': initial, 'final_state': final}
+    if kind == 'library_pickup_change':
+        truth['communication'] = {'available_site_ids': {
+            'kind': 'location_options_before_choice', 'expected': available_sites}}
     if kind == 'library_renewal_eligibility':
         # A complete owned-loan qualification set can answer the selected loan's
         # boolean question. Validate the entire set, not merely one membership.

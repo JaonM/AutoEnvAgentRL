@@ -89,7 +89,8 @@ def test_pickup_change_is_atomic_and_preserves_priority(data):
     wanted['copies'][0]['reserved_by'] = None
     wanted['copies'][1]['reserved_by'] = 'H1'
     wanted['holds'][0]['copy_id'] = 'K1'
-    assert truth['answer'] == {'committed': True, 'available_site_ids': ['S2']}
+    assert truth['answer'] == {'committed': True}
+    assert truth['communication']['available_site_ids']['expected'] == ['S2']
     assert truth['final_state'] == wanted
     assert data == original
 
@@ -133,7 +134,8 @@ def test_five_prepared_cases_use_shared_independent_acceptance_entry():
     assert truths[2]['answer'] == {'rank': 2, 'ahead': 1}
     assert truths[3]['answer'] == {'renewed_ids': ['L1'],
         'blocked_queue_counts': [{'loan_id': 'L2', 'count': 2}]}
-    assert truths[4]['answer'] == {'committed': True, 'available_site_ids': ['S2']}
+    assert truths[4]['answer'] == {'committed': True}
+    assert truths[4]['communication']['available_site_ids']['expected'] == ['S2']
     for row, truth in zip(rows, truths):
         refused = shared_expected(row['acceptance'], row['business'], row['user'], refuse=True)
         assert refused['final_state'] == refused['initial']

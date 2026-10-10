@@ -60,8 +60,9 @@ def scalar_literals(answer, truth, entries):
     return answer
 
 
-def audited_observations(world, truth, kind, business):
-    checks = observation_checks(world, truth, kind)
+def audited_observations(world, truth, kind, business, agent=None):
+    from v2_communication_evidence import communication_checks
+    checks = observation_checks(world, truth, kind) + communication_checks(world, truth, agent)
     # An atomic receipt is authoritative evidence of a committed update unless
     # the dossier explicitly requires a post-commit query. No invented read gate.
     if '提交后查询' in business['policy'] or '提交后核验' in business['policy']:
@@ -107,7 +108,7 @@ def rollout(bundle, row, truth, entries, aliases, agent, root, business):
                 break
         world = env.server.episodes[env.episode]
         outcome = env.finish()
-        checks = value_checks(env.answer or {}, truth, entries, aliases) + audited_observations(world, truth, row['kind'], business)
+        checks = value_checks(env.answer or {}, truth, entries, aliases) + audited_observations(world, truth, row['kind'], business, agent)
         checks.append({'id': 'full_business_state', 'passed': canonical(sorted_data(world.data)) == canonical(sorted_data(truth['final_state']))})
         return {'passed': env.terminated and outcome['score']['success'] and all(c['passed'] for c in checks),
             'answer': env.answer, 'outcome': outcome, 'checks': checks, 'messages': env.messages,
@@ -160,7 +161,7 @@ def audit_sample(row, assets, original, root, connection, reuse=None):
             continue
         world = execute_reference(compiled, scenario)
         answer = reference_answer(world, scenario)
-        current = value_checks(answer, truth, entries, aliases) + audited_observations(world, truth, spec['kind'], business)
+        current = value_checks(answer, truth, entries, aliases) + audited_observations(world, truth, spec['kind'], business, agent)
         current.append({'id': 'full_business_state', 'passed': canonical(sorted_data(world.data)) == canonical(sorted_data(truth['final_state']))})
         if all(c['passed'] for c in current):
             selected, checks = scenario, current

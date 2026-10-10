@@ -294,7 +294,7 @@ def policy_rollout(bundle, row, business, user, spec, mapping, agent, root):
         from v2_business_acceptance import business_truth
         truth = business_truth(spec, business, user, user_request=row['raw_request'], world=world)
         truth['name_aliases'] = {r['id']: r['name'] for r in spec['params'].get('candidates', [])}
-        checks = answer_checks(env.answer or {}, truth, mapping) + audited_observations(world, truth, spec['kind'], business)
+        checks = answer_checks(env.answer or {}, truth, mapping) + audited_observations(world, truth, spec['kind'], business, agent)
         checks.append({'id': 'full_business_state', 'passed': canonical(sorted_data(world.data)) == canonical(sorted_data(truth['final_state']))})
         success = env.terminated and outcome['score']['success'] and (continuation_verified or row['category'] == 'direct_response') and all(c['passed'] for c in checks)
         result = {'passed': bool(success), 'continuation_verified': continuation_verified, 'user_mode': env.user_mode, 'outcome': outcome, 'independent_checks': checks,

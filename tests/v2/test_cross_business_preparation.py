@@ -37,6 +37,9 @@ def test_all_twenty_reach_shared_truth_without_generated_score_reads():
         if row['acceptance']['kind'] == 'access_compare':
             fields.add('record_roles')
             assert truth['record_roles']['files']['scope'] == 'write'
+        if row['acceptance']['kind'] == 'library_pickup_change':
+            fields.add('communication')
+            assert truth['communication']['available_site_ids']['kind'] == 'location_options_before_choice'
         assert set(truth) == fields
         refused = expected(row['acceptance'], row['business'], user, refuse=True, **options)
         assert refused['final_state'] == refused['initial']
