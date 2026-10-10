@@ -450,6 +450,15 @@ hidden or invented requirements cannot compile. The graph evidence is private pr
 not vocabulary injected into user openings. The public agent context includes the complete
 applicable policy, so the agent is not scored against inaccessible business instructions.
 
+New layered demands split public clauses into individually identified requirements.
+Each requirement has `id`, `text`, `source`, `visibility: "public"` and a `citation`
+with zero-based Unicode character offsets `start` (inclusive) and `end` (exclusive)
+within the named public source. The text must equal that exact slice, IDs must be
+unique, and all substantive source characters must be covered. Existing frozen
+whole-document citations remain readable. Textual coverage proves origin, not that
+an executable rule faithfully implements every business meaning; independent review
+and counterexamples must still verify that interpretation.
+
 Business graph ingestion uses separate EFV2 labels and frozen namespaces, preserving
 existing scene nodes. Objects, policies and document hashes come from explicit dossiers;
 synthetic imports remain marked synthetic. Snapshot retrieval verifies document hashes
