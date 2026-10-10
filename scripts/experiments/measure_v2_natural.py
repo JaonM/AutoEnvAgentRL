@@ -288,7 +288,7 @@ def policy_rollout(bundle, row, business, user, spec, mapping, agent, root):
         world = env.server.episodes[env.episode]
         from audit_v2_natural import canonical_truth, audited_observations
         from v2_business_acceptance import business_truth
-        truth = business_truth(spec, business, user, user_request=row['raw_request'])
+        truth = business_truth(spec, business, user, user_request=row['raw_request'], world=world)
         truth['name_aliases'] = {r['id']: r['name'] for r in spec['params'].get('candidates', [])}
         checks = answer_checks(env.answer or {}, truth, mapping) + audited_observations(world, truth, spec['kind'], business)
         checks.append({'id': 'full_business_state', 'passed': canonical(sorted_data(world.data)) == canonical(sorted_data(truth['final_state']))})

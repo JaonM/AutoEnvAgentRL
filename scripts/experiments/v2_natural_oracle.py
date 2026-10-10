@@ -45,7 +45,7 @@ def change(data, mutation):
 
 
 def expected(spec, business, user, *, mutation=None, refuse=False, now=None,
-             authorized_snapshot=None):
+             authorized_snapshot=None, submission_times=None):
     data = expand(business)
     if mutation:
         change(data, mutation)
@@ -55,7 +55,8 @@ def expected(spec, business, user, *, mutation=None, refuse=False, now=None,
                                     authorized_snapshot=authorized_snapshot)
     if spec['kind'].startswith('access_'):
         from v2_access_oracle import expected as access_expected
-        return access_expected(spec, data, user['facts'], now=now, refuse=refuse)
+        return access_expected(spec, data, user['facts'], now=now, refuse=refuse,
+                               submission_times=submission_times)
     if spec['kind'].startswith('subscription_'):
         from v2_subscription_oracle import expected as subscription_expected
         return subscription_expected(spec, data, user['facts'], refuse=refuse)

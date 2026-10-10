@@ -64,7 +64,7 @@ def temporary_grant(data, grant_id, *, node_id, user_id, permission, now, expire
     if type(approved) is not bool:
         raise ValueError('Grant authorization must be boolean')
     if (type(now) not in (int, float) or type(expires_at) not in (int, float)
-            or not math.isfinite(now) or not math.isfinite(expires_at) or now < 0 or expires_at <= now):
+            or not math.isfinite(now) or not math.isfinite(expires_at) or now < 0 or expires_at < 0):
         raise ValueError('Temporary access requires a future virtual expiry')
     final = copy.deepcopy(data)
     grants = indexed(final['grants'])
@@ -75,13 +75,13 @@ def temporary_grant(data, grant_id, *, node_id, user_id, permission, now, expire
             or target['principal_id'] != user_id or target['permission'] != permission):
         raise ValueError('Grant target does not match the exact authorization')
     current = permissions(data, node_id, user_id, permission, now)
-    if not approved or current['deny_sources']:
+    if not approved or expires_at <= now or current['deny_sources']:
         return False, final
     target.update(active=True, effect='allow', starts_at=now, expires_at=expires_at)
     return True, final
 
 
-def expected(spec, data, facts, *, now=None, refuse=False):
+def expected(spec, data, facts, *, now=None, refuse=False, submission_times=None):
     initial, final = copy.deepcopy(data), copy.deepcopy(data)
     kind = spec['kind']
     if kind == 'access_direct':
@@ -102,12 +102,16 @@ def expected(spec, data, facts, *, now=None, refuse=False):
                 or type(facts['approve_grants']) is not bool):
             raise ValueError('Temporary grant targets require exact boolean authorization')
         results = []
+        if submission_times is not None and (not isinstance(submission_times, dict)
+                or set(submission_times) != set(facts['grant_ids'])):
+            raise ValueError('Temporary grant times must identify every specified grant exactly')
         for node_id, grant_id in zip(facts['node_ids'], facts['grant_ids']):
+            submitted_at = now if submission_times is None else submission_times[grant_id]
             committed, final = temporary_grant(final, grant_id, node_id=node_id, user_id=facts['user_id'],
-                permission='write', now=now, expires_at=facts['expires_at'],
+                permission='write', now=submitted_at, expires_at=facts['expires_at'],
                 approved=facts['approve_grants'] and not refuse)
             results.append({'node_id': node_id, 'committed': committed,
-                'allowed': permissions(final, node_id, facts['user_id'], 'write', now)['allowed'],
+                'allowed': permissions(final, node_id, facts['user_id'], 'write', submitted_at)['allowed'],
                 'allowed_at_expiry': permissions(final, node_id, facts['user_id'], 'write', facts['expires_at'])['allowed']})
         answer = {'results': results}
     elif kind == 'access_revoke':

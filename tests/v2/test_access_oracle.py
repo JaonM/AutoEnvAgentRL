@@ -93,3 +93,21 @@ def test_five_access_fixtures_and_twenty_case_mix():
     from collections import Counter
     assert [r['id'] for r in all_rows] == list(range(1, 21))
     assert Counter(r['stratum'] for r in all_rows) == {'direct': 4, 'simple': 4, 'ordinary': 4, 'complex': 8}
+
+
+def test_separate_temporary_grants_bind_their_actual_submission_times():
+    from prepare_v2_cross_business import access_cases
+    from v2_natural_oracle import expected
+    row = access_cases()[3]
+    grants = next(t['rows'] for t in row['business']['tables'] if t['id'] == 'grants')
+    next(g for g in grants if g['id'] == 'D1')['active'] = False
+    truth = expected(row['acceptance'], row['business'], row['user'], now=10,
+                     submission_times={'T0': 10, 'T1': 11.5})
+    final = {g['id']: g for g in truth['final_state']['grants']}
+    assert final['T0']['starts_at'] == 10
+    assert final['T1']['starts_at'] == 11.5
+    assert all(r['committed'] for r in truth['answer']['results'])
+    expired = expected(row['acceptance'], row['business'], row['user'], now=10,
+                       submission_times={'T0': 10, 'T1': 50})
+    assert [r['committed'] for r in expired['answer']['results']] == [True, False]
+    assert not next(g for g in expired['final_state']['grants'] if g['id'] == 'T1')['active']

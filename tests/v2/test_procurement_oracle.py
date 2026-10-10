@@ -108,6 +108,22 @@ def test_partial_truth_keeps_success_and_reports_remaining_demand():
     assert refused['answer'] == {'committed_ids': [], 'shortfall': 23}
 
 
+def test_second_purchase_uses_its_own_time_and_preserves_first_commit():
+    data = {'quotes': [quote('A'), quote('B')],
+            'budgets': [{'id': 'P1', 'remaining_cents': 1000}], 'orders': []}
+    facts = {'purchase_plans': [[('A', 2)], [('B', 2)]], 'approvals': [True, True],
+             'order_ids': ['O1', 'O2'], 'demand': 23}
+    spec = {'kind': 'procurement_partial', 'params': {}}
+    truth = expected(spec, data, facts, now=[10, 10.5])
+    assert truth['answer'] == {'committed_ids': ['O1'], 'shortfall': 11}
+    assert truth['final_state']['budgets'][0]['remaining_cents'] == 800
+    assert truth['final_state']['quotes'][0]['stock'] == 12
+    assert truth['final_state']['quotes'][1]['stock'] == 24
+    assert expected(spec, data, facts, now=[9, 10])['answer']['shortfall'] == 0
+    with pytest.raises(ValueError, match='chronological'):
+        expected(spec, data, facts, now=[10, 9])
+
+
 @pytest.mark.parametrize('change', ['none', 'price', 'stock', 'budget', 'expired', 'refused'])
 def test_large_purchase_respects_exact_authorization_and_current_validity(change):
     original = {'quotes': [quote('A', minimum=1), quote('B', minimum=1, price=200)],

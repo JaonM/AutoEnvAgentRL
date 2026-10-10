@@ -115,8 +115,12 @@ def expected(spec, data, facts, *, now=None, refuse=False, authorized_snapshot=N
         return {'answer': answer, 'initial': initial, 'final_state': final, 'observations': {}}
     if now is None:
         raise ValueError('Timed procurement truth requires observed virtual time')
-    if type(now) not in (int, float) or not math.isfinite(now) or now < 0:
-        raise ValueError('Procurement truth requires finite nonnegative virtual time')
+    times = now if isinstance(now, list) and kind == 'procurement_partial' else [now]
+    if (len(times) != (2 if isinstance(now, list) else 1)
+            or any(type(t) not in (int, float) or not math.isfinite(t) or t < 0 for t in times)):
+        raise ValueError('Procurement truth requires finite nonnegative virtual time for each purchase')
+    if isinstance(now, list) and times[1] < times[0]:
+        raise ValueError('Purchase virtual times must be chronological')
     if kind == 'procurement_quote':
         selected = [q for q in data['quotes'] if q['id'] == facts['quote_id']]
         if len(selected) != 1:
@@ -139,7 +143,7 @@ def expected(spec, data, facts, *, now=None, refuse=False, authorized_snapshot=N
         committed_ids = []
         for index, (plan, approved) in enumerate(zip(plans, approvals)):
             order_id = facts['order_ids'][index]
-            committed, state = commit(state, plan, now,
+            committed, state = commit(state, plan, times[index] if isinstance(now, list) else now,
                 approved=approved and not refuse, order_id=order_id)
             if committed:
                 committed_ids.append(order_id)
