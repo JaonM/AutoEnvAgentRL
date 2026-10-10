@@ -53,8 +53,12 @@ class NativeCodeAgent:
         return cls(base_url=connection['container_base_url' if container else 'base_url'],
                    token=token, timeout=budget + 15, evidence_root=evidence_root)
 
-    def ask(self, role, payload, schema):
-        validate_schema(schema)
+    def ask(self, role, payload, schema, *, source_object=False):
+        if source_object:
+            from .response_format import SOURCE_OBJECT_SCHEMA
+            require(schema == SOURCE_OBJECT_SCHEMA, 'unsupported generation response format')
+        else:
+            validate_schema(schema)
         messages = [{'role': 'system', 'content': role}, {'role': 'user', 'content': canonical(payload)}]
         body = {'model': MODEL, 'messages': messages,
                 'response_format': {'type': 'json_schema', 'json_schema': {'name': 'contract_v2', 'strict': True, 'schema': schema}}}
@@ -67,7 +71,11 @@ class NativeCodeAgent:
             require(result.get('model') == MODEL and result.get('backend') == 'codex_cli'
                     and isinstance(result.get('id'), str), 'native completion provenance missing')
             value = json.loads(result['choices'][0]['message']['content'])
-            validate_value(value, schema, 'native response')
+            if source_object:
+                from .response_format import validate_source_response
+                validate_source_response(value)
+            else:
+                validate_value(value, schema, 'native response')
         except (ContractError, ValueError, KeyError, TypeError) as exc:
             raise RuntimeError('native completion invalid; no fallback') from exc
         provenance = {'model': MODEL, 'backend': 'codex_cli', 'response_id': result['id'],
@@ -141,7 +149,8 @@ class NativeCodeAgent:
             text += ' 谢谢。' if zh else ' Thank you.'
         return {'event': event, 'text': text, 'provenance': provenance}
 
-    def generate(self, request, *, feedback=None):
+    def generate(self, request, *, feedback=None, source_object=False):
+        require(type(source_object) is bool, 'source object selector must be boolean')
         grammar = (Path(__file__).parent / 'CONTRACT.md').read_text()
         if feedback is not None and feedback.get('previous_source') is not None:
             from .repair import apply_edits, recover_edit_values
@@ -178,6 +187,7 @@ class NativeCodeAgent:
                     **({'format_repair': format_evidence} if format_evidence else {})}
             except json.JSONDecodeError as exc:
                 raise ContractError(f'repair value invalid JSON at line {exc.lineno}, column {exc.colno}: {exc.msg}') from exc
+        from .response_format import SOURCE_OBJECT_SCHEMA
         value, provenance = self.ask('Generate a NEW business contract following the supplied grammar. '
             'Preserve the original request and its category. No Python code. Model roles may not invent hidden '
             'business filters or freeze mutable facts in reasoning criteria. Include grounded positive/negative '
@@ -220,9 +230,16 @@ class NativeCodeAgent:
             'fields, complete pagination, result dependencies and post-write verification. '
             'Use numeric comparison for scalar number answers derived from arithmetic; keep exact comparison for discrete values. '
             'Include user.profile describing communication style, disclosure boundaries and preferences, '
-            'consistent with private facts and original request; never store computed answers there. Do not execute tools.',
+            'consistent with private facts and original request; never store computed answers there. Do not execute tools. '
+            + ('Return source as a JSON object, not a quoted JSON string. ' if source_object else ''),
             {'original_request': request, 'grammar': grammar, 'repair_feedback': feedback},
-            object_schema({'source_json': {'type': 'string'}}))
+            SOURCE_OBJECT_SCHEMA if source_object else object_schema({'source_json': {'type': 'string'}}),
+            **({'source_object': True} if source_object else {}))
+        if source_object:
+            from .response_format import validate_source_response
+            validate_source_response(value)
+            return value['source'], {**provenance, 'generation_format': 'native_source_object',
+                                     'strict_contract_grammar_enforced': False}
         try:
             return json.loads(value['source_json']), provenance
         except json.JSONDecodeError as exc:
