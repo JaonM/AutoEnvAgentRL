@@ -49,3 +49,12 @@ def test_depth_limit_and_runtime_cycle_guard():
         validate_rule_graph(rules)
     with pytest.raises(ContractError, match='cycle'):
         evaluate(invoke('A'), {'_rules': {'A': {'predicate': invoke('A')}}})
+
+
+def test_global_probe_cannot_call_record_rule_without_a_row():
+    source = transaction()
+    source['rules'].append({'id': 'record_key', 'public': 'Match the record ID.',
+                           'predicate': {'eq': [ref('row.id'), ref('args.id')]}})
+    source['probes'][0]['answer'] = {source['answers'][0]['id']: invoke('record_key', id=lit('A'))}
+    with pytest.raises(ContractError, match='record_key requires collection/operation row scope: id'):
+        compile_contract(source)

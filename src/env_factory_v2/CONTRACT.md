@@ -61,6 +61,9 @@ data and time remain in scope. Public rules may invoke other named public rules
 with exact arguments. The dependency graph must be acyclic and at most 16 rules
 deep. Indirect operation-row fields are validated on every transaction table;
 collection-local rows remain local. Unknown rules and cycles fail compilation.
+A row-dependent rule must be called inside filter/map or an operation-row
+context. Global answer, branch and probe expressions cannot call it directly;
+select the authoritative record inside a collection expression first.
 
 rules: list of {id,public,predicate}. public explains an actual business condition;
 predicate can reference row,args,data,initial,user,time. Tool filters are ONLY references

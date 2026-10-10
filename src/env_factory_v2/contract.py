@@ -114,7 +114,7 @@ def validate_data(contract, data):
                 require(canonical(row[fk['column']]) in targets, f'{name}: foreign key violation')
 
 
-def validate_rule_links(expression, rules, *, shared_filters=False):
+def validate_rule_links(expression, rules, *, shared_filters=False, row_scope=False):
     if not isinstance(expression, dict) or set(expression) == {'literal'}:
         return
     if 'rule' in expression:
@@ -122,6 +122,9 @@ def validate_rule_links(expression, rules, *, shared_filters=False):
         require(invocation['id'] in rules, 'unknown rule in expression')
         arguments = {ref.split('.')[1] for ref in refs(rules[invocation['id']]['predicate']) if ref.startswith('args.')}
         require(set(invocation['arguments']) == arguments, 'public rule argument mismatch')
+        row_fields = free_row_fields(rules[invocation['id']]['predicate'], rules)
+        require(row_scope or not row_fields,
+                f"public rule {invocation['id']} requires collection/operation row scope: {', '.join(sorted(row_fields))}")
     if 'filter' in expression and shared_filters:
         def shared(predicate):
             if set(predicate) == {'rule'}:
@@ -130,8 +133,13 @@ def validate_rule_links(expression, rules, *, shared_filters=False):
                 return all(shared(item) for values in predicate.values() for item in values)
             return False
         require(shared(expression['filter']['value']), 'reward eligibility filters must invoke named public rules')
-    for child in expression_children(expression):
-        validate_rule_links(child, rules, shared_filters=shared_filters)
+    if 'filter' in expression or 'map' in expression:
+        value = next(iter(expression.values()))
+        validate_rule_links(value['items'], rules, shared_filters=shared_filters, row_scope=row_scope)
+        validate_rule_links(value['value'], rules, shared_filters=shared_filters, row_scope=True)
+    else:
+        for child in expression_children(expression):
+            validate_rule_links(child, rules, shared_filters=shared_filters, row_scope=row_scope)
 
 
 def expression_children(expression):
@@ -188,7 +196,7 @@ def validate_rule_graph(rules):
     for name in rules:
         visit(name, set())
     for rule in rules.values():
-        validate_rule_links(rule['predicate'], rules)
+        validate_rule_links(rule['predicate'], rules, row_scope=True)
 
 
 def policy_independent_target(expression):
@@ -267,8 +275,10 @@ def compile_contract(source):
                 require(set(operation['set']) <= set(tables[operation['table']]['schema']['properties'])
                         and tables[operation['table']]['primary_key'] not in operation['set'], 'invalid write columns')
                 validate_expr(operation['key'], roots={'args', 'data', 'user', 'user_state', 'time'})
+                validate_rule_links(operation['key'], rules)
                 for expression in operation['set'].values():
                     validate_expr(expression, roots={'args', 'row', 'data', 'user', 'user_state', 'time'})
+                    validate_rule_links(expression, rules, row_scope=True)
         else:
             raise ContractError('unsupported tool kind; add a reviewed platform capability')
         validate_schema(tool['parameters'])
@@ -390,6 +400,7 @@ def compile_contract(source):
                 and set(scenario['answer']) == set(answers) | set(explanations), 'scenario answer fields mismatch')
         for expression in scenario['answer'].values():
             validate_expr(expression, roots={'data', 'initial', 'evidence', 'user', 'user_state', 'time'})
+            validate_rule_links(expression, rules)
         call_ids = set()
         for step in scenario['steps']:
             require(isinstance(step, dict) and 'kind' in step, 'scenario action required')
@@ -414,6 +425,11 @@ def compile_contract(source):
         require(probe['scenario'] in scenarios and set(probe['rule_ids']) <= set(rules)
                 and probe['rule_ids'], 'probe must identify actual rules and a scenario')
         require(type(probe['expect_success']) is bool and isinstance(probe['mutations'], list), 'invalid probe')
+        if 'answer' in probe:
+            require(isinstance(probe['answer'], dict), 'probe answer must be an object')
+            for expression in probe['answer'].values():
+                validate_expr(expression, roots={'data', 'initial', 'evidence', 'user', 'user_state', 'time'})
+                validate_rule_links(expression, rules)
     category = source['category']
     require((category != 'direct_response' or not tools and not stages and not tables and not source['user']['facts']), 'direct response must be stateless and have no private facts')
     require((category != 'simple_agentic' or sum(t.get('selection_role', 'task') == 'task' for t in tools.values()) == 1), 'simple agentic requires one business tool')
@@ -434,6 +450,7 @@ def compile_contract(source):
                 'business call bounds inverted')
         policy_independent_target(branch['when'])
         validate_expr(branch['when'], roots={'data', 'initial', 'evidence', 'user', 'user_state', 'time'})
+        validate_rule_links(branch['when'], rules)
         for observation in named(branch.get('required_observations', []), 'required observation').values():
             fields(observation, ['id', 'tools', 'columns', 'expected'], ['after_tools'])
             if 'after_tools' in observation:
