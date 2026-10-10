@@ -1,0 +1,33 @@
+{
+  "kind": "ranking",
+  "params": {
+    "candidates": [
+      {
+        "id": "A",
+        "name": "甲",
+        "rating": 4.8,
+        "price": 600
+      },
+      {
+        "id": "B",
+        "name": "乙",
+        "rating": 4.9,
+        "price": 800
+      },
+      {
+        "id": "C",
+        "name": "丙",
+        "rating": 4.9,
+        "price": 700
+      },
+      {
+        "id": "D",
+        "name": "丁",
+        "rating": 4.8,
+        "price": 600
+      }
+    ]
+  },
+  "observations": {},
+  "mutation": null
+}

@@ -1,0 +1,37 @@
+{
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "55b6adacf1224043842f6f6fd79b51c6",
+    "input_identity": "80893bac73dfd79fdaa9d847631fb07d987f9d15a465096c6fca14646ec19a21",
+    "usage": {
+      "input_tokens": 11662,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 121,
+      "reasoning_output_tokens": 33
+    },
+    "seconds": 10.65482225001324
+  },
+  "input": {
+    "scene": {
+      "situation": "购物结算",
+      "desired_outcome": "知道实付金额和节省金额",
+      "known_information": {
+        "prices": [
+          128,
+          96
+        ],
+        "threshold": 200,
+        "rate": 0.9,
+        "coupon": 15
+      },
+      "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+    },
+    "opening": "我买了两件商品，价格分别是128元和96元，满200元打9折，还有一张15元优惠券。最后实付多少，一共省了多少？"
+  },
+  "response": {
+    "passed": true,
+    "reason": "开场保留了两件商品价格、满减门槛、折扣和优惠券金额，并明确询问实付与节省金额；表达自然简洁，无新增事实、义务或执行步骤。优惠券与折扣的叠加顺序属于允许的合理澄清缺口。"
+  }
+}

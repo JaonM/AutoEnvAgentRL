@@ -1,0 +1,81 @@
+{
+  "provenance": "operator-authored synthetic business dossier; frozen before generation",
+  "policy": "只选size等于用户尺码、active=true、stock>0的鞋款；款名不影响资格，给出全部款号。",
+  "tables": [
+    {
+      "id": "shoes",
+      "rows": [
+        {
+          "id": "S1",
+          "size": 39,
+          "active": true,
+          "stock": 1,
+          "name": "日常跑鞋"
+        },
+        {
+          "id": "S2",
+          "size": 40,
+          "active": true,
+          "stock": 2,
+          "name": "日常跑鞋"
+        },
+        {
+          "id": "S3",
+          "size": 39,
+          "active": true,
+          "stock": 3,
+          "name": "日常跑鞋"
+        },
+        {
+          "id": "S4",
+          "size": 40,
+          "active": true,
+          "stock": 4,
+          "name": "日常跑鞋"
+        },
+        {
+          "id": "S5",
+          "size": 39,
+          "active": false,
+          "stock": 5,
+          "name": "日常跑鞋"
+        },
+        {
+          "id": "S6",
+          "size": 40,
+          "active": true,
+          "stock": 6,
+          "name": "日常跑鞋"
+        },
+        {
+          "id": "S7",
+          "size": 39,
+          "active": true,
+          "stock": 0,
+          "name": "日常跑鞋"
+        },
+        {
+          "id": "S8",
+          "size": 40,
+          "active": true,
+          "stock": 8,
+          "name": "日常跑鞋"
+        },
+        {
+          "id": "S9",
+          "size": 39,
+          "active": true,
+          "stock": 9,
+          "name": "日常跑鞋"
+        },
+        {
+          "id": "S10",
+          "size": 40,
+          "active": true,
+          "stock": 10,
+          "name": "日常跑鞋"
+        }
+      ]
+    }
+  ]
+}

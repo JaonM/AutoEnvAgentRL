@@ -1,0 +1,34 @@
+{
+  "provenance": "operator-authored synthetic business dossier; frozen before generation",
+  "policy": "读取预约及其slot_id实际时段。授权后同时把预约active和对应时段reserved设为false，保留其他记录；拒绝时不修改，提交后查询核验。",
+  "tables": [
+    {
+      "id": "reservations",
+      "rows": [
+        {
+          "id": "B1",
+          "slot_id": "L2",
+          "active": true
+        },
+        {
+          "id": "B2",
+          "slot_id": "L1",
+          "active": true
+        }
+      ]
+    },
+    {
+      "id": "slots",
+      "rows": [
+        {
+          "id": "L1",
+          "reserved": true
+        },
+        {
+          "id": "L2",
+          "reserved": true
+        }
+      ]
+    }
+  ]
+}

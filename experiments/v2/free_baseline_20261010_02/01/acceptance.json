@@ -1,0 +1,16 @@
+{
+  "kind": "energy",
+  "params": {
+    "watts": [
+      1100,
+      65
+    ],
+    "hours": [
+      3,
+      5
+    ],
+    "price": 0.9
+  },
+  "observations": {},
+  "mutation": null
+}

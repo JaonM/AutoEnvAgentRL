@@ -1,0 +1,14 @@
+{
+  "situation": "购物结算",
+  "desired_outcome": "知道实付金额和节省金额",
+  "known_information": {
+    "prices": [
+      128,
+      96
+    ],
+    "threshold": 200,
+    "rate": 0.9,
+    "coupon": 15
+  },
+  "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+}

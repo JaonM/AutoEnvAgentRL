@@ -1,0 +1,18 @@
+{
+  "kind": "warranty",
+  "params": {},
+  "observations": {
+    "devices": [
+      "D1"
+    ],
+    "models": [
+      "K2"
+    ]
+  },
+  "mutation": {
+    "table": "devices",
+    "key": "D1",
+    "column": "age_days",
+    "value": 366
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "provenance": "operator-authored synthetic business dossier; frozen before generation",
+  "policy": "调拨单关联source_id和target_id。两个库存记录必须同SKU，源stock>=12。授权后一笔事务源stock-12、目标stock+12、调拨单completed=true；库存守恒且非负，失败或拒绝不写入，提交后核验。",
+  "tables": [
+    {
+      "id": "transfers",
+      "rows": [
+        {
+          "id": "TR1",
+          "source_id": "ST1",
+          "target_id": "ST2",
+          "completed": false
+        }
+      ]
+    },
+    {
+      "id": "stocks",
+      "rows": [
+        {
+          "id": "ST1",
+          "sku": "K8",
+          "stock": 30
+        },
+        {
+          "id": "ST2",
+          "sku": "K8",
+          "stock": 5
+        },
+        {
+          "id": "ST3",
+          "sku": "K9",
+          "stock": 50
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,433 @@
+{
+  "backend": "neo4j",
+  "namespace": "free_baseline_20261010_01",
+  "documents": [
+    {
+      "document_id": "01/business.json",
+      "title": "办公室电费",
+      "sha256": "12ed420cb15e87f7c5e691cc80eb5ef6a947eb3ee9397fa5dd2a47749c5908de",
+      "policy_summary": "1度电=1千瓦时，按实际功率乘时长计算，费用不另加服务费。",
+      "objects": [
+        {
+          "columns": null,
+          "name": null
+        }
+      ]
+    },
+    {
+      "document_id": "02/business.json",
+      "title": "优惠后的实付",
+      "sha256": "91773bd0de10f49459e2053cf3c28be117132b51a57ea79e4efa6e9d9e106652",
+      "policy_summary": "会员订单原价满200元打九折，然后减15元券；不满200元只减券。实付最低0元。",
+      "objects": [
+        {
+          "columns": null,
+          "name": null
+        }
+      ]
+    },
+    {
+      "document_id": "03/business.json",
+      "title": "会议室计费",
+      "sha256": "59cf158f8364f63e51a52c814dfcda8aae3060a21ca2b07b55fa0077930fe6ca",
+      "policy_summary": "会议室每小时24元，按实际分钟比例计费，不向上取整。",
+      "objects": [
+        {
+          "columns": null,
+          "name": null
+        }
+      ]
+    },
+    {
+      "document_id": "04/business.json",
+      "title": "讲师候选排序",
+      "sha256": "0041167bc23e3d076d7e3ddd619fc8068c3887a755de8fe067176990284d6778",
+      "policy_summary": "优先评分高，再选报价低；两者相同按姓名升序。姓名排序约定甲、乙、丙、丁对应编号A、B、C、D，最后以编号升序打破平局。",
+      "objects": [
+        {
+          "columns": null,
+          "name": null
+        }
+      ]
+    },
+    {
+      "document_id": "05/business.json",
+      "title": "维修单进度",
+      "sha256": "42ac51dfde667a1ac3707eb82f1f24b694e7fb3e286cc410631934b7bd3ed7a8",
+      "policy_summary": "按用户提供的维修单编号精确查询当前状态和预计完成日期；标题和姓名不作为身份依据。",
+      "objects": [
+        {
+          "columns": [
+            "id",
+            "title",
+            "status",
+            "eta"
+          ],
+          "name": "tickets"
+        }
+      ]
+    },
+    {
+      "document_id": "06/business.json",
+      "title": "会员积分",
+      "sha256": "7d500dad22ebaef1bb0d9713969401bdd53cc24d1f1d27003cfaa40736ad864d",
+      "policy_summary": "按会员卡编号查询points与enabled，0积分和false启用状态都是有效结果。",
+      "objects": [
+        {
+          "columns": [
+            "id",
+            "points",
+            "enabled"
+          ],
+          "name": "members"
+        }
+      ]
+    },
+    {
+      "document_id": "07/business.json",
+      "title": "有货鞋款",
+      "sha256": "2331418abdca1cece9f1b1f518b6772faf0dd60e0e15a85489bd25194d11da77",
+      "policy_summary": "只选size等于用户尺码、active=true、stock>0的鞋款；款名不影响资格，给出全部款号。",
+      "objects": [
+        {
+          "columns": [
+            "id",
+            "size",
+            "active",
+            "stock",
+            "name"
+          ],
+          "name": "shoes"
+        }
+      ]
+    },
+    {
+      "document_id": "08/business.json",
+      "title": "待报销票据",
+      "sha256": "eb3bd83e5a5fdd23a9dcb117e58450bef26565aae86688ef066fccf7e79f74d6",
+      "policy_summary": "按用户employee_id筛选paid=false且cancelled=false的票据；返回完整编号集合与金额合计。",
+      "objects": [
+        {
+          "columns": [
+            "id",
+            "employee_id",
+            "paid",
+            "cancelled",
+            "amount"
+          ],
+          "name": "receipts"
+        }
+      ]
+    },
+    {
+      "document_id": "09/business.json",
+      "title": "订单配送追踪",
+      "sha256": "77f969359f61b8575ca503a4646627344a903a2627cbaf94bcbb771b901a6e72",
+      "policy_summary": "按订单编号读取其shipment_id，再查询该实际配送记录的status和eta；同名收件人不能串单。",
+      "objects": [
+        {
+          "columns": [
+            "id",
+            "shipment_id",
+            "recipient"
+          ],
+          "name": "orders"
+        },
+        {
+          "columns": [
+            "id",
+            "status",
+            "eta"
+          ],
+          "name": "shipments"
+        }
+      ]
+    },
+    {
+      "document_id": "10/business.json",
+      "title": "设备保修费用",
+      "sha256": "b496997ec7dc60fac7083f2625d8a69e448aae75e5295cabfebcfac21396bca9",
+      "policy_summary": "设备age_days<=实际关联型号warranty_days时保修且费用0，否则费用是该型号inspection_fee。先查设备，再查其model_id对应型号。",
+      "objects": [
+        {
+          "columns": [
+            "id",
+            "warranty_days",
+            "inspection_fee"
+          ],
+          "name": "models"
+        },
+        {
+          "columns": [
+            "id",
+            "model_id",
+            "age_days"
+          ],
+          "name": "devices"
+        }
+      ]
+    },
+    {
+      "document_id": "11/business.json",
+      "title": "部门在职人员",
+      "sha256": "a0e2e87459fe4638b3100bb756d867880a79da6845019a1e4402cd841f80a9ac",
+      "policy_summary": "先按用户部门名称确定真实部门编号，再查该部门active=true的全部员工；员工姓名不影响身份。",
+      "objects": [
+        {
+          "columns": [
+            "id",
+            "department_id",
+            "active",
+            "name"
+          ],
+          "name": "employees"
+        },
+        {
+          "columns": [
+            "id",
+            "name"
+          ],
+          "name": "departments"
+        }
+      ]
+    },
+    {
+      "document_id": "12/business.json",
+      "title": "取消健身预约",
+      "sha256": "b9be5459623fbc94bbbcaf0ad8b85d8b2a7604c2a409e37c6e0c3570b2b79435",
+      "policy_summary": "读取预约及其slot_id实际时段。授权后同时把预约active和对应时段reserved设为false，保留其他记录；拒绝时不修改，提交后查询核验。",
+      "objects": [
+        {
+          "columns": [
+            "id",
+            "slot_id",
+            "active"
+          ],
+          "name": "reservations"
+        },
+        {
+          "columns": [
+            "id",
+            "reserved"
+          ],
+          "name": "slots"
+        }
+      ]
+    },
+    {
+      "document_id": "13/business.json",
+      "title": "审批链追踪",
+      "sha256": "2c4441f13a13e3429f392e205265e6cdc571353066155d452c39426b301d324d",
+      "policy_summary": "申请关联entry_id；审批环节按实际next_id连接，null表示结束。最后环节owner_id关联人员。累计耗时为链上duration之和。",
+      "objects": [
+        {
+          "columns": [
+            "id",
+            "name"
+          ],
+          "name": "people"
+        },
+        {
+          "columns": [
+            "id",
+            "entry_id"
+          ],
+          "name": "applications"
+        },
+        {
+          "columns": [
+            "id",
+            "next_id",
+            "duration",
+            "owner_id"
+          ],
+          "name": "nodes"
+        }
+      ]
+    },
+    {
+      "document_id": "14/business.json",
+      "title": "项目大额报销统计",
+      "sha256": "3a1097cfaab8febafd82237c7e20e1949483e09f83f49d354f3d1c9b43b93b0a",
+      "policy_summary": "先按项目名称查project_id，再筛选该项目status=approved且amount>4900的报销。账本有6000条，每次查询最多64条。",
+      "objects": [
+        {
+          "columns": [
+            "id",
+            "name"
+          ],
+          "name": "projects"
+        },
+        {
+          "columns": [
+            "id",
+            "project_id",
+            "status",
+            "amount"
+          ],
+          "name": "expenses"
+        }
+      ]
+    },
+    {
+      "document_id": "15/business.json",
+      "title": "仓库补货资源统计",
+      "sha256": "08e6b7e4cecdd14e6cf8c00129a5e93f799c2c7a6b338ed54a8382b54d830b18",
+      "policy_summary": "先按仓库名称查真实warehouse_id，筛选该仓库stock>=6的全部库存。账本8000条，每次最多128条，0库存不是缺失。",
+      "objects": [
+        {
+          "columns": [
+            "id",
+            "name"
+          ],
+          "name": "warehouses"
+        },
+        {
+          "columns": [
+            "id",
+            "warehouse_id",
+            "stock"
+          ],
+          "name": "inventory"
+        }
+      ]
+    },
+    {
+      "document_id": "16/business.json",
+      "title": "换设备并调整维护",
+      "sha256": "c65ff913b08b5555845e6f35427655bc4fa8a5b7ed185c3f341ab930f025ffd6",
+      "policy_summary": "分配关联旧设备；候选需class_code匹配且capacity>0，完整展示。用户选新设备后读取新旧维护记录。一次更换同时旧capacity+1、新capacity-1、分配device_id改为新设备、旧维护scheduled=false、新维护scheduled=true；容量非负且总量守恒。提交后核验，拒绝不写入。",
+      "objects": [
+        {
+          "columns": [
+            "id",
+            "device_id",
+            "scheduled"
+          ],
+          "name": "maintenance"
+        },
+        {
+          "columns": [
+            "id",
+            "device_id",
+            "class_code"
+          ],
+          "name": "assignments"
+        },
+        {
+          "columns": [
+            "id",
+            "class_code",
+            "capacity"
+          ],
+          "name": "equipment"
+        }
+      ]
+    },
+    {
+      "document_id": "17/business.json",
+      "title": "跨仓调拨",
+      "sha256": "7e1a759af1ab65933df58d9de3e76a308458ca1de68f68f9accd789990cfda72",
+      "policy_summary": "调拨单关联source_id和target_id。两个库存记录必须同SKU，源stock>=12。授权后一笔事务源stock-12、目标stock+12、调拨单completed=true；库存守恒且非负，失败或拒绝不写入，提交后核验。",
+      "objects": [
+        {
+          "columns": [
+            "id",
+            "source_id",
+            "target_id",
+            "completed"
+          ],
+          "name": "transfers"
+        },
+        {
+          "columns": [
+            "id",
+            "sku",
+            "stock"
+          ],
+          "name": "stocks"
+        }
+      ]
+    },
+    {
+      "document_id": "18/business.json",
+      "title": "开放后登记活动",
+      "sha256": "c614fa847bc0e37c221dc084ac4aec034cade74479f6f59650558254b0996c6d",
+      "policy_summary": "活动关联登记记录。虚拟elapsed_seconds>=15才开放，开放前查询不显示可登记名额；每动作0秒，等待显式推进。开放后重新查，用户授权后原子activity.remaining-1、registration.enrolled=true；名额不足或拒绝不写入。基准2026-10-10T00:00:00+00:00。",
+      "objects": [
+        {
+          "columns": [
+            "id",
+            "activity_id",
+            "enrolled"
+          ],
+          "name": "registrations"
+        },
+        {
+          "columns": [
+            "id",
+            "registration_id",
+            "remaining"
+          ],
+          "name": "activities"
+        }
+      ]
+    },
+    {
+      "document_id": "19/business.json",
+      "title": "预订前更正区域",
+      "sha256": "7769ada248e12be516fd0c8f74e804077ff2b87345eb5a4f67874def0228448a",
+      "policy_summary": "区域更正使旧选择与授权失效。每区域六个候选，完整展示available=true的菜单。用户最终选中场地并授权后，一笔事务venue.available=false、booking.venue_id改为该场地。只影响最终场地，拒绝不写入，提交后核验。",
+      "objects": [
+        {
+          "columns": [
+            "id",
+            "region",
+            "available"
+          ],
+          "name": "venues"
+        },
+        {
+          "columns": [
+            "id",
+            "venue_id"
+          ],
+          "name": "bookings"
+        }
+      ]
+    },
+    {
+      "document_id": "20/business.json",
+      "title": "逐项开启服务",
+      "sha256": "6df01d7d1668c8d45520a17853514317a87f934cf9de4b29b16d0584f9cc45d8",
+      "policy_summary": "用户quota初始3，服务顺序F1再F2。每服务耗1单位，每笔分别原子更新用户quota-1、对应feature.active=true、对应既有log.completed=true。first和second是不同授权阶段，不可复用授权。第一笔后、第二笔前查询当前quota和功能状态。额度不足第二笔不写入但第一笔保留。",
+      "objects": [
+        {
+          "columns": [
+            "id",
+            "account_id",
+            "active",
+            "log_id"
+          ],
+          "name": "features"
+        },
+        {
+          "columns": [
+            "id",
+            "feature_id",
+            "completed"
+          ],
+          "name": "logs"
+        },
+        {
+          "columns": [
+            "id",
+            "quota"
+          ],
+          "name": "accounts"
+        }
+      ]
+    }
+  ],
+  "provenance": "synthetic business dossiers imported as scoped graph objects/rules; not production data"
+}

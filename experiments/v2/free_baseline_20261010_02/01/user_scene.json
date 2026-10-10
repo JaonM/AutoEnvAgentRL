@@ -1,0 +1,16 @@
+{
+  "situation": "办公室设备开销",
+  "desired_outcome": "估算一天耗电与电费",
+  "known_information": {
+    "watts": [
+      1100,
+      65
+    ],
+    "hours": [
+      3,
+      5
+    ],
+    "price": 0.9
+  },
+  "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+}

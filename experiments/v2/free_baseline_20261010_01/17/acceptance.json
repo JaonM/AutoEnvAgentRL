@@ -1,0 +1,14 @@
+{
+  "kind": "transfer",
+  "params": {},
+  "observations": {
+    "transfers": [
+      "TR1"
+    ],
+    "stocks": [
+      "ST1",
+      "ST2"
+    ]
+  },
+  "mutation": null
+}

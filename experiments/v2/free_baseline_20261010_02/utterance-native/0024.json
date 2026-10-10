@@ -1,0 +1,29 @@
+{
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "3808e4bc35de4df0b1ceddfc9136c3bf",
+    "input_identity": "b5c955c4d419c62ca760e56e21eba081d711641acb174766771474250a5c650b",
+    "usage": {
+      "input_tokens": 11616,
+      "cached_input_tokens": 9216,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 87,
+      "reasoning_output_tokens": 25
+    },
+    "seconds": 9.46195029100636
+  },
+  "input": {
+    "scene": {
+      "situation": "临时无法参加健身课程",
+      "desired_outcome": "取消当前预约",
+      "known_information": {},
+      "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+    },
+    "opening": "我临时有事，参加不了健身课了，想取消当前预约。"
+  },
+  "response": {
+    "passed": true,
+    "reason": "开场自然、简洁，准确表达临时无法参加健身课并希望取消当前预约，保留了所需结果，未添加额外事实、义务或平台执行步骤。"
+  }
+}

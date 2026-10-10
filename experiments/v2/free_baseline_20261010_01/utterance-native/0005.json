@@ -1,0 +1,29 @@
+{
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "b7116cfb01224d57b7f6cee42eee2ce0",
+    "input_identity": "6b2c368472a874c68cdd018ea33867c72ecb4f1f39c9f2aafd1b8f060de77f1b",
+    "usage": {
+      "input_tokens": 11597,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 49,
+      "reasoning_output_tokens": 0
+    },
+    "seconds": 7.63113129202975
+  },
+  "input": {
+    "situation": "会议室使用结束",
+    "desired_outcome": "知道使用时长和费用",
+    "known_information": {
+      "start_minutes": 560,
+      "end_minutes": 725,
+      "hourly_rate": 24
+    },
+    "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+  },
+  "response": {
+    "user_request": "会议室用完了，开始时间是当天第560分钟，结束是第725分钟，每小时24元。帮我算一下用了多久、费用是多少。"
+  }
+}

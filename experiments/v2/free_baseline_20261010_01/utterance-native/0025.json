@@ -1,0 +1,25 @@
+{
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "0470e2d3797d41da923006b56c34c6e4",
+    "input_identity": "14ea52aa60f46e6dd39709189f0de975edffb2aa7dba71648e889ba70f2de361",
+    "usage": {
+      "input_tokens": 11594,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 41,
+      "reasoning_output_tokens": 0
+    },
+    "seconds": 7.709574082982726
+  },
+  "input": {
+    "situation": "追踪申请进度",
+    "desired_outcome": "知道审批环节顺序、累计耗时和最终负责人",
+    "known_information": {},
+    "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+  },
+  "response": {
+    "user_request": "我想查一下申请进度，看看审批环节的顺序、累计用了多长时间，以及最终负责人是谁。"
+  }
+}

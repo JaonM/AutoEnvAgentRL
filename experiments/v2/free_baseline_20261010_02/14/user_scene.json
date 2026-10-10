@@ -1,0 +1,6 @@
+{
+  "situation": "核算项目报销",
+  "desired_outcome": "统计已批准且超过4900元的全部报销笔数和总额",
+  "known_information": {},
+  "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+}

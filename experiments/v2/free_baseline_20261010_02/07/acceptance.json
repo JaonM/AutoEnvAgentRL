@@ -1,0 +1,17 @@
+{
+  "kind": "shoes",
+  "params": {},
+  "observations": {
+    "shoes": [
+      "S1",
+      "S3",
+      "S9"
+    ]
+  },
+  "mutation": {
+    "table": "shoes",
+    "key": "S3",
+    "column": "stock",
+    "value": 0
+  }
+}

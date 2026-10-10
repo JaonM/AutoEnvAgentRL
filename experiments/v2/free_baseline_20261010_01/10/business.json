@@ -1,0 +1,36 @@
+{
+  "provenance": "operator-authored synthetic business dossier; frozen before generation",
+  "policy": "设备age_days<=实际关联型号warranty_days时保修且费用0，否则费用是该型号inspection_fee。先查设备，再查其model_id对应型号。",
+  "tables": [
+    {
+      "id": "devices",
+      "rows": [
+        {
+          "id": "D1",
+          "model_id": "K2",
+          "age_days": 365
+        },
+        {
+          "id": "D2",
+          "model_id": "K1",
+          "age_days": 200
+        }
+      ]
+    },
+    {
+      "id": "models",
+      "rows": [
+        {
+          "id": "K1",
+          "warranty_days": 180,
+          "inspection_fee": 80
+        },
+        {
+          "id": "K2",
+          "warranty_days": 365,
+          "inspection_fee": 120
+        }
+      ]
+    }
+  ]
+}

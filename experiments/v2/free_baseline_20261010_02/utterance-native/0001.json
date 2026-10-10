@@ -1,0 +1,35 @@
+{
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "a0ba78d4a01b436bb5ada460057848a3",
+    "input_identity": "74ff720870fd07a6412fe20b2e07c0da2a71d4088d9638d186a24daaf308f900",
+    "usage": {
+      "input_tokens": 12384,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 65,
+      "reasoning_output_tokens": 0
+    },
+    "seconds": 8.698084999981802
+  },
+  "input": {
+    "situation": "办公室设备开销",
+    "desired_outcome": "估算一天耗电与电费",
+    "known_information": {
+      "watts": [
+        1100,
+        65
+      ],
+      "hours": [
+        3,
+        5
+      ],
+      "price": 0.9
+    },
+    "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+  },
+  "response": {
+    "user_request": "办公室有两台设备，功率分别是1100瓦和65瓦，每天分别用3小时和5小时，电价是每度0.9元。帮我估算一下一天耗多少电、电费多少钱。"
+  }
+}

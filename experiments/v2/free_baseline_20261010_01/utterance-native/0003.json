@@ -1,0 +1,33 @@
+{
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "9521a1995734449b84c181f4bc8c575c",
+    "input_identity": "d7eedf85591ef4a5298e6665382b74b38a2e5f1a9f9af2463d8ddc92077aecc7",
+    "usage": {
+      "input_tokens": 11606,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 55,
+      "reasoning_output_tokens": 0
+    },
+    "seconds": 9.973301291989628
+  },
+  "input": {
+    "situation": "购物结算",
+    "desired_outcome": "知道实付金额和节省金额",
+    "known_information": {
+      "prices": [
+        128,
+        96
+      ],
+      "threshold": 200,
+      "rate": 0.9,
+      "coupon": 15
+    },
+    "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+  },
+  "response": {
+    "user_request": "我买了两件商品，价格分别是128元和96元，满200元打9折，还有一张15元优惠券。最后实付多少，一共省了多少？"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "kind": "receipts",
+  "params": {},
+  "observations": {
+    "receipts": [
+      "R1",
+      "R7",
+      "R9",
+      "R11"
+    ]
+  },
+  "mutation": {
+    "table": "receipts",
+    "key": "R7",
+    "column": "paid",
+    "value": true
+  }
+}

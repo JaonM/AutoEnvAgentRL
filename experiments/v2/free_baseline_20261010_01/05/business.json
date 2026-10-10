@@ -1,0 +1,59 @@
+{
+  "provenance": "operator-authored synthetic business dossier; frozen before generation",
+  "policy": "按用户提供的维修单编号精确查询当前状态和预计完成日期；标题和姓名不作为身份依据。",
+  "tables": [
+    {
+      "id": "tickets",
+      "rows": [
+        {
+          "id": "T01",
+          "title": "屏幕维修",
+          "status": "waiting",
+          "eta": "2026-10-13"
+        },
+        {
+          "id": "T02",
+          "title": "屏幕维修",
+          "status": "waiting",
+          "eta": "2026-10-13"
+        },
+        {
+          "id": "T03",
+          "title": "屏幕维修",
+          "status": "waiting",
+          "eta": "2026-10-13"
+        },
+        {
+          "id": "T04",
+          "title": "屏幕维修",
+          "status": "waiting",
+          "eta": "2026-10-13"
+        },
+        {
+          "id": "T05",
+          "title": "屏幕维修",
+          "status": "waiting",
+          "eta": "2026-10-13"
+        },
+        {
+          "id": "T06",
+          "title": "屏幕维修",
+          "status": "waiting",
+          "eta": "2026-10-13"
+        },
+        {
+          "id": "T07",
+          "title": "屏幕维修",
+          "status": "repairing",
+          "eta": "2026-10-12"
+        },
+        {
+          "id": "T08",
+          "title": "屏幕维修",
+          "status": "waiting",
+          "eta": "2026-10-13"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "kind": "sequential",
+  "params": {},
+  "observations": {
+    "accounts": [
+      "AC1"
+    ],
+    "features": [
+      "F1",
+      "F2"
+    ],
+    "logs": [
+      "LG1",
+      "LG2"
+    ]
+  },
+  "mutation": null
+}

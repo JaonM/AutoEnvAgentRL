@@ -1,0 +1,14 @@
+{
+  "kind": "discount",
+  "params": {
+    "prices": [
+      128,
+      96
+    ],
+    "threshold": 200,
+    "rate": 0.9,
+    "coupon": 15
+  },
+  "observations": {},
+  "mutation": null
+}

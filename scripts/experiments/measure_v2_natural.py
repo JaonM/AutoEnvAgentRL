@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import subprocess
+import shutil
 import sys
 import time
 from collections import Counter
@@ -146,6 +147,10 @@ def observation_checks(world, truth, kind):
 
 
 def answer_checks(answer, truth, mapping):
+    if isinstance(mapping, list):
+        from v2_natural_semantics import normalize
+        actual = normalize(answer, mapping, name_aliases=truth.get('name_aliases', {}), role_types={k: type(v) for k, v in truth['answer'].items()})
+        return [{'id': 'answer_' + k, 'passed': k in actual and equivalent(actual[k], v, unordered=k in UNORDERED)} for k,v in truth['answer'].items()]
     return [{'id': 'answer_' + role, 'passed': field in answer and equivalent(answer[field], value, unordered=role in UNORDERED)}
             for role, value in truth['answer'].items() for field in [mapping[role]]]
 
@@ -244,13 +249,14 @@ def policy_rollout(bundle, row, business, user, spec, mapping, agent, root):
     started = time.monotonic()
     try:
         env.reset(row['id'])
+        continuation_verified = False
         for turn in range(40):
             value, provenance = agent.ask(
                 'Act as the agent fulfilling the natural user request using ONLY supplied public tools '
                 'and actual observations. Hidden business records, user preferences, reference trajectories '
-                'and evaluator targets are unavailable. Ask declared user stages when information or '
-                'authorization is missing. Use $result and $user bindings with actual observation/stage '
-                'IDs. You may return 1..8 calls whose dependencies refer to earlier actual observations '
+                'and evaluator targets are unavailable. Use v2_chat for free dialogue, clarification and '
+                'confirmation. Bind exact canonical disclosed_facts values as literals and use returned '
+                'authorization tokens in _v2_authorization. Use $result with actual observation IDs. You may return 1..8 calls whose dependencies refer to earlier actual observations '
                 'or earlier calls in this same batch, never invented results. Pagination must use actual '
                 'returned cursors; stop a batch when you need to inspect a new value before deciding. '
                 'Return tool intent only, no Codex tools. The host executes intents through the real '
@@ -268,19 +274,33 @@ def policy_rollout(bundle, row, business, user, spec, mapping, agent, root):
             save(root / 'rollout_progress.json', {'turns': turn + 1, 'terminated': env.terminated, 'seconds': time.monotonic() - started})
             if env.terminated:
                 break
+            if not continuation_verified:
+                snapshot = env.snapshot()
+                env.restore(snapshot)
+                require(canonical(env.snapshot()['world']) == canonical(snapshot['world']), 'free dialogue continuation state changed')
+                continuation_verified = True
         outcome = env.finish()
         world = env.server.episodes[env.episode]
-        truth = expected(spec, business, user)
-        checks = answer_checks(env.answer or {}, truth, mapping) + observation_checks(world, truth, spec['kind'])
+        from audit_v2_natural import canonical_truth, audited_observations
+        truth = canonical_truth(spec, business, user)
+        truth['name_aliases'] = {r['id']: r['name'] for r in spec['params'].get('candidates', [])}
+        checks = answer_checks(env.answer or {}, truth, mapping) + audited_observations(world, truth, spec['kind'], business)
         checks.append({'id': 'full_business_state', 'passed': canonical(sorted_data(world.data)) == canonical(sorted_data(truth['final_state']))})
-        success = env.terminated and outcome['score']['success'] and all(c['passed'] for c in checks)
-        result = {'passed': bool(success), 'outcome': outcome, 'independent_checks': checks,
+        success = env.terminated and outcome['score']['success'] and (continuation_verified or row['category'] == 'direct_response') and all(c['passed'] for c in checks)
+        result = {'passed': bool(success), 'continuation_verified': continuation_verified, 'user_mode': env.user_mode, 'outcome': outcome, 'independent_checks': checks,
                   'messages': env.messages, 'tools': env.tools, 'answer': env.answer,
                   'seconds': time.monotonic() - started, 'policy_input_boundary': 'public_interface_and_actual_observations_only',
                   'scope': 'actual_native_policy_http_rollout_not_reference_replay'}
         save(root / 'rollout.json', result)
         return result
+    except Exception as exc:
+        setattr(exc, 'user_simulation_fault', env.simulation_fault)
+        save(root / 'rollout_failure.json', {'passed': False, 'user_simulation_fault': env.simulation_fault,
+            'trainable': False, 'trace': env.trace, 'error_type': type(exc).__name__})
+        raise
     finally:
+        if hasattr(env, 'native_evidence'):
+            shutil.copytree(env.native_evidence.name, root / 'runtime-native', dirs_exist_ok=True)
         env.close()
 
 
@@ -306,6 +326,11 @@ def worker(args):
         catalog = [{'document_id': candidate['business'], 'title': candidate['title'],
                     'policy_summary': read(assets / candidate['business'])['policy']}
                    for candidate in manifest['samples']]
+        graph_used = (assets / 'knowledge_graph.json').exists()
+        if graph_used:
+            graph = read(assets / 'knowledge_graph.json')
+            catalog = graph['documents']
+            require(len(catalog) == 20, 'frozen graph corpus incomplete')
         selected, retrieval_provenance = base.ask(
             'Select the business dossier needed to ground this natural request from the supplied catalog. '
             'Use request meaning, not ordering. Do not invent a document or execute tools.',
@@ -314,7 +339,10 @@ def worker(args):
                            'reason': {'type': 'string'}}))
         save(root / 'retrieval.json', {'selected': selected, 'provenance': retrieval_provenance,
             'sha256': digest(assets / selected['document_id']), 'method': 'native_selection_from_frozen_business_catalog',
-            'knowledge_graph_used': False})
+            'knowledge_graph_used': graph_used, 'graph_backend': 'neo4j_frozen_snapshot' if graph_used else None})
+        if graph_used:
+            selected_graph = next(d for d in catalog if d['document_id'] == selected['document_id'])
+            require(selected_graph['sha256'] == hashlib.sha256(canonical(read(assets / selected['document_id'])).encode()).hexdigest(), 'graph document differs from frozen dossier')
         require(selected['document_id'] == row['business'], 'business retrieval selected an unrelated dossier')
         result['phases'][phase_name] = time.monotonic() - tick
         tick = phase('demand_interpretation')
@@ -333,6 +361,10 @@ def worker(args):
             'business_evidence': business, 'private_user_fixture': user,
             'demand_interpretation': interpretation,
             'requirements': '实现原始自然需求和给定业务规则。task必须逐字保留goal。业务表id、字段、记录和生成计划来自固定外部资料，不得增删或改值；这些记录只能通过工具观察，不能发布到初始提示。user.facts必须恰好等于private_user_fixture.facts，私有事实仅通过模拟用户披露，approve_STAGE对应授权stage的id。不能自造授权或偏好。其他用户阶段、工具、答案字段、评分与场景由生成器设计。公开规则须说明实际业务政策；时间基准2026-10-10T00:00:00+00:00，每动作0秒，等待显式推进。不得使用固定答案替代真实观察。'}
+        if 'demand' in row:
+            request['demand'] = copy.deepcopy(row['demand'])
+            save(root / 'task_spec.json', row['demand']['task_spec'])
+            save(root / 'agent_context.json', row['demand']['agent_context'])
         save(root / 'author_request.json', request)
         class GroundedAuthor(NativeCodeAgent):
             def generate(self, request, *, feedback=None):
@@ -348,7 +380,8 @@ def worker(args):
         bundle = root / 'build/sandbox'
         compiled = fixture_alignment(read(bundle / 'contract.json'), row, business, user)
         tick = phase('external_business_acceptance')
-        acceptance = external_acceptance(compiled, row, business, user, spec, base)
+        from v2_business_acceptance import accept
+        acceptance = accept(compiled, row, business, user, spec, base)
         save(root / 'external_acceptance.json', acceptance)
         result['phases'][phase_name] = time.monotonic() - tick
         result['external_business_qualified'] = acceptance['passed']
@@ -359,19 +392,37 @@ def worker(args):
         result['training_ready'] = certificate['training_ready'] is True
         result['phases'][phase_name] = time.monotonic() - tick
         tick = phase('native_policy_rollout')
+        result['policy_attempted'] = True
+        result['policy_success'] = False
         rollout = policy_rollout(bundle, row, business, user, spec, acceptance['mapping'], base, root)
         result['phases'][phase_name] = time.monotonic() - tick
         result['policy_success'] = rollout['passed']
         # Conservative verified yield. Policy failure is inconclusive about the
         # sandbox, and must be reported separately rather than called its defect.
-        result['qualified'] = rollout['passed']
+        result['qualified'] = rollout['passed'] and result['training_ready']
+        result['user_simulation_fault'] = rollout['outcome'].get('user_simulation_fault', False)
         result['status'] = 'passed' if result['qualified'] else 'policy_validation_inconclusive'
         if not result['qualified']:
             result['failed_phase'] = phase_name
     except Exception as exc:
+        if 'tick' in locals():
+            result['phases'].setdefault(phase_name, time.monotonic() - tick)
+        result['user_simulation_fault'] = getattr(exc, 'user_simulation_fault', False)
+        result['failure_class'] = 'user_simulation' if result['user_simulation_fault'] else 'infrastructure' if type(exc).__name__ in {'InfrastructureError', 'RuntimeError', 'URLError', 'TimeoutError'} else 'business_or_contract'
         result.update(status='failed', failed_phase=phase_name, error=f'{type(exc).__name__}: {exc}')
     result.pop('active_phase', None)
     result['seconds'] = time.monotonic() - start
+    completions = []
+    for path in root.rglob('*.json'):
+        if 'native' in str(path.parent):
+            value = read(path)
+            if isinstance(value, dict) and 'provenance' in value and 'response' in value:
+                completions.append(value['provenance'])
+    if (root / 'build/progress.json').exists():
+        attempts = read(root / 'build/progress.json').get('attempts', [])
+        result['candidate_repairs'] = max(0, len(attempts) - 1)
+    result['model_calls'] = len(completions)
+    result['model_seconds'] = sum(p.get('seconds', 0) for p in completions)
     save(root / 'result.json', result)
     print(json.dumps({k: result.get(k) for k in ('id', 'qualified', 'status', 'failed_phase', 'error', 'seconds')}, ensure_ascii=False), flush=True)
     return 0 if result['qualified'] else 1
@@ -385,8 +436,13 @@ def summarize(protocol, samples, wall):
         'verified_end_to_end_yield': counts['qualified'] / 20 if terminal == 20 else None,
         'sandbox_pipeline_yield': counts['sandbox_qualified'] / 20 if terminal == 20 else None,
         'external_business_yield': counts['external_business_qualified'] / 20 if terminal == 20 else None,
-        'policy_attempted': sum(s.get('policy_success') is not None for s in samples),
+        'policy_attempted': sum(s.get('policy_attempted', s.get('policy_success') is not None) is True for s in samples),
         'policy_successes': sum(s.get('policy_success') is True for s in samples),
+        'user_simulation_faults': sum(s.get('user_simulation_fault') is True for s in samples),
+        'user_simulation_fault_rate': sum(s.get('user_simulation_fault') is True for s in samples) / 20,
+        'failure_classes': dict(Counter(s.get('failure_class', s.get('failed_phase', 'none')) for s in samples if s['status'] not in {'passed', 'pending', 'running'})),
+        'model_calls': sum(s.get('model_calls', 0) for s in samples),
+        'stage_seconds': {phase: sum(s.get('phases', {}).get(phase, 0) for s in samples) for phase in {p for s in samples for p in s.get('phases', {})}},
         'groups': {g: {'planned': n, 'qualified': sum(s.get('qualified') is True for s in samples if s['stratum'] == g)}
                    for g, n in protocol['mix'].items()}, 'wall_seconds': wall, 'samples': samples,
         'limitation': 'Synthetic operator-designed natural demands, fixed 4:4:4:8 mix; not production population or independent double-blind sampling. Policy failures are inconclusive sandbox validation, separately classified.'}
@@ -406,7 +462,7 @@ def main():
     manifest = verify_assets(args.assets.resolve())
     root = args.output.resolve()
     root.mkdir(parents=True, exist_ok=False)
-    protocol = {'version': 1, 'scope': manifest['scope'], 'planned': 20, 'mix': manifest['mix'],
+    protocol = {'version': 2, 'user_mode': 'free_dialogue', 'measurement': 'predeclared_closed_semantic_projections_v2', 'scope': manifest['scope'], 'planned': 20, 'mix': manifest['mix'],
         'sampling': manifest['sampling'], 'model': 'gpt-6.1-sol', 'concurrency': 1, 'candidate_repairs': 1,
         'platform_identity': implementation_identity(), 'runner_identity': runner_identity(),
         'assets_identity': digest(args.assets / 'frozen.json'), 'base_image': args.base_image,

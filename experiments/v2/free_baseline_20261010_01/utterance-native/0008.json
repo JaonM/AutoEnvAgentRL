@@ -1,0 +1,56 @@
+{
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "bbd279a87403409f8bbed1e256242f8c",
+    "input_identity": "3a746403673960079042f67b7547d983b59569ce76215e22759958b8cf4d4b51",
+    "usage": {
+      "input_tokens": 11756,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 107,
+      "reasoning_output_tokens": 24
+    },
+    "seconds": 9.674583667016122
+  },
+  "input": {
+    "scene": {
+      "situation": "筹备课程挑选讲师",
+      "desired_outcome": "得到前三名候选与总报价",
+      "known_information": {
+        "candidates": [
+          {
+            "id": "A",
+            "name": "甲",
+            "rating": 4.8,
+            "price": 600
+          },
+          {
+            "id": "B",
+            "name": "乙",
+            "rating": 4.9,
+            "price": 800
+          },
+          {
+            "id": "C",
+            "name": "丙",
+            "rating": 4.9,
+            "price": 700
+          },
+          {
+            "id": "D",
+            "name": "丁",
+            "rating": 4.8,
+            "price": 600
+          }
+        ]
+      },
+      "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+    },
+    "opening": "我在筹备课程，想挑选三位讲师。候选人有甲（报价600，评分4.8）、乙（报价800，评分4.9）、丙（报价700，评分4.9）和丁（报价600，评分4.8）。帮我选出前三名，并算出总报价。"
+  },
+  "response": {
+    "passed": true,
+    "reason": "开场保留了四位候选人的姓名、报价和评分，明确要求选出前三名并计算总报价，符合筹备课程挑选讲师的场景。排序及并列处理规则可合理留待澄清，没有新增事实、义务或平台执行步骤。"
+  }
+}

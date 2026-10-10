@@ -1,0 +1,6 @@
+{
+  "situation": "当前设备不合适",
+  "desired_outcome": "选择兼容有余量的设备替换，并调整维护安排",
+  "known_information": {},
+  "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+}

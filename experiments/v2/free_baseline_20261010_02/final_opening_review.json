@@ -1,0 +1,120 @@
+{
+  "response": {
+    "checks": [
+      {
+        "id": 1,
+        "passed": true,
+        "reason": "自然简洁，完整保留两台设备的功率、使用时长、电价及耗电和电费估算需求。"
+      },
+      {
+        "id": 2,
+        "passed": true,
+        "reason": "保留商品价格、折扣门槛、折扣和优惠券金额，明确询问实付与节省金额。"
+      },
+      {
+        "id": 3,
+        "passed": true,
+        "reason": "保留起止时间和每小时费用，准确表达使用时长与费用需求。"
+      },
+      {
+        "id": 4,
+        "passed": true,
+        "reason": "保留全部候选人的姓名、报价和评分，要求前三名及总报价；排序和同分规则的缺省属于合理信息缺口。"
+      },
+      {
+        "id": 5,
+        "passed": true,
+        "reason": "自然表达送修后的进度和预计修好时间，符合安排取回的场景。"
+      },
+      {
+        "id": 6,
+        "passed": true,
+        "reason": "保留会员卡积分与当前可用状态的查询需求，无 unsupported additions。"
+      },
+      {
+        "id": 7,
+        "passed": true,
+        "reason": "表达购买鞋子时查询合脚且有货款号的需求，尺码等信息缺省合理。"
+      },
+      {
+        "id": 8,
+        "passed": true,
+        "reason": "准确询问未报销票据的编号和总金额，符合整理报销场景。"
+      },
+      {
+        "id": 9,
+        "passed": true,
+        "reason": "自然询问配送进度和预计到达时间，符合等待收货场景。"
+      },
+      {
+        "id": 10,
+        "passed": true,
+        "reason": "保留设备故障送修背景，明确询问保修范围与检修费。"
+      },
+      {
+        "id": 11,
+        "passed": true,
+        "reason": "准确表达部门在职员工编号与总人数的统计需求。"
+      },
+      {
+        "id": 12,
+        "passed": true,
+        "reason": "自然表达因临时有事无法参加健身课并取消当前预约的意图。"
+      },
+      {
+        "id": 13,
+        "passed": true,
+        "reason": "完整保留审批环节顺序、累计耗时和最终负责人三项查询需求。"
+      },
+      {
+        "id": 14,
+        "passed": true,
+        "reason": "准确保留已批准、金额超过4900元、全部报销笔数及总额的统计条件。"
+      },
+      {
+        "id": 15,
+        "passed": true,
+        "reason": "保留至少可拿出6件的库存条件，以及符合条件的SKU数量和合计件数需求。"
+      },
+      {
+        "id": 16,
+        "passed": true,
+        "reason": "完整表达选择兼容且有空余容量的替换设备并调整维护安排，未将容量改为性能。"
+      },
+      {
+        "id": 17,
+        "passed": true,
+        "reason": "保留从源仓调拨12件指定SKU并更新调拨单的需求，仓库和SKU标识缺省合理。"
+      },
+      {
+        "id": 18,
+        "passed": true,
+        "reason": "保留活动开放后且有名额时登记参加的条件。"
+      },
+      {
+        "id": 19,
+        "passed": true,
+        "reason": "保留按个人区域偏好挑选并预订场地，以及允许改变主意的意图。"
+      },
+      {
+        "id": 20,
+        "passed": true,
+        "reason": "准确保留依次开启两个服务及第二个额度不足时保留第一个的条件，无执行步骤或额外设定。"
+      }
+    ]
+  },
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "ab540d3dcf0e43888d972d096601e053",
+    "input_identity": "2dbe88406c102bdfa32d9bbe4d67f818c030e6a4de13e4f06ea324c68cb7a623",
+    "usage": {
+      "input_tokens": 13619,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 690,
+      "reasoning_output_tokens": 0
+    },
+    "seconds": 23.391201041988097
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "1f83582b1d2f43c28e7eced7ae150bc6",
+    "input_identity": "c15dac9e08b62e59be566d8d7750d6c9b2093df8f10e7c83afed7cc9cc7c29c8",
+    "usage": {
+      "input_tokens": 12363,
+      "cached_input_tokens": 11264,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 34,
+      "reasoning_output_tokens": 0
+    },
+    "seconds": 10.467104332987219
+  },
+  "input": {
+    "situation": "准备部门人员统计",
+    "desired_outcome": "得到在职员工编号和人数",
+    "known_information": {},
+    "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+  },
+  "response": {
+    "user_request": "我在准备部门人员统计，想查一下在职员工的编号和总人数。"
+  }
+}

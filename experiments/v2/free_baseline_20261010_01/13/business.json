@@ -1,0 +1,93 @@
+{
+  "provenance": "operator-authored synthetic business dossier; frozen before generation",
+  "policy": "申请关联entry_id；审批环节按实际next_id连接，null表示结束。最后环节owner_id关联人员。累计耗时为链上duration之和。",
+  "tables": [
+    {
+      "id": "applications",
+      "rows": [
+        {
+          "id": "A1",
+          "entry_id": "N0"
+        }
+      ]
+    },
+    {
+      "id": "nodes",
+      "rows": [
+        {
+          "id": "N0",
+          "next_id": "N1",
+          "duration": 2,
+          "owner_id": "U1"
+        },
+        {
+          "id": "N1",
+          "next_id": "N2",
+          "duration": 3,
+          "owner_id": "U1"
+        },
+        {
+          "id": "N2",
+          "next_id": "N3",
+          "duration": 4,
+          "owner_id": "U1"
+        },
+        {
+          "id": "N3",
+          "next_id": "N4",
+          "duration": 5,
+          "owner_id": "U1"
+        },
+        {
+          "id": "N4",
+          "next_id": "N5",
+          "duration": 6,
+          "owner_id": "U1"
+        },
+        {
+          "id": "N5",
+          "next_id": "N6",
+          "duration": 7,
+          "owner_id": "U1"
+        },
+        {
+          "id": "N6",
+          "next_id": "N7",
+          "duration": 8,
+          "owner_id": "U1"
+        },
+        {
+          "id": "N7",
+          "next_id": "N8",
+          "duration": 9,
+          "owner_id": "U1"
+        },
+        {
+          "id": "N8",
+          "next_id": "N9",
+          "duration": 10,
+          "owner_id": "U1"
+        },
+        {
+          "id": "N9",
+          "next_id": null,
+          "duration": 11,
+          "owner_id": "U2"
+        }
+      ]
+    },
+    {
+      "id": "people",
+      "rows": [
+        {
+          "id": "U1",
+          "name": "陈宁"
+        },
+        {
+          "id": "U2",
+          "name": "周青"
+        }
+      ]
+    }
+  ]
+}

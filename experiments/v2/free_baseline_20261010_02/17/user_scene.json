@@ -1,0 +1,6 @@
+{
+  "situation": "目标仓库存不足",
+  "desired_outcome": "从源仓调拨12件指定SKU并更新调拨单",
+  "known_information": {},
+  "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+}
