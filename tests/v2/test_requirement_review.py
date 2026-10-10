@@ -93,3 +93,18 @@ def test_declared_integrity_constraints_are_evidence_but_fixture_rows_are_not():
     assert implementation_at(source, '/tables/0/foreign_keys') == []
     with pytest.raises(ContractError):
         implementation_at(source, '/tables/0/data')
+
+
+def test_scope_classification_preserves_case_gate_and_cannot_exclude_user_request():
+    compiled, requirements, review = fixture()
+    policy = next(item for item in review['requirement_reviews']
+                  if item['requirement_id'].startswith('business_policy_'))
+    policy['applicability'] = 'outside_request'
+    assert validate_review(compiled, requirements, review)['passed']
+    policy['case_ids'] = []
+    with pytest.raises(ContractError, match='actual independent executable cases'):
+        validate_review(compiled, requirements, review)
+    policy['case_ids'] = ['yes']
+    review['requirement_reviews'][0]['applicability'] = 'outside_request'
+    with pytest.raises(ContractError, match='user request obligations cannot be excluded'):
+        validate_review(compiled, requirements, review)

@@ -46,6 +46,7 @@ def review_schema(base_schema, requirements, source):
         'type': 'array', 'items': object_schema({
             'requirement_id': {'type': 'string', 'enum': [r['id'] for r in requirements]},
             'consistent': {'type': 'boolean'}, 'reason': {'type': 'string'},
+            'applicability': {'type': 'string', 'enum': ['applicable', 'conditional', 'outside_request']},
             'implementation_paths': {'type': 'array', 'items': {
                 'type': 'string', 'enum': implementation_paths(source)}},
             'case_ids': {'type': 'array', 'items': {'type': 'string'}},
@@ -75,11 +76,17 @@ def validate_review(compiled, requirements, value):
     reviews = value.get('requirement_reviews', [])
     require(len(reviews) == len(requirements), 'independent review must cover every public clause')
     expected, seen = {r['id'] for r in requirements}, set()
+    by_id = {r['id']: r for r in requirements}
     cases = {c['id'] for c in value['cases']}
     for item in reviews:
         identity = item['requirement_id']
         require(identity in expected and identity not in seen, 'invalid or duplicate requirement review')
         seen.add(identity)
+        applicability = item.get('applicability', 'applicable')
+        require(applicability in {'applicable', 'conditional', 'outside_request'},
+                'invalid requirement applicability')
+        require(applicability != 'outside_request' or by_id[identity]['source'] == 'business_policy',
+                'user request obligations cannot be excluded from scope')
         require(type(item['consistent']) is bool and item['reason'].strip(), 'requirement review verdict and reason required')
         paths, case_ids = item['implementation_paths'], item['case_ids']
         require(1 <= len(paths) <= 16 and len(set(paths)) == len(paths), 'requirement implementation evidence required')
