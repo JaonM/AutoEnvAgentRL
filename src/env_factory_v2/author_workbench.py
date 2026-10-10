@@ -45,7 +45,7 @@ def decode_json(text):
 
 
 class AuthorWorkbench:
-    def __init__(self, *, source=None, max_operations=128):
+    def __init__(self, *, source=None, max_operations=128, request=None):
         require(type(max_operations) is int and 1 <= max_operations <= 512,
                 'invalid author operation budget')
         self.source = {}
@@ -53,6 +53,7 @@ class AuthorWorkbench:
         self.max_operations = max_operations
         self.operations = 0
         self.last_check = None
+        self.request = copy.deepcopy(request or {})
 
     def call(self, tool, arguments):
         require(self.operations < self.max_operations, 'author operation budget exceeded')
@@ -73,6 +74,8 @@ class AuthorWorkbench:
             require(tool == 'check_contract' and not arguments, 'unknown author tool')
             self.last_check = None
             compiled = compile_contract(copy.deepcopy(self.source))
+            from .author_constraints import check_author_inputs
+            check_author_inputs(compiled, self.request)
             recipes = preflight_recipes(compiled)
             self.last_check = {'passed': recipes['passed'], 'phase': 'recipe_preflight',
                                'checks': recipes['checks'],

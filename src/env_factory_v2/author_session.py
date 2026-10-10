@@ -19,7 +19,7 @@ from .expressions import canonical
 from env_factory.generation.codex_transport import transport_args
 
 
-def author_command(folder, *, initial=None):
+def author_command(folder, *, initial=None, request_file=None):
     folder = Path(folder).resolve()
     args = ['codex', 'exec', '--ephemeral', '--sandbox', 'read-only', '--skip-git-repo-check',
             '--model', MODEL, '--json', '--ignore-user-config', '--disable', 'shell_tool',
@@ -30,6 +30,8 @@ def author_command(folder, *, initial=None):
     server_args = ['-m', 'env_factory_v2.author_mcp', '--output', str(folder/'workbench')]
     if initial is not None:
         server_args += ['--source', str(initial)]
+    if request_file is not None:
+        server_args += ['--request', str(request_file)]
     settings = {'command': sys.executable, 'args': server_args, 'required': True,
                 'enabled_tools': ['put_section', 'edit_contract', 'check_contract'],
                 'default_tools_approval_mode': 'approve', 'tool_timeout_sec': 60}
@@ -56,6 +58,8 @@ def generate_in_session(request, *, evidence_root, timeout=240, previous_source=
     folder = Path(evidence_root).resolve()/identity
     folder.mkdir(parents=True, exist_ok=False)
     (folder/'completion-schema.json').write_text(canonical(object_schema({'completed': {'type': 'boolean'}})))
+    request_file = folder/'request.json'
+    request_file.write_text(canonical(request))
     initial = None
     if previous_source is not None:
         initial = folder/'initial.json'
@@ -76,7 +80,7 @@ def generate_in_session(request, *, evidence_root, timeout=240, previous_source=
                    if not key.startswith(('SANDBOX_', 'LLM_', 'ROLLOUT_LLM_'))}
     with tempfile.TemporaryDirectory(prefix='envfactory-author-') as cwd:
         with (folder/'events.jsonl').open('w') as events, (folder/'stderr.log').open('w') as errors:
-            process = subprocess.Popen(author_command(folder, initial=initial), cwd=cwd, env=environment,
+            process = subprocess.Popen(author_command(folder, initial=initial, request_file=request_file), cwd=cwd, env=environment,
                                        stdin=subprocess.PIPE, stdout=events, stderr=errors,
                                        text=True, start_new_session=True)
             try:

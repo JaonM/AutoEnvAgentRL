@@ -27,10 +27,10 @@ TOOLS = [
 
 
 class AuthorMCP:
-    def __init__(self, output, *, source=None):
+    def __init__(self, output, *, source=None, request=None):
         self.output = Path(output)
         self.output.mkdir(parents=True, exist_ok=True)
-        self.workbench = AuthorWorkbench(source=source)
+        self.workbench = AuthorWorkbench(source=source, request=request)
 
     def dispatch(self, request):
         identity = request.get('id')
@@ -82,8 +82,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--source', type=Path)
+    parser.add_argument('--request', type=Path)
     args = parser.parse_args()
-    server = AuthorMCP(args.output, source=json.loads(args.source.read_text()) if args.source else None)
+    server = AuthorMCP(args.output, source=json.loads(args.source.read_text()) if args.source else None,
+                       request=json.loads(args.request.read_text()) if args.request else None)
     for line in sys.stdin:
         try:
             request = json.loads(line)
