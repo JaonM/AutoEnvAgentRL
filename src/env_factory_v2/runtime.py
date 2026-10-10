@@ -151,10 +151,11 @@ class Sandbox:
             for binding in tool.get('result_bindings', []):
                 value = arguments.get(binding['argument'])
                 providers = binding['tool'] if isinstance(binding['tool'], list) else [binding['tool']]
+                paths = binding['path'] if isinstance(binding['path'], list) else [binding['path']]
                 require(isinstance(value, dict) and set(value) == {'$result', 'path'}
                         and value['$result'] in self.observations
                         and self.observations[value['$result']]['tool'] in providers
-                        and re.fullmatch(re.escape(binding['path']).replace(r'\*', r'\d+'), value['path']),
+                        and any(re.fullmatch(re.escape(path).replace(r'\*', r'\d+'), value['path']) for path in paths),
                         'required observed-result dependency missing')
                 if binding.get('recency') == 'latest':
                     latest = next((turn['id'] for turn in reversed(self.trace)

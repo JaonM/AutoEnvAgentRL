@@ -294,6 +294,9 @@ def compile_contract(source):
             require(binding.get('recency', 'any') in ('any', 'latest'), 'invalid dependency recency')
             providers = binding['tool'] if isinstance(binding['tool'], list) else [binding['tool']]
             require(providers and all(isinstance(provider, str) and provider in tools for provider in providers), 'invalid dependency')
+            paths = binding['path'] if isinstance(binding['path'], list) else [binding['path']]
+            require(1 <= len(paths) <= 16 and all(isinstance(path, str) and path for path in paths)
+                    and len(set(paths)) == len(paths), 'invalid dependency paths')
             require(binding['argument'] in tool['parameters']['required'], 'dependency argument must be required')
         for argument, fact in tool.get('user_bindings', {}).items():
             available = set(source['user'].get('facts', {})) | {

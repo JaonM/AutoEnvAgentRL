@@ -125,6 +125,11 @@ Optional tool keys: user_bindings={argument:fact_name},
 result_bindings=[{argument,tool,path}], complete_retrieval=true.
 result_bindings require actual observed references, not matching literals;
 path may use '*' for a numeric result-array index, e.g. items.*.id.
+path may also be a nonempty list of up to 16 distinct paths: any one is allowed.
+For example, one stock_id binding may allow items.*.source_id or items.*.target_id.
+Separate bindings remain simultaneous requirements; do not express alternatives
+by repeating an argument across bindings. Providers and paths are independent
+allowed sets, and runtime still requires an actual observed result reference.
 The binding tool can be a list of permitted providers. A tool may consume its own
 earlier result: runtime observations must already exist, preventing temporal cycles.
 Each result binding may specify recency="latest" (default "any"). latest requires
