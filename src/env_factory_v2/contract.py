@@ -191,6 +191,8 @@ def expression_children(expression):
         return [value['items'], value['start']]
     if op == 'range':
         return [value['start'], value['stop']]
+    if op == 'bounded_cover':
+        return [value['items'], value['target']]
     return value.values() if isinstance(value, dict) else value
 
 

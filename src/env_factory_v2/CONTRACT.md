@@ -24,6 +24,19 @@ revocations or stale captures instead of repeating long trajectories. Expectatio
 must remain grounded in original business; inheritance never skips execution.
 
 Expressions have exactly one operator. Literals always use {"literal":VALUE};
+bounded_cover:{items:EXPR,target:EXPR,max_states:1..10000,
+max_transitions:1..1000000,max_plans:1..10000} exactly solves bounded integer
+covering. Each item is {key:unique nonempty string,units:positive integer,
+cost:nonnegative integer,minimum:positive integer,maximum:nonnegative integer}.
+Choose zero or minimum..maximum copies per group; cover target (nonnegative
+integer), minimizing total cost, then total units. Returns
+{feasible:boolean,cost:integer|null,quantity:integer|null,plans:[[{key,count}]]}.
+All equally optimal plans are retained; no hidden key tie-break chooses one.
+Infeasible returns null totals and empty plans; zero target returns zero and [[]].
+Use named public rules to select eligible source records before mapping these
+coefficients from their current fields. The optimizer does not invent eligibility,
+authorization, budgets, expiry or tool evidence. Any computation budget excess
+raises an explicit error instead of claiming infeasibility or truncating optima.
 range:{start:EXPR,stop:EXPR,max_items:1..10000} constructs integers from start
 inclusive to stop exclusive, with integer endpoints. Empty/reversed intervals
 return []. Exceeding max_items raises an error; candidates are never truncated.

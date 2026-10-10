@@ -111,6 +111,15 @@ def validate_expr(expression, *, roots, depth=0):
         for field in ('start', 'stop'):
             validate_expr(value[field], roots=roots, depth=depth + 1)
         return
+    if op == 'bounded_cover':
+        if not isinstance(value, dict) or set(value) != {'items', 'target', 'max_states', 'max_transitions', 'max_plans'}:
+            raise ContractError('invalid bounded_cover expression')
+        for field, ceiling in [('max_states', 10000), ('max_transitions', 1000000), ('max_plans', 10000)]:
+            if type(value[field]) is not int or not 1 <= value[field] <= ceiling:
+                raise ContractError('cover budget outside allowed bounds')
+        for field in ['items', 'target']:
+            validate_expr(value[field], roots=roots, depth=depth + 1)
+        return
     if op == 'if':
         if not isinstance(value, dict) or set(value) != {'condition', 'then', 'else'}:
             raise ContractError('invalid conditional')
@@ -143,6 +152,10 @@ def validate_expr(expression, *, roots, depth=0):
 
 def evaluate(expression, context):
     op, value = next(iter(expression.items()))
+    if op == 'bounded_cover':
+        from .integer_cover import bounded_cover
+        return bounded_cover(evaluate(value['items'], context), evaluate(value['target'], context),
+            **{field: value[field] for field in ['max_states', 'max_transitions', 'max_plans']})
     if op == 'literal':
         return copy.deepcopy(value)
     if op == 'ref':
