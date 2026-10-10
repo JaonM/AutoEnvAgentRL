@@ -155,6 +155,11 @@ def expected(spec, business, user, *, mutation=None, refuse=False):
             registration['enrolled'] = True
         answer = fields(submitted=not refuse, enrolled=registration['enrolled'], remaining=activity['remaining'])
     elif kind == 'correction':
+        # The public obligation is the complete available menu for the final
+        # preference. An early correction can make the old region obsolete
+        # before any query; observing its records is not a business requirement.
+        observation['venues'] = [row['id'] for row in data['venues']
+                                 if row['region'] == facts['region_new'] and row['available']]
         venue = get('venues', facts['venue_choice'])
         booking = get('bookings', facts['booking_id'])
         if not refuse:

@@ -3,6 +3,7 @@ import copy
 import importlib.util
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,6 +15,41 @@ from measure_v2_natural import fixture_alignment, answer_checks, observation_che
 from env_factory_v2.examples import simple, transaction
 from env_factory_v2.contract import ContractError
 from env_factory_v2.runtime import Sandbox
+
+
+def correction_observation_check(truth, ids):
+    world = SimpleNamespace(version=0, tools={'menu': {'table': 'venues', 'kind': 'query'}},
+        user=SimpleNamespace(stages={'changed': {'kind': 'correction'}}),
+        trace=[{'kind': 'user', 'stage': 'changed'}, {'kind': 'tool', 'tool': 'menu',
+            'status': 'ok', 'result': {'items': [{'id': key} for key in ids], 'state_version': 0}}])
+    return next(c for c in observation_checks(world, truth, 'correction')
+                if c['id'] == 'observed_venues')['passed']
+
+
+def test_correction_requires_complete_final_menu_not_obsolete_region():
+    row = next(r for r in cases() if r['acceptance']['kind'] == 'correction')
+    truth = expected(row['acceptance'], row['business'], row['user'])
+    final_ids = [v['id'] for v in truth['initial']['venues']
+                 if v['region'] == row['user']['facts']['region_new'] and v['available']]
+    assert truth['observations']['venues'] == final_ids
+    assert correction_observation_check(truth, final_ids)
+    assert not correction_observation_check(truth, final_ids[:-1])
+    obsolete_ids = [v['id'] for v in truth['initial']['venues']
+                    if v['region'] != row['user']['facts']['region_new']]
+    assert not correction_observation_check(truth, obsolete_ids)
+
+
+def test_correction_menu_excludes_unavailable_records_and_follows_changed_preferences():
+    row = copy.deepcopy(next(r for r in cases() if r['acceptance']['kind'] == 'correction'))
+    venues = next(t['rows'] for t in row['business']['tables'] if t['id'] == 'venues')
+    excluded = next(v for v in venues if v['region'] == 'west' and v['id'] != row['user']['facts']['venue_choice'])
+    excluded['available'] = False
+    truth = expected(row['acceptance'], row['business'], row['user'])
+    assert excluded['id'] not in truth['observations']['venues']
+    row['user']['facts'].update(region_new='east', venue_choice=venues[0]['id'])
+    changed = expected(row['acceptance'], row['business'], row['user'])
+    assert set(changed['observations']['venues']) == {v['id'] for v in venues if v['region'] == 'east' and v['available']}
+    assert set(truth['observations']['venues']).isdisjoint(changed['observations']['venues'])
 
 
 def test_frozen_business_oracle_covers_twenty_natural_requests():
