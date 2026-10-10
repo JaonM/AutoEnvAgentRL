@@ -47,3 +47,28 @@ def test_bindings_cannot_bypass_names_or_reference_boundaries(bindings):
 def test_local_variables_are_not_available_outside_binding_scope():
     with pytest.raises(ContractError, match='forbidden'):
         validate_expr({'ref': 'vars.key'}, roots={'data'})
+
+
+def test_lexical_capture_around_public_filter_preserves_rule_and_boundary_semantics():
+    rules = {'eligible': {'predicate': {'and': [
+        {'eq': [{'ref': 'row.project_id'}, {'ref': 'args.project_id'}]},
+        {'gt': [{'ref': 'row.amount'}, {'literal': 10}]}]}}}
+    expr = {'filter': {'items': {'ref': 'data.expenses'}, 'value': {'let': {
+        'bindings': {'key': {'ref': 'row.project_id'}}, 'value': {'rule': {
+            'id': 'eligible', 'arguments': {'project_id': {'ref': 'vars.key'}}}}}}}}
+    validate_expr(expr, roots={'data'})
+    validate_rule_links(expr, rules, shared_filters=True)
+    rows = [{'project_id': 'P1', 'amount': 10}, {'project_id': 'P2', 'amount': 11}]
+    assert evaluate(expr, {'data': {'expenses': rows}, '_rules': rules}) == [rows[1]]
+
+
+@pytest.mark.parametrize('predicate', [
+    {'literal': True},
+    {'eq': [{'ref': 'row.amount'}, {'literal': 10}]},
+    {'or': [{'rule': {'id': 'eligible', 'arguments': {}}}, {'literal': True}]},
+])
+def test_lexical_wrapper_cannot_hide_unshared_eligibility(predicate):
+    expr = {'filter': {'items': {'ref': 'data.expenses'}, 'value': {'let': {
+        'bindings': {'key': {'ref': 'row.amount'}}, 'value': predicate}}}}
+    with pytest.raises(ContractError, match='invoke named public rules'):
+        validate_rule_links(expr, {'eligible': {'predicate': {'literal': False}}}, shared_filters=True)

@@ -193,7 +193,9 @@ not a business rounding rule. Integers remain exact and booleans are not numbers
 Current record facts must follow actual records, not fixture literals. Meaning
 and comparison are public. Weights including explanations sum to one.
 Every eligibility filter in reward targets, invariants and actual-state goals MUST invoke
-named public rules (or boolean combinations of them). Never duplicate a tool's
+named public rules (or boolean combinations of them). A let wrapper may capture
+arguments before invoking those rules; its value still obeys the same restriction.
+Never duplicate a tool's
 eligibility predicate manually in an expected expression. Use filter/map with
 the rule operator to compute the authoritative complete set independently of
 the agent's possibly incomplete tool observations. Scenario/challenge answer

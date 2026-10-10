@@ -129,6 +129,11 @@ def validate_rule_links(expression, rules, *, shared_filters=False, row_scope=Fa
         def shared(predicate):
             if set(predicate) == {'rule'}:
                 return True
+            if set(predicate) == {'let'}:
+                # Capturing lexical values does not add an eligibility clause.
+                # The selected predicate must still be wholly public-rule based;
+                # recursive validation below checks every binding expression too.
+                return shared(predicate['let']['value'])
             if set(predicate) <= {'and', 'or', 'not'}:
                 return all(shared(item) for values in predicate.values() for item in values)
             return False
