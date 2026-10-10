@@ -147,6 +147,8 @@ class NativeCodeAgent:
             from .repair import apply_edits, recover_edit_values
             previous = feedback['previous_source']
             evidence = {key: value for key, value in feedback.items() if key != 'previous_source'}
+            if 'original_request' in evidence and canonical(evidence['original_request']) == canonical(request):
+                evidence.pop('original_request')  # Supplied once as original_request below.
             value, provenance = self.ask(
                 'Repair the supplied contract using atomic JSON Pointer edits, not a complete rewrite. '
                 'Preserve every original business obligation and difficulty. Repair the actual executable '

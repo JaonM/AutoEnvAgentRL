@@ -103,3 +103,22 @@ def test_pipeline_passes_actual_failed_contract_and_current_error_to_repair(tmp_
     assert feedback['previous_source'] == source
     assert feedback['recipe_preflight']['passed'] is False
     assert any(check['error'] for check in feedback['recipe_preflight']['checks'])
+
+
+@pytest.mark.parametrize('same_request', [True, False])
+def test_repair_payload_deduplicates_only_identical_request(same_request):
+    request = {'goal': '查当前业务状态', 'category': 'direct_response'}
+    included = copy.deepcopy(request) if same_request else {'goal': 'distinct review evidence'}
+    feedback = {'previous_source': direct(), 'original_request': included,
+                'recipe_preflight': {'passed': False, 'checks': [{'id': 'negative', 'error': 'actual error'}]}}
+    before = copy.deepcopy(feedback)
+    agent = Mock()
+    agent.ask.return_value = ({'edits': [edit('replace', '/task', request['goal'])]}, {'test': True})
+    NativeCodeAgent.generate(agent, request, feedback=feedback)
+    payload = agent.ask.call_args.args[1]
+    assert payload['original_request'] == request
+    assert ('original_request' not in payload['repair_feedback']) is same_request
+    if not same_request:
+        assert payload['repair_feedback']['original_request'] == included
+    assert payload['repair_feedback']['recipe_preflight'] == feedback['recipe_preflight']
+    assert feedback == before
