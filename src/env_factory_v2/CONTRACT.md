@@ -341,3 +341,21 @@ never dereference items.0 as if a row existed. A stale-reference test must captu
 an actual earlier row and reach the intended binding/recency protection, rather
 than failing while resolving a nonexistent result. Do not relabel an accidental
 empty-result failure as proof of stale-reference protection.
+
+## Tool selection interference
+
+The build pipeline adds up to two executable read-only partial views after the original
+reference preflight and before independent review. `build(tool_interference=0..4)` controls
+this budget (default 2); direct-response tasks remain tool-free. Only existing query
+columns are projected; filters, pagination, user bindings and result dependencies are
+preserved. No new private facts, unrelated data or writes are fabricated. Each added view
+is executed using a valid reference prefix, and the full reference preflight runs again.
+All added tools pass the same review, qualification, export and container gates.
+
+Tools may carry internal `selection_role: task|distractor` (default task). Distractors must
+be queries, are excluded from the simple-task core-tool count and default completion
+obligations, and the label is stripped from public tools. Actual projected columns are
+explicitly described publicly. Existing explicit success obligations are preserved.
+This first version covers partial-view selection; cross-domain distractors and independent
+measurement of robustness gains require separate evaluation. A successful build does not
+prove training improvement.

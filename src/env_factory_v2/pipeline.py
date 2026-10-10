@@ -24,7 +24,8 @@ def implementation_identity():
     return hashlib.sha256(canonical(files).encode()).hexdigest()
 
 
-def build(request, *, agent, output, source=None, repairs=1, docker=True, base_image='python:3.14-slim'):
+def build(request, *, agent, output, source=None, repairs=1, docker=True, base_image='python:3.14-slim', tool_interference=2):
+    require(type(tool_interference) is int and 0 <= tool_interference <= 4, 'tool interference count must be 0..4')
     require(type(repairs) is int and 0 <= repairs <= 2, 'repair budget must be 0..2')
     output = Path(output)
     require(not output.exists(), 'pipeline output directory must be fresh')
@@ -75,6 +76,20 @@ def build(request, *, agent, output, source=None, repairs=1, docker=True, base_i
                 feedback = {'original_request': request, 'recipe_preflight': recipes}
                 rejected.add(compiled['identity'])
                 raise ContractError('reference trajectory/answer recipe invalid before model review')
+            phase('tool_interference')
+            phase_start = time.monotonic()
+            from .tool_interference import augment
+            candidate, interference = augment(candidate, count=tool_interference)
+            save(folder / 'tool_interference.json', interference)
+            previous_source = copy.deepcopy(candidate)
+            save(folder / 'source.json', candidate)
+            compiled = compile_contract(candidate)
+            attempt['contract_identity'] = compiled['identity']
+            require(compiled['identity'] not in rejected, 'unchanged rejected contract; no repeated model calls')
+            augmented_recipes = preflight_recipes(compiled)
+            save(folder / 'recipe_preflight.json', augmented_recipes)
+            require(augmented_recipes['passed'], 'tool interference changed reference trajectory validity')
+            attempt['phases']['tool_interference'] = time.monotonic() - phase_start
             phase('independent_challenge')
             phase_start = time.monotonic()
             review = challenge(compiled, request, agent)

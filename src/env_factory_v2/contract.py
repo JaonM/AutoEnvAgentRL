@@ -185,7 +185,9 @@ def compile_contract(source):
     tools = named(source['tools'], 'tool')
     for tool in tools.values():
         common = ['id', 'kind', 'description', 'parameters', 'rule_ids']
-        optional = ['user_bindings', 'result_bindings', 'authorization', 'complete_retrieval']
+        optional = ['user_bindings', 'result_bindings', 'authorization', 'complete_retrieval', 'selection_role']
+        require(tool.get('selection_role', 'task') in {'task', 'distractor'}, 'invalid tool selection role')
+        require(tool.get('selection_role') != 'distractor' or tool.get('kind') == 'query', 'distractors must be read-only queries')
         if tool.get('kind') == 'query':
             fields(tool, common + ['table', 'columns', 'order_by', 'page_size'], optional)
             require(tool['table'] in tables, 'unknown query table')
@@ -354,11 +356,11 @@ def compile_contract(source):
         require(type(probe['expect_success']) is bool and isinstance(probe['mutations'], list), 'invalid probe')
     category = source['category']
     require((category != 'direct_response' or not tools and not stages and not tables and not source['user']['facts']), 'direct response must be stateless and have no private facts')
-    require((category != 'simple_agentic' or len(tools) == 1), 'simple agentic requires one business tool')
+    require((category != 'simple_agentic' or sum(t.get('selection_role', 'task') == 'task' for t in tools.values()) == 1), 'simple agentic requires one business tool')
     require((category != 'multi_step_agentic' or len(tools) >= 2
              and any(t.get('result_bindings') for t in tools.values())), 'multistep requires actual result dependencies')
     success = source.setdefault('success', [{'id': 'complete', 'public': 'Complete all declared business tools and user stages.',
-        'when': {'literal': True}, 'required_tools': list(tools), 'required_stages': list(stages)}])
+        'when': {'literal': True}, 'required_tools': [t['id'] for t in tools.values() if t.get('selection_role', 'task') == 'task'], 'required_stages': list(stages)}])
     require(bool(success), 'success branches required')
     for branch in named(success, 'success branch').values():
         fields(branch, ['id', 'public', 'when', 'required_tools', 'required_stages'],
@@ -411,7 +413,7 @@ def compile_contract(source):
 
 
 def public_tool(tool, rules):
-    published = {key: copy.deepcopy(value) for key, value in tool.items() if key != 'operations'}
+    published = {key: copy.deepcopy(value) for key, value in tool.items() if key not in {'operations', 'selection_role'}}
     published['business_parameters'] = copy.deepcopy(tool['parameters'])
     wire = copy.deepcopy(tool['parameters'])
     result_ref = {'type': 'object', 'properties': {'$result': {'type': 'string'}, 'path': {'type': 'string'}},
@@ -423,11 +425,15 @@ def public_tool(tool, rules):
     for binding in tool.get('result_bindings', []):
         wire['properties'][binding['argument']] = copy.deepcopy(result_ref)
     published['parameters'] = wire
+    if tool['kind'] == 'query':
+        published['projection'] = 'Only returns columns: ' + ', '.join(tool['columns'])
     texts = [rules[rule]['public'] for rule in tool['rule_ids']]
     published['description'] = (f"{tool['kind']} operation. Public business rules: " + '; '.join(texts)
         + '. Parameter/result dependencies and authorization below are mandatory. '
         + ('Returns items, total and query-bound pagination cursors. Nulls sort last; ties retain fixture order.'
            if tool['kind'] == 'query' else 'Commits all declared updates atomically only after exact user approval.'))
+    if tool['kind'] == 'query':
+        published['description'] += ' Only returns columns: ' + ', '.join(tool['columns']) + '.'
     if any(binding.get('recency') == 'latest' for binding in tool.get('result_bindings', [])):
         published['description'] += ' Bindings with recency=latest must reference the most recent successful business tool call; user/time/state/collect events do not replace it.'
     if tool.get('complete_retrieval'):
