@@ -122,6 +122,20 @@ def test_capability_refusal_retries_full_generation_with_original_evidence():
     assert feedback == before
 
 
+def test_structured_private_binding_requires_matching_parameter_schema():
+    source = simple()
+    source['user']['facts']['size'] = [{'size': 'M'}]
+    with pytest.raises(ContractError, match='user binding size from fact size: expected string'):
+        compile_contract(source)
+    source['tools'][0]['parameters']['properties']['size'] = {
+        'type': 'array', 'items': {'type': 'object', 'properties': {'size': {'type': 'string'}},
+                                  'required': ['size'], 'additionalProperties': False}}
+    compile_contract(source)
+    source['user']['facts']['size'] = [{'size': 3}]
+    with pytest.raises(ContractError, match='expected string'):
+        compile_contract(source)
+
+
 @pytest.mark.parametrize('same_request', [True, False])
 def test_repair_payload_deduplicates_only_identical_request(same_request):
     request = {'goal': '查当前业务状态', 'category': 'direct_response'}

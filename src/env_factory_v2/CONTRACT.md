@@ -155,6 +155,9 @@ selection; publish and enforce that obligation through user_bindings and the
 actual choice stage. Review the combined rule, binding and authorization behavior.
 Optional tool keys: user_bindings={argument:fact_name},
 result_bindings=[{argument,tool,path}], complete_retrieval=true.
+Bound private facts must satisfy the argument schema at compilation. Arrays and
+objects require their actual items/properties schemas; never stringify structured
+plans or declare them as strings to bypass exact proposal validation.
 result_bindings require actual observed references, not matching literals;
 path may use '*' for a numeric result-array index, e.g. items.*.id.
 path may also be a nonempty list of up to 16 distinct paths: any one is allowed.

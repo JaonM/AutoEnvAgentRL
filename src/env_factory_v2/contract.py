@@ -341,6 +341,9 @@ def compile_contract(source):
             available = set(source['user'].get('facts', {})) | {
                 stage.get('as_fact', stage.get('fact')) for stage in source['user'].get('stages', [])}
             require(argument in tool['parameters']['required'] and isinstance(fact, str) and fact in available, 'invalid private fact binding')
+            if fact in source['user'].get('facts', {}):
+                validate_value(source['user']['facts'][fact], tool['parameters']['properties'][argument],
+                               f"tool {tool['id']} user binding {argument} from fact {fact}")
         for rule_id in tool['rule_ids']:
             if tool['kind'] == 'transaction':
                 row_fields = free_row_fields(rules[rule_id]['predicate'], rules)
