@@ -53,8 +53,12 @@ class NativeCodeAgent:
         return cls(base_url=connection['container_base_url' if container else 'base_url'],
                    token=token, timeout=budget + 15, evidence_root=evidence_root)
 
-    def ask(self, role, payload, schema, *, source_object=False):
-        if source_object:
+    def ask(self, role, payload, schema, *, source_object=False, source_tree=False):
+        require(not (source_object and source_tree), 'generation response formats are exclusive')
+        if source_tree:
+            from .json_tree import TREE_SCHEMA
+            require(schema == TREE_SCHEMA, 'unsupported JSON tree response format')
+        elif source_object:
             from .response_format import SOURCE_OBJECT_SCHEMA
             require(schema == SOURCE_OBJECT_SCHEMA, 'unsupported generation response format')
         else:
@@ -71,7 +75,10 @@ class NativeCodeAgent:
             require(result.get('model') == MODEL and result.get('backend') == 'codex_cli'
                     and isinstance(result.get('id'), str), 'native completion provenance missing')
             value = json.loads(result['choices'][0]['message']['content'])
-            if source_object:
+            if source_tree:
+                from .json_tree import decode_response
+                decode_response(value)
+            elif source_object:
                 from .response_format import validate_source_response
                 validate_source_response(value)
             else:
@@ -149,8 +156,9 @@ class NativeCodeAgent:
             text += ' 谢谢。' if zh else ' Thank you.'
         return {'event': event, 'text': text, 'provenance': provenance}
 
-    def generate(self, request, *, feedback=None, source_object=False):
+    def generate(self, request, *, feedback=None, source_object=False, source_tree=False):
         require(type(source_object) is bool, 'source object selector must be boolean')
+        require(type(source_tree) is bool and not (source_object and source_tree), 'invalid JSON tree selector')
         grammar = (Path(__file__).parent / 'CONTRACT.md').read_text()
         if feedback is not None and feedback.get('previous_source') is not None:
             from .repair import apply_edits, recover_edit_values
@@ -188,6 +196,15 @@ class NativeCodeAgent:
             except json.JSONDecodeError as exc:
                 raise ContractError(f'repair value invalid JSON at line {exc.lineno}, column {exc.colno}: {exc.msg}') from exc
         from .response_format import SOURCE_OBJECT_SCHEMA
+        from .json_tree import TREE_SCHEMA
+        tree_instruction = ('Return source encoded in the closed JSON tree wire grammar: '
+            'an object is {"o":[{"k":KEY,"v":NODE},...]}; arrays are ordinary JSON arrays '
+            'of encoded nodes, and strings/numbers/booleans/null are ordinary JSON scalar values '
+            'with no tag wrapper. Encode every object recursively; no raw contract JSON string, '
+            'no omitted fields, duplicate keys, extra tags or placeholders. Preserve actual string '
+            'characters, not their printed escape sequences. The decoded source must '
+            'satisfy the full business grammar. Wire encoding must not simplify any obligation. '
+            if source_tree else '')
         value, provenance = self.ask('Generate a NEW business contract following the supplied grammar. '
             'Preserve the original request and its category. No Python code. Model roles may not invent hidden '
             'business filters or freeze mutable facts in reasoning criteria. Include grounded positive/negative '
@@ -231,10 +248,16 @@ class NativeCodeAgent:
             'Use numeric comparison for scalar number answers derived from arithmetic; keep exact comparison for discrete values. '
             'Include user.profile describing communication style, disclosure boundaries and preferences, '
             'consistent with private facts and original request; never store computed answers there. Do not execute tools. '
-            + ('Return source as a JSON object, not a quoted JSON string. ' if source_object else ''),
+            + tree_instruction + ('Return source as a JSON object, not a quoted JSON string. ' if source_object else ''),
             {'original_request': request, 'grammar': grammar, 'repair_feedback': feedback},
-            SOURCE_OBJECT_SCHEMA if source_object else object_schema({'source_json': {'type': 'string'}}),
-            **({'source_object': True} if source_object else {}))
+            TREE_SCHEMA if source_tree else SOURCE_OBJECT_SCHEMA if source_object else object_schema({'source_json': {'type': 'string'}}),
+            **({'source_tree': True} if source_tree else {'source_object': True} if source_object else {}))
+        if source_tree:
+            from .json_tree import decode_response
+            return decode_response(value), {**provenance, 'generation_format': 'closed_json_tree',
+                                           'generation_wire_version': 2,
+                                           'strict_contract_grammar_enforced': False,
+                                           'business_grammar_enforced_by': 'compile_contract'}
         if source_object:
             from .response_format import validate_source_response
             validate_source_response(value)
