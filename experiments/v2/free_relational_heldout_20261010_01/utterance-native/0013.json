@@ -1,0 +1,25 @@
+{
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "8a5f041a57964ffab181dd82005f13e9",
+    "input_identity": "e7061a933af9f968426c1556100b7a2ccb37cf202c930d9defec4394b13ba343",
+    "usage": {
+      "input_tokens": 11584,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 31,
+      "reasoning_output_tokens": 0
+    },
+    "seconds": 6.59421624999959
+  },
+  "input": {
+    "situation": "准备买鞋",
+    "desired_outcome": "知道合脚且有货的款号",
+    "known_information": {},
+    "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+  },
+  "response": {
+    "user_request": "我准备买鞋，想知道哪些款号合脚又有货。"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "kind": "receipts",
+  "params": {},
+  "observations": {
+    "receipts": [
+      "V2_H08_R1",
+      "V2_H08_R7",
+      "V2_H08_R9",
+      "V2_H08_R11"
+    ]
+  },
+  "mutation": {
+    "table": "receipts",
+    "key": "V2_H08_R7",
+    "column": "paid",
+    "value": true
+  },
+  "answer_obligations": [
+    {
+      "role": "ids",
+      "source": "user_request",
+      "text": "我准备整理报销，想知道哪些票据还没报销，票据编号是什么，总金额是多少。"
+    },
+    {
+      "role": "total_amount",
+      "source": "user_request",
+      "text": "我准备整理报销，想知道哪些票据还没报销，票据编号是什么，总金额是多少。"
+    }
+  ]
+}

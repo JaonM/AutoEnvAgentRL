@@ -1,0 +1,25 @@
+{
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "ca89d7b85d6943ee993dad165cdaaee2",
+    "input_identity": "0a9b5c31b03bb101e149fa809db54063d2de1d65ca14a9afc8bb2e4e39995656",
+    "usage": {
+      "input_tokens": 11580,
+      "cached_input_tokens": 9216,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 34,
+      "reasoning_output_tokens": 0
+    },
+    "seconds": 6.920970208011568
+  },
+  "input": {
+    "situation": "临时无法参加健身课程",
+    "desired_outcome": "取消当前预约",
+    "known_information": {},
+    "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+  },
+  "response": {
+    "user_request": "我临时有事，没法参加健身课了，想取消当前预约。"
+  }
+}

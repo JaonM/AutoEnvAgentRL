@@ -1,0 +1,22 @@
+{
+  "kind": "duration",
+  "params": {
+    "start_minutes": 620,
+    "end_minutes": 799,
+    "hourly_rate": 24
+  },
+  "observations": {},
+  "mutation": null,
+  "answer_obligations": [
+    {
+      "role": "hours",
+      "source": "user_request",
+      "text": "会议室用完了，从10:20用到13:19，每小时24元，一共用了多久，费用是多少？"
+    },
+    {
+      "role": "cost",
+      "source": "user_request",
+      "text": "会议室用完了，从10:20用到13:19，每小时24元，一共用了多久，费用是多少？"
+    }
+  ]
+}

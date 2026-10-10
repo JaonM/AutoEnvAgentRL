@@ -1,0 +1,39 @@
+{
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "9a9d37bb617843a59d3bfe65917f86e8",
+    "input_identity": "963660919b58dfa69eea50d818450e5183422e8f8e7bfd3c65fd6a7b00f9934a",
+    "usage": {
+      "input_tokens": 11624,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 62,
+      "reasoning_output_tokens": 0
+    },
+    "seconds": 7.466653583047446
+  },
+  "input": {
+    "situation": "购物结算",
+    "desired_outcome": "知道实付金额和节省金额",
+    "known_information": {
+      "item_prices": [
+        164,
+        120
+      ],
+      "membership": "会员",
+      "member_order_discount": {
+        "minimum_order_total": 200,
+        "rate": 0.9
+      },
+      "coupon": {
+        "amount": 15,
+        "minimum_order_total": 0
+      }
+    },
+    "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+  },
+  "response": {
+    "user_request": "我是会员，买了两件商品，价格分别是164元和120元。会员订单满200元打九折，还有一张无门槛15元优惠券，最后实付多少，省了多少钱？"
+  }
+}

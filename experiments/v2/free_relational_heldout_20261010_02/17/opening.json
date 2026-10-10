@@ -1,0 +1,37 @@
+{
+  "response": {
+    "user_request": "目标仓库存不足，帮我从源仓调拨12件指定SKU，并更新调拨单。"
+  },
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "06a3be554f8843ec89aae64723b24bee",
+    "input_identity": "9bd42ed3811d611b6c090b1cae66d2c1aaedd23a4e9fc1ad67ab53d0ea5ce82f",
+    "usage": {
+      "input_tokens": 11588,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 37,
+      "reasoning_output_tokens": 0
+    },
+    "seconds": 9.016910666017793
+  },
+  "review": {
+    "passed": true,
+    "reason": "开场自然简洁，保留了目标仓库存不足、从源仓调拨12件指定SKU及更新调拨单的全部要求，没有添加事实、额外义务或平台执行步骤；仓库和SKU的具体信息可合理留待澄清。"
+  },
+  "review_provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "5f5fe8c15bf744aab635422fc810fab8",
+    "input_identity": "1232a8c3ec7ed324503d42d442be409618897d8f97f6887e97d3c334193b77c0",
+    "usage": {
+      "input_tokens": 11659,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 100,
+      "reasoning_output_tokens": 21
+    },
+    "seconds": 12.650097249948885
+  }
+}

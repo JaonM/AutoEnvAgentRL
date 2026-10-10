@@ -1,0 +1,29 @@
+{
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "d0e420e82376458eafc12d81ff9850f8",
+    "input_identity": "07dcd5b9483171beb6f8d3fcc5aeb612b8e97456029e85460161e31c969bfc97",
+    "usage": {
+      "input_tokens": 11659,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 67,
+      "reasoning_output_tokens": 0
+    },
+    "seconds": 7.818512041994836
+  },
+  "input": {
+    "scene": {
+      "situation": "追踪申请进度",
+      "desired_outcome": "知道审批环节顺序、累计耗时和最终负责人",
+      "known_information": {},
+      "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+    },
+    "opening": "我想查一下申请进度，了解审批环节的顺序、累计耗时，以及最终负责人是谁。"
+  },
+  "response": {
+    "passed": true,
+    "reason": "开场自然简洁，保留了追踪申请进度的情境，以及审批环节顺序、累计耗时和最终负责人三项期望结果，未添加事实、额外义务或平台执行步骤。"
+  }
+}

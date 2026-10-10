@@ -1,0 +1,37 @@
+{
+  "response": {
+    "user_request": "我是会员，买了两件商品，价格分别是164元和120元。会员订单满200元打九折，还有一张无门槛15元优惠券，最后实付多少，省了多少钱？"
+  },
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "9a9d37bb617843a59d3bfe65917f86e8",
+    "input_identity": "963660919b58dfa69eea50d818450e5183422e8f8e7bfd3c65fd6a7b00f9934a",
+    "usage": {
+      "input_tokens": 11624,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 62,
+      "reasoning_output_tokens": 0
+    },
+    "seconds": 7.466653583047446
+  },
+  "review": {
+    "passed": true,
+    "reason": "开场自然、简洁，完整保留会员身份、两件商品价格、满200元九折及无门槛15元优惠券，并询问实付和节省金额，没有新增事实、额外义务或平台执行步骤。优惠叠加顺序未明确属于合理澄清空间。"
+  },
+  "review_provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "5a0d9c55ec2445dc87aedd32859452a8",
+    "input_identity": "ba252dabf8334c65db91c1a4658d88f1eff911244d31f3bfc5bc66b29349fd59",
+    "usage": {
+      "input_tokens": 11720,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 87,
+      "reasoning_output_tokens": 0
+    },
+    "seconds": 9.709256999951322
+  }
+}

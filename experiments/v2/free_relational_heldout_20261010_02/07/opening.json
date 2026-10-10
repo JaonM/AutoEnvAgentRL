@@ -1,0 +1,37 @@
+{
+  "response": {
+    "user_request": "我准备买鞋，想知道哪些款号合脚又有货。"
+  },
+  "provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "8a5f041a57964ffab181dd82005f13e9",
+    "input_identity": "e7061a933af9f968426c1556100b7a2ccb37cf202c930d9defec4394b13ba343",
+    "usage": {
+      "input_tokens": 11584,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 31,
+      "reasoning_output_tokens": 0
+    },
+    "seconds": 6.59421624999959
+  },
+  "review": {
+    "passed": true,
+    "reason": "开场自然简洁，保留了准备买鞋的情境及了解合脚且有货款号的目标，未添加事实、额外要求或平台执行步骤。"
+  },
+  "review_provenance": {
+    "model": "gpt-6.1-sol",
+    "backend": "codex_cli",
+    "response_id": "e6c90e81e3474fc8a5f114f6e17b024f",
+    "input_identity": "cb04ae4947bfa5a05b6d91bb43155ffa236fbf193b93dfd2f48f54d78c10e0dd",
+    "usage": {
+      "input_tokens": 11643,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 72,
+      "reasoning_output_tokens": 13
+    },
+    "seconds": 6.924841166008264
+  }
+}

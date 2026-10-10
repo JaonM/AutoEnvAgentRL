@@ -1,0 +1,6 @@
+{
+  "situation": "盘点可调配库存",
+  "desired_outcome": "统计至少可拿出6件的SKU数量和合计件数",
+  "known_information": {},
+  "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+}

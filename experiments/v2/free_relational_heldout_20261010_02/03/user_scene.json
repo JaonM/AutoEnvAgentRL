@@ -1,0 +1,10 @@
+{
+  "situation": "会议室使用结束",
+  "desired_outcome": "知道使用时长和费用",
+  "known_information": {
+    "start_time": "10:20",
+    "end_time": "13:19",
+    "hourly_rate": 24
+  },
+  "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
+}

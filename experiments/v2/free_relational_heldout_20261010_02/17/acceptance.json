@@ -1,0 +1,15 @@
+{
+  "kind": "transfer",
+  "params": {},
+  "observations": {
+    "transfers": [
+      "V2_H17_TR1"
+    ],
+    "stocks": [
+      "V2_H17_ST1",
+      "V2_H17_ST2"
+    ]
+  },
+  "mutation": null,
+  "answer_obligations": []
+}

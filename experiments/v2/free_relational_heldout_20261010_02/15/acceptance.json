@@ -1,0 +1,23 @@
+{
+  "kind": "inventory",
+  "params": {},
+  "observations": {},
+  "mutation": {
+    "table": "inventory",
+    "key": "V2_H15_SKU3",
+    "column": "stock",
+    "value": 0
+  },
+  "answer_obligations": [
+    {
+      "role": "count",
+      "source": "user_request",
+      "text": "帮我盘点一下可调配库存，统计至少能拿出6件的SKU有多少个，合计多少件。"
+    },
+    {
+      "role": "total_stock",
+      "source": "user_request",
+      "text": "帮我盘点一下可调配库存，统计至少能拿出6件的SKU有多少个，合计多少件。"
+    }
+  ]
+}

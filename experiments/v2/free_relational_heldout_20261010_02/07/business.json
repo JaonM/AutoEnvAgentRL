@@ -1,0 +1,82 @@
+{
+  "provenance": "held-out synthetic instance; frozen before contract generation",
+  "policy": "只选size等于用户尺码、active=true、stock>0的鞋款；款名不影响资格，给出全部款号。",
+  "tables": [
+    {
+      "id": "shoes",
+      "rows": [
+        {
+          "id": "V2_H07_S1",
+          "size": 39,
+          "active": true,
+          "stock": 7,
+          "name": "日常跑鞋"
+        },
+        {
+          "id": "V2_H07_S2",
+          "size": 40,
+          "active": true,
+          "stock": 8,
+          "name": "日常跑鞋"
+        },
+        {
+          "id": "V2_H07_S3",
+          "size": 39,
+          "active": true,
+          "stock": 9,
+          "name": "日常跑鞋"
+        },
+        {
+          "id": "V2_H07_S4",
+          "size": 40,
+          "active": true,
+          "stock": 10,
+          "name": "日常跑鞋"
+        },
+        {
+          "id": "V2_H07_S5",
+          "size": 39,
+          "active": false,
+          "stock": 11,
+          "name": "日常跑鞋"
+        },
+        {
+          "id": "V2_H07_S6",
+          "size": 40,
+          "active": true,
+          "stock": 12,
+          "name": "日常跑鞋"
+        },
+        {
+          "id": "V2_H07_S7",
+          "size": 39,
+          "active": true,
+          "stock": 6,
+          "name": "日常跑鞋"
+        },
+        {
+          "id": "V2_H07_S8",
+          "size": 40,
+          "active": true,
+          "stock": 14,
+          "name": "日常跑鞋"
+        },
+        {
+          "id": "V2_H07_S9",
+          "size": 39,
+          "active": true,
+          "stock": 15,
+          "name": "日常跑鞋"
+        },
+        {
+          "id": "V2_H07_S10",
+          "size": 40,
+          "active": true,
+          "stock": 16,
+          "name": "日常跑鞋"
+        }
+      ]
+    }
+  ],
+  "relations": []
+}
