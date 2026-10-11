@@ -15,6 +15,7 @@ CASE_SCHEMA = object_schema({
     'scenario_id': {'type': 'string'}, 'reason': {'type': 'string'},
     'mutations_json': {'type': 'string'}, 'answer_json': {'type': 'string'},
     'user_overrides_json': {'type': 'string'},
+    'steps_json': {'type': 'string'},
     'expect_success': {'type': 'boolean'},
 })
 CHALLENGE_SCHEMA = object_schema({'business_consistent': {'type': 'boolean'},
@@ -27,7 +28,7 @@ AUDIT_SCHEMA = object_schema({'business_consistent': {'type': 'boolean'}, 'reaso
 def _repair_recipe_json(value, agent):
     broken = []
     for index, case in enumerate(value['cases']):
-        for field in ('mutations_json', 'answer_json', 'user_overrides_json'):
+        for field in ('mutations_json', 'answer_json', 'user_overrides_json', 'steps_json'):
             try:
                 json.loads(case.get(field, '{}'))
             except json.JSONDecodeError as exc:
@@ -106,13 +107,18 @@ def _challenge(compiled, original_request, agent):
         'the original business rules explicitly require it. '
         'user_overrides_json is a JSON object of existing private fact '
         'overrides for this qualification case only; use {} to retain inherited facts. You may vary approval '
-        'booleans to exercise real refusal. Never change the base fixture or public request. Each case reuses an actual scenario, changes initial records by primary key, and supplies '
+        'booleans to exercise real refusal. Never change the base fixture or public request. Each case names an actual base scenario, changes initial records by primary key, and supplies '
         'an independently correct answer recipe (the expression grammar is provided). answer_json and '
         'mutations_json and user_overrides_json are JSON strings; use {} to retain the original answer recipe. The verifier owns '
         'intentional-invalid-action expectations inherited from each referenced scenario; never invent runtime '
         'error strings. When an inherited scenario expects an intentional runtime error, expect_success '
         'must be false; a safely rejected illegal action is a negative execution fixture, not a successful '
         'completed episode. Successful no-write paths must finish without an exception. '
+        'steps_json is a JSON string: null inherits the base trajectory; an array supplies your own '
+        'complete trajectory using the existing public tools and user stages. Use independent steps '
+        'to exercise missing branches instead of accepting the author scenario catalog as complete. '
+        'An empty array explicitly tests no actions. Independent steps do not inherit expect_error: '
+        'they must complete normally, so a runtime error cannot count as a successful negative case. '
         'Include at least one positive and one negative. '
         'For stateless direct tasks, empty data mutations are appropriate. Validate boundary predicates '
         'by invoking the actual named public rule with boundary arguments in a conditional answer recipe: '
@@ -192,7 +198,8 @@ def _complete_review(compiled, original_request, agent, value):
         'Complete an incomplete independent business review by APPENDING concrete executable cases. '
         'Preserve every existing case, business_consistent verdict and reason; never edit the contract. '
         'The combined review must contain 2..32 cases, both positive and negative, and cover every '
-        'actual public rule. Use unique new IDs and actual scenario IDs. Recipes follow the supplied '
+        'actual public rule. Use unique new IDs and actual base scenario IDs. steps_json may be null '
+        'to inherit or an array of independent steps using existing tools/stages. Recipes follow the supplied '
         'grammar, mutations must reference actual records. Return only the additional cases. '
         'All appended cases will execute independently; do not invent runtime error expectations. '
         'Do not execute tools.',
@@ -205,8 +212,7 @@ def _complete_review(compiled, original_request, agent, value):
                     'appended_cases': supplement['cases'], 'budget': 1}
 
 
-def _execute_case(compiled, case, scenarios, agent, mutation_repair_budget=None):
-    from .expressions import ContractError
+def _case_scenario(compiled, case, scenarios):
     scenario = copy.deepcopy(scenarios[case['scenario_id']])
     mutations, answer = json.loads(case['mutations_json']), json.loads(case['answer_json'])
     require(isinstance(mutations, list) and isinstance(answer, dict), 'invalid challenge recipes')
@@ -218,6 +224,33 @@ def _execute_case(compiled, case, scenarios, agent, mutation_repair_budget=None)
     scenario['user_overrides'] = {**scenario.get('user_overrides', {}), **overrides}
     if answer:
         scenario['answer'] = answer
+    steps = json.loads(case.get('steps_json', 'null'))
+    require(steps is None or isinstance(steps, list), 'independent steps must be null or an array')
+    if steps is not None:
+        tool_ids = {tool['id'] for tool in compiled['source']['tools']}
+        for step in steps:
+            require(isinstance(step, dict), 'independent step must be an object')
+            if step.get('kind') in {'call', 'traverse'}:
+                require(step.get('tool') in tool_ids, 'unknown independent tool')
+        scenario['steps'] = steps
+        scenario.pop('expect_error', None)
+        # Validate the new trajectory with the production grammar, without
+        # changing the contract executed or its scoring identity.
+        from .contract import compile_contract
+        validation_source = copy.deepcopy(compiled['source'])
+        validation_case = copy.deepcopy(scenario)
+        validation_case['id'] = '__independent_case'
+        while any(s['id'] == validation_case['id'] for s in validation_source['scenarios']):
+            validation_case['id'] += '_'
+        validation_source['scenarios'].append(validation_case)
+        compile_contract(validation_source)
+    return scenario
+
+
+def _execute_case(compiled, case, scenarios, agent, mutation_repair_budget=None):
+    from .expressions import ContractError
+    scenario = _case_scenario(compiled, case, scenarios)
+    mutations = json.loads(case['mutations_json'])
     mutation_repair = None
     try:
         first = run_scenario(compiled, scenario, judge=agent.judge)
@@ -294,7 +327,7 @@ def _audit(compiled, original_request, agent, report):
         case['expect_success'], case['reason'] = label['expect_success'], label['reason']
         # Same executed evidence, independently corrected business labels. No
         # source, mutations, answers or semantic judgments are regenerated here.
-        scenario = {**scenarios[case['scenario_id']], 'expect_success': case['expect_success']}
+        scenario = _case_scenario(compiled, case, scenarios)
         records.append({**old, 'case': case, 'passed': expected_result(scenario, old['first'])
                         and expected_result(scenario, old['repeat'])
                         and replay_identity(old['first']) == replay_identity(old['repeat'])})
@@ -304,7 +337,9 @@ def _audit(compiled, original_request, agent, report):
         extra, extra_provenance = agent.ask(
             'Append grounded independent counterexamples to restore missing positive/negative coverage after '
             'correcting contradictory labels. Never relabel or discard any existing case. Each new case must '
-            'reuse an actual scenario and provide schema-valid JSON mutations and answer recipes. Derive '
+            'name an actual base scenario and provide schema-valid JSON mutations and answer recipes. '
+            'steps_json is null to inherit or an array to construct an independent trajectory using '
+            'existing tools and stages; new trajectories cannot inherit runtime-error expectations. Derive '
             'expected success from the ORIGINAL business, never from the observed grader. A negative case '
             'must propose genuinely wrong behavior/answer. No invented data, runtime error strings, weaker '
             'rules or tools. Supply 1..4 new cases with unique IDs and the requested missing labels. Do not execute tools.',

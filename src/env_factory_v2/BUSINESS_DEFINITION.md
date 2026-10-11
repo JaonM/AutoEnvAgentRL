@@ -68,3 +68,16 @@ component is satisfied without a model call; evidence records the inactive IDs.
 All structured answer, process, safety, and world-outcome checks still apply.
 The independent verifier must check that conditions faithfully implement the
 original requirement and cover both applicable and inapplicable branches.
+
+## Independent execution challenges
+
+Independent review cases name a base scenario but may supply `steps_json` as a
+JSON array to construct a different trajectory using existing tools and user
+stages. JSON `null` (or omission in historical evidence) inherits the trajectory;
+`[]` deliberately performs no actions. New trajectories are validated against
+the executable grammar and run against the unchanged contract, with separate
+execution and replay. They cannot inherit the base scenario's expected runtime
+error: an accidental exception is not evidence of correct reward discrimination.
+Original-request interpretation remains independent of authored rules and answers.
+This capability permits missing-branch probes; it does not itself prove complete
+coverage or correct business interpretation.
