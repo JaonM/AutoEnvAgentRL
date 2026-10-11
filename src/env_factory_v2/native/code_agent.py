@@ -22,6 +22,14 @@ def object_schema(properties):
             'required': list(properties), 'additionalProperties': False}
 
 
+def request_body(role, payload, schema):
+    """Canonical native transport envelope shared by request and evidence reuse."""
+    return {'model': MODEL, 'messages': [{'role': 'system', 'content': role},
+                {'role': 'user', 'content': canonical(payload)}],
+            'response_format': {'type': 'json_schema', 'json_schema': {
+                'name': 'contract_v2', 'strict': True, 'schema': schema}}}
+
+
 class NativeCodeAgent:
     """Uses the existing host bridge only as transport, never V1 business code."""
     def __init__(self, *, base_url, token, timeout=180, evidence_root):
@@ -63,9 +71,7 @@ class NativeCodeAgent:
             require(schema == SOURCE_OBJECT_SCHEMA, 'unsupported generation response format')
         else:
             validate_schema(schema)
-        messages = [{'role': 'system', 'content': role}, {'role': 'user', 'content': canonical(payload)}]
-        body = {'model': MODEL, 'messages': messages,
-                'response_format': {'type': 'json_schema', 'json_schema': {'name': 'contract_v2', 'strict': True, 'schema': schema}}}
+        body = request_body(role, payload, schema)
         started = time.monotonic()
         request = Request(self.base_url + '/chat/completions', data=canonical(body).encode(),
                           headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + self.token})
