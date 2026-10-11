@@ -22,6 +22,9 @@ CASCADE_ENV = ("            renewed.append(loan_id)\n    return",
                "            renewed.append(loan_id)\n        else:\n            break\n    return")
 CASCADE_ORACLE = ("            renewed.append(loan_id)\n    return",
                   "            renewed.append(loan_id)\n        else:\n            break\n    return")
+# Both sides ignore whether a loan is active: agreement everywhere, wrong on perturbed worlds.
+IGNORE_ACTIVE_ENV = ("    if not loan['active']:\n        reasons.append('inactive_loan')\n", "")
+IGNORE_ACTIVE_ORACLE = ("loan['reader_id'] == reader and loan['active'] and", "loan['reader_id'] == reader and")
 BUGGY = ("if any(h['active'] and h['book_id'] == book['id'] and h['reader_id'] != reader_id for h in db['holds']):",
          "if False:")
 
@@ -143,8 +146,11 @@ class AnswerAndRewardTests(unittest.TestCase):
         result = {'answer': {'a': 1, 'b': 0}, 'final_state': {'t': [{'id': 1, 'v': 1}]},
                   'safety_violations': 0, 'tool_calls': 2}
         grade = reward.grade(result, expected, schema, initial=initial, reference_calls=2)
-        self.assertAlmostEqual(grade['reward'], 0.475 + 0.2375 + 0.05)
+        self.assertAlmostEqual(grade['reward'], 0.475 + 0.2375)
         self.assertFalse(grade['success'])
+        read_only = {'answer': {'a': 1, 'b': 2}, 'final_state': initial}
+        empty = {'answer': {}, 'final_state': initial, 'safety_violations': 0, 'tool_calls': 0}
+        self.assertEqual(reward.grade(empty, read_only, schema, initial=initial, reference_calls=2)['reward'], 0.0)
         unsafe = dict(result, answer={'a': 1, 'b': 2}, safety_violations=1)
         self.assertEqual(reward.grade(unsafe, expected, schema, initial=initial, reference_calls=2)['reward'], 0.0)
 
@@ -166,6 +172,13 @@ class SpecTests(unittest.TestCase):
 
 
 class GateTests(unittest.TestCase):
+    def test_untyped_tool_parameters_fail_static(self):
+        source = (LIBRARY / 'env.py').read_text().replace('book_id: str)', 'book_id)')
+        env, oracle, schema = library_modules(source)
+        report = gates.qualify(env, oracle, schema, library_request(), perturbed=5)
+        self.assertFalse(report['static']['passed'])
+        self.assertTrue(any('book_id' in p for p in report['static']['tool_problems']))
+
     def test_correct_environment_qualifies(self):
         env, oracle, schema = library_modules()
         report = gates.qualify(env, oracle, schema, library_request(), perturbed=20)
@@ -214,9 +227,17 @@ class ServerTests(unittest.TestCase):
 class FakeRunner:
     """Writes fixture files instead of calling a model; `env_source` lets a test plant bugs."""
 
-    def __init__(self, env_source=None, arbiter=None, fail_role=None, oracle_source=None, auditor=None, repair=None):
+    def __init__(self, env_source=None, arbiter=None, fail_role=None, oracle_source=None, auditor=None, repair=None,
+                 perturbation_auditor=None):
         self.env_source, self.arbiter, self.fail_role, self.roles = env_source, arbiter, fail_role, []
         self.oracle_source, self.auditor, self.repair = oracle_source, auditor, repair
+        self.perturbation_auditor = perturbation_auditor or self.all_consistent
+
+    @staticmethod
+    def all_consistent(folder):
+        found = json.loads((folder / 'perturbations.json').read_text())
+        (folder / 'perturbation_audit.json').write_text(json.dumps({'worlds': [
+            {'world': f['world'], 'verdict': 'consistent', 'reason': 'irrelevant'} for f in found]}))
 
     def __call__(self, folder, prompt, *, timeout, role):
         self.roles.append(role)
@@ -235,6 +256,8 @@ class FakeRunner:
             self.auditor(folder)
         elif role == 'repair' and self.repair:
             self.repair(folder)
+        elif role == 'perturbation_audit':
+            self.perturbation_auditor(folder)
         return {'role': role, 'status': 'exited', 'seconds': 0.0, 'usage': {}, 'attempts': 1}
 
 
@@ -361,7 +384,7 @@ class PipelineTests(unittest.TestCase):
         runner = self.cascade_runner('unsupported', repair=repair)
         status = self.build(runner, self.both_renewable())
         self.assertTrue(status['training_ready'], status)
-        self.assertEqual(runner.roles[-1], 'repair')
+        self.assertIn('repair', runner.roles)
         self.assertEqual(status['repairs_used'], 1)
         self.assertTrue(status['stages']['branch_audit']['repaired'])
 
@@ -385,6 +408,51 @@ class PipelineTests(unittest.TestCase):
 
     def test_audit_quote_must_exist(self):
         status = self.build(self.cascade_runner('supported', quote='a rule that is not in the brief'), self.both_renewable())
+        self.assertEqual(status['failure_class'], 'audit_invalid')
+
+    def ignore_active_runner(self, verdict, repair=None, quote='仅本人有效借阅可续借'):
+        def auditor(folder):
+            found = json.loads((folder / 'perturbations.json').read_text())
+            self.assertFalse((folder / 'env.py').exists() or (folder / 'oracle.py').exists())
+            (folder / 'perturbation_audit.json').write_text(json.dumps({'worlds': [
+                {'world': f['world'], 'reason': 'x', 'brief_quote': quote,
+                 'verdict': verdict if any(c['field'] == 'active' and c['table'] == 'loans'
+                                           for c in f['changed_cells']) else 'consistent'}
+                for f in found]}, ensure_ascii=False))
+        return FakeRunner(env_source=(LIBRARY / 'env.py').read_text().replace(*IGNORE_ACTIVE_ENV),
+                          oracle_source=(LIBRARY / 'oracle.py').read_text().replace(*IGNORE_ACTIVE_ORACLE),
+                          perturbation_auditor=auditor, repair=repair)
+
+    def flagged(self, status):
+        return [d['world'] for d in status['stages']['perturbation_audit']['decisions'] if d['verdict'] != 'consistent']
+
+    def test_rule_both_sides_ignore_is_repaired(self):
+        def repair(folder):
+            shutil.copy(LIBRARY / 'env.py', folder / 'env.py')
+            shutil.copy(LIBRARY / 'oracle.py', folder / 'oracle.py')
+        status = self.build(self.ignore_active_runner('should_change', repair))
+        self.assertTrue(self.flagged(status))
+        self.assertTrue(status['stages']['perturbation_audit']['repaired'])
+        self.assertTrue(status['training_ready'], status)
+        self.assertNotIn('excluded_worlds', status['stages']['perturbation_audit'])
+
+    def test_unrepaired_rule_excludes_its_worlds_from_training(self):
+        status = self.build(self.ignore_active_runner('should_change', repair=lambda folder: None))
+        self.assertTrue(status['training_ready'], status)
+        flagged = set(self.flagged(status))
+        self.assertTrue(flagged)
+        self.assertFalse(flagged & set(bundle.load_bundle(status['bundle'])['valid_worlds']))
+        self.assertTrue(any(d['verdict'] == 'should_change' for d in status['spec_findings']))
+
+    def test_ambiguous_perturbation_is_excluded_without_repair(self):
+        runner = self.ignore_active_runner('ambiguous')
+        status = self.build(runner)
+        self.assertNotIn('repair', runner.roles)
+        self.assertTrue(status['training_ready'], status)
+        self.assertFalse(set(self.flagged(status)) & set(bundle.load_bundle(status['bundle'])['valid_worlds']))
+
+    def test_perturbation_audit_quote_must_exist(self):
+        status = self.build(self.ignore_active_runner('should_change', quote='not in the brief at all'))
         self.assertEqual(status['failure_class'], 'audit_invalid')
 
     def test_infrastructure_errors_are_classified(self):

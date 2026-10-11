@@ -6,6 +6,7 @@
   python -m env_factory_v3 serve BUNDLE --port 8090
   python -m env_factory_v3 verify BUNDLE [--resign]   # re-run gates; --resign re-signs for this platform
   python -m env_factory_v3 docker BUNDLE              # hardened image, verified offline in a container
+  python -m env_factory_v3 policy BUNDLE [--k 4]      # policy gate with an independent model
   python -m env_factory_v3 check {schema|env|oracle|diff}   # same as env_factory_v3.checks
 """
 from __future__ import annotations
@@ -51,6 +52,10 @@ def main(argv=None):
     p.add_argument('--resign', action='store_true', help='on success, re-sign the bundle for this platform')
     p = sub.add_parser('container-check', help='inside the image: every gate on the bundle, JSON evidence')
     p.add_argument('bundle')
+    p = sub.add_parser('policy', help='policy gate: an independent model plays k episodes')
+    p.add_argument('bundle')
+    p.add_argument('--k', type=int, default=4)
+    p.add_argument('--prefix', default='LLM', help='<PREFIX>_API_KEY / _BASE_URL / _MODEL')
     p = sub.add_parser('docker', help='build the hardened image and verify it offline in a container')
     p.add_argument('bundle')
     p.add_argument('--base-image', default=None)
@@ -98,6 +103,13 @@ def main(argv=None):
                           'gates': {g: report[g]['passed'] for g in ('static', 'differential', 'negatives',
                                                                        'category', 'http')}}))
         return 0 if report['passed'] else 1
+    if args.command == 'policy':
+        from env_factory_v3 import policy
+        policy.load_env_file()
+        report = policy.gate(args.bundle, policy.ChatClient(args.prefix), k=args.k)
+        print(json.dumps({k: report[k] for k in ('model', 'k', 'played', 'successes', 'success_rate',
+                                                 'mean_reward', 'status')}))
+        return 0 if report['status'] == 'passed' else 1
     if args.command == 'docker':
         from env_factory_v3 import docker
         options = {'base_image': args.base_image} if args.base_image else {}

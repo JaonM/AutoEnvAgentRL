@@ -16,11 +16,11 @@ import time
 import traceback
 from pathlib import Path
 
-from env_factory_v3 import answers, branches, bundle, checks, gates, prompts, spec
+from env_factory_v3 import answers, branches, bundle, checks, gates, perturbations, prompts, spec
 from env_factory_v3.codex import InfrastructureError
 from env_factory_v3.sandbox import load_module
 
-DEFAULT_TIMEOUTS = {'schema': 240, 'author': 720, 'oracle': 600, 'arbiter': 600, 'audit': 300, 'repair': 600}
+DEFAULT_TIMEOUTS = {'schema': 240, 'author': 720, 'oracle': 600, 'arbiter': 600, 'audit': 300, 'perturbation_audit': 300, 'repair': 600}
 
 
 class Build:
@@ -135,7 +135,7 @@ class Build:
             if not report['passed'] or not checks.run('env', arbiter)['passed'] or not checks.run('oracle', arbiter)['passed']:
                 return self.fail('disagreement', 'env and oracle still disagree after arbitration')
 
-        failure = self.audit_branches(arbiter, schema)
+        failure = self.audit_branches(arbiter, schema) or self.audit_perturbations(arbiter, schema)
         if failure:
             return failure
 
@@ -189,6 +189,49 @@ class Build:
         self.stage('branch_audit', repaired=not left, still_cascading=left)
         if left:
             return self.fail('branch_unsupported', f'refusal cascades remain after the branch repair on {left}')
+        return None
+
+    def audit_perturbations(self, arbiter, schema):
+        """Perturbed worlds where both sides ignore a change to the rows the task acts on need a
+        fresh auditor's verdict. Rules both ignore are repaired on both sides (one unit of budget);
+        otherwise those worlds, like ambiguous ones, are excluded from training and reported."""
+        load = lambda: load_module(arbiter / 'env.py', role='env')
+        found = perturbations.insensitive(load(), self.request, perturbed=self.perturbed, excluded=self.excluded)
+        self.stage('perturbation_audit', insensitive=[f['world'] for f in found])
+        if not found:
+            return None
+        folder = self.workdir('perturbation_audit', schema)
+        (folder / 'perturbations.json').write_text(json.dumps(found, ensure_ascii=False, indent=1, default=str))
+        self.call(folder, prompts.PERTURBATION_AUDITOR, 'perturbation_audit')
+        verdict = perturbations.verdict(folder, found, self.request)
+        self.stage('perturbation_audit', **verdict)
+        if not verdict['valid']:
+            return self.fail('audit_invalid', verdict['reason'])
+        findings = [d for d in verdict['decisions'] if d['verdict'] != 'consistent']
+        self.status.setdefault('spec_findings', []).extend(d for d in findings if d['verdict'] == 'ambiguous')
+        drop = set(verdict['ambiguous'])
+        if verdict['should_change']:
+            repaired = False
+            if self.spend():
+                for name in ('perturbations.json', 'perturbation_audit.json'):
+                    shutil.copy(folder / name, arbiter / name)
+                self.call(arbiter, prompts.PERTURBATION_REPAIR, 'repair')
+                if all(checks.run(kind, arbiter)['passed'] for kind in ('env', 'oracle', 'diff')):
+                    still = {f['world'] for f in perturbations.insensitive(
+                        load(), self.request, perturbed=self.perturbed, excluded=self.excluded)}
+                    repaired = not (still & set(verdict['should_change']))
+                else:
+                    return self.fail('perturbation_unsupported', 'env and oracle no longer pass their checks '
+                                     'after the perturbation repair')
+            if not repaired:
+                drop |= set(verdict['should_change'])
+                self.status.setdefault('spec_findings', []).extend(
+                    d for d in findings if d['verdict'] == 'should_change')
+            self.stage('perturbation_audit', repaired=repaired)
+        if drop:
+            self.excluded = sorted(set(self.excluded) | drop)
+            (arbiter / 'excluded_worlds.json').write_text(json.dumps(self.excluded))
+            self.stage('perturbation_audit', excluded_worlds=sorted(drop))
         return None
 
     def qualify(self, folder, schema):

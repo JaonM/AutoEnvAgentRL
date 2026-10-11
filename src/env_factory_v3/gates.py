@@ -1,6 +1,7 @@
 """Qualification gates. Every gate is mandatory; there is no weighted threshold.
 
-G1 static      generated code passes the sandbox rules and the answer schema is valid
+G1 static      generated code passes the sandbox rules, the answer schema is valid and every
+              tool parameter has a type and a description (the agent sees nothing else)
 G2 differential env.py's reference and the independent oracle agree (state and answer) on the
                original world, every approval flip and perturbed worlds; the reference earns
                reward 1.0 everywhere
@@ -16,7 +17,8 @@ import copy
 import traceback
 
 from env_factory_v3 import answers, reward
-from env_factory_v3.runtime import BusinessError, InvalidWorld, canonical, is_write, run_policy, run_reference
+from env_factory_v3.runtime import (BusinessError, InvalidWorld, canonical, is_write, run_policy, run_reference,
+                                    tool_spec_problems)
 from env_factory_v3.worlds import state_diff, variants
 
 
@@ -206,7 +208,9 @@ def category(request, env):
 def qualify(env, oracle, schema, request, *, perturbed=20, http=True, excluded=()):
     """Run G2-G5 (G1 is enforced when modules are loaded). Returns the full gate report."""
     schema_problems = answers.check_schema(schema)
-    report = {'static': {'passed': not schema_problems, 'schema_problems': schema_problems},
+    tool_problems = tool_spec_problems(env.make_tools())
+    report = {'static': {'passed': not schema_problems and not tool_problems, 'schema_problems': schema_problems,
+                         'tool_problems': tool_problems[:10]},
               'excluded_worlds': sorted(excluded)}
     worlds = compare_worlds(env, oracle, schema, request, perturbed=perturbed, excluded=excluded)
     report['differential'] = differential(worlds)

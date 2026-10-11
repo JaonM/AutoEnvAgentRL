@@ -41,6 +41,15 @@ budget) fixes env.py and oracle.py together from the auditor's finding; the buil
 `branch_unsupported` when no budget is left, the checks fail afterwards, or a cascade the auditor did
 not support remains. Builds without a cascade run no audit; the audit itself spends no budget.
 
+Perturbation audit: agreement on a perturbed world also proves nothing when both sides ignore
+the same rule. Example: an inactive subscription that still gets refunded. The audit runs when a
+perturbation changes a row the task acts on (named by the user, written, or reported) yet the
+reference commits the same writes and gives the same answer as on the original world. A fresh
+auditor gives a verdict per world: `consistent`, `should_change` (with a quote), or `ambiguous`.
+A status flag changed on a row the task writes is `ambiguous` unless a rule covers that state.
+Rules both sides ignore are repaired on both sides (one unit of budget). Unrepaired and ambiguous
+worlds are excluded from training and reported in `spec_findings`.
+
 Answer contract rule: every outcome is graded exactly (ids, numbers, booleans, string enums).
 User-facing prose must be marked `"graded": false`; the schema check rejects fields that look like
 free text without an enum or that mark. Two correct implementations never agree on wording.
@@ -59,6 +68,8 @@ At most two codex sessions run at once.
 | `env.py` | author session | `make_tools()` (read tools, `@write` tools) and `reference(api)` |
 | `oracle.py` | oracle session, never sees env.py | `expected(data, facts, now) -> {answer, final_state}` |
 | `audit/audit.json` | audit session, sees neither implementation | verdict per refusal cascade (only when one exists) |
+| `perturbation_audit/perturbation_audit.json` | perturbation audit session | verdict per outcome-insensitive perturbed world |
+| `bundle/policy.json` | `policy` command | policy gate episodes, pass@k and success rate |
 | `gates.json` | platform | every gate result and the worlds env/oracle agree on |
 | `manifest.json` | platform | file hashes and V3 platform identity |
 
@@ -66,19 +77,25 @@ At most two codex sessions run at once.
 
 `reward = 0.95 · business + 0.05 · efficiency`, derived from the oracle. Business: the final
 state must equal the oracle's (half the weight when the task changes state) and each answer
-field must equal the oracle's (sharing the rest). A write attempted without valid consent is a
+field must equal the oracle's (sharing the rest). Efficiency is paid only on success, so a wrong
+or empty answer never earns it. A write attempted without valid consent is a
 safety violation and zeroes the reward. Episodes may be served on any world the env and oracle
 agree on, so memorised answers do not transfer between worlds.
 
 ## Gates (all mandatory)
 
-1. **static**: sandbox rules (no I/O, no clock, no reflection) and a valid answer schema
+1. **static**: sandbox rules (no I/O, no clock, no reflection), a valid answer schema, and a type
+   annotation plus an `Args:` description for every tool parameter (the agent sees nothing else)
 2. **differential**: reference and oracle agree on the original world, every approval flip and at least five perturbed worlds; the reference earns 1.0
 3. **negatives**, all derived automatically: do nothing, replay a stale answer on a changed world, skip consent, stop after the first write, forge consent (must earn 0)
 4. **category**: the reference trace has the structure the category needs (direct: no tools; simple: reads only, no result dependency; multi-step: ≥2 calls with a result dependency or a write)
 5. **http**: the reference replayed through the HTTP service earns the same full reward
 
-Policy gates (frontier pass@k, adversarial agent) and natural-language user simulation are M2.
+**Policy gate** (`policy BUNDLE --k 4`, not yet part of `build`): an independent
+OpenAI-compatible model plays k episodes through the HTTP service and the shared agent view
+(`agent_view.py`, which is also what `rl` trains on), one per served world. The gate passes when
+at least one episode succeeds. Provider failures are infrastructure errors, not task results.
+An adversarial agent and natural-language user simulation are M2.
 
 ## Commands
 

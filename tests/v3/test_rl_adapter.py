@@ -154,6 +154,41 @@ class RequalifyTests(unittest.TestCase):
             bundle.load_bundle(folder)
 
 
+class PolicyGateTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        root = Path(tempfile.mkdtemp())
+        cls.bundle = Path(pipeline.build(library_request(), root / 'build', runner=FakeRunner(), perturbed=20)['bundle'])
+
+    def test_a_policy_that_answers_nothing_leaves_the_task_unsolved(self):
+        from env_factory_v3 import policy
+
+        class Silent:
+            model = 'silent'
+
+            def chat(self, messages, tools):
+                self.tools = [t['function']['name'] for t in tools]
+                return {'content': '{}'}
+
+        client = Silent()
+        report = policy.gate(self.bundle, client, k=2, parallel=1)
+        self.assertEqual((report['status'], report['played'], report['successes']), ('unsolved', 2, 0))
+        self.assertIn('v3_ask', client.tools)
+        self.assertTrue((self.bundle / policy.RESULT).exists())
+
+    def test_provider_failures_are_infrastructure_not_task_results(self):
+        from env_factory_v3 import policy
+
+        class Broken:
+            model = 'broken'
+
+            def chat(self, messages, tools):
+                raise policy.ProviderError('HTTP 503')
+
+        report = policy.gate(self.bundle, Broken(), k=2, parallel=1)
+        self.assertEqual((report['status'], report['played']), ('infrastructure', 0))
+
+
 @unittest.skipUnless(os.environ.get('V3_DOCKER_TESTS') == '1' and shutil.which('docker'),
                      'set V3_DOCKER_TESTS=1 to build and run real containers')
 class DockerTests(unittest.TestCase):

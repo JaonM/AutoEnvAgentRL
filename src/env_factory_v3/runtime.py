@@ -20,6 +20,7 @@ from __future__ import annotations
 import copy
 import inspect
 import json
+import re
 
 
 class BusinessError(Exception):
@@ -52,17 +53,86 @@ def jsonable(value):
     return value
 
 
+JSON_TYPES = {'str': 'string', 'int': 'integer', 'float': 'number', 'bool': 'boolean', 'dict': 'object',
+              'list': 'array'}
+
+
+def json_type(annotation):
+    """JSON schema of a parameter annotation: str, int, float, bool, dict, list[...], X | None."""
+    if isinstance(annotation, str):
+        text = annotation
+    elif isinstance(annotation, type):
+        text = annotation.__name__
+    else:
+        text = str(annotation)
+    options = text.replace('typing.', '').replace(' ', '').split('|')
+    kept = [o for o in options if o not in ('None', 'NoneType')]
+    match = re.fullmatch(r'(str|int|float|bool|dict|list)(?:\[(.+)\])?', kept[0]) if len(kept) == 1 else None
+    if match is None:
+        return None
+    schema = {'type': JSON_TYPES[match[1]]}
+    if match[1] == 'list' and match[2]:
+        items = json_type(match[2])
+        if items is None:
+            return None
+        schema['items'] = items
+    if len(kept) < len(options):
+        schema['type'] = [schema['type'], 'null']
+    return schema
+
+
+def argument_docs(doc):
+    """`name: description` lines of a docstring's Args: section."""
+    docs, inside, last = {}, False, None
+    for line in (doc or '').splitlines():
+        stripped = line.strip()
+        if stripped.lower() in ('args:', 'arguments:', 'parameters:'):
+            inside = True
+        elif inside and not stripped:
+            break
+        elif inside:
+            match = re.match(r'(\w+)\s*(?:\([^)]*\))?\s*:\s*(.+)', stripped)
+            if match:
+                last = match[1]
+                docs[last] = match[2]
+            elif last:
+                docs[last] += ' ' + stripped
+    return docs
+
+
+def _parameters(fn):
+    return [p for p in list(inspect.signature(fn).parameters.values())[2:]
+            if p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)]
+
+
+def tool_spec_problems(tools):
+    """The public tool description is all an agent sees: every parameter needs a type and a meaning."""
+    problems = []
+    for name in sorted(tools):
+        fn = tools[name]
+        if not (inspect.getdoc(fn) or '').strip():
+            problems.append(f'tool {name}: missing docstring')
+        docs = argument_docs(inspect.getdoc(fn))
+        for parameter in _parameters(fn):
+            if parameter.annotation is parameter.empty or json_type(parameter.annotation) is None:
+                problems.append(f'tool {name}: parameter {parameter.name} needs a type annotation '
+                                '(str, int, float, bool, dict, list[...], or X | None)')
+            if parameter.name not in docs:
+                problems.append(f'tool {name}: parameter {parameter.name} needs a description in the '
+                                'docstring Args: section')
+    return problems
+
+
 def tool_specs(tools):
-    """Public wire description of tools, derived from signatures and docstrings."""
+    """Public wire description of tools, derived from signatures, annotations and docstrings."""
     specs = []
     for name in sorted(tools):
         fn = tools[name]
-        parameters = list(inspect.signature(fn).parameters.values())[2:]
+        docs = argument_docs(inspect.getdoc(fn))
         properties, required = {}, []
-        for parameter in parameters:
-            if parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD):
-                continue
-            properties[parameter.name] = {'description': parameter.name}
+        for parameter in _parameters(fn):
+            typed = json_type(parameter.annotation) if parameter.annotation is not parameter.empty else None
+            properties[parameter.name] = {**(typed or {}), 'description': docs.get(parameter.name, parameter.name)}
             if parameter.default is parameter.empty:
                 required.append(parameter.name)
         if is_write(fn):

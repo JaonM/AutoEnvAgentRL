@@ -15,7 +15,7 @@ import traceback
 from pathlib import Path
 
 from env_factory_v3 import answers, gates
-from env_factory_v3.runtime import InvalidWorld, canonical, run_reference
+from env_factory_v3.runtime import InvalidWorld, canonical, run_reference, tool_spec_problems
 from env_factory_v3.sandbox import SandboxError, load_module
 from env_factory_v3.spec import load
 from env_factory_v3.worlds import variants
@@ -56,6 +56,7 @@ def check_env(folder):
     problems, notes = [], []
     if not isinstance(tools, dict) or not tools:
         return ['make_tools() must return a non-empty dict'], notes
+    problems += tool_spec_problems(tools)
     start = request['time']['start']
     for name, data, facts in variants(request['tables'], request['user_facts'], perturbed=PERTURBED):
         try:

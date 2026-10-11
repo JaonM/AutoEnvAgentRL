@@ -27,21 +27,35 @@ def _reasons(db, loan_id, reader_id):
     return loan, book, reasons
 
 
-def check_renewal(db, now, loan_id, reader_id):
-    """Check whether a loan can be renewed by this reader today; returns eligibility and book id."""
+def check_renewal(db, now, loan_id: str, reader_id: str):
+    """Check whether a loan can be renewed by this reader today; returns eligibility and book id.
+
+    Args:
+        loan_id: loan id, e.g. "L1"
+        reader_id: id of the reader asking, e.g. "R1"
+    """
     loan, book, reasons = _reasons(db, loan_id, reader_id)
     return {'loan_id': loan['id'], 'book_id': book['id'], 'eligible': not reasons, 'reasons': reasons}
 
 
-def get_waitlist(db, now, book_id):
-    """Number of active holds (all readers) on a book."""
+def get_waitlist(db, now, book_id: str):
+    """Number of active holds (all readers) on a book.
+
+    Args:
+        book_id: book id, as returned by check_renewal
+    """
     _find(db['books'], book_id, 'book')
     return {'book_id': book_id, 'active_hold_count': sum(1 for h in db['holds'] if h['active'] and h['book_id'] == book_id)}
 
 
 @write
-def renew_loan(db, now, loan_id, reader_id):
-    """Renew one eligible loan: due day + renewal_days, renewals + 1."""
+def renew_loan(db, now, loan_id: str, reader_id: str):
+    """Renew one eligible loan: due day + renewal_days, renewals + 1.
+
+    Args:
+        loan_id: loan id to renew
+        reader_id: id of the reader who owns the loan
+    """
     loan, book, reasons = _reasons(db, loan_id, reader_id)
     if reasons:
         raise BusinessError(', '.join(reasons))

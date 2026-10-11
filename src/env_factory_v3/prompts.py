@@ -32,8 +32,10 @@ Write env.py:
     from env_factory_v3.runtime import write, BusinessError
 
 1. make_tools() -> dict of name -> function.
-   - Read tool: fn(db, now, **args) -> JSON. Give each tool a docstring that tells an agent
-     what it does and what its arguments mean.
+   - Read tool: fn(db, now, **args) -> JSON. The signature and docstring are the only tool
+     description an agent sees: annotate every argument with its type (str, int, float, bool,
+     dict, list[...], or X | None) and give the docstring a summary plus an `Args:` section
+     with one `name: meaning` line per argument (units, id format, allowed values).
    - Write tool: decorate with @write; fn(db, now, **args) mutates db in place and returns a
      JSON receipt. Raise BusinessError to reject; the runtime rolls the write back.
    - Tools enforce every rule in brief.md on whatever data they receive. They run on
@@ -144,6 +146,51 @@ everything the rules still require is handled: later steps are offered for their
 and carried out when approved and valid, and the answer reports them. Change nothing else.
 Never special-case ids or worlds; keep both interfaces; do not edit brief.md, data.json,
 facts.json, request.json, answer_schema.json, branches.json or audit.json.
+
+Run `{python} -m env_factory_v3.checks env`, `{python} -m env_factory_v3.checks oracle` and
+`{python} -m env_factory_v3.checks diff` until all three print PASS.
+Do not read or write files outside this folder. End with a two-line summary of the fix.
+"""
+
+PERTURBATION_AUDITOR = """You audit perturbed worlds of a business task. brief.md is the only authority (data.json
+and facts.json hold the original world).
+
+perturbations.json lists worlds where cells of rows the task acts on were changed
+(`changed_cells`: table, id, field, original and perturbed value, and whether the task writes
+that row), yet the implementation committed the same writes and gave the same answer as in the
+original world (shown).
+
+For each world decide whether brief.md makes the outcome depend on any changed cell:
+- "consistent": no rule makes these changes matter here (for example a threshold is still met,
+  or the field plays no role); the unchanged outcome is right.
+- "should_change": a rule makes the outcome depend on a changed cell (an eligibility flag, a
+  status, an amount, a date boundary), so the same outcome is wrong. Quote that rule.
+- "ambiguous": brief.md does not decide whether the change matters. Quote the unclear text.
+- A status or eligibility flag (for example active, cancelled, live, enabled, quarantined)
+  changed on a row the task writes: if brief.md does not say how a row in that state is handled,
+  the verdict is "ambiguous" (quote the rule that governs that write), never "consistent".
+  Writing to a row as if its state did not matter needs a rule that says so.
+
+Write perturbation_audit.json:
+{{"worlds": [{{"world": "<world from perturbations.json>", "verdict": "consistent" | "should_change" | "ambiguous",
+              "brief_quote": "<exact text from the user request or business rules; required unless consistent>",
+              "reason": "..."}}]}}
+Cover every entry. Each brief_quote must be copied verbatim from the "User request" or "Business
+rules" section of brief.md (never from the answer schema). Do not write any other file and do not
+read or write files outside this folder. End with one line per world.
+"""
+
+PERTURBATION_REPAIR = """An independent audit found rules env.py and oracle.py both ignore: in some perturbed
+worlds a changed cell should change the outcome, yet both produce the original outcome.
+- perturbations.json: each world, its changed cells, and the unchanged writes and answer
+- perturbation_audit.json: the verdict per world; fix the worlds marked "should_change",
+  following the quoted rule and reason
+brief.md is the only authority.
+
+Fix env.py (its tools and reference agent) and oracle.py so both enforce the quoted rules on
+any data. Change nothing else. Never special-case ids or worlds; keep both interfaces; do not
+edit brief.md, data.json, facts.json, request.json, answer_schema.json, perturbations.json or
+perturbation_audit.json.
 
 Run `{python} -m env_factory_v3.checks env`, `{python} -m env_factory_v3.checks oracle` and
 `{python} -m env_factory_v3.checks diff` until all three print PASS.

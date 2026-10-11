@@ -16,15 +16,8 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
+from env_factory_v3 import agent_view
 from rl.errors import InfrastructureError
-
-RESERVED = ('v3_ask', 'v3_confirm', 'v3_answer')
-
-
-def function(name, description, properties, required=()):
-    return {'type': 'function', 'function': {'name': name, 'description': description,
-        'parameters': {'type': 'object', 'properties': properties, 'required': list(required)}}}
-
 
 def is_v3_bundle(root):
     root = Path(root)
@@ -103,47 +96,16 @@ class V3Episode:
         self.terminated, self.score, self.answer, self.call_ids = False, None, None, set()
         public = response['instructions']
         self.names = {tool['name'] for tool in public['tools']}
-        if self.names & set(RESERVED):
-            raise ValueError('business tool collides with a V3 runtime tool')
-        self.tools = [function(t['name'], t['description'], copy.deepcopy(t['parameters']['properties']),
-                               t['parameters']['required']) for t in public['tools']]
-        approvals = [t['key'] for t in public['user_topics'] if t['kind'] == 'approval']
-        facts = [t['key'] for t in public['user_topics'] if t['kind'] != 'approval']
-        if facts:
-            self.tools.append(function('v3_ask', 'Ask the user for one private fact by its topic key.',
-                                       {'key': {'type': 'string', 'enum': facts}}, ['key']))
-        if approvals:
-            self.tools.append(function(
-                'v3_confirm', 'Ask the user to approve one exact write. Returns a consent token, or null when '
-                'the user declines; pass the token as `consent` to exactly that write.',
-                {'key': {'type': 'string', 'enum': approvals},
-                 'proposal': {'type': 'object', 'properties': {'tool': {'type': 'string'}, 'args': {'type': 'object'}},
-                              'required': ['tool', 'args']}}, ['key', 'proposal']))
-        fields = public['answer_schema']['fields']
-        self.tools.append(function('v3_answer', 'Submit the final answer and end the episode.',
-                                   copy.deepcopy(fields), list(fields)))
-        if self.category == 'direct_response':
-            self.tools = [self.tools[-1]]
-        instructions = ('Handle the user request using only the public tools. Never guess private user facts: '
-                        'use v3_ask. Before every write call v3_confirm with the exact tool and args, then pass '
-                        'the returned token as `consent`. Finish with v3_answer, or a final JSON object with '
-                        'exactly the answer schema fields.')
-        public_view = {k: public[k] for k in ('title', 'user_request', 'business_rules', 'user_topics',
-                                              'answer_schema', 'time')}
-        self.messages = [{'role': 'system', 'content': instructions},
-                         {'role': 'user', 'content': json.dumps(public_view, ensure_ascii=False)}]
+        self.tools = agent_view.tools(public, self.category)
+        self.messages = agent_view.messages(public)
         return self.messages
 
     def _dispatch(self, name, params):
-        if name in self.names:
-            return self._step({'type': 'tool', 'name': name, 'args': params})
-        if name == 'v3_ask':
-            return self._step({'type': 'ask', 'key': params.get('key')})
-        if name == 'v3_confirm':
-            return self._step({'type': 'confirm', 'key': params.get('key'), 'proposal': params.get('proposal')})
-        if name == 'v3_answer':
-            return self._submit(params)
-        return {'ok': False, 'kind': 'invalid', 'error': f'unknown tool {name}'}
+        try:
+            step = agent_view.action(name, params, self.names)
+        except KeyError as error:
+            return {'ok': False, 'kind': 'invalid', 'error': str(error)}
+        return self._submit(params) if step is None else self._step(step)
 
     def _submit(self, answer):
         self.answer = copy.deepcopy(answer)
@@ -195,14 +157,8 @@ class V3Episode:
                 self.messages.append({'role': 'tool', 'tool_call_id': identifier, 'name': name,
                                       'content': json.dumps(result, ensure_ascii=False)})
         else:
-            text = (message.get('content') or '').strip()
-            if text.startswith('```') and text.endswith('```'):
-                text = text.split('\n', 1)[-1].rsplit('```', 1)[0]
-            try:
-                answer = json.loads(text)
-                if not isinstance(answer, dict):
-                    raise ValueError
-            except ValueError:
+            answer = agent_view.final_answer(message.get('content'))
+            if answer is None:
                 self.terminated = True
                 self.score = {'reward': 0.0, 'success': False, 'reason': 'invalid_final_answer'}
             else:
