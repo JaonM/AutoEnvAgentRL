@@ -12,11 +12,15 @@ def validate_plan(plan, source, tools, rules, *, temporal=False):
     require(isinstance(plan, list) and 1 <= len(plan) <= 64, 'transaction plan requires 1..64 intentions')
     require(temporal or not source.get('events'), 'event-driven worlds require timeline or explicit state goals')
     for intent in plan:
-        fields(intent, ['tool', 'arguments'], ['when', 'completion'])
+        fields(intent, ['tool', 'arguments'], ['when', 'completion', 'eligibility_at_seconds'])
         if 'completion' in intent:
             require(intent['completion'] == 'consent_or_unavailable', 'unknown transaction completion mode')
-            require(not temporal and 'when' not in intent,
-                    'derived consent completion uses an unconditional time-independent intention')
+            require('when' not in intent, 'derived consent completion uses an unconditional intention')
+            if temporal:
+                require(type(intent.get('eligibility_at_seconds')) is int and intent['eligibility_at_seconds'] >= 0,
+                        'temporal consent completion requires a fixed eligibility_at_seconds')
+        if 'eligibility_at_seconds' in intent:
+            require(temporal and 'completion' in intent, 'eligibility time requires temporal consent completion')
         require(intent['tool'] in tools and tools[intent['tool']]['kind'] == 'transaction',
                 'transaction plan requires an existing transaction')
         tool = tools[intent['tool']]
@@ -28,6 +32,9 @@ def validate_plan(plan, source, tools, rules, *, temporal=False):
             validate_rule_links(expression, rules)
         # Named rules may conceal time/state reads behind a rule invocation.
         def stable(expression, allowed, stack=()):
+            if 'eligibility_at_seconds' in intent:
+                require(not any(path == 'time' or path == 'time.tick' for path in refs(expression)),
+                        'fixed-second eligibility cannot depend on agent action ticks')
             require(all(path.split('.')[0] in allowed for path in refs(expression)),
                     'transaction plan dependencies require explicit state goals')
             if isinstance(expression, dict):
@@ -48,11 +55,30 @@ def validate_plan(plan, source, tools, rules, *, temporal=False):
             for expression in intent['arguments'].values():
                 stable(expression, {'initial', 'user', 'row', 'vars'})
             for rule in tool['rule_ids']:
-                stable(rules[rule]['predicate'], {'initial', 'data', 'args', 'row', 'user', 'vars'})
+                stable(rules[rule]['predicate'], {'initial', 'data', 'args', 'row', 'user', 'vars'}
+                       | ({'time'} if temporal else set()))
         for operation in tool['operations']:
             for expression in [operation['key'], operation.get('when', {'literal': True}), *operation['set'].values()]:
                 stable(expression, {'initial', 'data', 'args', 'row', 'user', 'vars'}
                        | ({'time'} if temporal else set()))
+
+
+def eligibility_context(source, context, seconds):
+    """Counterfactual scope at an explicit clock anchor, independent of agent delay.
+
+    Uses reset data and scheduled external events, never the agent's final data.
+    The anchor determines task scope; successful writes still use actual commit time.
+    """
+    from datetime import datetime, timedelta
+    from env_factory_v2.contracts.contract import require
+    basis = context.get('_eligibility_initial')
+    require(isinstance(basis, dict), 'initial eligibility snapshot unavailable')
+    from env_factory_v2.execution.world_events import apply_events, ordered_events
+    data = apply_events(source, basis['data'], [event for _, event in ordered_events(source)
+        if basis['time']['elapsed_seconds'] < event['at_seconds'] <= seconds])
+    return {**context, 'data': data, 'user_state': basis['user_state'],
+            'time': {'elapsed_seconds': seconds, 'tick': 0,
+                     'datetime': (datetime.fromisoformat(source['time']['base']) + timedelta(seconds=seconds)).isoformat()}}
 
 
 def project_transaction(tool, source, before, context, *, check_eligibility=False):
@@ -72,7 +98,6 @@ def project_transaction(tool, source, before, context, *, check_eligibility=Fals
 def project_plan(plan, source, context, *, trace=None, ordered_commits=True):
     from env_factory_v2.contracts.contract import require, validate_value
 
-    tables = {table['id']: table for table in source['tables']}
     tools = {tool['id']: tool for tool in source['tools']}
     projected = copy.deepcopy(context['initial'])
     commits = None if trace is None else [turn for turn in trace
@@ -92,17 +117,16 @@ def project_plan(plan, source, context, *, trace=None, ordered_commits=True):
                     and previous_tick < clock['tick'] <= context['time']['tick'],
                     'transaction timeline is not monotonic')
             previous_seconds, previous_tick = clock['elapsed_seconds'], clock['tick']
-    events = sorted(enumerate(source.get('events', [])), key=lambda pair: (pair[1]['at_seconds'], pair[0]))
+    from env_factory_v2.execution.world_events import apply_events as project_events, ordered_events
+    events = ordered_events(source)
     def apply_events(seconds):
-        nonlocal event_index
+        nonlocal event_index, projected
+        due = []
         while event_index < len(events) and events[event_index][1]['at_seconds'] <= seconds:
-            event = events[event_index][1]
-            table = tables[event['table']]
-            matches = [row for row in projected[event['table']]
-                       if canonical(row[table['primary_key']]) == canonical(event['key'])]
-            require(len(matches) == 1, 'projected event target must identify exactly one row')
-            matches[0].update(copy.deepcopy(event['set']))
+            due.append(events[event_index][1])
             event_index += 1
+        if due:
+            projected = project_events(source, projected, due)
     previous_seconds, previous_tick = 0, 0
     for intent in plan:
         enabled = evaluate(intent.get('when', {'literal': True}), context)
@@ -115,8 +139,13 @@ def project_plan(plan, source, context, *, trace=None, ordered_commits=True):
         target = None
         if 'completion' in intent:
             require(commits is not None, 'derived consent completion requires execution evidence')
-            target, eligible = project_transaction(tool, source, projected,
-                {**context, 'args': args}, check_eligibility=True)
+            if 'eligibility_at_seconds' in intent:
+                basis = eligibility_context(source, context, intent['eligibility_at_seconds'])
+                _, eligible = project_transaction(tool, source, basis['data'],
+                    {**basis, 'args': args}, check_eligibility=True)
+            else:
+                target, eligible = project_transaction(tool, source, projected,
+                    {**context, 'args': args}, check_eligibility=True)
             if not eligible:
                 continue
             state = context['user_state']['regions'].get(tool['authorization'])
@@ -151,8 +180,12 @@ def project_plan(plan, source, context, *, trace=None, ordered_commits=True):
             previous_seconds, previous_tick = operation_time['elapsed_seconds'], operation_time['tick']
             apply_events(previous_seconds)
             commit_index += 1
-        projected = target if target is not None else project_transaction(tool, source, projected,
-            {**context, 'args': args, 'time': operation_time})[0]
+        if target is not None:
+            projected = target
+        else:
+            projected, eligible = project_transaction(tool, source, projected,
+                {**context, 'args': args, 'time': operation_time}, check_eligibility=True)
+            require(eligible, 'intended transaction unavailable at execution time')
     if commits is not None:
         require(commit_index == len(commits), 'unplanned successful transaction')
         apply_events(context['time']['elapsed_seconds'])

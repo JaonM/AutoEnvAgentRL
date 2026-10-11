@@ -164,7 +164,11 @@ def build(request, *, agent, output, source=None, repairs=1, docker=True, base_i
             phase('export')
             phase_start = time.monotonic()
             bundle = output / 'sandbox'
-            manifest = export_bundle(compiled, report, bundle, base_image=base_image)
+            from env_factory_v2.native.code_agent import NativeCodeAgent
+            from env_factory_v2.native.evidence import snapshot
+            semantic_evidence = snapshot(agent) if isinstance(agent, NativeCodeAgent) else None
+            manifest = export_bundle(compiled, report, bundle, base_image=base_image,
+                                     semantic_evidence=semantic_evidence)
             attempt['phases']['export'] = time.monotonic() - phase_start
             container = None
             if docker:

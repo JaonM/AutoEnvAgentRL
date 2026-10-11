@@ -38,6 +38,8 @@ class V2Episode:
             import tempfile
             self.native_evidence = tempfile.TemporaryDirectory(prefix='v2-rl-native-')
             agent = NativeCodeAgent.from_connection(connection, evidence_root=self.native_evidence.name)
+            from env_factory_v2.native.evidence import restore_bundle
+            restore_bundle(agent, self.root)
         self.server = serve(source, port=0, agent=agent, user_mode=self.user_mode)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()

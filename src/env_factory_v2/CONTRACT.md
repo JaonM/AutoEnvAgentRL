@@ -642,3 +642,13 @@ and reciprocal association changes. Include executable probes for those changes.
 A linked entry may itself be terminal; its observed terminal identifier must be
 a valid provider for subsequent owner lookup. Success branches must not require
 a successor call when no successor exists. Retain observed-result provenance.
+
+Temporal `transaction_timeline` intentions additionally support
+`completion: "consent_or_unavailable", eligibility_at_seconds: NONNEGATIVE_INTEGER`
+without `when`. Eligibility uses the reset snapshot and scheduled external events
+at the declared time, not final agent state/time. Actual commits are projected at
+their recorded execution times. A missed initially applicable obligation cannot be
+waived by waiting. Future anchors express source-specified later availability.
+Action ticks and lifecycle-dependent eligibility are unsupported in this mode;
+use explicit goals for other temporal policies. See BUSINESS_DEFINITION.md for
+scope, refusal/revocation and independent-review requirements.

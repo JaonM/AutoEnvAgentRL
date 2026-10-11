@@ -106,6 +106,9 @@ def main():
         agent = NativeCodeAgent.from_connection(args.connection, evidence_root=args.contract.parent / 'native-verification')
     review = None
     if args.command == 'container-check':
+        if agent is not None:
+            from env_factory_v2.native.evidence import restore_bundle
+            restore_bundle(agent, args.contract.parent)
         review = json.loads((args.contract.parent / 'verification.json').read_text()).get('independent_review')
     fresh_audit = getattr(args, 'fresh_semantic_audit', False)
     if fresh_audit and agent is None:

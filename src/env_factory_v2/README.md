@@ -300,3 +300,13 @@ certification still verifies adapter conformance, privacy and evidence identitie
 may still contain the former structural flag, but false/missing required gates or
 unknown gates are rejected. Clock/communication diagnostics remain diagnostic hints,
 not new acceptance gates. No independent business or authorization check was removed.
+
+The pipeline now exports `semantic_evidence.json` from its scoped native judge.
+It is covered by the bundle manifest. Container qualification and the training
+adapter restore it only after bundle verification. Entries bind the model,
+recursive Python implementation, complete semantic payload and response schema.
+Only exact matches reuse scores; all world executions and HTTP/adapter checks still
+run. Explicit independent reassessment stays fresh, and conflicting assessments
+poison the dependency. The ledger is private delivery material, never policy input.
+This avoids repeating the same semantic question across delivery stages without
+making the independent original-requirement reviewer trust the platform's score.

@@ -9,7 +9,12 @@ from env_factory_v2.contracts.expressions import canonical, refs
 
 
 def assemble_contract(environment, task):
-    environment, task = copy.deepcopy(environment), copy.deepcopy(task)
+    from env_factory_v2.contracts.obligations import lower_obligations
+    return _assemble_contract(environment, lower_obligations(task)[0])
+
+
+def _assemble_contract(environment, task):
+    environment = copy.deepcopy(environment)
     fields(environment, ['version', 'id', 'tables', 'rules', 'tools', 'time'], ['invariants', 'events', 'communications'])
     require(environment['version'] == '1.0' and isinstance(environment['id'], str)
             and environment['id'], 'invalid business environment identity')
@@ -78,13 +83,16 @@ def assemble_contract(environment, task):
 
 
 def compile_definition(environment, task):
-    compiled = compile_contract(assemble_contract(environment, task))
+    from env_factory_v2.contracts.obligations import lower_obligations
+    lowered, bindings = lower_obligations(task)
+    compiled = compile_contract(_assemble_contract(environment, lowered))
     return compiled, {'version': '1.0',
         'environment_identity': hashlib.sha256(canonical(environment).encode()).hexdigest(),
         'task_identity': hashlib.sha256(canonical(task).encode()).hexdigest(),
         'contract_identity': compiled['identity'],
-        'derived_reports': [report['id'] for report in task.get('reports', [])],
-        'derived_messages': [message['id'] for message in task.get('messages', [])],
+        'obligation_bindings': bindings,
+        'derived_reports': [report['id'] for report in lowered.get('reports', [])],
+        'derived_messages': [message['id'] for message in lowered.get('messages', [])],
         'scope': 'compiled_definition_not_independent_business_acceptance'}
 
 

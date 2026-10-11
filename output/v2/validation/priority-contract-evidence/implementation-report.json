@@ -1,0 +1,62 @@
+{
+  "status": "mechanisms_implemented_and_tested_measurement_pending",
+  "tests": {
+    "passed": 1021,
+    "seconds": 20.69
+  },
+  "business_semantics": {
+    "typed_obligations": "Single task definition with exact original-source citations; lowers state, transaction, answer, query report, communication and process obligations through existing compiler primitives.",
+    "temporal_completion": "Explicit fixed eligibility time; reset world and scheduled external events determine scope; actual commit clock determines effects. Delay cannot waive an initially available duty.",
+    "preserved": "Explicit refusal/revocation, real commit requirement, full-world comparison and independent source interpretation.",
+    "limits": [
+      "Citations do not prove correct business interpretation.",
+      "Fixed-time counterfactual scope is not a universal temporal policy; other policies retain explicit goals.",
+      "No model adoption/full delivery claim from unit tests."
+    ]
+  },
+  "evidence_reuse": {
+    "transport": "Manifest-bound ledger exported with bundle; restored in container-check and training adapter.",
+    "identity": "Model, recursive Python implementation, complete semantic payload and schema.",
+    "fresh_review": "Always calls model; conflicting judgments poison the dependency.",
+    "native_validation": {
+      "scope": "native_cross_stage_exact_evidence_not_yield",
+      "first_calls": 2,
+      "second_calls": 0,
+      "first_gates": {
+        "joint_execution_and_counterexamples": true,
+        "independent_business_challenge": false,
+        "deterministic_reset_and_replay": true
+      },
+      "second_gates": {
+        "joint_execution_and_counterexamples": true,
+        "independent_business_challenge": false,
+        "deterministic_reset_and_replay": true
+      },
+      "seconds": 16.627837166015524,
+      "revision_note": "Native reuse proof preceded the subsequent shared-event refactor; final regression covers the combined implementation, no full pipeline timing claim."
+    }
+  },
+  "cross_scenario_validation": [
+    "Direct, simple, retrieval, long chain, ordinary transaction and complex transaction lowering preserve compiled identities.",
+    "Initial obligation expiry, future eligibility, scheduled event, unavailable target, explicit refusal/revocation, commit followed by wait, forged lifecycle and invalid tick-based anchor.",
+    "Existing full regression preserves atomicity, partial transactions, privacy and training continuation."
+  ],
+  "next_measurement": {
+    "planned": 20,
+    "mix": {
+      "direct": 4,
+      "simple": 4,
+      "ordinary": 4,
+      "complex": 8
+    },
+    "concurrency": 1,
+    "default": "independent new-business assets, reviews and freeze before execution",
+    "repairs": "between completed cohorts only"
+  },
+  "yield_claim": null,
+  "matched_speed_claim": null,
+  "implementation_consolidation": [
+    "Runtime external events, temporal projection and anchored scope use one pure world-event interpreter.",
+    "Typed obligation lowering occurs once per definition compile."
+  ]
+}

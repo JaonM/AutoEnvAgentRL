@@ -14,7 +14,7 @@ from env_factory_v2.contracts.expressions import canonical
 from env_factory_v2.validation.verification import compact_evidence
 
 
-def export_bundle(compiled, report, output, *, base_image='python:3.14-slim'):
+def export_bundle(compiled, report, output, *, base_image='python:3.14-slim', semantic_evidence=None):
     require(isinstance(base_image, str) and re.fullmatch(r'[A-Za-z0-9._/:@-]+', base_image), 'invalid base image reference')
     output = Path(output)
     require(not output.exists(), 'delivery directory already exists')
@@ -26,6 +26,8 @@ def export_bundle(compiled, report, output, *, base_image='python:3.14-slim'):
         target = package / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, target)
+    if semantic_evidence is not None:
+        (output / 'semantic_evidence.json').write_text(canonical(semantic_evidence) + '\n')
     (output / 'contract.json').write_text(canonical(compiled['source']) + '\n')
     if 'demand' in compiled['source']:
         (output / 'task_spec.json').write_text(canonical(compiled['source']['demand']['task_spec']) + '\n')

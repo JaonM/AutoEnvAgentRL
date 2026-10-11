@@ -263,3 +263,53 @@ evidence without applicability are unobserved. One observed branch is a coverage
 gap to investigate against original requirements and reachability, not an automatic
 rejection or permission to weaken the condition. Two observed branches also do
 not prove that the condition implements the correct original business meaning.
+
+### Typed task obligations
+
+New tasks should declare one `obligations` list instead of separately authoring
+`goals`, `answers`, `reports`, `messages`, `explanations` and `success`. Mixing these
+representations in a task is rejected. An entry is:
+
+```
+{id, kind, citations: [{source: "user_request" | "business_policy", quote: "exact original text"}], definition: {...}}
+```
+
+Citation sources are the original `demand.agent_context` fields; without demand,
+only `user_request` (task.request) exists. Citations prove textual origin, not the
+correctness of an interpretation. Independent original-source review remains required.
+`definition` excludes `id`; the obligation is its sole owner. Kinds:
+
+- `state`: `{rule_ids, predicate}` lowers to a state goal.
+- `transaction`: `{rule_ids, mode: "static" | "timeline", intentions: [...]}` lowers
+  to a transaction plan/timeline using the same tool operations and authorization.
+- `answer`: the existing answer body, excluding id.
+- `report`: the existing derived-report body, excluding id; query rules are reused.
+- `communication`: the existing message body, excluding id; it references environment
+  communications. Only requirements to communicate belong here; behavioral rules do not
+  automatically become requirements to recite those rules.
+- `process`: the existing success-branch body, excluding id. Use only source-grounded
+  evidence requirements, not an arbitrary preferred trajectory.
+
+Compilation records original citations and lowering targets in `obligation_bindings`.
+Existing definition imports remain supported. This is one representation lowered
+into existing execution primitives, not a second scoring engine.
+
+### Temporal completion scope
+
+A `timeline` intention can use `completion: "consent_or_unavailable"` with required
+`eligibility_at_seconds: NONNEGATIVE_INTEGER` and no `when`. This clock anchor is
+chosen from the original business policy, never the agent's ending time. Scope is
+computed from the reset world plus external events due at the anchor, private task
+inputs and the transaction's own preconditions. The initial lifecycle is used;
+consent and action ticks cannot define their own applicability. The time anchor
+cannot depend on action ticks. Use zero for reset-time duties, or a specified future
+business time when appropriate. This mode does not express every temporal policy.
+
+An available duty still requires its exact authorized commit or a matching explicit
+refusal/revocation. Agent-controlled delay cannot erase it. A successful commit is
+projected with its actual clock and then checked against the final world including
+external events. Initially unavailable targets remain outside reset-time scope;
+future-time scope can instead include a target made available by an external event.
+Scope is per intention; independent partial outcomes do not require pointless
+consent for an unavailable target. Independent review must verify the chosen scope
+and whether refusal or revocation legitimately discharges the original requirement.

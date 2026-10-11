@@ -1,0 +1,77 @@
+{
+  "objective": "Architecture consolidation, generalization yield and end-to-end efficiency without reducing difficulty",
+  "status": "implementation_in_progress",
+  "constraints": [
+    "No consecutive full-pipeline repair runs on one artifact.",
+    "Develop mechanisms against a cross-scenario regression matrix; freeze implementation before cohort measurement.",
+    "No business-name or sample-ID branches/prompts.",
+    "Keep independent original-source truth separate from runtime truth.",
+    "Single pipeline concurrency; all new run/report/plan artifacts under output/v2."
+  ],
+  "batches": [
+    {
+      "id": "production_entry",
+      "status": "implemented_verified",
+      "changes": [
+        "Production generate/build/CLI/measurement use workbench only.",
+        "Old string/object/tree generator isolated to explicit historical diagnostic script."
+      ],
+      "evidence": "output/v2/reports/production-entry-consolidation.json"
+    },
+    {
+      "id": "definition_boundary",
+      "status": "implemented_verified",
+      "work": "Make reusable business definition the normal authored form; flat contract remains compiled artifact and explicit historical import.",
+      "evidence": "output/v2/reports/definition-authoring-boundary.json",
+      "compatibility": "Explicit historical flat imports remain editable; new drafts use definition documents only."
+    },
+    {
+      "id": "task_obligations",
+      "status": "in_progress",
+      "work": "Typed original-source obligations for outcomes, communication, authorization, partial results and temporal discharge; dependency identity marks affected reference evidence stale.",
+      "implemented": "Typed cited obligation lowering plus explicit temporal eligibility anchor and prior shared dependency index",
+      "evidence": "output/v2/reports/shared-obligation-index.json",
+      "remaining": "Native author adoption and independent cross-scenario/full delivery measurement; arbitrary temporal policies still use explicit goals."
+    },
+    {
+      "id": "validation_ownership",
+      "status": "in_progress",
+      "work": "Declare each gate unique evidence, share exact evidence through one registry, keep independent judgments separate; consolidate bounded diagnostics.",
+      "implemented": "Effective gate separation and manifest-bound exact semantic evidence ledger for container/training; fresh independent judgments remain separate.",
+      "remaining": "Measure end-to-end call reduction and check independent evaluator boundaries on the frozen cohort."
+    },
+    {
+      "id": "cross_scenario_validation",
+      "status": "deterministic_matrix_verified_native_cohort_pending",
+      "work": "Validate deadlines, legitimate waiting, user delay, initial unavailability/later availability, partial transactions, large retrieval and prior capabilities before live cohort.",
+      "evidence": "output/v2/validation/priority-contract-evidence/implementation-report.json"
+    },
+    {
+      "id": "frozen_measurement",
+      "status": "pending",
+      "work": "First run one independent 20-case cohort, 4:4:4:8; count every failure, measure matched time and repair only after cohort completion."
+    }
+  ],
+  "targets": {
+    "end_to_end_generalization_yield": 0.6,
+    "complex_yield": 0.5,
+    "matched_wall_reduction": 0.3
+  },
+  "nonclaims": [
+    "No new yield measurement from architecture tests.",
+    "Transport consolidation does not yet unify business semantics."
+  ],
+  "measurement_sequence": {
+    "first_batch": 20,
+    "mix": {
+      "direct": 4,
+      "simple": 4,
+      "ordinary": 4,
+      "complex": 8
+    },
+    "concurrency": 1,
+    "start_after": "priority implementation and cross-scenario validation",
+    "repair_policy": "after complete batch only",
+    "later_40_case_batches": "deferred until first 20-case analysis"
+  }
+}

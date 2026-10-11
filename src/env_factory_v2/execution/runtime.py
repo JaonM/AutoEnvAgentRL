@@ -79,14 +79,11 @@ class Sandbox:
         return rows[0]
 
     def _events(self):
-        candidate = copy.deepcopy(self.data)
-        due = [(i, e) for i, e in enumerate(self.source.get('events', []))
-               if i not in self.applied_events and e['at_seconds'] <= self.seconds]
-        for i, event in sorted(due, key=lambda pair: (pair[1]['at_seconds'], pair[0])):
-            self._row(candidate, event['table'], event['key']).update(copy.deepcopy(event['set']))
+        from env_factory_v2.execution.world_events import apply_events, ordered_events
+        due = [(i, event) for i, event in ordered_events(self.source)
+               if i not in self.applied_events and event['at_seconds'] <= self.seconds]
         if due:
-            validate_data(self.source, candidate)
-            self.data = candidate
+            self.data = apply_events(self.source, self.data, [event for _, event in due])
             self.applied_events.update(i for i, _ in due)
             self.version += 1
 
