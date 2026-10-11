@@ -203,15 +203,6 @@ class NativeCodeAgent:
 
     def generate(self, request, *, feedback=None, author_tools=True):
         require(author_tools is True, 'production generation requires the author workbench; no legacy fallback')
-        if feedback is not None:
-            from env_factory_v2.authoring.repair_evidence import compact_repair_feedback
-            compact, receipt = compact_repair_feedback(feedback)
-            if receipt['compacted_passing_records']:
-                folder = self.evidence_root / 'repair-feedback' / uuid.uuid4().hex
-                folder.mkdir(parents=True)
-                for name, value in [('original', feedback), ('compact', compact), ('receipt', receipt)]:
-                    (folder / f'{name}.json').write_text(canonical(value) + '\n')
-                feedback = compact
         require(not self.base_url.startswith('http://host.docker.internal:'),
                 'author sessions run only on the host')
         from env_factory_v2.authoring.author_session import generate_in_session

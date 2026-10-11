@@ -1,58 +1,92 @@
-import copy
-import hashlib
 import json
-from unittest.mock import patch
-
-from env_factory_v2.native.code_agent import NativeCodeAgent
-from env_factory_v2.examples import direct
+import pytest
+from env_factory_v2.authoring.repair_evidence import repair_context, prompt_context, PROMPT_LIMIT
+from env_factory_v2.authoring.author_workbench import AuthorWorkbench
+from env_factory_v2.authoring.author_mcp import AuthorMCP
+from env_factory_v2.authoring.author_session import checked_source
+from env_factory_v2.contracts.contract import ContractError
 from env_factory_v2.contracts.expressions import canonical
-from env_factory_v2.authoring.repair_evidence import compact_repair_feedback
+from env_factory_v2.examples import direct, simple, transaction
 
 
-def record(passed):
-    run = {'outcome': {'success': passed, 'reward': int(passed)}, 'error': None,
-           'answer': {'value': 3}, 'trace': [{'detail': 'actual evidence ' * 200}],
-           'final_state': {'rows': list(range(100))}, 'time': {'tick': 1}}
-    return {'case': {'id': 'case', 'steps_json': '[]'}, 'passed': passed,
-            'first': copy.deepcopy(run), 'repeat': copy.deepcopy(run)}
+def test_large_failed_evidence_is_bounded_in_prompt_and_losslessly_readable():
+    feedback = {'records': [{'passed': False, 'case': {'id': 'x'}, 'trace': 'evidence' * 400000}]}
+    context = repair_context({'goal': 'original'}, feedback, direct())
+    assert len(canonical(prompt_context(context))) < PROMPT_LIMIT
+    assert context['feedback'] == feedback
+    bench = AuthorWorkbench(source=direct(), context=context, max_operations=512)
+    fragments, offset = [], 0
+    while True:
+        read = bench.call('read_context', {'path': '/feedback/records/0/trace', 'offset': offset})
+        assert len(read['json_fragment']) <= 8192
+        fragments.append(read['json_fragment'])
+        offset = read['next_offset']
+        if offset is None: break
+    assert json.loads(''.join(fragments)) == feedback['records'][0]['trace']
+    assert not bench.call('read_context', {'path': '/../../etc/passwd', 'offset': 0})['passed']
 
 
-def test_failed_evidence_and_original_source_are_never_compacted():
-    feedback = {'original_request': {'data': record(True)}, 'previous_source': {'example': record(True)},
-                'records': [record(True), record(False)]}
-    before = copy.deepcopy(feedback)
-    compact, receipt = compact_repair_feedback(feedback)
-    assert feedback == before
-    assert compact['original_request'] == feedback['original_request']
-    assert compact['previous_source'] == feedback['previous_source']
-    assert compact['records'][1] == feedback['records'][1]
-    successful = compact['records'][0]
-    assert successful['case'] == feedback['records'][0]['case']
-    assert successful['first']['answer'] == {'value': 3}
-    assert 'trace' not in successful['first'] and 'final_state' not in successful['first']
-    assert successful['first']['archived_execution_identity'] == hashlib.sha256(
-        canonical(feedback['records'][0]['first']).encode()).hexdigest()
-    assert receipt['compacted_passing_records'] == 1 and receipt['compact_bytes'] < receipt['original_bytes']
+def test_resume_cannot_hide_prior_independent_findings():
+    feedback = {'author_recovery': {'interrupted': True}, 'failed_phase': 'generation', 'error': 'timeout'}
+    assert repair_context({}, feedback, direct())['repair']['mode'] == 'resume'
+    feedback['review'] = {'consistent': False, 'reason': 'incorrect business result'}
+    feedback['duplicate'] = feedback['review']
+    context = repair_context({}, feedback, direct())
+    assert context['repair']['mode'] == 'repair'
+    assert len(context['repair']['issues']) == 1
 
 
-def test_unknown_or_already_compact_feedback_is_preserved():
-    for value in [None, {'error': 'failed compile'}, {'passed': True, 'first': {'outcome': {}}},
-                  {'literal': record(True)}]:
-        compact, receipt = compact_repair_feedback(value)
-        assert compact == value and receipt['compacted_passing_records'] == 0
+def test_unchanged_repair_and_legacy_completion_are_rejected(tmp_path):
+    context = repair_context({}, {'error': 'independent rejection'}, direct())
+    (tmp_path/'context.json').write_text(canonical(context))
+    server = AuthorMCP(tmp_path/'workbench', source=direct(), context=context)
+    def call(name, args={}):
+        return json.loads(server.dispatch({'id': 1, 'method': 'tools/call', 'params': {'name': name, 'arguments': args}})['result']['content'][0]['text'])
+    assert call('check_contract')['passed']
+    assert not call('submit_contract')['passed']
+    call('check_contract')
+    with pytest.raises(ContractError, match='explicit submission'):
+        checked_source(tmp_path)
+    assert call('put_section', {'section': 'task', 'value_json': json.dumps('Reworded task')})['passed']
+    assert call('check_contract')['passed']
+    assert not call('submit_contract')['passed']
+    issue = context['repair']['issues'][0]['id']
+    assert call('address_repair', {'issue_id': issue, 'paths': ['/task'], 'explanation': 'Proposed correction; independent validation still required.'})['passed']
+    assert call('check_contract')['passed']
+    assert call('submit_contract')['submitted']
+    assert checked_source(tmp_path)[0]['task'] == 'Reworded task'
 
 
-def test_generator_archives_full_evidence_before_sending_compact_feedback(tmp_path):
-    agent = NativeCodeAgent(base_url='http://localhost:9999/v1', token='a'*24, evidence_root=tmp_path)
-    feedback = {'previous_source': direct(), 'records': [record(True), record(False)]}
-    with patch('env_factory_v2.authoring.author_session.generate_in_session',
-               return_value=(direct(), {'source_identity': 'fixture'})) as run:
-        agent.generate({'goal': 'unchanged request'}, feedback=feedback, author_tools=True)
-    folders = list((tmp_path/'repair-feedback').iterdir())
-    assert len(folders) == 1
-    original = json.loads((folders[0]/'original.json').read_text())
-    compact = json.loads((folders[0]/'compact.json').read_text())
-    assert original == feedback
-    assert run.call_args.kwargs['feedback']['records'] == compact['records']
-    assert run.call_args.kwargs['previous_source'] == direct()
-    assert run.call_args.kwargs['feedback']['records'][1] == feedback['records'][1]
+@pytest.mark.parametrize("factory", [direct, simple, transaction])
+def test_edits_invalidate_fix_claims(factory):
+    context = repair_context({}, {'error': 'independent rejection'}, direct())
+    bench = AuthorWorkbench(source=factory(), context=context)
+    issue = context['repair']['issues'][0]['id']
+    claim = {'issue_id': issue, 'paths': ['/task'], 'explanation': 'Proposed correction awaiting independent review.'}
+    assert not bench.call('address_repair', claim)['passed']
+    bench.call('put_section', {'section': 'task', 'value_json': '"first change"'})
+    assert bench.call('address_repair', claim)['passed']
+    bench.call('put_section', {'section': 'task', 'value_json': '"second change"'})
+    assert bench.call('check_contract', {})['passed']
+    assert not bench.call('submit_contract', {})['passed']
+
+
+def test_large_request_remains_available_without_inline_expansion():
+    request = {'goal': 'x' * 100000}
+    context = repair_context(request, None, None)
+    assert prompt_context(context)['original_request']['read_context_path'] == '/request'
+    assert context['request'] == request
+
+
+def test_business_review_without_failed_execution_still_requires_repair():
+    context = repair_context({}, {'business_consistent': False, 'reason': 'Omitted requirement', 'records': []}, direct())
+    assert context['repair']['mode'] == 'repair'
+    assert context['repair']['issues'][0]['reason'] == 'Omitted requirement'
+
+
+def test_many_findings_use_index_pagination_without_rejection_or_loss():
+    feedback = {'records': [{'consistent': False, 'reason': str(i)} for i in range(300)]}
+    context = repair_context({}, feedback, direct())
+    index = prompt_context(context)['repair']
+    assert len(context['repair']['issues']) == index['issue_count'] == 300
+    assert len(index['issues']) == 16

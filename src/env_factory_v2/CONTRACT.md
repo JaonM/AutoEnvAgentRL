@@ -665,3 +665,19 @@ transaction with no applicable operations is unavailable. Every existing row
 precondition, exact consent, schema and invariant check still applies, and any
 failure rolls back the entire transaction. No partial commits are introduced.
 Use collection operations for large write sets instead of enumerating each row.
+
+
+### Author repair evidence boundary
+
+Author sessions distinguish new creation, interrupted generation resumption, and
+repair after independent rejection. A locally passing draft is sufficient only
+for submission to independent validation. In repair mode, unchanged rejected
+drafts cannot be submitted; proposed fixes cite changed JSON Pointer values and
+are bound to the current source identity. Subsequent edits invalidate those
+claims. Neither claims nor authored recipe checks establish business correctness.
+
+Full original requirements and failure evidence are archived in the session's
+`context.json`. `read_context` exposes bounded JSON fragments, not filesystem
+access. Initial prompts carry a bounded finding index; additional findings and
+full records remain available by JSON Pointer. Reviewer conflicts with original
+requirements must not be resolved by inventing business requirements.

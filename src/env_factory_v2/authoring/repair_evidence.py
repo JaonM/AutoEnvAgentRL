@@ -1,44 +1,60 @@
-"""Reduce repeated passing execution detail in author-only repair feedback."""
-from __future__ import annotations
-
+"""Bounded repair index over immutable full evidence; no semantic verdict rewriting."""
 import copy
 import hashlib
-
 from env_factory_v2.contracts.expressions import canonical
-from env_factory_v2.validation.verification import compact_evidence
+
+PROMPT_LIMIT = 262144
 
 
-def compact_repair_feedback(feedback):
-    """Keep all failed executions intact; never alter requests or candidate source."""
-    count = 0
-    def visit(value):
-        nonlocal count
-        if isinstance(value, list):
-            return [visit(item) for item in value]
-        if not isinstance(value, dict):
-            return copy.deepcopy(value)
-        is_record = (type(value.get('passed')) is bool
-            and all(isinstance(value.get(k), dict)
-                    and {'outcome', 'trace', 'final_state', 'time'} <= value[k].keys()
-                    for k in ('first', 'repeat')))
-        if is_record:
-            if not value['passed']:
-                return copy.deepcopy(value)
-            result = copy.deepcopy(value)
-            for key in ('first', 'repeat'):
-                result[key] = compact_evidence(value[key])
-                result[key]['archived_execution_identity'] = hashlib.sha256(canonical(value[key]).encode()).hexdigest()
-            count += 1
-            result['repair_evidence_detail'] = 'passing_verdicts_and_answers_full_execution_archived'
-            return result
-        return {key: copy.deepcopy(item) if key in {
-                    'previous_source', 'original_request', 'contract', 'source', 'demand', 'literal'}
-                else visit(item) for key, item in value.items()}
-    result = visit(feedback)
-    original, compact = canonical(feedback).encode(), canonical(result).encode()
-    if len(compact) >= len(original):
-        result, compact, count = copy.deepcopy(feedback), original, 0
-    return result, {'compacted_passing_records': count, 'original_bytes': len(original),
-                    'compact_bytes': len(compact), 'original_identity': hashlib.sha256(original).hexdigest(),
-                    'compact_identity': hashlib.sha256(compact).hexdigest(),
-                    'scope': 'author_feedback_only_not_qualification_evidence'}
+def identity(value):
+    return hashlib.sha256(canonical(value).encode()).hexdigest()
+
+
+def repair_context(request, feedback, previous_source):
+    feedback = copy.deepcopy(feedback or {})
+    issues, seen = [], set()
+    def visit(value, path):
+        if isinstance(value, dict):
+            finding = (value.get('consistent') is False or value.get('business_consistent') is False or
+                       value.get('passed') is False and any(k in value for k in ('case', 'failure_evidence', 'kind')))
+            if finding:
+                # Deduplicate the same finding nested in verification and audit.
+                key = identity(value)
+                if key not in seen:
+                    seen.add(key)
+                    case = value.get('case')
+                    reason = value.get('reason') or value.get('error') or (case.get('reason') if isinstance(case, dict) else None) or 'Failed execution evidence'
+                    issues.append({'id': key, 'evidence_path': path, 'reason': str(reason)[:800]})
+            for k, child in value.items():
+                if k not in {'original_request', 'previous_source', 'source', 'contract', 'literal'}:
+                    visit(child, path + '/' + k.replace('~','~0').replace('/','~1'))
+        elif isinstance(value, list):
+            for i, child in enumerate(value):visit(child, path + '/' + str(i))
+    visit(feedback, '/feedback')
+    recovery = feedback.get('author_recovery', {})
+    resume = bool(recovery) and feedback.get('failed_phase', 'generation') == 'generation'
+    if not issues and feedback.get('error') and not resume:
+        issues.append({'id': identity({'error': feedback['error'], 'phase': feedback.get('failed_phase')}),
+                       'evidence_path': '/feedback', 'reason': str(feedback['error'])[:800]})
+    mode = 'repair' if previous_source is not None and issues else 'resume' if previous_source is not None else 'create'
+    return {'request': copy.deepcopy(request), 'feedback': feedback,
+            'repair': {'mode': mode, 'issues': issues, 'initial_identity': identity(previous_source),
+                       'scope': 'proposed fixes require subsequent independent validation'}}
+
+
+def prompt_context(context):
+    request = context['request']
+    # Full original input is available to read_context, never silently truncated.
+    return {'original_request': request if len(canonical(request)) <= 65536 else {
+                'read_context_path': '/request', 'characters': len(canonical(request)),
+                'sha256': identity(request), 'keys': sorted(request)},
+            'repair': repair_index(context),
+            'evidence': {'read_context_path': '/feedback', 'sha256': identity(context['feedback']),
+                         'characters': len(canonical(context['feedback'])),
+                         'keys': sorted(context['feedback'])}}
+
+
+def repair_index(context):
+    repair = context['repair']
+    return {**repair, 'issues': repair['issues'][:16], 'issue_count': len(repair['issues']),
+            'all_issues_path': '/repair/issues'}

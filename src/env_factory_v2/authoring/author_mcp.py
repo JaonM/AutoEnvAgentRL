@@ -15,6 +15,10 @@ from env_factory_v2.contracts.expressions import canonical
 
 
 TOOLS = [
+    {'name': 'read_context', 'description': 'Read immutable original request or independent failure evidence by JSON Pointer and character offset, at most 8192 characters per call.',
+     'inputSchema': object_schema({'path': {'type': 'string'}, 'offset': {'type': 'integer'}})},
+    {'name': 'address_repair', 'description': 'Record a proposed fix for an indexed finding after editing. Paths must name changed contract values. This is not independent approval.',
+     'inputSchema': object_schema({'issue_id': {'type': 'string'}, 'paths': {'type': 'array', 'items': {'type': 'string'}}, 'explanation': {'type': 'string'}})},
     {'name': 'inspect_contract', 'description': 'Get section sizes, keys and current check status before selecting a narrow read path.',
      'inputSchema': object_schema({})},
     {'name': 'read_check', 'description': 'Read detailed current check evidence by JSON Pointer and character offset; use after the concise check summary.',
@@ -36,10 +40,10 @@ TOOLS = [
 
 
 class AuthorMCP:
-    def __init__(self, output, *, source=None, request=None):
+    def __init__(self, output, *, source=None, request=None, context=None):
         self.output = Path(output)
         self.output.mkdir(parents=True, exist_ok=True)
-        self.workbench = AuthorWorkbench(source=source, request=request)
+        self.workbench = AuthorWorkbench(source=source, request=request, context=context)
 
     def dispatch(self, request):
         identity = request.get('id')
@@ -65,7 +69,7 @@ class AuthorMCP:
             source = self.workbench.snapshot()
             digest = hashlib.sha256(canonical(source).encode()).hexdigest()
             value['source_identity'] = digest
-            read_only = params.get('name') in {'read_contract', 'inspect_contract', 'read_check'}
+            read_only = params.get('name') in {'read_contract', 'inspect_contract', 'read_check', 'read_context'}
             if not read_only:
                 self._save('draft.json', source)
             if params.get('name') == 'check_contract' and self.workbench.last_check is not None:
@@ -107,9 +111,11 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--source', type=Path)
     parser.add_argument('--request', type=Path)
+    parser.add_argument('--context', type=Path)
     args = parser.parse_args()
     server = AuthorMCP(args.output, source=json.loads(args.source.read_text()) if args.source else None,
-                       request=json.loads(args.request.read_text()) if args.request else None)
+                       request=json.loads(args.request.read_text()) if args.request else None,
+                       context=json.loads(args.context.read_text()) if args.context else None)
     for line in sys.stdin:
         try:
             request = json.loads(line)
