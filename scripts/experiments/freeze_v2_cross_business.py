@@ -14,8 +14,7 @@ from env_factory_v2.expressions import canonical
 from collections import Counter
 from v2_preparation_pack import load_pack, identity, user_scenes, exact_ids, business_review_input
 from env_factory_v2.code_agent import NativeCodeAgent
-from v2_answer_obligations import review_answer_obligations
-from audit_v2_natural import canonical_truth
+from v2_answer_obligations import review_case_answer_obligations
 
 
 def reviewed_cases(openings_root, opening_review_root, business_review_root, case_pack=None):
@@ -64,8 +63,8 @@ def main():
     agent = NativeCodeAgent.from_connection(args.connection, evidence_root=args.output / 'answer-scope-native')
     answer_scopes = {}
     for row in rows:
-        scope = review_answer_obligations(agent, user_request=row['raw_request'], business=row['business'],
-            truth=canonical_truth(row['acceptance'], row['business'], row['user']))
+        scope = review_case_answer_obligations(agent, user_request=row['raw_request'], business=row['business'],
+            user=row['user'], spec=row['acceptance'])
         answer_scopes[str(row['id'])] = scope
         save(args.output / 'answer_scope_reviews.json', answer_scopes)
         if not scope['passed']:

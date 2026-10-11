@@ -44,10 +44,50 @@ def generation_output_scope(spec, *, user_request, business):
     return scope
 
 
-def review_answer_obligations(agent, *, user_request, business, truth):
+def validate_role_shapes(shapes):
+    def check(node):
+        require(isinstance(node, dict), 'answer role shape must be structural')
+        kind = node.get('type')
+        if kind == 'object':
+            require(set(node) == {'type', 'properties'} and isinstance(node['properties'], dict),
+                    'object role shape needs only properties')
+            for value in node['properties'].values():
+                check(value)
+        elif kind == 'array':
+            require(set(node) == {'type', 'item_shapes'} and isinstance(node['item_shapes'], list),
+                    'array role shape needs only item shapes')
+            for value in node['item_shapes']:
+                check(value)
+        else:
+            require(set(node) == {'type'} and kind in {'str', 'bool', 'int', 'float', 'NoneType'},
+                    'role shape must not contain expected values or constraints')
+    require(isinstance(shapes, dict) and all(isinstance(k, str) and k.strip() for k in shapes),
+            'answer role shapes must be named')
+    for shape in shapes.values():
+        check(shape)
+    return copy.deepcopy(shapes)
+
+
+def review_case_answer_obligations(agent, *, user_request, business, user, spec):
+    if 'answer_role_shapes' in spec:
+        return review_answer_obligations(agent, user_request=user_request, business=business,
+            role_shapes=spec['answer_role_shapes'], state_tables=[table['id'] for table in business['tables']])
+    from audit_v2_natural import canonical_truth
+    return review_answer_obligations(agent, user_request=user_request, business=business,
+                                    truth=canonical_truth(spec, business, user))
+
+
+def review_answer_obligations(agent, *, user_request, business, truth=None, role_shapes=None, state_tables=None):
     """No generated contract, scores, trajectories or candidate answer enter this review."""
     public = {'user_request': user_request, 'business_policy': business['policy']}
-    roles = list(truth['answer'])
+    require((truth is None) != (role_shapes is None), 'supply truth or declared role shapes, not both')
+    if truth is not None:
+        role_shapes = {k: value_shape(v) for k, v in truth['answer'].items()}
+        state_tables = list(truth['final_state'])
+    role_shapes = validate_role_shapes(role_shapes)
+    require(isinstance(state_tables, list) and all(isinstance(t, str) for t in state_tables),
+            'state table names required for output scope review')
+    roles = list(role_shapes)
     citation = object_schema({'source': {'type': 'string', 'enum': list(public)},
                              'text': {'type': 'string'}})
     item = object_schema({'role': {'type': 'string', **({'enum': roles} if roles else {})},
@@ -67,8 +107,8 @@ def review_answer_obligations(agent, *, user_request, business, truth):
         'Use unsupported for an unresolved role; never guess a scope to obtain acceptance. '
         'No candidate contract, expected values or run outcomes are available. No tools.',
         {'original_sources': public,
-         'proposed_role_shapes': {k: value_shape(v) for k,v in truth['answer'].items()},
-         'state_tables': list(truth['final_state'])},
+         'proposed_role_shapes': role_shapes,
+         'state_tables': state_tables},
         object_schema({'roles': {'type': 'array', 'items': item},
                        'process_requirements': {'type': 'array', 'items': citation},
                        'uncovered_answers': {'type': 'array', 'items': citation}}))

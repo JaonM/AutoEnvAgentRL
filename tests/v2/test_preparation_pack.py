@@ -121,8 +121,7 @@ def test_forty_case_freeze_is_accepted_by_runner_with_same_graph_evidence(tmp_pa
     path, pack = pack_file(tmp_path)
     roots = review_evidence(tmp_path, pack)
     monkeypatch.setattr(freeze.NativeCodeAgent, 'from_connection', lambda *a, **k: object())
-    monkeypatch.setattr(freeze, 'canonical_truth', lambda *a: {})
-    monkeypatch.setattr(freeze, 'review_answer_obligations', lambda *a, **k:
+    monkeypatch.setattr(freeze, 'review_case_answer_obligations', lambda *a, **k:
                         {'passed': True, 'answer_obligations': {'mock': True}, 'generation_output_scope': {'mock': True}})
     documents = []
     class Driver:

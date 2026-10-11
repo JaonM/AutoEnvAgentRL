@@ -72,15 +72,14 @@ def main():
             'passed':{'type':'boolean'},'reason':{'type':'string'}})}}))
     write(args.output / 'final_opening_review.json', {'response':review,'provenance':provenance})
     validate_review(review, identities)
-    from audit_v2_natural import canonical_truth
-    from v2_answer_obligations import review_answer_obligations
+    from v2_answer_obligations import review_case_answer_obligations
     for row in manifest['samples']:
         acceptance_path = args.output / row['acceptance']
         acceptance = json.loads(acceptance_path.read_text())
         business = json.loads((args.output / row['business']).read_text())
         user = json.loads((args.output / row['user']).read_text())
-        scope = review_answer_obligations(agent, user_request=row['raw_request'], business=business,
-                                         truth=canonical_truth(acceptance, business, user))
+        scope = review_case_answer_obligations(agent, user_request=row['raw_request'], business=business,
+                                              user=user, spec=acceptance)
         write(acceptance_path.parent / 'answer_scope_review.json', scope)
         if scope['passed'] is not True:
             raise ValueError('answer obligation scope unresolved; no freeze')

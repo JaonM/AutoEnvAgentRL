@@ -7,7 +7,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts/experiments'))
 from env_factory_v2.expressions import ContractError
-from v2_answer_obligations import review_answer_obligations, generation_output_scope
+from v2_answer_obligations import review_answer_obligations, generation_output_scope, review_case_answer_obligations
 from v2_business_acceptance import business_truth
 
 
@@ -109,3 +109,30 @@ def test_generation_scope_cannot_drift_from_sources_or_acceptance(changed):
 
 def test_historical_scope_is_not_fabricated_from_truth():
     assert generation_output_scope({'expected': 42}, user_request='old', business={'policy': ''}) is None
+
+
+def test_declared_shapes_do_not_invoke_runtime_oracle_or_fabricate_clock():
+    data = fixture()
+    data['business']['tables'] = [{'id': 'items', 'rows': []}]
+    shapes = {'changed': {'type': 'array', 'item_shapes': [{'type': 'str'}]},
+              'reasons': {'type': 'array', 'item_shapes': [{'type': 'str'}]}}
+    agent = Mock(); agent.ask.return_value = (review(), {})
+    with patch('audit_v2_natural.canonical_truth', side_effect=AssertionError('runtime truth must not run')):
+        result = review_case_answer_obligations(agent, user_request=data['user_request'], business=data['business'],
+            user={'facts': {'secret': 'never disclose'}}, spec={'kind': 'arbitrary_timed_task', 'answer_role_shapes': shapes})
+    assert result['passed']
+    payload = agent.ask.call_args.args[1]
+    assert payload['proposed_role_shapes'] == shapes
+    assert payload['state_tables'] == ['items']
+    assert 'never disclose' not in str(payload)
+
+
+@pytest.mark.parametrize('shape', [{'type': 'int', 'expected': 42},
+    {'type': 'array', 'item_shapes': [{'type': 'str', 'enum': ['secret']}]},
+    {'type': 'object', 'properties': {'nested': {'type': 'int', 'minimum': 12}}}])
+def test_declared_shapes_reject_values_constraints_before_model_call(shape):
+    agent = Mock()
+    with pytest.raises(ContractError):
+        review_answer_obligations(agent, user_request='request', business={'policy': ''},
+                                 role_shapes={'result': shape}, state_tables=[])
+    agent.ask.assert_not_called()

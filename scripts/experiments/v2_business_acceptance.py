@@ -113,8 +113,11 @@ def business_truth(spec, business, user, *, user_request, world=None, **kwargs):
 
 def apply_answer_obligations(truth, spec, *, user_request, policy):
     """Answer scope never removes state, timing or process truth."""
-    from v2_answer_obligations import generation_output_scope
+    from v2_answer_obligations import generation_output_scope, validate_role_shapes
     generation_output_scope(spec, user_request=user_request, business={'policy': policy})
+    if 'answer_role_shapes' in spec:
+        shapes = validate_role_shapes(spec['answer_role_shapes'])
+        require(set(shapes) == set(truth['answer']), 'declared answer roles differ from runtime oracle roles')
     if 'answer_obligations' not in spec:
         return truth
     obligations = spec['answer_obligations']

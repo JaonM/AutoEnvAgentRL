@@ -62,7 +62,7 @@ def test_finalization_scales_without_sample_specific_scene_edits(tmp_path, monke
 
     monkeypatch.setattr(finalizer.NativeCodeAgent, 'from_connection', lambda *a, **k: Agent())
     monkeypatch.setattr('audit_v2_natural.canonical_truth', lambda *a: {})
-    monkeypatch.setattr('v2_answer_obligations.review_answer_obligations', scope)
+    monkeypatch.setattr('v2_answer_obligations.review_case_answer_obligations', scope)
     monkeypatch.setattr(sys, 'argv', ['finalize', '--draft', str(draft), '--output', str(output),
                                      '--connection', 'unused', '--repair-ids', repair])
     finalizer.main()

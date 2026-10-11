@@ -93,11 +93,9 @@ def main():
             raise RuntimeError('opening fidelity review failed; assets not frozen')
         folder = args.output / f'{index:02d}'
         folder.mkdir()
-        from audit_v2_natural import canonical_truth
-        from v2_answer_obligations import review_answer_obligations
-        truth = canonical_truth(case['acceptance'], case['business'], case['user'])
-        scope = review_answer_obligations(agent, user_request=opening['user_request'],
-                                         business=case['business'], truth=truth)
+        from v2_answer_obligations import review_case_answer_obligations
+        scope = review_case_answer_obligations(agent, user_request=opening['user_request'],
+                                              business=case['business'], user=case['user'], spec=case['acceptance'])
         write(folder / 'answer_scope_review.json', scope)
         if not scope['passed']:
             raise RuntimeError('answer obligation interpretation unresolved; assets not frozen')
