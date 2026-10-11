@@ -3,6 +3,7 @@ import argparse
 import json
 from pathlib import Path
 from env_factory_v2.code_agent import NativeCodeAgent, object_schema
+from v2_preparation_pack import load_pack, identity, user_scenes, exact_ids, business_review_input
 
 
 def scenes():
@@ -39,27 +40,24 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--review-generated', type=Path)
     parser.add_argument('--business-review', action='store_true')
+    parser.add_argument('--case-pack', type=Path, help='Explicit independent cases, scenes, and historical rules; defaults to historical corpus')
     args = parser.parse_args()
+    pack = load_pack(args.case_pack)
+    ids = exact_ids(pack['cases'])
+    count = len(ids)
     args.output.mkdir(parents=True, exist_ok=False)
     def save(name, value):
         (args.output / name).write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n')
-    payload = {'scenes': scenes()}
+    payload = {'scenes': user_scenes(pack)}
+    save('preparation_identity.json', identity(pack))
     save('user_scenes.json', payload)
     agent = NativeCodeAgent.from_connection(args.connection, evidence_root=args.output / 'native-generation')
     if args.review_generated:
+        if json.loads((args.review_generated / 'preparation_identity.json').read_text()) != identity(pack):
+            raise ValueError('Generated openings refer to a different preparation pack')
         original = json.loads((args.review_generated / 'generated_openings.json').read_text())['response']['openings']
         if args.business_review:
-            from prepare_v2_cross_business import cases
-            from prepare_v2_natural_pilot import cases as historical_cases
-            openings = {row['id']: row['user_request'] for row in original}
-            review_input = {
-                'scope': 'synthetic business novelty and public fidelity review; not yield',
-                'historical_business_rules': [{'title': row['title'], 'policy': row['business']['policy']}
-                                              for row in historical_cases()],
-                'new_cases': [{'id': row['id'], 'business_family': row['business_family'],
-                    'user_request': openings[row['id']], 'public_policy': row['business']['policy'],
-                    'clarifiable_private_user_information': row['user']['facts'],
-                    'business_tables': row['business']['tables']} for row in cases()]}
+            review_input = business_review_input(pack, original)
             save('review_input.json', review_input)
             item = object_schema({'id': {'type': 'integer'}, 'genuine_rule_or_composition_novelty': {'type': 'boolean'},
                 'public_demand_consistent': {'type': 'boolean'}, 'public_policy_sufficient': {'type': 'boolean'},
@@ -77,13 +75,13 @@ def main():
                 'Do not infer absent policies or repair inputs. No tools.', review_input,
                 object_schema({'reviews': {'type': 'array', 'items': item}}))
             save('business_review.json', {'response': result, 'provenance': provenance})
-            if sorted(row['id'] for row in result['reviews']) != list(range(1, 21)):
-                raise ValueError('Business review must cover twenty cases exactly once')
-            passed = sum(all(row[k] for k in ('genuine_rule_or_composition_novelty',
+            exact_ids(result['reviews'], ids)
+            passed = sum(all(row[k] is True for k in ('genuine_rule_or_composition_novelty',
                 'public_demand_consistent', 'public_policy_sufficient')) for row in result['reviews'])
-            print(f'Business preparation review: {passed}/20 passed; not measured yield', flush=True)
+            print(f'Business preparation review: {passed}/{count} passed; not measured yield', flush=True)
             return
-        review_input = {'scenes': scenes(), 'openings': original}
+        exact_ids(original, ids)
+        review_input = {'scenes': user_scenes(pack), 'openings': original}
         save('review_input.json', review_input)
         review_item = object_schema({'id': {'type': 'integer'}, 'natural': {'type': 'boolean'},
             'faithful': {'type': 'boolean'}, 'no_invented_facts_or_steps': {'type': 'boolean'},
@@ -94,11 +92,10 @@ def main():
             'in a scene are allowed. Do not rewrite openings or compute answers. No tools.', review_input,
             object_schema({'reviews': {'type': 'array', 'items': review_item}}))
         save('independent_review.json', {'response': result, 'provenance': provenance})
-        if sorted(r['id'] for r in result['reviews']) != list(range(1, 21)):
-            raise ValueError('Independent review must cover all twenty openings exactly once')
-        passed = sum(all(r[key] for key in ('natural', 'faithful', 'no_invented_facts_or_steps'))
+        exact_ids(result['reviews'], ids)
+        passed = sum(all(r[key] is True for key in ('natural', 'faithful', 'no_invented_facts_or_steps'))
                      for r in result['reviews'])
-        print(f'Independent opening review: {passed}/20 passed; not factory yield', flush=True)
+        print(f'Independent opening review: {passed}/{count} passed; not factory yield', flush=True)
         return
     item = object_schema({'id': {'type': 'integer'}, 'user_request': {'type': 'string'}})
     result, provenance = agent.ask('Write one natural Chinese opening per scene as an ordinary user. '
@@ -106,10 +103,8 @@ def main():
         'invent facts, name tools, give implementation steps, or add business rules. No tools.',
         payload, object_schema({'openings': {'type': 'array', 'items': item}}))
     save('generated_openings.json', {'response': result, 'provenance': provenance})
-    identities = [row['id'] for row in result['openings']]
-    if sorted(identities) != list(range(1, 21)):
-        raise ValueError('Native openings must cover every scene exactly once')
-    print('Generated 20 native openings; independent review and freeze still pending', flush=True)
+    exact_ids(result['openings'], ids)
+    print(f'Generated {count} native openings; independent review and freeze still pending', flush=True)
 
 
 if __name__ == '__main__':

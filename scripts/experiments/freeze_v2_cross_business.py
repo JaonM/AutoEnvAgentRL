@@ -1,5 +1,6 @@
 """Freeze reviewed cross-business assets after scoped Neo4j readback verification."""
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -10,14 +11,20 @@ from neo4j import GraphDatabase
 from env_factory_v2.business_graph import install, retrieve
 from env_factory_v2.demand import layered_demand, validate_demand
 from env_factory_v2.expressions import canonical
-from prepare_v2_cross_business import cases
+from collections import Counter
+from v2_preparation_pack import load_pack, identity, user_scenes, exact_ids, business_review_input
 from env_factory_v2.code_agent import NativeCodeAgent
 from v2_answer_obligations import review_answer_obligations
 from audit_v2_natural import canonical_truth
 
 
-def reviewed_cases(openings_root, opening_review_root, business_review_root):
+def reviewed_cases(openings_root, opening_review_root, business_review_root, case_pack=None):
     def read(root, name): return json.loads((root / name).read_text())
+    pack = load_pack(case_pack)
+    ids = exact_ids(pack['cases'])
+    for root in (openings_root, opening_review_root, business_review_root):
+        if read(root, 'preparation_identity.json') != identity(pack):
+            raise ValueError('Preparation pack differs from reviewed evidence')
     generated = read(openings_root, 'generated_openings.json')
     opening_review = read(opening_review_root, 'independent_review.json')
     business_review = read(business_review_root, 'business_review.json')
@@ -25,23 +32,21 @@ def reviewed_cases(openings_root, opening_review_root, business_review_root):
         (opening_review, 'reviews', ['natural', 'faithful', 'no_invented_facts_or_steps']),
         (business_review, 'reviews', ['genuine_rule_or_composition_novelty', 'public_demand_consistent', 'public_policy_sufficient'])]:
         rows = result['response'][collection]
-        if sorted(row['id'] for row in rows) != list(range(1, 21)) or not all(
-                all(row[flag] is True for flag in flags) for row in rows):
-            raise ValueError('All twenty independent preparation reviews must pass')
-    openings = {row['id']: row['user_request'] for row in generated['response']['openings']}
-    if sorted(openings) != list(range(1, 21)):
-        raise ValueError('Twenty native openings are required')
-    if read(opening_review_root, 'review_input.json')['openings'] != generated['response']['openings']:
-        raise ValueError('Opening review refers to different generation evidence')
-    evidence = {row['id']: row for row in read(business_review_root, 'review_input.json')['new_cases']}
-    rows = cases()
+        exact_ids(rows, ids)
+        if not all(all(row[flag] is True for flag in flags) for row in rows):
+            raise ValueError('All independent preparation reviews must pass')
+    original = generated['response']['openings']
+    exact_ids(original, ids)
+    openings = {row['id']: row['user_request'] for row in original}
+    if read(opening_review_root, 'review_input.json') != {'scenes': user_scenes(pack), 'openings': original}:
+        raise ValueError('Opening review refers to different generation evidence or scenes')
+    if read(business_review_root, 'review_input.json') != business_review_input(pack, original):
+        raise ValueError('Current public business assets differ from independent review')
+    rows = copy.deepcopy(pack['cases'])
     for row in rows:
-        audited = evidence[row['id']]
-        if (audited['user_request'] != openings[row['id']] or audited['public_policy'] != row['business']['policy']
-                or audited['business_tables'] != row['business']['tables']):
-            raise ValueError('Current public business assets differ from independent review')
         row['raw_request'] = openings[row['id']]
-    return rows, {'native_openings': generated, 'opening_review': opening_review, 'business_review': business_review}
+    return rows, {'preparation_identity': identity(pack), 'preparation_pack': pack,
+                  'native_openings': generated, 'opening_review': opening_review, 'business_review': business_review}
 
 
 def main():
@@ -51,8 +56,9 @@ def main():
     parser.add_argument('--namespace', required=True)
     parser.add_argument('--connection', type=Path, required=True,
                         help='Native Code Agent connection for pre-generation answer scope review')
+    parser.add_argument('--case-pack', type=Path, help='Same explicit preparation pack used for generation and independent reviews')
     args = parser.parse_args()
-    rows, evidence = reviewed_cases(args.openings, args.opening_review, args.business_review)
+    rows, evidence = reviewed_cases(args.openings, args.opening_review, args.business_review, args.case_pack)
     args.output.mkdir(parents=True, exist_ok=False)
     def save(path, value): path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n')
     agent = NativeCodeAgent.from_connection(args.connection, evidence_root=args.output / 'answer-scope-native')
@@ -79,8 +85,8 @@ def main():
                 or sorted(actual['relations'], key=lambda r: r['id']) != sorted(document['business']['relations'], key=lambda r: r['id'])):
             raise ValueError('Scoped graph readback does not match reviewed public business assets')
     manifest = {'version': 1, 'scope': 'native_natural_free_dialogue_cross_business_heldout',
-        'sampling': 'twenty synthetic new business-rule/composition cases; native openings independently reviewed; not production-user sampling',
-        'mix': {'direct': 4, 'simple': 4, 'ordinary': 4, 'complex': 8}, 'samples': []}
+        'sampling': 'synthetic business-rule/composition cases; native openings independently reviewed; not production-user sampling',
+        'mix': dict(Counter(row['stratum'] for row in rows)), 'samples': []}
     for row in rows:
         folder = args.output / f"{row['id']:02d}"
         folder.mkdir()
@@ -97,7 +103,7 @@ def main():
     save(args.output / 'preparation_review.json', evidence)
     save(args.output / 'frozen.json', {'files': {str(path.relative_to(args.output)): hashlib.sha256(path.read_bytes()).hexdigest()
                                               for path in sorted(args.output.rglob('*.json'))}})
-    print('Frozen twenty reviewed cross-business cases with verified Neo4j evidence; not measured yield', flush=True)
+    print(f'Frozen {len(rows)} reviewed cross-business cases with verified Neo4j evidence; not measured yield', flush=True)
 
 
 if __name__ == '__main__': main()
