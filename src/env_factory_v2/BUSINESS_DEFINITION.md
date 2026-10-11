@@ -24,6 +24,17 @@ empty results need truthful completion and guarded downstream dependencies.
 No findings does not prove branch coverage, and independent business review
 remains required. These probes do not execute a policy or simulate consent.
 
+`check_contract` also includes non-gating `process_diagnostics`. At most eight
+authored successful no-write cases and sixteen omitted-fact-question variants
+are executed without a semantic model. Authorization stages and write paths are
+not removed. Facts referenced by answer recipes or targets, including named rules,
+are excluded to avoid making private answer knowledge look like a removable
+question. A hint records a path with unchanged answer, final world and elapsed
+time, passing safety and goals, but rejection by an explicit stage requirement.
+It is a candidate overconstraint, not permission to delete a question: original
+business and communication purposes still need independent review. Necessary
+disclosure, consent, temporal behavior and verification must remain enforced.
+
 Normal qualification re-executes every scenario and compares full execution
 evidence, while the native semantic judge reuses an assessment for identical
 contract, implementation, text, facts, observations and times. A changed

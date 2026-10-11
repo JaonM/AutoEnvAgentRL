@@ -112,6 +112,8 @@ class AuthorWorkbench:
                                'scope': 'authored_recipe_validation_not_business_acceptance'}
             from .input_diagnostics import input_diagnostics
             self.last_check['input_diagnostics'] = input_diagnostics(compiled)
+            from .process_diagnostics import process_diagnostics
+            self.last_check['process_diagnostics'] = process_diagnostics(compiled)
             if compilation is not None:
                 self.last_check['compilation'] = compilation
             return author_feedback(self.last_check)
