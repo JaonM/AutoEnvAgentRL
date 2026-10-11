@@ -35,7 +35,7 @@ def author_command(folder, *, initial=None, request_file=None, context_file=None
     if context_file is not None:
         server_args += ['--context', str(context_file)]
     settings = {'command': sys.executable, 'args': server_args, 'required': True,
-                'enabled_tools': ['read_contract', 'inspect_contract', 'read_check', 'read_context', 'address_repair', 'put_section',
+                'enabled_tools': ['read_contract', 'inspect_contract', 'read_check', 'read_context', 'put_section',
                                   'edit_contract', 'check_contract', 'submit_contract'],
                 'default_tools_approval_mode': 'approve', 'tool_timeout_sec': 60}
     for key, value in settings.items():
@@ -59,9 +59,6 @@ def checked_source(folder):
             require(submitted.exists() and receipt['result'].get('submitted') is True,
                     'business repair requires explicit submission')
             require(identity != context['repair']['initial_identity'], 'rejected draft cannot be resubmitted unchanged')
-            claims = receipt['result'].get('proposed_repairs', {})
-            require(all(claims.get(issue['id'], {}).get('source_identity') == identity
-                        for issue in context['repair']['issues']), 'unaddressed independent repair findings')
     return source, receipt
 
 
@@ -103,6 +100,9 @@ def incomplete_draft(folder, message):
             recovery['previous_source'] = bench.snapshot()
             digest = hashlib.sha256(canonical(draft).encode()).hexdigest()
             recovery['source_identity'] = digest
+            context_file = folder/'context.json'
+            if context_file.exists():
+                recovery['repair_state'] = json.loads(context_file.read_text())['repair']
             receipt_path = folder / 'workbench/latest_operation.json'
             if receipt_path.exists() and receipt_path.stat().st_size <= 4 * 1024 * 1024:
                 receipt = decode_json(receipt_path.read_text())
@@ -164,10 +164,12 @@ def generate_in_session(request, *, evidence_root, timeout=600, idle_timeout=240
               'draft to address optional diagnostics. Read detailed failed checks through read_check. '
               'In repair mode a local passing check does NOT resolve independent findings. Read each finding via '
               'read_context at its evidence_path and compare with /request. Fix its actual cause while preserving '
-              'requirements. After all edits, call address_repair for each finding with changed JSON Pointer paths '
-              'and an explanation, check_contract, then submit_contract. Proposed fixes undergo independent validation. '
+              'requirements. Read the indexed case outcome and error first, then narrow evidence paths as needed. '
+              'After edits, check_contract then submit_contract. No per-finding declarations are required. '
+              'A recovered repair draft may already contain the fix; compare against evidence and original requirements '
+              'and do not change a correct draft merely to produce another diff. Submission undergoes independent validation. '
               'If evidence conflicts with the original requirement, report inability to repair; do not invent business rules '
-              'or change requirements to satisfy a reviewer. Resume mode alone may submit an unchanged passing draft. '
+              'or change requirements to satisfy a reviewer. Repair mode rejects the original rejected version, not a corrected recovery draft. '
               'After submission return {"completed":true}. '
               'Checks validate authored recipes only, not independent business correctness. '
               'Do not call shell, file, web, delegation or other tools. Do not output the contract in '
@@ -209,7 +211,7 @@ def generate_in_session(request, *, evidence_root, timeout=600, idle_timeout=240
                 'native author attempted an out-of-scope tool')
         if item.get('type') == 'mcp_tool_call':
             require(item.get('server') == 'envfactory_author' and item.get('tool') in
-                    {'read_contract', 'inspect_contract', 'read_check', 'read_context', 'address_repair', 'put_section', 'edit_contract',
+                    {'read_contract', 'inspect_contract', 'read_check', 'read_context', 'put_section', 'edit_contract',
                      'check_contract', 'submit_contract'}, 'unexpected author MCP tool')
     if timed_out:
         message = 'author session deadline exceeded'

@@ -17,8 +17,6 @@ from env_factory_v2.contracts.expressions import canonical
 TOOLS = [
     {'name': 'read_context', 'description': 'Read immutable original request or independent failure evidence by JSON Pointer and character offset, at most 8192 characters per call.',
      'inputSchema': object_schema({'path': {'type': 'string'}, 'offset': {'type': 'integer'}})},
-    {'name': 'address_repair', 'description': 'Record a proposed fix for an indexed finding after editing. Paths must name changed contract values. This is not independent approval.',
-     'inputSchema': object_schema({'issue_id': {'type': 'string'}, 'paths': {'type': 'array', 'items': {'type': 'string'}}, 'explanation': {'type': 'string'}})},
     {'name': 'inspect_contract', 'description': 'Get section sizes, keys and current check status before selecting a narrow read path.',
      'inputSchema': object_schema({})},
     {'name': 'read_check', 'description': 'Read detailed current check evidence by JSON Pointer and character offset; use after the concise check summary.',

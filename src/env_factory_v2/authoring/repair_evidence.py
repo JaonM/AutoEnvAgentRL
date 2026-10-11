@@ -13,29 +13,52 @@ def identity(value):
 def repair_context(request, feedback, previous_source):
     feedback = copy.deepcopy(feedback or {})
     issues, seen = [], set()
+    # Only current report fields carry verdicts. Audit/recovery archives and
+    # execution payloads are data, not new repair obligations.
+    children = {'records', 'checks', 'requirement_review', 'reviews',
+                'obligation_reviews', 'communication_coverage', 'independent_review'}
     def visit(value, path):
         if isinstance(value, dict):
+            if value.get('passed') is True:
+                return
             finding = (value.get('consistent') is False or value.get('business_consistent') is False or
                        value.get('passed') is False and any(k in value for k in ('case', 'failure_evidence', 'kind')))
             if finding:
-                # Deduplicate the same finding nested in verification and audit.
                 key = identity(value)
                 if key not in seen:
                     seen.add(key)
                     case = value.get('case')
                     reason = value.get('reason') or value.get('error') or (case.get('reason') if isinstance(case, dict) else None) or 'Failed execution evidence'
-                    issues.append({'id': key, 'evidence_path': path, 'reason': str(reason)[:800]})
-            for k, child in value.items():
-                if k not in {'original_request', 'previous_source', 'source', 'contract', 'literal'}:
-                    visit(child, path + '/' + k.replace('~','~0').replace('/','~1'))
+                    issue = {'id': key, 'evidence_path': path, 'reason': str(reason)[:800]}
+                    if isinstance(case, dict):
+                        issue['case_id'] = case.get('id')
+                        issue['expect_success'] = case.get('expect_success')
+                    first = value.get('first')
+                    if isinstance(first, dict):
+                        issue['execution_error'] = str(first.get('error') or '')[:800]
+                        outcome = first.get('outcome', {})
+                        issue['observed_success'] = outcome.get('success') if isinstance(outcome, dict) else None
+                    issues.append(issue)
+            for k in sorted(children & value.keys()):
+                if k == 'independent_review' and 'independent_challenge' in feedback:
+                    continue  # The top-level current challenge is authoritative.
+                visit(value[k], path + '/' + k)
         elif isinstance(value, list):
-            for i, child in enumerate(value):visit(child, path + '/' + str(i))
+            for i, child in enumerate(value):
+                visit(child, path + '/' + str(i))
+    for name in ('verification', 'independent_challenge', 'recipe_preflight'):
+        if name in feedback:
+            visit(feedback[name], '/feedback/' + name)
+    # Also accept a standalone current report (used by direct author callers).
     visit(feedback, '/feedback')
     recovery = feedback.get('author_recovery', {})
     resume = bool(recovery) and feedback.get('failed_phase', 'generation') == 'generation'
     if not issues and feedback.get('error') and not resume:
         issues.append({'id': identity({'error': feedback['error'], 'phase': feedback.get('failed_phase')}),
                        'evidence_path': '/feedback', 'reason': str(feedback['error'])[:800]})
+    lineage = recovery.get('repair_state') if resume and recovery.get('source_identity') == identity(previous_source) else None
+    if lineage and lineage.get('mode') == 'repair':
+        return {'request': copy.deepcopy(request), 'feedback': feedback, 'repair': copy.deepcopy(lineage)}
     mode = 'repair' if previous_source is not None and issues else 'resume' if previous_source is not None else 'create'
     return {'request': copy.deepcopy(request), 'feedback': feedback,
             'repair': {'mode': mode, 'issues': issues, 'initial_identity': identity(previous_source),

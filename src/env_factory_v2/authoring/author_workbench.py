@@ -77,9 +77,13 @@ def decode_json(text):
 
 
 class AuthorWorkbench:
-    def __init__(self, *, source=None, max_operations=128, request=None, context=None):
+    def __init__(self, *, source=None, max_operations=128, max_reads=1024, request=None, context=None):
         require(type(max_operations) is int and 1 <= max_operations <= 512,
                 'invalid author operation budget')
+        require(type(max_reads) is int and 1 <= max_reads <= 4096, 'invalid author read budget')
+        self.max_reads = max_reads
+        self.read_operations = 0
+        self.write_operations = 0
         self.source = {}
         # Fresh production drafts have one authored representation. A supplied
         # flat draft is an explicit historical import, never an automatic fallback.
@@ -99,11 +103,14 @@ class AuthorWorkbench:
         self.recipe_cache = {}
         self.context = copy.deepcopy(context or {'request': self.request, 'feedback': {},
                                                 'repair': {'mode': 'create', 'issues': []}})
-        self.initial_source = self.snapshot()
-        self.repair_claims = {}
 
     def call(self, tool, arguments):
-        require(self.operations < self.max_operations, 'author operation budget exceeded')
+        if tool in {'read_context', 'read_contract', 'read_check', 'inspect_contract'}:
+            require(self.read_operations < self.max_reads, 'author read budget exceeded')
+            self.read_operations += 1
+        else:
+            require(self.write_operations < self.max_operations, 'author operation budget exceeded')
+            self.write_operations += 1
         self.operations += 1
         try:
             require(isinstance(arguments, dict), 'author arguments must be an object')
@@ -111,30 +118,6 @@ class AuthorWorkbench:
             identity = hashlib.sha256(canonical(self.source).encode()).hexdigest()
             if tool == 'read_context':
                 return read_draft(self.context, arguments)
-            if tool == 'address_repair':
-                require(set(arguments) == {'issue_id', 'paths', 'explanation'}, 'repair evidence fields required')
-                require(arguments['issue_id'] in {i['id'] for i in self.context['repair']['issues']}, 'unknown repair issue')
-                require(isinstance(arguments['explanation'], str) and 20 <= len(arguments['explanation']) <= 4000,
-                        'explain the proposed fix and its original requirement')
-                require(isinstance(arguments['paths'], list) and 1 <= len(arguments['paths']) <= 16,
-                        'repair requires changed source paths')
-                for path in arguments['paths']:
-                    require(isinstance(path, str) and path.startswith('/'), 'repair needs specific JSON Pointers')
-                    def at(source):
-                        try:
-                            first = read_draft(source, {'path': path, 'offset': 0})
-                            # Comparing the whole value via bounded slices avoids
-                            # treating a common first8192 chars as equality.
-                            text = first['json_fragment']
-                            while first['next_offset'] is not None:
-                                first = read_draft(source, {'path': path, 'offset': first['next_offset']})
-                                text += first['json_fragment']
-                            return text
-                        except ContractError:
-                            return None
-                    require(at(self.initial_source) != at(self.source), 'repair path has not changed')
-                self.repair_claims[arguments['issue_id']] = {**copy.deepcopy(arguments), 'source_identity': identity}
-                return {'passed': True, 'scope': 'proposed_fix_not_independently_verified', 'issue_id': arguments['issue_id']}
             if tool == 'inspect_contract':
                 require(not arguments, 'inspect takes no arguments')
                 return {'passed': True, 'sections': {key: {'type': type(value).__name__,
@@ -142,8 +125,8 @@ class AuthorWorkbench:
                     for key, value in self.source.items()},
                     'checked': self.checked_identity == identity and bool(self.last_check and self.last_check['passed']),
                     'repair': repair_index(self.context),
-                    'pending_issues': [i['id'] for i in self.context['repair']['issues']
-                                       if self.repair_claims.get(i['id'], {}).get('source_identity') != identity]}
+                    'budget': {'reads_used': self.read_operations, 'reads_limit': self.max_reads,
+                               'writes_used': self.write_operations, 'writes_limit': self.max_operations}}
             if tool == 'read_check':
                 require(self.last_check is not None, 'no current check')
                 return read_draft(self.last_check, arguments)
@@ -152,12 +135,10 @@ class AuthorWorkbench:
                 require(self.checked_identity == identity and self.last_check is not None
                         and self.last_check['passed'] is True, 'submit requires a successful check of the current draft')
                 if self.context['repair']['mode'] == 'repair':
-                    require(self.source != self.initial_source, 'rejected draft cannot be resubmitted unchanged')
-                    require(all(self.repair_claims.get(i['id'], {}).get('source_identity') == identity
-                                for i in self.context['repair']['issues']), 'unaddressed independent repair findings')
+                    require(identity != self.context['repair']['initial_identity'],
+                            'rejected draft cannot be resubmitted unchanged')
                 self.submitted = True
                 return {'passed': True, 'submitted': True,
-                        'proposed_repairs': copy.deepcopy(self.repair_claims),
                         'scope': 'authored_recipe_validation_not_business_acceptance'}
             if tool == 'read_contract':
                 return read_draft(self.source, arguments)

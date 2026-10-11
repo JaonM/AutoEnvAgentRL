@@ -113,8 +113,8 @@ def test_reads_reject_invalid_paths_offsets_and_extra_access(arguments):
     assert bench.snapshot() == original
 
 
-def test_reads_consume_operation_budget_without_invalidating_checks():
-    bench = AuthorWorkbench(source=direct(), max_operations=2)
+def test_reads_consume_separate_budget_without_invalidating_checks():
+    bench = AuthorWorkbench(source=direct(), max_operations=2, max_reads=1)
     assert bench.call('check_contract', {})['passed']
     previous = bench.last_check
     assert bench.call('read_contract', {'path': '', 'offset': 0})['passed']

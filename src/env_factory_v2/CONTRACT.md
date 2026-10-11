@@ -671,13 +671,17 @@ Use collection operations for large write sets instead of enumerating each row.
 
 Author sessions distinguish new creation, interrupted generation resumption, and
 repair after independent rejection. A locally passing draft is sufficient only
-for submission to independent validation. In repair mode, unchanged rejected
-drafts cannot be submitted; proposed fixes cite changed JSON Pointer values and
-are bound to the current source identity. Subsequent edits invalidate those
-claims. Neither claims nor authored recipe checks establish business correctness.
+for submission to independent validation. Repair sessions retain the original
+rejected source identity across interruptions; recovered corrected drafts do not
+need another edit to submit. There is no mandatory per-finding fix declaration:
+neither a changed hash nor a self-authored check proves business correctness.
 
 Full original requirements and failure evidence are archived in the session's
-`context.json`. `read_context` exposes bounded JSON fragments, not filesystem
-access. Initial prompts carry a bounded finding index; additional findings and
-full records remain available by JSON Pointer. Reviewer conflicts with original
-requirements must not be resolved by inventing business requirements.
+`context.json`. Only current report verdicts enter the repair index; historical
+review/audit payloads remain readable evidence. `read_context` exposes bounded
+JSON fragments, not filesystem access. Initial prompts carry a bounded finding
+index with case outcomes and errors; additional findings and full records remain
+available by JSON Pointer. Reads have a separate bounded budget (1024 calls by
+default) from edits/checks/submission (128 calls). Both remain subject to the
+session deadline. Reviewer conflicts must not be resolved by inventing business
+requirements.
