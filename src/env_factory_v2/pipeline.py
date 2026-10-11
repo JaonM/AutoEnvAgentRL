@@ -99,6 +99,7 @@ def build(request, *, agent, output, source=None, repairs=1, docker=True, base_i
                 raise ContractError('reference trajectory/answer recipe invalid before model review')
             phase('tool_interference')
             phase_start = time.monotonic()
+            preflight_identity = compiled['identity']
             from .tool_interference import augment
             candidate, interference = augment(candidate, count=tool_interference)
             save(folder / 'tool_interference.json', interference)
@@ -109,7 +110,10 @@ def build(request, *, agent, output, source=None, repairs=1, docker=True, base_i
                 candidate_validator(candidate)
             attempt['contract_identity'] = compiled['identity']
             require(compiled['identity'] not in rejected, 'unchanged rejected contract; no repeated model calls')
-            augmented_recipes = preflight_recipes(compiled)
+            # Reuse only within this frozen build when augmentation leaves the
+            # compiled contract unchanged. Changed tools require fresh execution.
+            augmented_recipes = (recipes if compiled['identity'] == preflight_identity
+                                 else preflight_recipes(compiled))
             save(folder / 'recipe_preflight.json', augmented_recipes)
             require(augmented_recipes['passed'], 'tool interference changed reference trajectory validity')
             attempt['phases']['tool_interference'] = time.monotonic() - phase_start

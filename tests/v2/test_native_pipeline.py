@@ -230,6 +230,27 @@ def test_native_transport_failure_never_triggers_author_repair(tmp_path):
     assert result['attempts'][0]['phases']['generation'] >= 0
 
 
+@pytest.mark.parametrize('changed', [False, True])
+def test_preflight_reuse_requires_unchanged_contract(tmp_path, changed):
+    from env_factory_v2.verification import preflight_recipes
+    source = direct()
+    augmented = copy.deepcopy(source)
+    if changed:
+        augmented['scenarios'][0]['answer']['temperature'] = {'literal': 19}
+    agent = native(tmp_path / 'native')
+    agent.ask = Mock(return_value=(challenge_value(source), {'unit_test': True}))
+    with patch('env_factory_v2.tool_interference.augment', return_value=(augmented, {})), \
+         patch('env_factory_v2.pipeline.preflight_recipes', wraps=preflight_recipes) as preflight:
+        result = build({'goal': source['task']}, agent=agent, source=source,
+                       output=tmp_path / 'run', repairs=0, docker=False)
+    assert preflight.call_count == (2 if changed else 1)
+    if changed:
+        assert result['attempts'][0]['failed_phase'] == 'tool_interference'
+        agent.ask.assert_not_called()
+    else:
+        assert result['gates']['joint_execution_and_counterexamples'] is True
+
+
 def test_broken_negative_recipe_is_rejected_before_any_review_model_call(tmp_path):
     source = direct()
     source['scenarios'][1]['answer']['temperature'] = {'ref': 'evidence.never_executed.value'}
