@@ -5,6 +5,7 @@ from env_factory_v2.expressions import canonical
 from env_factory_v2.code_agent import object_schema
 from env_factory_v2.contract import require
 from v2_natural_semantics import value_shape
+from v2_answer_members import member_paths, validate_members
 
 
 def public_scope_identity(user_request, business):
@@ -14,7 +15,9 @@ def public_scope_identity(user_request, business):
 
 def validate_public_scope(scope, *, user_request, business):
     """Validate provenance and allowed data, not the semantic correctness of a model interpretation."""
-    require(set(scope) == {'source_identity', 'roles', 'process_requirements'}, 'invalid public output scope fields')
+    require(set(scope) in ({'source_identity', 'roles', 'process_requirements'},
+                           {'source_identity', 'roles', 'process_requirements', 'member_catalog', 'member_reviews'}),
+            'invalid public output scope fields')
     require(scope['source_identity'] == public_scope_identity(user_request, business),
             'output scope belongs to different original sources')
     public = {'user_request': user_request, 'business_policy': business['policy']}
@@ -31,6 +34,13 @@ def validate_public_scope(scope, *, user_request, business):
         require(set(c) == {'source', 'text'} and c['source'] in public
                 and isinstance(c['text'], str) and c['text'].strip()
                 and c['text'] in public[c['source']], 'output scope citation must match original text')
+    if 'member_reviews' in scope:
+        def citation_check(c):
+            require(set(c) == {'source', 'text'} and c['source'] in public
+                    and isinstance(c['text'], str) and c['text'].strip()
+                    and c['text'] in public[c['source']], 'member citation must match original text')
+        validate_members(scope['member_catalog'], scope['member_reviews'], scope['roles'], citation_check)
+        require(all(r['kind'] != 'unsupported' for r in scope['member_reviews']), 'unresolved member scope')
     return copy.deepcopy(scope)
 
 
@@ -41,6 +51,9 @@ def generation_output_scope(spec, *, user_request, business):
     scope = validate_public_scope(spec['generation_output_scope'], user_request=user_request, business=business)
     require({r['role'] for r in scope['roles'] if r['kind'] == 'answer'} ==
             {r['role'] for r in spec['answer_obligations']}, 'generation and acceptance output scopes differ')
+    if 'answer_role_shapes' in spec and 'member_catalog' in scope:
+        require(scope['member_catalog'] == member_paths(validate_role_shapes(spec['answer_role_shapes'])),
+                'member scope differs from declared answer structure')
     return scope
 
 
@@ -93,6 +106,17 @@ def review_answer_obligations(agent, *, user_request, business, truth=None, role
     item = object_schema({'role': {'type': 'string', **({'enum': roles} if roles else {})},
         'kind': {'type': 'string', 'enum': ['answer', 'state_only', 'optional', 'unsupported']},
         'reason': {'type': 'string'}, 'citations': {'type': 'array', 'items': citation}})
+    members = member_paths(role_shapes)
+    response_fields = {'roles': {'type': 'array', 'items': item},
+                       'process_requirements': {'type': 'array', 'items': citation},
+                       'uncovered_answers': {'type': 'array', 'items': citation}}
+    if members:
+        response_fields['member_reviews'] = {'type': 'array', 'items': object_schema({
+            # Encoded JSON paths contain quotes, unsupported in strict-output enum literals.
+            # Exact catalog membership and completeness are enforced by validate_members.
+            'path': {'type': 'string'},
+            'kind': {'type': 'string', 'enum': ['answer', 'state_only', 'optional', 'unsupported']},
+            'reason': {'type': 'string'}, 'citations': {'type': 'array', 'items': citation}})}
     value, provenance = agent.ask(
         'Before any sandbox generation, independently classify EVERY proposed semantic role against '
         'the original request and business policy. An answer role requires communicating its value; '
@@ -105,13 +129,17 @@ def review_answer_obligations(agent, *, user_request, business, truth=None, role
         'process_requirements, not missing final answer fields; separate execution/communication verifiers '
         'enforce those requirements. Never turn required user interaction into an extra final answer field. '
         'Use unsupported for an unresolved role; never guess a scope to obtain acceptance. '
+        'When nested_member_paths are supplied, classify EVERY listed member separately in member_reviews. '
+        'Paths encode JSON arrays: strings name properties and null means every array element. '
+        'A required record does not make all its members mandatory answers. Preserve identifiers needed '
+        'to associate requested values with objects, but distinguish final answers from state and process '
+        'facts for each member. If any member is required, its parent role must be answer. '
+        'Do not remove real execution/state obligations when classifying a member as state_only. '
         'No candidate contract, expected values or run outcomes are available. No tools.',
         {'original_sources': public,
          'proposed_role_shapes': role_shapes,
-         'state_tables': state_tables},
-        object_schema({'roles': {'type': 'array', 'items': item},
-                       'process_requirements': {'type': 'array', 'items': citation},
-                       'uncovered_answers': {'type': 'array', 'items': citation}}))
+         'state_tables': state_tables, **({'nested_member_paths': members} if members else {})},
+        object_schema(response_fields))
     require(isinstance(value['roles'], list) and len(value['roles']) == len(roles)
             and {r['role'] for r in value['roles']} == set(roles), 'answer scope must review each role exactly once')
     def validate_citation(c):
@@ -128,11 +156,15 @@ def review_answer_obligations(agent, *, user_request, business, truth=None, role
             obligations.append({'role': role['role'], **role['citations'][0]})
     for c in value['uncovered_answers'] + value['process_requirements']:
         validate_citation(c)
-    passed = not value['uncovered_answers'] and all(r['kind'] != 'unsupported' for r in value['roles'])
+    if members:
+        validate_members(members, value['member_reviews'], value['roles'], validate_citation)
+    passed = (not value['uncovered_answers']
+              and all(r['kind'] != 'unsupported' for r in value['roles'] + value.get('member_reviews', [])))
     scope = None
     if passed:
         scope = validate_public_scope({'source_identity': public_scope_identity(user_request, business),
-            'roles': value['roles'], 'process_requirements': value['process_requirements']},
+            'roles': value['roles'], 'process_requirements': value['process_requirements'],
+            **({'member_catalog': members, 'member_reviews': value['member_reviews']} if members else {})},
             user_request=user_request, business=business)
     return {'passed': passed, 'answer_obligations': obligations, 'generation_output_scope': scope,
             'review': value, 'provenance': provenance,
