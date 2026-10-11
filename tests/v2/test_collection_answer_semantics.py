@@ -96,3 +96,20 @@ def test_correct_branch_keeps_real_answer_and_reversible_layouts_still_prepare()
              'packing': 'single', 'names': 'native', 'time_unit': 'native'}
     prepared, report = prepare_branch_answer({'value': 1}, {'answer': {'x': 2}}, [entry], {})
     assert prepared == {'value': 2} and report['status'] == 'ready'
+
+
+def test_bijective_columns_can_prepare_changed_record_population_without_guessing():
+    entry = entries()[1]
+    actual = {'pending': [{'key': 'a', 'details': {'number': 1}},
+                          {'key': 'b', 'details': {'number': 3}}], 'unrelated': 'keep'}
+    truth = {'pending_counts': [{'identity': 'b', 'count': 3}]}
+    changed = fill_projections(actual, [entry], truth)
+    assert changed == {'pending': [{'key': 'b', 'details': {'number': 3}}], 'unrelated': 'keep'}
+    assert project(changed, entry) == truth['pending_counts']
+    assert len(actual['pending']) == 2
+    assert fill_projections(actual, [entry], {'pending_counts': []})['pending'] == []
+
+
+def test_partial_columns_cannot_drop_unselected_fields_during_inverse():
+    with pytest.raises(ContractError, match='unselected record fields'):
+        fill_projections(answer(), [entries()[1]], {'pending_counts': []})

@@ -300,9 +300,43 @@ def fill_projections(answer, entries, truth, *, name_aliases=None, set_membershi
         if e.get('exclude_selectors') or e.get('columns'):
             from env_factory_v2.expressions import canonical
             observed = project(result, e)
-            require(isinstance(value, list) and canonical(sorted(observed, key=canonical))
-                    == canonical(sorted(value, key=canonical)),
-                    'derived collection differs from independent truth; inverse is ambiguous')
+            require(isinstance(value, list), 'collection truth must be a list')
+            if canonical(sorted(observed, key=canonical)) != canonical(sorted(value, key=canonical)):
+                require(e.get('columns') and not e.get('exclude_selectors') and len(e['selectors']) == 1,
+                        'derived collection differs from independent truth; inverse is ambiguous')
+                selector = e['selectors'][0]
+                segments = path_segments(selector['path'])
+                require('*' not in segments, 'inverse columns require one concrete record array')
+                current = select(result[selector['field']], segments)
+                require(isinstance(current, list), 'inverse columns require an actual record array')
+                def invert(rows):
+                    converted = []
+                    for row in rows:
+                        require(isinstance(row, dict) and set(row) == {c['name'] for c in e['columns']},
+                                'inverse columns require complete canonical records')
+                        restored = {}
+                        occupied = set()
+                        for column in e['columns']:
+                            path = path_segments(column['path'])
+                            require(path and all(part.isidentifier() for part in path),
+                                    'inverse column paths must be object properties')
+                            location = tuple(path)
+                            require(all(location[:len(old)] != old and old[:len(location)] != location
+                                        for old in occupied), 'inverse column paths overlap')
+                            occupied.add(location)
+                            target = restored
+                            for part in path[:-1]:
+                                target = target.setdefault(part, {})
+                            target[path[-1]] = copy.deepcopy(row[column['name']])
+                        converted.append(restored)
+                    return converted
+                # Round-trip existing records proves that no unselected values
+                # would be invented, dropped or silently assigned to another row.
+                require(canonical(invert(observed)) == canonical(current),
+                        'inverse columns would lose unselected record fields')
+                replacement = invert(value)
+                result[selector['field']] = replace(result[selector['field']], segments, replacement)
+                require(canonical(project(result, e)) == canonical(value), 'inverse columns failed round trip')
             # Preserve an independently correct real answer. Do not manufacture
             # records or choose one of several possible inverse representations.
             continue
