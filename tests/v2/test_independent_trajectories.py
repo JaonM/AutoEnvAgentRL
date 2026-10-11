@@ -62,6 +62,8 @@ def test_independent_steps_do_not_inherit_expected_runtime_error():
     {}, [{'kind': 'call', 'id': 'unknown', 'tool': 'invented', 'arguments': {}}],
     [{'kind': 'user', 'stage': 'invented', 'question': 'Invented?'}],
     [{'kind': 'shell', 'command': 'anything'}],
+    [{'kind': 'wait', 'seconds': 86401}],
+    [{'kind': 'wait', 'seconds': True}],
 ])
 def test_independent_steps_must_use_existing_grammar_and_interface(steps):
     compiled, case, scenarios = setup_case()

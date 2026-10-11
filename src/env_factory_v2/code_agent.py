@@ -243,6 +243,8 @@ class NativeCodeAgent:
             'Keep tables, rules, operations and time in the environment; task goals cannot override them. '
             'Use derived reports for complete unordered query record collections so eligibility and '
             'field types come from the environment, not a duplicate reward implementation. Preserve '
+            'the requested output scope: tools may expose additional fields without making them '
+            'mandatory answers. Include only justified report columns and reward-bearing fields. '
             'natural communication as task messages referencing shared environment communications; '
             'do not encode freely worded explanations as exact expected sentences. Ground conditional '
             'communication applicability in actual business requirements, covering both branches. '

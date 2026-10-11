@@ -37,6 +37,8 @@ authorization, observation and negative-case checks remain in force.
 
 Reports currently describe unordered complete collections, not ranked subsets or
 transaction completion. `answers` remains available for existing contracts;
+report columns must match requested output scope. A tool can expose extra fields
+without requiring the agent to repeat them in its answer or earn reward for them.
 Transaction goals may use the declarative plans described below. New generation requests use an envelope with exactly `environment`
 and `task`; both JSON transports and the author workbench support this envelope.
 The build pipeline stores `definition.json` and `compilation.json` before tool
@@ -111,6 +113,16 @@ component is satisfied without a model call; evidence records the inactive IDs.
 All structured answer, process, safety, and world-outcome checks still apply.
 The independent verifier must check that conditions faithfully implement the
 original requirement and cover both applicable and inapplicable branches.
+
+For contracts carrying cited demand requirements, independent review is
+bidirectional. `requirement_reviews` trace every original clause to implementation
+and executed cases. `obligation_reviews` trace every cataloged mandatory answer
+(including nested properties), communication criterion, state goal and explicit
+success constraint back to original clauses and cases. Unsupported obligations
+are rejected even when forward coverage and execution pass. Necessary derived
+outputs and decision evidence can be justified by business meaning; exact word
+matches are not required. Table membership alone is not a justification.
+This uses the existing independent review call, not an extra scoring stage.
 
 ## Independent execution challenges
 

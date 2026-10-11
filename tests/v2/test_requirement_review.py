@@ -7,7 +7,7 @@ from env_factory_v2.challenge import challenge
 from env_factory_v2.contract import ContractError, compile_contract
 from env_factory_v2.demand import layered_demand
 from env_factory_v2.examples import direct
-from env_factory_v2.requirement_review import obligations, validate_review, implementation_at
+from env_factory_v2.requirement_review import obligations, validate_review, implementation_at, mandatory_obligations
 
 
 def fixture():
@@ -24,6 +24,10 @@ def fixture():
             'reason': 'Expected temperature is the publicly declared value.',
             'implementation_paths': ['/answers/0/expected'], 'case_ids': ['yes', 'no']}
             for r in requirements]}
+    review['obligation_reviews'] = [{'path': item['path'], 'consistent': True,
+        'reason': 'The user explicitly requests this temperature field.',
+        'requirement_ids': [requirements[0]['id']], 'case_ids': ['yes', 'no']}
+        for item in mandatory_obligations(compiled['source'])]
     return compiled, requirements, review
 
 
@@ -70,7 +74,7 @@ def test_passed_cases_cannot_override_failed_clause_interpretation():
     assert all(r['passed'] for r in result['records'])
 
 
-def test_case_label_audit_cannot_override_failed_requirement_review():
+def test_failed_requirement_review_does_not_trigger_useless_case_label_audit():
     compiled, _, review = fixture()
     review['business_consistent'] = False
     review['requirement_reviews'][0]['consistent'] = False
@@ -80,8 +84,9 @@ def test_case_label_audit_cannot_override_failed_requirement_review():
     agent = Mock()
     agent.ask.side_effect = [(review, {}), (audit, {})]
     result = challenge(compiled, {}, agent)
-    assert result['business_consistent']
-    assert 'review_audit' in result
+    assert not result['business_consistent']
+    assert 'review_audit' not in result
+    assert agent.ask.call_count == 1
     assert not result['passed']
     assert result['status'] == 'inconclusive'
 
@@ -108,3 +113,48 @@ def test_scope_classification_preserves_case_gate_and_cannot_exclude_user_reques
     review['requirement_reviews'][0]['applicability'] = 'outside_request'
     with pytest.raises(ContractError, match='user request obligations cannot be excluded'):
         validate_review(compiled, requirements, review)
+
+
+@pytest.mark.parametrize('defect', ['omitted', 'unknown_path', 'uncited', 'unknown_requirement', 'unknown_case'])
+def test_reverse_review_cannot_claim_unsupported_coverage(defect):
+    compiled, requirements, review = fixture()
+    item = review['obligation_reviews'][0]
+    if defect == 'omitted':
+        review['obligation_reviews'] = []
+    elif defect == 'unknown_path':
+        item['path'] = '/private/facts'
+    elif defect == 'uncited':
+        item['requirement_ids'] = []
+    elif defect == 'unknown_requirement':
+        item['requirement_ids'] = ['invented']
+    else:
+        item['case_ids'] = ['invented']
+    with pytest.raises(ContractError):
+        validate_review(compiled, requirements, review)
+
+
+def test_unsupported_output_rejection_survives_passing_forward_review_and_cases():
+    compiled, requirements, review = fixture()
+    item = review['obligation_reviews'][0]
+    item.update(consistent=False, requirement_ids=[], reason='Unit test: unsupported mandatory output.')
+    agent = Mock()
+    agent.ask.return_value = (review, {})
+    result = challenge(compiled, {}, agent)
+    assert all(record['passed'] for record in result['records'])
+    assert all(item['consistent'] for item in result['requirement_review']['reviews'])
+    assert not result['passed']
+    assert not result['requirement_review']['passed']
+    assert agent.ask.call_count == 1
+
+
+def test_reverse_catalog_includes_nested_output_and_observation_columns():
+    source = direct()
+    source['answers'][0]['schema'] = {'type': 'array', 'items': {'type': 'object',
+        'properties': {'requested': {'type': 'number'}, 'unasked/metadata': {'type': 'string'}}}}
+    source['success'] = [{'id': 'done', 'public': 'Finish', 'when': {'literal': True},
+        'required_tools': ['read'], 'required_stages': [],
+        'required_observations': [{'tools': ['read'], 'columns': ['requested', 'unasked']}]}]
+    paths = {item['path'] for item in mandatory_obligations(source)}
+    assert '/answers/0/schema/items/properties/unasked~1metadata' in paths
+    assert '/success/0/required_observations/0/columns/1' in paths
+    assert '/success/0/required_tools/0' in paths

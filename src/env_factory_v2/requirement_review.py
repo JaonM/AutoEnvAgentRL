@@ -9,6 +9,46 @@ def obligations(compiled):
     return cited_requirements(demand['agent_context']) if demand else []
 
 
+def mandatory_obligations(source):
+    """Reverse-review catalog of authored outputs and enforced success conditions."""
+    result = []
+    def add(path, kind, value):
+        result.append({'path': path, 'kind': kind, 'definition': value})
+    def fields(schema, path):
+        if schema.get('type') == 'array':
+            fields(schema['items'], path + '/items')
+        elif schema.get('type') == 'object':
+            for key, child in schema['properties'].items():
+                escaped = key.replace('~', '~0').replace('/', '~1')
+                child_path = path + '/properties/' + escaped
+                add(child_path, 'answer_property', child)
+                fields(child, child_path)
+    for index, answer in enumerate(source['answers']):
+        path = f'/answers/{index}'
+        add(path, 'answer_field', {key: answer[key] for key in ('id', 'meaning', 'weight', 'comparison')})
+        fields(answer['schema'], path + '/schema')
+    for index, explanation in enumerate(source.get('explanations', [])):
+        for position, criterion in enumerate(explanation['criteria']):
+            add(f'/explanations/{index}/criteria/{position}', 'communication', criterion)
+    for root in ('goals', 'invariants'):
+        for index, item in enumerate(source.get(root, [])):
+            add(f'/{root}/{index}', 'world_constraint', item)
+    for index, branch in enumerate(source.get('success', [])):
+        prefix = f'/success/{index}'
+        add(prefix + '/when', 'completion_branch', {'public': branch['public'], 'when': branch['when']})
+        for key in ('required_tools', 'required_stages', 'required_platform_observations'):
+            for position, item in enumerate(branch.get(key, [])):
+                add(f'{prefix}/{key}/{position}', key, item)
+        for position, observation in enumerate(branch.get('required_observations', [])):
+            for column_index, column in enumerate(observation['columns']):
+                add(f'{prefix}/required_observations/{position}/columns/{column_index}',
+                    'required_observation_column', {'column': column, 'tools': observation['tools']})
+        for key in ('min_business_calls', 'max_business_calls'):
+            if key in branch:
+                add(prefix + '/' + key, 'call_constraint', branch[key])
+    return result
+
+
 def implementation_paths(source):
     """A finite catalog prevents response paths from referring to payload wrappers."""
     paths = []
@@ -50,7 +90,12 @@ def review_schema(base_schema, requirements, source):
             'implementation_paths': {'type': 'array', 'items': {
                 'type': 'string', 'enum': implementation_paths(source)}},
             'case_ids': {'type': 'array', 'items': {'type': 'string'}},
-        })}})
+        })}, 'obligation_reviews': {'type': 'array', 'items': object_schema({
+            'path': {'type': 'string', 'enum': [item['path'] for item in mandatory_obligations(source)]},
+            'consistent': {'type': 'boolean'}, 'reason': {'type': 'string'},
+            'requirement_ids': {'type': 'array', 'items': {'type': 'string',
+                'enum': [r['id'] for r in requirements]}},
+            'case_ids': {'type': 'array', 'items': {'type': 'string'}}})}})
 
 
 def implementation_at(source, path):
@@ -94,6 +139,23 @@ def validate_review(compiled, requirements, value):
                 'requirement must cite actual independent executable cases')
         for path in paths:
             implementation_at(compiled['source'], path)
+    reverse = value.get('obligation_reviews', [])
+    required_paths = {item['path'] for item in mandatory_obligations(compiled['source'])}
+    require(len(reverse) == len(required_paths), 'reverse review must cover every mandatory obligation')
+    reviewed_paths = set()
+    for item in reverse:
+        path = item['path']
+        require(path in required_paths and path not in reviewed_paths, 'invalid or duplicate obligation review')
+        reviewed_paths.add(path)
+        require(type(item['consistent']) is bool and isinstance(item['reason'], str)
+                and item['reason'].strip(), 'obligation review verdict and reason required')
+        references, cited_cases = item['requirement_ids'], item['case_ids']
+        require(isinstance(references, list) and len(references) == len(set(references))
+                and set(references) <= expected, 'obligation cites unknown or duplicate requirement')
+        require(not item['consistent'] or references, 'consistent obligation requires original requirement evidence')
+        require(cited_cases and len(cited_cases) == len(set(cited_cases)) and set(cited_cases) <= cases,
+                'obligation must cite actual independent executable cases')
     return {'scope': 'independent_model_interpretation_with_validated_text_and_execution_references',
             'requirements': requirements, 'reviews': reviews,
-            'passed': all(item['consistent'] for item in reviews)}
+            'obligation_catalog': mandatory_obligations(compiled['source']), 'obligation_reviews': reverse,
+            'passed': all(item['consistent'] for item in reviews + reverse)}

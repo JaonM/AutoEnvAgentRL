@@ -62,15 +62,16 @@ def challenge(compiled, original_request, agent):
     from .contract import ContractError
     try:
         report = _challenge(compiled, original_request, agent)
-        all_passed = all(record['passed'] for record in report['records'])
-        if report['business_consistent'] != all_passed:
-            report = _audit(compiled, original_request, agent, report)
         from .communication_coverage import communication_coverage
         report['communication_coverage'] = communication_coverage(compiled, report['records'])
         if report.get('requirement_review', {}).get('passed') is False:
             return {**report, 'passed': False, 'status': 'inconclusive',
                     'instruction': 'Resolve the independently identified public-clause discrepancies. '
                     'Case relabeling cannot override a failed requirement interpretation review.'}
+        all_passed = all(record['passed'] for record in report['records'])
+        if report['business_consistent'] != all_passed:
+            report = _audit(compiled, original_request, agent, report)
+            report['communication_coverage'] = communication_coverage(compiled, report['records'])
         if not report['business_consistent'] and all(record['passed'] for record in report['records']):
             # A structurally unsolvable answer or absent user branch need not be
             # expressible by initial-record mutations. Preserve uncertainty and
@@ -89,7 +90,7 @@ def _challenge(compiled, original_request, agent):
     import json
     from .fixtures import review_contract
     review_source, fixture_evidence = review_contract(compiled['source'])
-    from .requirement_review import obligations, review_schema, validate_review, implementation_paths
+    from .requirement_review import obligations, review_schema, validate_review, implementation_paths, mandatory_obligations
     requirements = obligations(compiled)
     value, provenance = agent.ask(
         'Independently compare the ORIGINAL request with this proposed business contract. compiled_public '
@@ -121,6 +122,8 @@ def _challenge(compiled, original_request, agent):
         'to exercise missing branches instead of accepting the author scenario catalog as complete. '
         'An empty array explicitly tests no actions. Independent steps do not inherit expect_error: '
         'they must complete normally, so a runtime error cannot count as a successful negative case. '
+        'Each wait step accepts 0..86400 seconds; longer elapsed durations require multiple valid '
+        'wait steps within the action budget, never an out-of-range wait argument. '
         'For conditional communication criteria inspect when against the ORIGINAL obligation and '
         'exercise applicable and inapplicable branches when reachable within that obligation. '
         'Do not demand an unreachable branch or invent an obligation to recite unrelated business rules. '
@@ -135,6 +138,17 @@ def _challenge(compiled, original_request, agent):
         'For generated tables the exact generator plan is authoritative; previews are concrete examples, not '
         'the whole table. Derive unshown values from the documented plan, never invent hidden rows. '
         'When public_requirements is nonempty, review EVERY listed clause exactly once in requirement_reviews. '
+        'Also review EVERY mandatory_obligation_catalog entry exactly once in obligation_reviews. '
+        'For each mandatory output field, nested property, communication or success constraint, identify '
+        'the original requirement_ids that justify requiring it from this user, and actual case_ids that '
+        'exercise it. Existence in a business table or tool response does not justify mandatory output '
+        'or reward weight. Distinguish necessary evidence to decide the requested result from unrelated '
+        'record columns; returning a full record must not make every column an extra task obligation. '
+        'Derived outputs and necessary decision evidence may be justified implicitly by the original '
+        'request: exact keyword matches are not required. If an obligation is unsupported, mark '
+        'consistent=false, explain the added burden, and allow requirement_ids=[]; do not invent a '
+        'citation or remove genuine safety and transaction requirements. A citation is not proof: '
+        'assess the actual business meaning in both directions. '
         'Declare applicability as applicable, conditional, or outside_request. Determine scope from the '
         'original natural request and the clause conditions, never merely from missing generated tools '
         'or rules. A business dossier can describe other operations that this user did not request. '
@@ -156,6 +170,7 @@ def _challenge(compiled, original_request, agent):
         {'original_request': original_request, 'contract': review_source,
          'compiled_public': compiled['public'], 'fixture_evidence': fixture_evidence,
          'public_requirements': requirements,
+         'mandatory_obligation_catalog': mandatory_obligations(compiled['source']) if requirements else [],
          'implementation_citation_catalog': implementation_paths(compiled['source']) if requirements else [],
          'grammar': (__import__('pathlib').Path(__file__).parent / 'CONTRACT.md').read_text()},
         review_schema(CHALLENGE_SCHEMA, requirements, compiled['source']))
@@ -237,6 +252,10 @@ def _case_scenario(compiled, case, scenarios):
             require(isinstance(step, dict), 'independent step must be an object')
             if step.get('kind') in {'call', 'traverse'}:
                 require(step.get('tool') in tool_ids, 'unknown independent tool')
+            if step.get('kind') == 'wait':
+                seconds = step.get('seconds')
+                require(type(seconds) in {int, float} and 0 <= seconds <= 86400,
+                        'invalid independent wait; each wait must be 0..86400 seconds')
         scenario['steps'] = steps
         scenario.pop('expect_error', None)
         # Validate the new trajectory with the production grammar, without
