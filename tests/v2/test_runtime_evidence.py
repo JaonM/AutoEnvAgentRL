@@ -10,7 +10,7 @@ from v2_runtime_evidence import (observed_time, authorization_decisions, state_b
 from v2_runtime_evidence import target_authorizations
 from measure_v2_natural import execute_reference
 from env_factory_v2.examples import transaction
-from env_factory_v2.contract import compile_contract
+from env_factory_v2.contracts.contract import compile_contract
 
 
 def test_time_is_bound_to_actual_call_and_survives_later_wait():
@@ -51,7 +51,7 @@ def test_historical_state_uses_actual_commit_deltas_without_reexecuting_rules():
 
 
 def test_virtual_event_history_and_failed_write_do_not_distort_snapshot():
-    from env_factory_v2.expressions import ContractError
+    from env_factory_v2.contracts.expressions import ContractError
     source = transaction()
     source['events'] = [{'at_seconds': 8, 'table': 'accounts', 'key': 'A', 'set': {'balance': 77}}]
     compiled = compile_contract(source)
@@ -85,7 +85,7 @@ def test_authorized_context_binds_exact_actual_proposal_and_historical_state():
 
 
 def approved_world():
-    from env_factory_v2.runtime import Sandbox
+    from env_factory_v2.execution.runtime import Sandbox
     world = Sandbox(transaction())
     world.call('accounts', {}, call_id='read')
     arguments = {'from_id': {'$result': 'read', 'path': 'items.0.id'},
@@ -95,7 +95,7 @@ def approved_world():
 
 
 def test_consumed_approval_cannot_be_attached_to_later_attempt():
-    from env_factory_v2.expressions import ContractError
+    from env_factory_v2.contracts.expressions import ContractError
     world, arguments, decision = approved_world()
     world.call('transfer', arguments, call_id='first')
     with pytest.raises(ContractError):
@@ -106,7 +106,7 @@ def test_consumed_approval_cannot_be_attached_to_later_attempt():
 
 
 def test_revised_proposal_supersedes_old_approval_even_when_old_arguments_return():
-    from env_factory_v2.expressions import ContractError
+    from env_factory_v2.contracts.expressions import ContractError
     world, arguments, decision = approved_world()
     world.interact('approve', question='Different direction?', proposal={
         'tool': 'transfer', 'arguments': {**arguments, 'from_id': 'B', 'to_id': 'A'}})
@@ -117,7 +117,7 @@ def test_revised_proposal_supersedes_old_approval_even_when_old_arguments_return
 
 
 def test_schema_error_before_authorization_does_not_consume_valid_approval():
-    from env_factory_v2.expressions import ContractError
+    from env_factory_v2.contracts.expressions import ContractError
     world, arguments, decision = approved_world()
     with pytest.raises(ContractError):
         world.call('transfer', {**arguments, 'amount': 'invalid'}, call_id='invalid_input')
@@ -126,8 +126,8 @@ def test_schema_error_before_authorization_does_not_consume_valid_approval():
 
 
 def test_changed_disclosed_fact_invalidates_approval_context():
-    from env_factory_v2.runtime import Sandbox
-    from env_factory_v2.expressions import ContractError
+    from env_factory_v2.execution.runtime import Sandbox
+    from env_factory_v2.contracts.expressions import ContractError
     source = transaction()
     source['user']['facts'].update(original='first', corrected='second')
     source['user']['stages'] += [
@@ -150,7 +150,7 @@ def test_changed_disclosed_fact_invalidates_approval_context():
 
 def test_real_query_clock_flows_to_independent_quote_truth_and_preserves_other_tables():
     from env_factory_v2.examples import obj, query
-    from env_factory_v2.runtime import Sandbox
+    from env_factory_v2.execution.runtime import Sandbox
     from v2_business_acceptance import runtime_business_truth, business_truth
     source = transaction()
     rows = [dict(id='Q1', starts_at=0, ends_at=1, pack=6, minimum_boxes=2)]
@@ -176,7 +176,7 @@ def test_real_query_clock_flows_to_independent_quote_truth_and_preserves_other_t
 
 
 def test_target_times_use_actual_success_and_failure_attempts():
-    from env_factory_v2.expressions import ContractError
+    from env_factory_v2.contracts.expressions import ContractError
     compiled = compile_contract(transaction())
     scenario = next(s for s in compiled['source']['scenarios'] if s['expect_success'])
     world = execute_reference(compiled, scenario)
@@ -207,7 +207,7 @@ def test_refusal_is_actual_target_evidence_without_requiring_a_write_attempt():
 def test_temporary_grant_runtime_adapter_handles_one_write_and_one_blocked_target():
     from prepare_v2_cross_business import access_cases
     from env_factory_v2.examples import obj, query, ref, lit
-    from env_factory_v2.runtime import Sandbox
+    from env_factory_v2.execution.runtime import Sandbox
     from v2_business_acceptance import business_truth
     row = access_cases()[3]
     source = transaction()
@@ -248,7 +248,7 @@ def test_temporary_grant_runtime_adapter_handles_one_write_and_one_blocked_targe
 def test_large_purchase_runtime_adapter_reads_real_proposal_snapshot_and_created_order(refuse):
     from prepare_v2_cross_business import procurement_cases
     from env_factory_v2.examples import obj, query, ref, lit, array
-    from env_factory_v2.runtime import Sandbox
+    from env_factory_v2.execution.runtime import Sandbox
     from v2_business_acceptance import business_truth
     row = procurement_cases()[4]
     source = transaction()

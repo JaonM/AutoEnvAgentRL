@@ -2,10 +2,10 @@ import copy
 
 import pytest
 
-from env_factory_v2.contract import ContractError, compile_contract
+from env_factory_v2.contracts.contract import ContractError, compile_contract
 from env_factory_v2.examples import direct, simple, lit, ref
-from env_factory_v2.reward import equivalent, grade
-from env_factory_v2.runtime import Sandbox
+from env_factory_v2.execution.reward import equivalent, grade
+from env_factory_v2.execution.runtime import Sandbox
 
 
 def test_numeric_representation_cleanup_never_accepts_material_errors_or_bool_numbers():

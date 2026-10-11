@@ -1,11 +1,11 @@
 import copy
 import json
 
-from env_factory_v2.contract import compile_contract
+from env_factory_v2.contracts.contract import compile_contract
 from env_factory_v2.examples import direct, simple, transaction
-from env_factory_v2.obligation_index import obligation_index, reference_changes
-from env_factory_v2.author_workbench import AuthorWorkbench
-from env_factory_v2.requirement_review import mandatory_obligations
+from env_factory_v2.requirements.obligation_index import obligation_index, reference_changes
+from env_factory_v2.authoring.author_workbench import AuthorWorkbench
+from env_factory_v2.validation.requirement_review import mandatory_obligations
 
 
 def index(source):

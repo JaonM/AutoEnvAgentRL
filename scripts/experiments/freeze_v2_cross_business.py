@@ -8,12 +8,12 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from neo4j import GraphDatabase
-from env_factory_v2.business_graph import install, retrieve
-from env_factory_v2.demand import layered_demand, validate_demand
-from env_factory_v2.expressions import canonical
+from env_factory_v2.requirements.business_graph import install, retrieve
+from env_factory_v2.requirements.demand import layered_demand, validate_demand
+from env_factory_v2.contracts.expressions import canonical
 from collections import Counter
 from v2_preparation_pack import load_pack, identity, user_scenes, exact_ids, business_review_input
-from env_factory_v2.code_agent import NativeCodeAgent
+from env_factory_v2.native.code_agent import NativeCodeAgent
 from v2_answer_obligations import review_case_answer_obligations
 
 

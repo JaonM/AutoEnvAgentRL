@@ -3,10 +3,10 @@ import copy
 import pytest
 
 from env_factory_v2.examples import transaction, lit, ref
-from env_factory_v2.expressions import ContractError
-from env_factory_v2.runtime import Sandbox
-from env_factory_v2.transaction_semantics import prepare_transaction, TransactionUnavailable
-from env_factory_v2.transaction_targets import project_transaction
+from env_factory_v2.contracts.expressions import ContractError
+from env_factory_v2.execution.runtime import Sandbox
+from env_factory_v2.execution.transaction_semantics import prepare_transaction, TransactionUnavailable
+from env_factory_v2.contracts.transaction_targets import project_transaction
 
 
 def ready(source):

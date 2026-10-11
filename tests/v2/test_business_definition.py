@@ -3,11 +3,11 @@ import copy
 
 import pytest
 
-from env_factory_v2.business_definition import assemble_contract, compile_definition
-from env_factory_v2.contract import compile_contract
+from env_factory_v2.contracts.business_definition import assemble_contract, compile_definition
+from env_factory_v2.contracts.contract import compile_contract
 from env_factory_v2.examples import simple
-from env_factory_v2.expressions import ContractError
-from env_factory_v2.verification import expected_result, run_scenario
+from env_factory_v2.contracts.expressions import ContractError
+from env_factory_v2.validation.verification import expected_result, run_scenario
 
 
 def split(source):
@@ -125,7 +125,7 @@ def test_cli_emits_reproducible_sources_without_qualification(tmp_path, monkeypa
 
 def test_workbench_checks_definitions_and_atomic_nested_repairs():
     import json
-    from env_factory_v2.author_workbench import AuthorWorkbench
+    from env_factory_v2.authoring.author_workbench import AuthorWorkbench
 
     environment, task = report_definition()
     bench = AuthorWorkbench()
@@ -172,7 +172,7 @@ def test_pipeline_retains_definition_on_bounded_repair(tmp_path, monkeypatch):
 def test_generation_requests_separate_definition_and_preserves_nested_edits(tmp_path):
     import json
     from unittest.mock import Mock
-    from env_factory_v2.code_agent import NativeCodeAgent
+    from env_factory_v2.native.code_agent import NativeCodeAgent
 
     environment, task = report_definition()
     definition = {'environment': environment, 'task': task}

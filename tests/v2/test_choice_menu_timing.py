@@ -1,8 +1,8 @@
 import pytest
 
 from env_factory_v2.examples import transaction
-from env_factory_v2.expressions import ContractError
-from env_factory_v2.runtime import Sandbox
+from env_factory_v2.contracts.expressions import ContractError
+from env_factory_v2.execution.runtime import Sandbox
 
 
 def menu_world(*, complete=True, events=False):

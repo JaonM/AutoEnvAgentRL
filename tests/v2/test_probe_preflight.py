@@ -1,8 +1,8 @@
 import copy
 
-from env_factory_v2.contract import compile_contract
+from env_factory_v2.contracts.contract import compile_contract
 from env_factory_v2.examples import simple, direct
-from env_factory_v2.verification import preflight_recipes
+from env_factory_v2.validation.verification import preflight_recipes
 
 
 def test_preflight_executes_probe_recipes_without_grading_or_changing_source():

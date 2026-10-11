@@ -1,6 +1,6 @@
 """Operator-declared relationships for new synthetic dossiers, never inferred."""
 import copy
-from env_factory_v2.business_graph import validate_relations
+from env_factory_v2.requirements.business_graph import validate_relations
 
 # Explicit business-family declarations. No column-name inference or old asset edits.
 RELATIONS = {

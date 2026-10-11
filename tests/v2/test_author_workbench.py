@@ -1,8 +1,8 @@
 import json
 import pytest
 
-from env_factory_v2.author_workbench import AuthorWorkbench, author_feedback
-from env_factory_v2.contract import ContractError
+from env_factory_v2.authoring.author_workbench import AuthorWorkbench, author_feedback
+from env_factory_v2.contracts.contract import ContractError
 from env_factory_v2.examples import direct, simple
 
 
@@ -84,7 +84,7 @@ def test_read_existing_draft_then_edit_without_rewriting_other_sections():
 
 
 def test_paged_reads_are_exact_bounded_and_unicode_safe():
-    from env_factory_v2.expressions import canonical
+    from env_factory_v2.contracts.expressions import canonical
     value = {'a/b~c': ['多字节\\\"' * 10000]}
     bench = AuthorWorkbench(source={'environment': value})
     text, offset = '', 0

@@ -22,13 +22,13 @@ def function(name, description, properties, required=()):
 
 class V2Episode:
     def __init__(self, root, *, _qualification_only=False, user_mode='free_dialogue'):
-        from env_factory_v2.training import verify_training_bundle, verify_delivery
+        from env_factory_v2.delivery.training import verify_training_bundle, verify_delivery
         self.root = Path(root).resolve()
         self._qualification_only = _qualification_only
         self.user_mode = 'structured' if _qualification_only else user_mode
         (verify_delivery if _qualification_only else verify_training_bundle)(self.root)
-        from env_factory_v2.server import serve
-        from env_factory_v2.code_agent import NativeCodeAgent
+        from env_factory_v2.delivery.server import serve
+        from env_factory_v2.native.code_agent import NativeCodeAgent
         source = json.loads((self.root / 'contract.json').read_text())
         agent = None
         if source.get('explanations') or (self.user_mode == 'free_dialogue' and source['category'] != 'direct_response'):

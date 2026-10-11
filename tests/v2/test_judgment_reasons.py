@@ -3,9 +3,9 @@ from unittest.mock import Mock
 
 import pytest
 
-from env_factory_v2.code_agent import NativeCodeAgent
-from env_factory_v2.expressions import ContractError
-from env_factory_v2.judgment_reasons import validate_reasons
+from env_factory_v2.native.code_agent import NativeCodeAgent
+from env_factory_v2.contracts.expressions import ContractError
+from env_factory_v2.validation.judgment_reasons import validate_reasons
 
 
 def payload():

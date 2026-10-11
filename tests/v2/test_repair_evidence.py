@@ -3,10 +3,10 @@ import hashlib
 import json
 from unittest.mock import patch
 
-from env_factory_v2.code_agent import NativeCodeAgent
+from env_factory_v2.native.code_agent import NativeCodeAgent
 from env_factory_v2.examples import direct
-from env_factory_v2.expressions import canonical
-from env_factory_v2.repair_evidence import compact_repair_feedback
+from env_factory_v2.contracts.expressions import canonical
+from env_factory_v2.authoring.repair_evidence import compact_repair_feedback
 
 
 def record(passed):
@@ -45,7 +45,7 @@ def test_unknown_or_already_compact_feedback_is_preserved():
 def test_generator_archives_full_evidence_before_sending_compact_feedback(tmp_path):
     agent = NativeCodeAgent(base_url='http://localhost:9999/v1', token='a'*24, evidence_root=tmp_path)
     feedback = {'previous_source': direct(), 'records': [record(True), record(False)]}
-    with patch('env_factory_v2.author_session.generate_in_session',
+    with patch('env_factory_v2.authoring.author_session.generate_in_session',
                return_value=(direct(), {'source_identity': 'fixture'})) as run:
         agent.generate({'goal': 'unchanged request'}, feedback=feedback, author_tools=True)
     folders = list((tmp_path/'repair-feedback').iterdir())

@@ -2,7 +2,7 @@
 import argparse
 import json
 from pathlib import Path
-from env_factory_v2.code_agent import NativeCodeAgent, object_schema
+from env_factory_v2.native.code_agent import NativeCodeAgent, object_schema
 from v2_preparation_pack import load_pack, identity, user_scenes, exact_ids, business_review_input
 
 

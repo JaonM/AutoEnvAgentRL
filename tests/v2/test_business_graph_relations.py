@@ -1,7 +1,7 @@
 import copy
 import pytest
-from env_factory_v2.business_graph import validate_relations
-from env_factory_v2.expressions import ContractError
+from env_factory_v2.requirements.business_graph import validate_relations
+from env_factory_v2.contracts.expressions import ContractError
 
 
 def dossier():

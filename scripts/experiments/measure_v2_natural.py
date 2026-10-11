@@ -19,12 +19,12 @@ from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT / 'src'))
-from env_factory_v2.code_agent import NativeCodeAgent, object_schema
-from env_factory_v2.contract import compile_contract, require
-from env_factory_v2.expressions import canonical
+from env_factory_v2.native.code_agent import NativeCodeAgent, object_schema
+from env_factory_v2.contracts.contract import compile_contract, require
+from env_factory_v2.contracts.expressions import canonical
 from env_factory_v2.pipeline import build, implementation_identity, require_qualified_delivery
-from env_factory_v2.runtime import Sandbox
-from env_factory_v2.training import certify
+from env_factory_v2.execution.runtime import Sandbox
+from env_factory_v2.delivery.training import certify
 from rl.environments.v2 import V2Episode
 from v2_natural_oracle import expand, equivalent, UNORDERED
 from v2_mapping_validation import MappingValidationError

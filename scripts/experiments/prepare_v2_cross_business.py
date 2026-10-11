@@ -224,7 +224,7 @@ def access_cases():
 
 
 def cases():
-    from env_factory_v2.business_graph import validate_relations
+    from env_factory_v2.requirements.business_graph import validate_relations
     rows = library_cases() + procurement_cases() + subscription_cases() + access_cases()
     # Explicit operator declarations, never inferred from similar field names.
     declarations = [

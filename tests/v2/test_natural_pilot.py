@@ -13,8 +13,8 @@ from prepare_v2_natural_pilot import cases
 from v2_natural_oracle import expected, equivalent
 from measure_v2_natural import fixture_alignment, answer_checks, observation_checks
 from env_factory_v2.examples import simple, transaction
-from env_factory_v2.contract import ContractError
-from env_factory_v2.runtime import Sandbox
+from env_factory_v2.contracts.contract import ContractError
+from env_factory_v2.execution.runtime import Sandbox
 
 
 def correction_observation_check(truth, ids):

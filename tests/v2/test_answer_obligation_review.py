@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts/experiments'))
-from env_factory_v2.expressions import ContractError
+from env_factory_v2.contracts.expressions import ContractError
 from v2_answer_obligations import review_answer_obligations, generation_output_scope, review_case_answer_obligations
 from v2_business_acceptance import business_truth
 

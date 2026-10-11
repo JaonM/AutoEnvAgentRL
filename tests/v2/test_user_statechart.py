@@ -8,10 +8,10 @@ from urllib.error import HTTPError
 import pytest
 
 from env_factory_v2.examples import transaction
-from env_factory_v2.expressions import ContractError
-from env_factory_v2.runtime import Sandbox
-from env_factory_v2.user_simulator import UserSimulator
-from env_factory_v2.server import serve
+from env_factory_v2.contracts.expressions import ContractError
+from env_factory_v2.execution.runtime import Sandbox
+from env_factory_v2.execution.user_simulator import UserSimulator
+from env_factory_v2.delivery.server import serve
 
 
 def consent_world(source=None):

@@ -5,7 +5,7 @@ import math
 from pathlib import Path
 from statistics import median
 
-from env_factory_v2.contract import require
+from env_factory_v2.contracts.contract import require
 from measure_v2_natural import read, digest
 
 MATCH_FIELDS = ('assets_identity', 'planned', 'mix', 'model', 'concurrency', 'author_tools',

@@ -2,9 +2,9 @@ import copy
 import json
 
 from env_factory_v2.examples import simple
-from env_factory_v2.verification import qualify
-from env_factory_v2.export import export_bundle, verify_bundle
-from env_factory_v2.api_verification import verify_api
+from env_factory_v2.validation.verification import qualify
+from env_factory_v2.delivery.export import export_bundle, verify_bundle
+from env_factory_v2.validation.api_verification import verify_api
 
 
 def test_compact_qualification_keeps_actual_gates_answers_and_api_execution():
@@ -35,7 +35,7 @@ def test_export_compacts_evidence_without_mutating_full_host_report(tmp_path):
 
 
 def test_compact_mode_checks_full_world_replay_before_discarding_detail(monkeypatch):
-    from env_factory_v2 import verification
+    from env_factory_v2.validation import verification
     original = verification.run_scenario
     calls = 0
 
@@ -49,6 +49,8 @@ def test_compact_mode_checks_full_world_replay_before_discarding_detail(monkeypa
 
     monkeypatch.setattr(verification, 'run_scenario', changed_world)
     _, report = verification.qualify(simple(), compact=True)
+    assert report['gates']['joint_execution_and_counterexamples']
     assert not report['gates']['deterministic_reset_and_replay']
+    assert not report['passed']
     assert not report['records'][0]['passed']
     assert not report['records'][0]['replay_passed']

@@ -2,7 +2,7 @@ import json
 import subprocess
 import sys
 
-from env_factory_v2.author_mcp import AuthorMCP
+from env_factory_v2.authoring.author_mcp import AuthorMCP
 from env_factory_v2.examples import direct
 
 
@@ -36,7 +36,7 @@ def test_stdio_handshake_tool_discovery_and_real_check(tmp_path):
         {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'},
         {'jsonrpc': '2.0', 'id': 3, 'method': 'tools/call', 'params': {'name': 'check_contract', 'arguments': {}}},
     ]
-    process = subprocess.run([sys.executable, '-m', 'env_factory_v2.author_mcp', '--output', str(tmp_path/'session'),
+    process = subprocess.run([sys.executable, '-m', 'env_factory_v2.authoring.author_mcp', '--output', str(tmp_path/'session'),
                               '--source', str(source)], input='\n'.join(map(json.dumps, requests))+'\n',
                              text=True, capture_output=True, check=True, timeout=10)
     responses = [json.loads(line) for line in process.stdout.splitlines()]
@@ -54,7 +54,7 @@ def test_model_cannot_select_files_or_execute_commands(tmp_path):
 
 
 def test_read_preserves_current_check_and_cannot_create_a_check(tmp_path):
-    from env_factory_v2.author_session import checked_source
+    from env_factory_v2.authoring.author_session import checked_source
     folder = tmp_path / 'workbench'
     server = AuthorMCP(folder, source=direct())
     response = call(server, 'read_contract', {'path': '/task', 'offset': 0})

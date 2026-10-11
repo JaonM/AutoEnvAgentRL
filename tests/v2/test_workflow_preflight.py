@@ -1,8 +1,8 @@
 import copy
 
-from env_factory_v2.contract import compile_contract
+from env_factory_v2.contracts.contract import compile_contract
 from env_factory_v2.examples import transaction, lit, ref
-from env_factory_v2.verification import preflight_recipes, run_scenario
+from env_factory_v2.validation.verification import preflight_recipes, run_scenario
 
 
 def refusal_contract():

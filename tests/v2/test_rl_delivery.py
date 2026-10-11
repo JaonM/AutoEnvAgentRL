@@ -4,11 +4,11 @@ import json
 
 import pytest
 
-from env_factory_v2.contract import ContractError
+from env_factory_v2.contracts.contract import ContractError
 from env_factory_v2.examples import direct, simple, transaction
-from env_factory_v2.export import export_bundle, verify_bundle
-from env_factory_v2.verification import qualify
-from env_factory_v2 import training
+from env_factory_v2.delivery.export import export_bundle, verify_bundle
+from env_factory_v2.validation.verification import qualify
+from env_factory_v2.delivery import training
 from rl.environments.v2 import V2Episode
 from rl.data.tasks import load_tasks
 from rl.data.contracts import attach_contract, validate_contract

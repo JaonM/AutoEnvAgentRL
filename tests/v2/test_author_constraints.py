@@ -1,7 +1,7 @@
 import copy
 import pytest
 
-from env_factory_v2.author_workbench import AuthorWorkbench
+from env_factory_v2.authoring.author_workbench import AuthorWorkbench
 from env_factory_v2.examples import simple
 
 

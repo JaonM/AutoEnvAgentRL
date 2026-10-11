@@ -3,11 +3,11 @@ from unittest.mock import Mock
 
 import pytest
 
-from env_factory_v2.challenge import challenge
-from env_factory_v2.contract import ContractError, compile_contract
-from env_factory_v2.demand import layered_demand
+from env_factory_v2.validation.challenge import challenge
+from env_factory_v2.contracts.contract import ContractError, compile_contract
+from env_factory_v2.requirements.demand import layered_demand
 from env_factory_v2.examples import direct
-from env_factory_v2.requirement_review import obligations, validate_review, implementation_at, mandatory_obligations
+from env_factory_v2.validation.requirement_review import obligations, validate_review, implementation_at, mandatory_obligations
 
 
 def fixture():

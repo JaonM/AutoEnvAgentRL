@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts/experiments'))
-from env_factory_v2.expressions import ContractError
+from env_factory_v2.contracts.expressions import ContractError
 from v2_natural_semantics import project, fill_projections, wrong_projection, value_shape
 from v2_mapping_validation import check_mapping
 from v2_business_acceptance import prepare_branch_answer

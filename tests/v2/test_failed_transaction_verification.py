@@ -3,10 +3,10 @@ from unittest.mock import patch
 
 import pytest
 
-from env_factory_v2.contract import ContractError, compile_contract
+from env_factory_v2.contracts.contract import ContractError, compile_contract
 from env_factory_v2.examples import transaction
-from env_factory_v2.runtime import Sandbox
-from env_factory_v2.verification import expected_result, preflight_recipes, run_scenario
+from env_factory_v2.execution.runtime import Sandbox
+from env_factory_v2.validation.verification import expected_result, preflight_recipes, run_scenario
 
 
 @pytest.mark.parametrize('corruption', ['data', 'consent', 'version'])

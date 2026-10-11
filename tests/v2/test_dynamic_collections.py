@@ -2,8 +2,8 @@ from itertools import product
 
 import pytest
 
-from env_factory_v2.contract import free_row_fields, validate_rule_links
-from env_factory_v2.expressions import ContractError, evaluate, validate_expr
+from env_factory_v2.contracts.contract import free_row_fields, validate_rule_links
+from env_factory_v2.contracts.expressions import ContractError, evaluate, validate_expr
 
 
 def interval(stop, maximum=10000):

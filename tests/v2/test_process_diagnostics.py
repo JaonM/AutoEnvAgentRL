@@ -3,11 +3,11 @@ from unittest.mock import patch
 
 import pytest
 
-from env_factory_v2.author_workbench import AuthorWorkbench
-from env_factory_v2.contract import compile_contract, ContractError
+from env_factory_v2.authoring.author_workbench import AuthorWorkbench
+from env_factory_v2.contracts.contract import compile_contract, ContractError
 from env_factory_v2.examples import simple
-from env_factory_v2.process_diagnostics import process_diagnostics
-from env_factory_v2.verification import run_scenario
+from env_factory_v2.validation.process_diagnostics import process_diagnostics
+from env_factory_v2.validation.verification import run_scenario
 
 
 def extra_question():
@@ -62,7 +62,7 @@ def test_no_hint_when_question_is_not_the_isolated_observable_gate(change):
 
 
 def test_zero_budget_executes_no_additional_trajectories():
-    with patch('env_factory_v2.process_diagnostics.run_scenario', side_effect=AssertionError('no execution')):
+    with patch('env_factory_v2.validation.process_diagnostics.run_scenario', side_effect=AssertionError('no execution')):
         result = process_diagnostics(compile_contract(extra_question()), max_variants=0)
     assert result['variants_tested'] == result['baselines_tested'] == 0
 
@@ -85,7 +85,7 @@ def test_diagnostics_never_remove_authorization_or_execute_write_paths():
         transactions = {t['id'] for t in compiled['source']['tools'] if t['kind'] == 'transaction'}
         assert not any(s.get('tool') in transactions for s in scenario['steps'])
         return original(compiled, scenario, **kwargs)
-    with patch('env_factory_v2.process_diagnostics.run_scenario', side_effect=guarded):
+    with patch('env_factory_v2.validation.process_diagnostics.run_scenario', side_effect=guarded):
         result = process_diagnostics(compiled)
     fact_stages = {s['id'] for s in compiled['source']['user']['stages'] if s['kind'] == 'fact'}
     assert all(h['omitted_fact_stage'] in fact_stages for h in result['findings'])

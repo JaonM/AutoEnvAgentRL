@@ -9,7 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts/experiments'))
 import finalize_v2_free_assets as finalizer
-from env_factory_v2.demand import layered_demand
+from env_factory_v2.requirements.demand import layered_demand
 
 
 def draft_assets(root, count):

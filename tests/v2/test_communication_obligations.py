@@ -3,10 +3,10 @@ from unittest.mock import Mock
 
 import pytest
 
-from env_factory_v2.business_definition import compile_definition
+from env_factory_v2.contracts.business_definition import compile_definition
 from env_factory_v2.examples import direct, lit
-from env_factory_v2.expressions import ContractError
-from env_factory_v2.verification import run_scenario
+from env_factory_v2.contracts.expressions import ContractError
+from env_factory_v2.validation.verification import run_scenario
 
 
 def definition():

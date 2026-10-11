@@ -1,9 +1,9 @@
 import copy
 
-from env_factory_v2.author_workbench import AuthorWorkbench
-from env_factory_v2.contract import compile_contract
+from env_factory_v2.authoring.author_workbench import AuthorWorkbench
+from env_factory_v2.contracts.contract import compile_contract
 from env_factory_v2.examples import simple, lit
-from env_factory_v2.input_diagnostics import input_diagnostics
+from env_factory_v2.validation.input_diagnostics import input_diagnostics
 
 
 def first_match_source():

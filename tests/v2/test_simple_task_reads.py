@@ -1,9 +1,9 @@
 import pytest
 
-from env_factory_v2.contract import compile_contract
+from env_factory_v2.contracts.contract import compile_contract
 from env_factory_v2.examples import direct, retrieval
-from env_factory_v2.expressions import ContractError
-from env_factory_v2.verification import run_scenario
+from env_factory_v2.contracts.expressions import ContractError
+from env_factory_v2.validation.verification import run_scenario
 
 
 def test_simple_goal_can_read_normalized_tables_without_category_change():

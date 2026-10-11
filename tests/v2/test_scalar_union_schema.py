@@ -1,6 +1,6 @@
 import pytest
-from env_factory_v2.contract import validate_schema, validate_value
-from env_factory_v2.expressions import ContractError
+from env_factory_v2.contracts.contract import validate_schema, validate_value
+from env_factory_v2.contracts.expressions import ContractError
 
 SCHEMA = {'type': 'array', 'items': {'type':'array', 'items':{'type':'string'}}}
 PLANS = {'type':'array','items': {'type':'array', 'items': {

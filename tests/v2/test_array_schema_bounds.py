@@ -1,6 +1,6 @@
 import pytest
 
-from env_factory_v2.contract import ContractError, validate_schema, validate_value
+from env_factory_v2.contracts.contract import ContractError, validate_schema, validate_value
 
 
 def test_nested_array_lengths_are_enforced_without_changing_values():

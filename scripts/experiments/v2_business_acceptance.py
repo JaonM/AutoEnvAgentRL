@@ -1,8 +1,8 @@
 """Predeclared representation-neutral business acceptance for new free rounds."""
-from env_factory_v2.contract import require
-from env_factory_v2.fixtures import review_contract
-from env_factory_v2.reward import grade
-from env_factory_v2.expressions import canonical
+from env_factory_v2.contracts.contract import require
+from env_factory_v2.contracts.fixtures import review_contract
+from env_factory_v2.execution.reward import grade
+from env_factory_v2.contracts.expressions import canonical
 from v2_natural_semantics import (schema, fill_projections, wrong_projection, rename_observations,
                                  COLLECTION_MAPPING_INSTRUCTIONS, value_shape)
 

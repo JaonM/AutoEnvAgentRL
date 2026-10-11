@@ -2,8 +2,8 @@
 import copy
 import json
 
-from env_factory_v2.contract import require
-from env_factory_v2.expressions import canonical
+from env_factory_v2.contracts.contract import require
+from env_factory_v2.contracts.expressions import canonical
 
 
 def member_paths(shapes):

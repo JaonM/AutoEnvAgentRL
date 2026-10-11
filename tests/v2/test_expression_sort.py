@@ -1,7 +1,7 @@
 import pytest
 
-from env_factory_v2.contract import contains_rule, expression_children
-from env_factory_v2.expressions import ContractError, evaluate, validate_expr
+from env_factory_v2.contracts.contract import contains_rule, expression_children
+from env_factory_v2.contracts.expressions import ContractError, evaluate, validate_expr
 
 
 def expression(rows, orders=None):

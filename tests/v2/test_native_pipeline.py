@@ -5,9 +5,9 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from env_factory_v2.challenge import challenge
-from env_factory_v2.code_agent import NativeCodeAgent
-from env_factory_v2.contract import compile_contract
+from env_factory_v2.validation.challenge import challenge
+from env_factory_v2.native.code_agent import NativeCodeAgent
+from env_factory_v2.contracts.contract import compile_contract
 from env_factory_v2.examples import direct, simple
 from env_factory_v2.pipeline import build
 
@@ -193,7 +193,7 @@ def test_review_cannot_invent_invalid_action_error_expectations(tmp_path):
                 'choices': [{'message': {'content': json.dumps(value)}}]}
     agent = native(tmp_path / 'native')
     agent.generate = Mock()
-    with patch('env_factory_v2.code_agent.urlopen') as transport:
+    with patch('env_factory_v2.native.code_agent.urlopen') as transport:
         transport.return_value.__enter__.return_value.read.return_value = json.dumps(response).encode()
         result = build({'goal': source['task']}, agent=agent, source=source,
                        output=tmp_path / 'run', repairs=2, docker=False)
@@ -234,14 +234,14 @@ def test_native_transport_failure_never_triggers_author_repair(tmp_path):
 
 @pytest.mark.parametrize('changed', [False, True])
 def test_preflight_reuse_requires_unchanged_contract(tmp_path, changed):
-    from env_factory_v2.verification import preflight_recipes
+    from env_factory_v2.validation.verification import preflight_recipes
     source = direct()
     augmented = copy.deepcopy(source)
     if changed:
         augmented['scenarios'][0]['answer']['temperature'] = {'literal': 19}
     agent = native(tmp_path / 'native')
     agent.ask = Mock(return_value=(challenge_value(source), {'unit_test': True}))
-    with patch('env_factory_v2.tool_interference.augment', return_value=(augmented, {})), \
+    with patch('env_factory_v2.requirements.tool_interference.augment', return_value=(augmented, {})), \
          patch('env_factory_v2.pipeline.preflight_recipes', wraps=preflight_recipes) as preflight:
         result = build({'goal': source['task']}, agent=agent, source=source,
                        output=tmp_path / 'run', repairs=0, docker=False)

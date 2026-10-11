@@ -5,10 +5,10 @@ from unittest.mock import Mock
 
 import pytest
 
-from env_factory_v2.challenge import _case_scenario, _execute_case
-from env_factory_v2.contract import compile_contract
+from env_factory_v2.validation.challenge import _case_scenario, _execute_case
+from env_factory_v2.contracts.contract import compile_contract
 from env_factory_v2.examples import simple
-from env_factory_v2.expressions import ContractError
+from env_factory_v2.contracts.expressions import ContractError
 
 
 def setup_case():
@@ -74,7 +74,7 @@ def test_independent_steps_must_use_existing_grammar_and_interface(steps):
 
 
 def test_full_review_executes_independent_steps_and_preserves_original_identity():
-    from env_factory_v2.challenge import challenge
+    from env_factory_v2.validation.challenge import challenge
 
     compiled, case, scenarios = setup_case()
     case['steps_json'] = json.dumps(scenarios['correct']['steps'] + [{'kind': 'time'}])
@@ -92,7 +92,7 @@ def test_full_review_executes_independent_steps_and_preserves_original_identity(
 
 
 def test_compact_steps_preserve_exact_trajectory_and_execution():
-    from env_factory_v2.verification import replay_identity
+    from env_factory_v2.validation.verification import replay_identity
     compiled, case, scenarios = setup_case()
     steps = scenarios['correct']['steps']
     before = copy.deepcopy(scenarios)

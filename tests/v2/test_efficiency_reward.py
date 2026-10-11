@@ -1,8 +1,8 @@
 import pytest
 
 from env_factory_v2.examples import simple, retrieval
-from env_factory_v2.runtime import Sandbox
-from env_factory_v2.reward import grade, assess_efficiency
+from env_factory_v2.execution.runtime import Sandbox
+from env_factory_v2.execution.reward import grade, assess_efficiency
 
 
 def world():
@@ -36,7 +36,7 @@ def test_correct_guess_without_evidence_gets_no_efficiency_credit():
 
 def test_all_required_pagination_is_useful():
     sandbox = Sandbox(retrieval(rows=512))
-    from env_factory_v2.verification import run_scenario
+    from env_factory_v2.validation.verification import run_scenario
     source = sandbox.compiled
     run = run_scenario(source, source['source']['scenarios'][0])
     assert run['error'] is None
@@ -58,7 +58,7 @@ def test_equivalent_read_path_can_satisfy_business_evidence():
 
 
 def test_partial_view_cannot_replace_required_full_evidence():
-    from env_factory_v2.tool_interference import augment
+    from env_factory_v2.requirements.tool_interference import augment
     source, _ = augment(simple())
     sandbox = Sandbox(source)
     sandbox.interact('size', question='尺码？')
@@ -68,7 +68,7 @@ def test_partial_view_cannot_replace_required_full_evidence():
 
 def test_partial_query_satisfies_explicit_id_obligation_but_not_missing_pages():
     from env_factory_v2.examples import lit, ref
-    from env_factory_v2.tool_interference import augment
+    from env_factory_v2.requirements.tool_interference import augment
     source = simple()
     source['tables'][0]['rows'].append({'id': 'I3', 'size': 'M', 'display': '另一款'})
     source['tools'][0].update(page_size=1, complete_retrieval=True)

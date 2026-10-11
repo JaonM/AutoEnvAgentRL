@@ -1,8 +1,8 @@
 """Protocol-complete mocked review records; never independent business evidence."""
 import copy
 
-from env_factory_v2.contract import compile_contract
-from env_factory_v2.requirement_review import obligations, mandatory_obligations, implementation_paths
+from env_factory_v2.contracts.contract import compile_contract
+from env_factory_v2.validation.requirement_review import obligations, mandatory_obligations, implementation_paths
 
 
 def with_requirement_reviews(source, review, original_request=None):

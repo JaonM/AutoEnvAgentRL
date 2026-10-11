@@ -2,12 +2,12 @@ import copy
 
 import pytest
 
-from env_factory_v2.api_verification import verify_api
-from env_factory_v2.contract import ContractError, compile_contract
+from env_factory_v2.validation.api_verification import verify_api
+from env_factory_v2.contracts.contract import ContractError, compile_contract
 from env_factory_v2.examples import direct, lit
-from env_factory_v2.reward import grade
-from env_factory_v2.runtime import Sandbox
-from env_factory_v2.verification import qualify, run_scenario
+from env_factory_v2.execution.reward import grade
+from env_factory_v2.execution.runtime import Sandbox
+from env_factory_v2.validation.verification import qualify, run_scenario
 
 
 def timed():

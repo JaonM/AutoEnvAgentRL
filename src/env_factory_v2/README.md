@@ -258,3 +258,45 @@ Both kinds of findings are returned in one repair package, so contract fixes and
 affected references can be repaired together. Both gates and container validation
 remain mandatory. This avoids hiding later-stage findings, but does not establish
 a measured speed gain; collecting both can cost more for a failing attempt.
+
+## Code organization
+
+The root contains the public API (`Sandbox`, `compile_contract`, `ContractError`),
+CLI, pipeline orchestration, examples, grammar documents and package inventory.
+Import implementation modules from their owning package; old flat internal import
+paths are not retained as forwarding modules. The CLI remains `python -m env_factory_v2`.
+
+| Package | Responsibility |
+| --- | --- |
+| `requirements` | Demand provenance, graph grounding, obligation index, tool interference |
+| `authoring` | Workbench, MCP author session, constraints and repair feedback |
+| `contracts` | Definition lowering, DSL validation, expressions, fixtures and target resolution |
+| `execution` | Sandbox state, transactions, rewards, user simulation and scenario values |
+| `validation` | Authored execution/replay, independent challenge, diagnostics and HTTP conformance |
+| `delivery` | Export/container packaging, HTTP service and RL readiness certification |
+| `native` | Native Code Agent transport and response codecs |
+
+`pipeline.py` owns stage ordering. Validators provide evidence; they do not restart
+production authoring. Historical generation experiments remain in
+`scripts/experiments/v2_legacy_generation.py`; they are not production entry points.
+This organization does not claim to remove every existing cross-package dependency.
+
+`package.py` owns the recursive source inventory for both export and fingerprints.
+Paths are relative to the package root, so nested files and repeated basenames
+cannot disappear from the bundle or overwrite fingerprint entries. Code changes
+invalidate existing implementation-bound evidence; moving files is not permission
+to reuse an old delivery certificate.
+
+## Acceptance ownership
+
+Compilation rejects invalid contracts before any qualification report exists; it
+is no longer represented by an always-true `structural_contract` gate.
+`joint_execution_and_counterexamples` checks expectations of both executions;
+`deterministic_reset_and_replay` checks their full-state equivalence. The record's
+`passed` combines both, while the gates diagnose distinct failures. Independent
+business review and container execution remain mandatory for delivery. Training
+certification still verifies adapter conformance, privacy and evidence identities.
+`validation/gates.py` centralizes the delivery gate vocabulary; historical reports
+may still contain the former structural flag, but false/missing required gates or
+unknown gates are rejected. Clock/communication diagnostics remain diagnostic hints,
+not new acceptance gates. No independent business or authorization check was removed.

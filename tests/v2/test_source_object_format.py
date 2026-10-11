@@ -3,10 +3,10 @@ from unittest.mock import Mock
 
 import pytest
 
-from env_factory_v2.code_agent import NativeCodeAgent
-from env_factory_v2.contract import ContractError, compile_contract, validate_schema
+from env_factory_v2.native.code_agent import NativeCodeAgent
+from env_factory_v2.contracts.contract import ContractError, compile_contract, validate_schema
 from env_factory_v2.examples import direct, simple
-from env_factory_v2.response_format import SOURCE_OBJECT_SCHEMA, validate_source_response
+from env_factory_v2.native.response_format import SOURCE_OBJECT_SCHEMA, validate_source_response
 
 
 @pytest.mark.parametrize('source_factory', [direct, simple])

@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts/experiment
 from measure_v2_natural import execute_reference
 from v2_runtime_evidence import state_before_event
 from env_factory_v2.examples import transaction, obj, lit
-from env_factory_v2.contract import compile_contract, ContractError
+from env_factory_v2.contracts.contract import compile_contract, ContractError
 
 
 def source_with_ledger():
@@ -36,7 +36,7 @@ def test_insert_commits_with_balance_updates_and_historical_reconstruction():
 
 
 def test_duplicate_insert_rolls_back_earlier_balance_updates_and_consent():
-    from env_factory_v2.runtime import Sandbox
+    from env_factory_v2.execution.runtime import Sandbox
     source = source_with_ledger()
     source['tables'][-1]['rows'] = [{'id': 'L1', 'balance': 0, 'amount': 99}]
     world = Sandbox(source)

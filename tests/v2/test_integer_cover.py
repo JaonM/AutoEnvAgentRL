@@ -3,8 +3,8 @@ import random
 
 import pytest
 
-from env_factory_v2.expressions import ContractError, evaluate, validate_expr
-from env_factory_v2.integer_cover import bounded_cover
+from env_factory_v2.contracts.expressions import ContractError, evaluate, validate_expr
+from env_factory_v2.contracts.integer_cover import bounded_cover
 
 
 def solve(groups, target, **budgets):

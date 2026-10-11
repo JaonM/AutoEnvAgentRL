@@ -2,10 +2,10 @@ import copy
 
 import pytest
 
-from env_factory_v2.contract import ContractError, compile_contract
+from env_factory_v2.contracts.contract import ContractError, compile_contract
 from env_factory_v2.examples import retrieval, long_chain
-from env_factory_v2.fixtures import review_contract
-from env_factory_v2.verification import qualify
+from env_factory_v2.contracts.fixtures import review_contract
+from env_factory_v2.validation.verification import qualify
 
 
 def generated_retrieval():

@@ -4,9 +4,9 @@ Not imported by production env_factory_v2. No CLI or automatic fallback.
 """
 import json
 from pathlib import Path
-from env_factory_v2.code_agent import object_schema
-from env_factory_v2.contract import ContractError, require
-from env_factory_v2.expressions import canonical
+from env_factory_v2.native.code_agent import object_schema
+from env_factory_v2.contracts.contract import ContractError, require
+from env_factory_v2.contracts.expressions import canonical
 
 
 def generate_legacy(self, request, *, feedback=None, source_object=False, source_tree=False):
@@ -21,7 +21,7 @@ def generate_legacy(self, request, *, feedback=None, source_object=False, source
     contract_candidate = isinstance(previous, dict) and bool(
         {'task', 'tables', 'tools', 'answers', 'scenarios', 'rules'} & previous.keys())
     if contract_candidate:
-        from env_factory_v2.repair import apply_edits, recover_edit_values
+        from env_factory_v2.authoring.repair import apply_edits, recover_edit_values
         previous = feedback['previous_source']
         evidence = {key: value for key, value in feedback.items() if key != 'previous_source'}
         if 'original_request' in evidence and canonical(evidence['original_request']) == canonical(request):
@@ -55,8 +55,8 @@ def generate_legacy(self, request, *, feedback=None, source_object=False, source
                 **({'format_repair': format_evidence} if format_evidence else {})}
         except json.JSONDecodeError as exc:
             raise ContractError(f'repair value invalid JSON at line {exc.lineno}, column {exc.colno}: {exc.msg}') from exc
-    from env_factory_v2.response_format import SOURCE_OBJECT_SCHEMA
-    from env_factory_v2.json_tree import TREE_SCHEMA
+    from env_factory_v2.native.response_format import SOURCE_OBJECT_SCHEMA
+    from env_factory_v2.native.json_tree import TREE_SCHEMA
     tree_instruction = ('Return source encoded in the closed JSON tree wire grammar: '
         'an object is {"o":[{"k":KEY,"v":NODE},...]}; arrays are ordinary JSON arrays '
         'of encoded nodes, and strings/numbers/booleans/null are ordinary JSON scalar values '
@@ -148,20 +148,20 @@ def generate_legacy(self, request, *, feedback=None, source_object=False, source
         TREE_SCHEMA if source_tree else SOURCE_OBJECT_SCHEMA if source_object else object_schema({'source_json': {'type': 'string'}}),
         **({'source_tree': True} if source_tree else {'source_object': True} if source_object else {}))
     if source_tree:
-        from env_factory_v2.json_tree import decode_response
+        from env_factory_v2.native.json_tree import decode_response
         return decode_response(value), {**provenance, 'generation_format': 'closed_json_tree',
                                        'generation_wire_version': 2,
                                        'strict_contract_grammar_enforced': False,
                                        'business_grammar_enforced_by': 'compile_contract'}
     if source_object:
-        from env_factory_v2.response_format import validate_source_response
+        from env_factory_v2.native.response_format import validate_source_response
         validate_source_response(value)
         return value['source'], {**provenance, 'generation_format': 'native_source_object',
                                  'strict_contract_grammar_enforced': False}
     try:
         return json.loads(value['source_json']), provenance
     except json.JSONDecodeError as exc:
-        from env_factory_v2.json_syntax import recover_json
+        from env_factory_v2.native.json_syntax import recover_json
         try:
             recovered, evidence = recover_json(value['source_json'], self)
             return recovered, {**provenance, 'format_repair': evidence}

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'scripts/experiments'))
-from env_factory_v2.contract import ContractError
+from env_factory_v2.contracts.contract import ContractError
 from measure_v2_natural import verify_assets, summarize, digest, runner_identity
 from compare_v2_measurements import compare, MATCH_FIELDS, load_round
 

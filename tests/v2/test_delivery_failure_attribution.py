@@ -1,6 +1,6 @@
 import pytest
 
-from env_factory_v2.expressions import ContractError
+from env_factory_v2.contracts.expressions import ContractError
 from env_factory_v2.pipeline import InfrastructureError, require_qualified_delivery
 
 

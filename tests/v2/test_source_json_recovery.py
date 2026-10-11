@@ -3,8 +3,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from env_factory_v2.json_syntax import recover_json
-from env_factory_v2.expressions import ContractError
+from env_factory_v2.native.json_syntax import recover_json
+from env_factory_v2.contracts.expressions import ContractError
 
 
 def test_short_repair_preserves_values_and_avoids_full_regeneration():
@@ -35,7 +35,7 @@ def test_valid_json_never_calls_recovery_model():
 
 
 def test_native_generation_returns_recovered_source_with_both_provenances(tmp_path):
-    from env_factory_v2.code_agent import NativeCodeAgent
+    from env_factory_v2.native.code_agent import NativeCodeAgent
     agent = NativeCodeAgent(base_url='http://localhost:9999/v1', token='a' * 24, evidence_root=tmp_path)
     agent.ask = Mock(side_effect=[({'source_json': '{"amount":18 "count":2}'}, {'generation': True}),
         ({'replacements': [{'old': '18 "count"', 'new': '18,"count"'}]}, {'syntax': True})])

@@ -3,8 +3,8 @@ import hashlib
 import json
 from collections import Counter
 
-from env_factory_v2.business_graph import validate_relations
-from env_factory_v2.expressions import canonical
+from env_factory_v2.requirements.business_graph import validate_relations
+from env_factory_v2.contracts.expressions import canonical
 
 
 def exact_ids(rows, expected=None):

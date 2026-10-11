@@ -1,8 +1,8 @@
 import pytest
 
-from env_factory_v2.contract import compile_contract
+from env_factory_v2.contracts.contract import compile_contract
 from env_factory_v2.examples import simple
-from env_factory_v2.expressions import ContractError
+from env_factory_v2.contracts.expressions import ContractError
 
 
 def test_mutated_positive_reports_missing_baseline_even_with_valid_negative():

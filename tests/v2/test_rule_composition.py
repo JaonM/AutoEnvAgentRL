@@ -1,8 +1,8 @@
 import pytest
 
-from env_factory_v2.contract import compile_contract, validate_rule_graph
+from env_factory_v2.contracts.contract import compile_contract, validate_rule_graph
 from env_factory_v2.examples import transaction, ref, lit
-from env_factory_v2.expressions import ContractError, evaluate
+from env_factory_v2.contracts.expressions import ContractError, evaluate
 
 
 def invoke(name, **arguments):

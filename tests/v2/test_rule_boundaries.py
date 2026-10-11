@@ -1,7 +1,7 @@
 import copy
 
 from env_factory_v2.examples import direct, lit, ref
-from env_factory_v2.verification import qualify
+from env_factory_v2.validation.verification import qualify
 
 
 def test_stateless_boundary_probe_detects_wrong_rule_without_changing_agent_answer():

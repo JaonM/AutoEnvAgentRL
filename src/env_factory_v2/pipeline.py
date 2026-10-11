@@ -7,11 +7,11 @@ import json
 import time
 from pathlib import Path
 
-from .challenge import challenge
-from .contract import ContractError, compile_contract, require
-from .export import export_bundle, verify_container
-from .expressions import canonical
-from .verification import qualify, preflight_recipes, attach_independent_review
+from env_factory_v2.validation.challenge import challenge
+from env_factory_v2.contracts.contract import ContractError, compile_contract, require
+from env_factory_v2.delivery.export import export_bundle, verify_container
+from env_factory_v2.contracts.expressions import canonical
+from env_factory_v2.validation.verification import qualify, preflight_recipes, attach_independent_review
 
 
 class InfrastructureError(RuntimeError):
@@ -34,8 +34,8 @@ def save(path, value):
 
 
 def implementation_identity():
-    files = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(Path(__file__).parent.iterdir())
-             if p.suffix in {'.py', '.md'}}
+    from env_factory_v2.package import package_fingerprints
+    files = package_fingerprints()
     return hashlib.sha256(canonical(files).encode()).hexdigest()
 
 
@@ -75,7 +75,7 @@ def build(request, *, agent, output, source=None, repairs=1, docker=True, base_i
                 attempt['generation_provenance'] = provenance
             else:
                 candidate = copy.deepcopy(source)
-            from .business_definition import compile_source, is_definition
+            from env_factory_v2.contracts.business_definition import compile_source, is_definition
             definition_input = is_definition(candidate)
             if 'demand' in request:
                 (candidate['task'] if definition_input else candidate)['demand'] = copy.deepcopy(request['demand'])
@@ -108,7 +108,7 @@ def build(request, *, agent, output, source=None, repairs=1, docker=True, base_i
             phase('tool_interference')
             phase_start = time.monotonic()
             preflight_identity = compiled['identity']
-            from .tool_interference import augment
+            from env_factory_v2.requirements.tool_interference import augment
             candidate, interference = augment(candidate, count=tool_interference)
             save(folder / 'tool_interference.json', interference)
             if not definition_input:
@@ -127,7 +127,7 @@ def build(request, *, agent, output, source=None, repairs=1, docker=True, base_i
             require(augmented_recipes['passed'], 'tool interference changed reference trajectory validity')
             attempt['phases']['tool_interference'] = time.monotonic() - phase_start
             phase('execution')
-            from .obligation_index import obligation_index, reference_changes
+            from env_factory_v2.requirements.obligation_index import obligation_index, reference_changes
             index_manifest = obligation_index(compiled)
             save(folder / 'obligations.json', index_manifest)
             changes = reference_changes(previous_index, index_manifest) if previous_index is not None else None
@@ -186,7 +186,7 @@ def build(request, *, agent, output, source=None, repairs=1, docker=True, base_i
             save(output / 'progress.json', delivery)
             return delivery
         except ContractError as exc:
-            from .author_session import AuthorDraftError
+            from env_factory_v2.authoring.author_session import AuthorDraftError
             if isinstance(exc, AuthorDraftError):
                 recovery = copy.deepcopy(exc.recovery)
                 draft = recovery.pop('previous_source', None)

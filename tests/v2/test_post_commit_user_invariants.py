@@ -3,8 +3,8 @@ import copy
 import pytest
 
 from env_factory_v2.examples import transaction, ref, lit
-from env_factory_v2.runtime import Sandbox
-from env_factory_v2.contract import ContractError
+from env_factory_v2.execution.runtime import Sandbox
+from env_factory_v2.contracts.contract import ContractError
 
 
 def test_invariant_projects_consumption_without_premature_live_mutation():

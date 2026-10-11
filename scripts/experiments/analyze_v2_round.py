@@ -7,6 +7,7 @@ import json
 import statistics
 from collections import Counter, defaultdict
 from pathlib import Path
+from env_factory_v2.validation.gates import delivery_gates_pass
 
 
 def read(path):
@@ -50,16 +51,12 @@ def summarize(root):
         if sample['qualified']:
             delivery_path = root / f'sample-{number:02d}' / 'sandbox' / 'delivery.json'
             delivery = read(delivery_path)
-            expected_gates = {'structural_contract', 'joint_execution_and_counterexamples',
-                              'independent_business_challenge', 'deterministic_reset_and_replay',
-                              'container_execution'}
             container = delivery.get('container') or {}
             execution = container.get('execution') or {}
             if (sample.get('exit_code') != 0 or progress.get('qualified') is not True
                     or delivery.get('qualified') is not True
                     or delivery.get('platform_identity') != protocol['platform_identity']
-                    or set(delivery.get('gates', {})) != expected_gates
-                    or any(value is not True for value in delivery['gates'].values())
+                    or not delivery_gates_pass(delivery.get('gates', {}))
                     or execution.get('passed') is not True
                     or execution.get('http_api', {}).get('passed') is not True
                     or container.get('bundle_identity') != delivery.get('bundle_identity')

@@ -116,7 +116,7 @@ def test_generation_uses_only_supplied_scenes_for_sparse_forty_pack(tmp_path, mo
 
 
 def test_forty_case_freeze_is_accepted_by_runner_with_same_graph_evidence(tmp_path, monkeypatch):
-    from env_factory_v2.expressions import canonical
+    from env_factory_v2.contracts.expressions import canonical
     from measure_v2_natural import verify_assets
     path, pack = pack_file(tmp_path)
     roots = review_evidence(tmp_path, pack)

@@ -3,9 +3,9 @@ import copy
 import json
 from unittest.mock import Mock
 
-from env_factory_v2.challenge import challenge
-from env_factory_v2.communication_coverage import communication_coverage
-from env_factory_v2.contract import compile_contract
+from env_factory_v2.validation.challenge import challenge
+from env_factory_v2.validation.communication_coverage import communication_coverage
+from env_factory_v2.contracts.contract import compile_contract
 from env_factory_v2.examples import simple, lit
 
 

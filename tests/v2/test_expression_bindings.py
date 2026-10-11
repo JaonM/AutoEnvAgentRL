@@ -1,7 +1,7 @@
 import pytest
 
-from env_factory_v2.contract import validate_rule_links, free_row_fields
-from env_factory_v2.expressions import ContractError, evaluate, validate_expr
+from env_factory_v2.contracts.contract import validate_rule_links, free_row_fields
+from env_factory_v2.contracts.expressions import ContractError, evaluate, validate_expr
 
 
 def test_outer_project_key_survives_inner_expense_rows_and_reordering():

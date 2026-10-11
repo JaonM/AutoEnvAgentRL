@@ -2,11 +2,11 @@ import json
 import pytest
 from unittest.mock import patch
 
-from env_factory_v2.author_mcp import AuthorMCP
-from env_factory_v2.author_session import author_command, checked_source
-from env_factory_v2.contract import ContractError
+from env_factory_v2.authoring.author_mcp import AuthorMCP
+from env_factory_v2.authoring.author_session import author_command, checked_source
+from env_factory_v2.contracts.contract import ContractError
 from env_factory_v2.examples import direct
-from env_factory_v2.code_agent import NativeCodeAgent
+from env_factory_v2.native.code_agent import NativeCodeAgent
 
 
 def test_author_command_limits_tools_and_preserves_requested_model(tmp_path):
@@ -34,7 +34,7 @@ def test_native_generator_selects_host_tools_without_changing_judge_transport(tm
     agent = NativeCodeAgent(base_url='http://localhost:9999/v1', token='a'*24,
                             timeout=255, evidence_root=tmp_path)
     provenance = {'source_identity': 'test', 'model': 'gpt-6.1-sol'}
-    with patch('env_factory_v2.author_session.generate_in_session', return_value=(direct(), provenance)) as run:
+    with patch('env_factory_v2.authoring.author_session.generate_in_session', return_value=(direct(), provenance)) as run:
         result, _ = agent.generate({'goal': direct()['task']}, author_tools=True,
                                    feedback={'previous_source': direct(), 'error': 'actual failure'})
     assert result == direct()
@@ -52,7 +52,7 @@ def test_container_cannot_start_a_host_author_session(tmp_path):
 
 
 def test_incomplete_author_preserves_current_draft_and_failure_check(tmp_path):
-    from env_factory_v2.author_session import incomplete_draft
+    from env_factory_v2.authoring.author_session import incomplete_draft
     draft = {'environment': {'version': '1.0', 'id': 'partial'}}
     server = AuthorMCP(tmp_path / 'workbench', source=draft)
     server.dispatch({'id': 1, 'method': 'tools/call',
@@ -64,7 +64,7 @@ def test_incomplete_author_preserves_current_draft_and_failure_check(tmp_path):
 
 
 def test_stale_success_receipt_is_not_attached_to_new_draft(tmp_path):
-    from env_factory_v2.author_session import incomplete_draft
+    from env_factory_v2.authoring.author_session import incomplete_draft
     server = AuthorMCP(tmp_path / 'workbench', source=direct())
     server.dispatch({'id': 1, 'method': 'tools/call',
                      'params': {'name': 'check_contract', 'arguments': {}}})
@@ -78,7 +78,7 @@ def test_stale_success_receipt_is_not_attached_to_new_draft(tmp_path):
 
 
 def test_invalid_draft_is_not_used_as_repair_source(tmp_path):
-    from env_factory_v2.author_session import incomplete_draft
+    from env_factory_v2.authoring.author_session import incomplete_draft
     (tmp_path / 'workbench').mkdir()
     (tmp_path / 'workbench/draft.json').write_text('{"unexpected":true}')
     assert 'previous_source' not in incomplete_draft(tmp_path, 'failed').recovery
@@ -87,7 +87,7 @@ def test_invalid_draft_is_not_used_as_repair_source(tmp_path):
 def test_environment_only_draft_is_forwarded_to_next_author_session(tmp_path):
     agent = NativeCodeAgent(base_url='http://localhost:9999/v1', token='a'*24, evidence_root=tmp_path)
     partial = {'environment': {'version': '1.0', 'id': 'draft'}}
-    with patch('env_factory_v2.author_session.generate_in_session',
+    with patch('env_factory_v2.authoring.author_session.generate_in_session',
                return_value=(direct(), {'source_identity': 'test'})) as generate:
         agent.generate({'goal': 'test'}, author_tools=True, feedback={'previous_source': partial})
     assert generate.call_args.kwargs['previous_source'] == partial
@@ -95,7 +95,7 @@ def test_environment_only_draft_is_forwarded_to_next_author_session(tmp_path):
 
 def test_pipeline_hands_off_partial_work_within_existing_budget(tmp_path):
     from unittest.mock import Mock
-    from env_factory_v2.author_session import AuthorDraftError
+    from env_factory_v2.authoring.author_session import AuthorDraftError
     from env_factory_v2.pipeline import build
 
     partial = {'environment': {'version': '1.0', 'id': 'draft'}}
@@ -117,7 +117,7 @@ def test_pipeline_hands_off_partial_work_within_existing_budget(tmp_path):
 def test_completed_but_unfinished_session_raises_recoverable_draft(tmp_path):
     from pathlib import Path
     from unittest.mock import Mock
-    from env_factory_v2.author_session import AuthorDraftError, generate_in_session
+    from env_factory_v2.authoring.author_session import AuthorDraftError, generate_in_session
 
     draft = {'version': '2.0', 'id': 'unfinished'}
     def process(args, **kwargs):
@@ -128,7 +128,7 @@ def test_completed_but_unfinished_session_raises_recoverable_draft(tmp_path):
         (folder / 'events.jsonl').write_text(json.dumps({'type': 'turn.completed'}) + '\n')
         (folder / 'completion.json').write_text('{"completed":false}')
         return Mock(returncode=0)
-    with patch('env_factory_v2.author_session.subprocess.Popen', side_effect=process):
+    with patch('env_factory_v2.authoring.author_session.subprocess.Popen', side_effect=process):
         with pytest.raises(AuthorDraftError) as error:
             generate_in_session({'goal': 'test'}, evidence_root=tmp_path)
     assert error.value.recovery['previous_source'] == draft
@@ -140,7 +140,7 @@ def test_interrupted_author_recovers_only_audited_progress(tmp_path, case):
     from pathlib import Path
     import subprocess
     from unittest.mock import Mock
-    from env_factory_v2.author_session import AuthorDraftError, generate_in_session
+    from env_factory_v2.authoring.author_session import AuthorDraftError, generate_in_session
 
     draft = direct() if case == 'checked' else {'environment': {'version': '1.0', 'id': 'partial'}}
     previous = draft if case == 'unchanged' else None
@@ -162,8 +162,8 @@ def test_interrupted_author_recovers_only_audited_progress(tmp_path, case):
         (folder / 'events.jsonl').write_text('\n'.join(json.dumps(e) for e in events) + '\n'
                                             + ('{"type":' if case == 'truncated' else ''))
         return Mock(pid=123, returncode=-15, communicate=Mock(side_effect=subprocess.TimeoutExpired('codex', 1)))
-    with patch('env_factory_v2.author_session.subprocess.Popen', side_effect=process), \
-         patch('env_factory_v2.author_session.os.killpg') as kill:
+    with patch('env_factory_v2.authoring.author_session.subprocess.Popen', side_effect=process), \
+         patch('env_factory_v2.authoring.author_session.os.killpg') as kill:
         expected = AuthorDraftError if case in {'partial', 'checked'} else (ContractError if case == 'forbidden'
                    else json.JSONDecodeError if case == 'truncated' else RuntimeError)
         with pytest.raises(expected) as error:
@@ -181,7 +181,7 @@ def test_interrupted_author_recovers_only_audited_progress(tmp_path, case):
 
 def test_interrupted_draft_does_not_increase_pipeline_repair_budget(tmp_path):
     from unittest.mock import Mock
-    from env_factory_v2.author_session import AuthorDraftError
+    from env_factory_v2.authoring.author_session import AuthorDraftError
     from env_factory_v2.pipeline import build
     draft = {'environment': {'version': '1.0', 'id': 'partial'}}
     agent = Mock()
@@ -198,7 +198,7 @@ def test_production_generation_defaults_to_workbench_and_never_falls_back(tmp_pa
     agent = NativeCodeAgent(base_url='http://localhost:9999/v1', token='a'*24,
                             timeout=255, evidence_root=tmp_path)
     agent.ask = Mock(side_effect=AssertionError('legacy transport reached'))
-    with patch('env_factory_v2.author_session.generate_in_session',
+    with patch('env_factory_v2.authoring.author_session.generate_in_session',
                side_effect=RuntimeError('workbench unavailable')) as run:
         with pytest.raises(RuntimeError, match='workbench unavailable'):
             agent.generate({'goal':'test'})

@@ -1,9 +1,9 @@
 """Review answer obligations before generation, independent of candidate layouts."""
 import copy
 import hashlib
-from env_factory_v2.expressions import canonical
-from env_factory_v2.code_agent import object_schema
-from env_factory_v2.contract import require
+from env_factory_v2.contracts.expressions import canonical
+from env_factory_v2.native.code_agent import object_schema
+from env_factory_v2.contracts.contract import require
 from v2_natural_semantics import value_shape
 from v2_answer_members import member_paths, validate_members
 

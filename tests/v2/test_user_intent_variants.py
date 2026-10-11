@@ -2,10 +2,10 @@ import copy
 
 import pytest
 
-from env_factory_v2.contract import compile_contract
+from env_factory_v2.contracts.contract import compile_contract
 from env_factory_v2.examples import transaction
-from env_factory_v2.expressions import ContractError
-from env_factory_v2.verification import authored_cases, run_scenario, replay_identity
+from env_factory_v2.contracts.expressions import ContractError
+from env_factory_v2.validation.verification import authored_cases, run_scenario, replay_identity
 
 
 def test_private_decline_variant_blocks_write_and_preserves_base_fixture():
@@ -45,7 +45,7 @@ def test_probe_overrides_materialize_without_mutating_parent():
 def test_independent_challenge_executes_private_decline_and_rejects_unknown_key():
     import json
     from types import SimpleNamespace
-    from env_factory_v2.challenge import _execute_case
+    from env_factory_v2.validation.challenge import _execute_case
 
     compiled = compile_contract(transaction())
     scenarios = {s['id']: s for s in compiled['source']['scenarios']}
@@ -64,7 +64,7 @@ def test_independent_challenge_executes_private_decline_and_rejects_unknown_key(
 
 def test_preflight_reports_effective_inputs_for_invalid_negative_fixture():
     from env_factory_v2.examples import simple
-    from env_factory_v2.verification import preflight_recipes
+    from env_factory_v2.validation.verification import preflight_recipes
     source = simple()
     source['probes'].append({'id': 'invalid_mismatch', 'scenario': 'correct',
         'rule_ids': ['size_matches'], 'mutations': [], 'user_overrides': {'size': 'L'},

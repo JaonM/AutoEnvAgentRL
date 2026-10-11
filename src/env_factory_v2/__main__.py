@@ -6,13 +6,13 @@ import json
 import os
 from pathlib import Path
 
-from .code_agent import NativeCodeAgent
-from .contract import compile_contract
-from .examples import EXAMPLES
-from .expressions import canonical
-from .pipeline import build
-from .server import serve
-from .verification import qualify
+from env_factory_v2.native.code_agent import NativeCodeAgent
+from env_factory_v2.contracts.contract import compile_contract
+from env_factory_v2.examples import EXAMPLES
+from env_factory_v2.contracts.expressions import canonical
+from env_factory_v2.pipeline import build
+from env_factory_v2.delivery.server import serve
+from env_factory_v2.validation.verification import qualify
 
 
 def environment_agent():
@@ -57,7 +57,7 @@ def main():
                                  help='Explicitly resample semantic judgments during replay; disagreements fail the audit')
     args = parser.parse_args()
     if args.command == 'compile-definition':
-        from .business_definition import compile_definition
+        from env_factory_v2.contracts.business_definition import compile_definition
         environment = json.loads(args.environment.read_text())
         task = json.loads(args.task.read_text())
         compiled, provenance = compile_definition(environment, task)
@@ -85,10 +85,13 @@ def main():
         result = build(request, agent=agent, output=args.output, source=source, repairs=args.repairs,
                        docker=not args.without_docker, base_image=args.base_image)
         print(canonical(result))
-        return 0 if result.get('qualified') or result.get('gates', {}).get('joint_execution_and_counterexamples') and args.without_docker else 1
+        gates = result.get('gates', {})
+        executable = (gates.get('joint_execution_and_counterexamples') is True
+                      and gates.get('deterministic_reset_and_replay') is True)
+        return 0 if result.get('qualified') or executable and args.without_docker else 1
     source = json.loads(args.contract.read_text())
     if args.command == 'certify-training':
-        from .training import certify
+        from env_factory_v2.delivery.training import certify
         print(canonical(certify(args.contract.parent)))
         return 0
     agent = environment_agent()
@@ -112,7 +115,7 @@ def main():
                               compact=args.command == 'container-check')
     executable = report['gates']['joint_execution_and_counterexamples'] and report['gates']['deterministic_reset_and_replay']
     if args.command == 'container-check':
-        from .api_verification import verify_api
+        from env_factory_v2.validation.api_verification import verify_api
         api = verify_api(compiled['source'], report, agent=agent)
         print(canonical({'passed': executable and report['gates']['independent_business_challenge'],
                          'contract_identity': compiled['identity'], 'evidence_identity': report['evidence_identity'],

@@ -1,7 +1,7 @@
 """Closed record layouts: paths only, with host-owned scope and enum aliases."""
 import copy
 
-from env_factory_v2.contract import require
+from env_factory_v2.contracts.contract import require
 
 
 def record_projection(rows, layout, descriptor, *, replacement=None):
@@ -81,7 +81,7 @@ def record_projection(rows, layout, descriptor, *, replacement=None):
 
 def selected_boolean(rows, descriptor):
     """Validate the entire independently scoped record set before selection."""
-    from env_factory_v2.expressions import canonical
+    from env_factory_v2.contracts.expressions import canonical
     identity, field = descriptor['identity'], descriptor['fields'][0]
     expected = descriptor['complete_records']
     require(all(type(row[field]) is bool for row in rows), 'record qualification requires strict booleans')

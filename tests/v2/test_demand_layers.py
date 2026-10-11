@@ -1,7 +1,7 @@
 import copy
 import pytest
-from env_factory_v2.demand import layered_demand, validate_demand
-from env_factory_v2.contract import compile_contract, ContractError
+from env_factory_v2.requirements.demand import layered_demand, validate_demand
+from env_factory_v2.contracts.contract import compile_contract, ContractError
 from env_factory_v2.examples import simple
 
 

@@ -5,11 +5,11 @@ from unittest.mock import Mock
 import pytest
 
 from env_factory.code_agent_runtime import cli_schema
-from env_factory_v2.code_agent import NativeCodeAgent
-from env_factory_v2.contract import ContractError, compile_contract
+from env_factory_v2.native.code_agent import NativeCodeAgent
+from env_factory_v2.contracts.contract import ContractError, compile_contract
 from env_factory_v2.examples import direct, simple, retrieval, transaction, long_chain, complex_transaction
-from env_factory_v2.json_tree import TREE_SCHEMA, encode_response, decode_response
-from env_factory_v2.verification import preflight_recipes
+from env_factory_v2.native.json_tree import TREE_SCHEMA, encode_response, decode_response
+from env_factory_v2.validation.verification import preflight_recipes
 
 
 @pytest.mark.parametrize('factory', [direct, simple, retrieval, transaction, long_chain, complex_transaction])

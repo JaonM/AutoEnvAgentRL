@@ -45,7 +45,7 @@ def load_tasks(*, sandbox='', manifest=''):
             raise ValueError('task weight must be finite and positive')
         candidate = (base / entry['sandbox']).resolve()
         if (candidate / 'contract.json').is_file() and (candidate / 'delivery.json').is_file():
-            from env_factory_v2.training import verify_training_bundle
+            from env_factory_v2.delivery.training import verify_training_bundle
             certificate = verify_training_bundle(candidate)
             root, identity = candidate, certificate['identity']
             public = json.loads((candidate / 'public.json').read_text())

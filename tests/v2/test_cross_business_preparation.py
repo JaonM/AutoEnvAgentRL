@@ -88,8 +88,8 @@ def test_export_is_reviewable_and_cannot_be_mistaken_for_frozen_measurement(tmp_
 
 
 def test_explicit_graph_relations_are_public_and_reject_broken_business_links():
-    from env_factory_v2.business_graph import validate_relations
-    from env_factory_v2.contract import ContractError
+    from env_factory_v2.requirements.business_graph import validate_relations
+    from env_factory_v2.contracts.contract import ContractError
     rows = cases()
     count = 0
     for row in rows:
@@ -106,7 +106,7 @@ def test_explicit_graph_relations_are_public_and_reject_broken_business_links():
 
 
 def test_graph_install_handles_empty_tables_and_preserves_declared_schema():
-    from env_factory_v2.business_graph import install
+    from env_factory_v2.requirements.business_graph import install
     class Session:
         def __enter__(self): return self
         def __exit__(self, *args): pass
@@ -124,7 +124,7 @@ def test_graph_install_handles_empty_tables_and_preserves_declared_schema():
 
 @pytest.mark.parametrize('identity', [9, 15, 20])
 def test_independent_consent_preferences_match_user_simulator_fact_interface(identity):
-    from env_factory_v2.user_simulator import UserSimulator
+    from env_factory_v2.execution.user_simulator import UserSimulator
     from env_factory_v2.examples import obj
     row = cases()[identity - 1]
     facts = row['user']['facts']

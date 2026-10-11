@@ -1,6 +1,6 @@
 import pytest
 
-from env_factory_v2.expressions import ContractError, evaluate, validate_expr
+from env_factory_v2.contracts.expressions import ContractError, evaluate, validate_expr
 
 
 def run(operator, *values):
@@ -55,8 +55,8 @@ def test_integer_guard_and_empty_sum():
 
 def test_exact_billing_contract_rewards_correct_integer_and_rejects_early_rounding():
     from env_factory_v2.examples import base, answer, lit, scenario
-    from env_factory_v2.runtime import Sandbox
-    from env_factory_v2.reward import grade
+    from env_factory_v2.execution.runtime import Sandbox
+    from env_factory_v2.execution.reward import grade
     source = base('exact_segment_billing', 'direct_response',
         '前10天按1000分/30天计费，后20天按2000分/30天计费；精确累加后统一向下取整。')
     source['rules'] = [{'id': 'billing', 'public': source['task'], 'predicate': lit(True)}]

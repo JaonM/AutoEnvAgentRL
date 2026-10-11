@@ -6,8 +6,8 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
 
-from env_factory_v2.code_agent import NativeCodeAgent, object_schema
-from env_factory_v2.server import serve
+from env_factory_v2.native.code_agent import NativeCodeAgent, object_schema
+from env_factory_v2.delivery.server import serve
 
 
 def main():

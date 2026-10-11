@@ -3,9 +3,9 @@ import json
 
 import pytest
 
-from env_factory_v2 import training
+from env_factory_v2.delivery import training
 from env_factory_v2.examples import transaction, lit, ref
-from env_factory_v2.expressions import evaluate
+from env_factory_v2.contracts.expressions import evaluate
 from rl.environments.v2 import V2Episode
 
 

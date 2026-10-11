@@ -1,9 +1,9 @@
 import pytest
 
-from env_factory_v2.contract import compile_contract
+from env_factory_v2.contracts.contract import compile_contract
 from env_factory_v2.examples import long_chain
-from env_factory_v2.expressions import ContractError
-from env_factory_v2.runtime import Sandbox
+from env_factory_v2.contracts.expressions import ContractError
+from env_factory_v2.execution.runtime import Sandbox
 
 
 def source():

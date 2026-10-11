@@ -102,7 +102,7 @@ def authorized_call_context(world, call_id, authorization_index):
     if (tool['kind'] != 'transaction' or tool['authorization'] != decision['stage']
             or decision['proposal'] != {'tool': call['tool'], 'arguments': call['arguments']}):
         raise ValueError('Committed call differs from exact authorized proposal')
-    from env_factory_v2.expressions import canonical
+    from env_factory_v2.contracts.expressions import canonical
     disclosed = {}
     for index, event in enumerate(world.trace[:call_index]):
         after_approval = index > authorization_index
@@ -136,7 +136,7 @@ def target_attempts(world, table_id, identity):
     a literal key or direct args key path can establish their intended target.
     Other expressions are explicitly unresolved rather than executed as truth.
     """
-    from env_factory_v2.expressions import canonical, path
+    from env_factory_v2.contracts.expressions import canonical, path
     attempts = []
     for index, event in enumerate(world.trace):
         if event.get('kind') != 'tool' or world.tools[event['tool']]['kind'] != 'transaction':
@@ -179,7 +179,7 @@ def individual_submission_times(world, table_id, identities):
 
 def target_authorizations(world, table_id, identity):
     """Bind approvals/refusals to intended rows even when no write is attempted."""
-    from env_factory_v2.expressions import canonical, path
+    from env_factory_v2.contracts.expressions import canonical, path
     matched = []
     for decision in authorization_decisions(world):
         proposal = decision['proposal']

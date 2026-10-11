@@ -2,11 +2,11 @@ import copy
 
 import pytest
 
-from env_factory_v2.contract import compile_contract
+from env_factory_v2.contracts.contract import compile_contract
 from env_factory_v2.examples import long_chain, lit
-from env_factory_v2.expressions import ContractError
-from env_factory_v2.scenarios import expand_scenarios
-from env_factory_v2.verification import preflight_recipes
+from env_factory_v2.contracts.expressions import ContractError
+from env_factory_v2.execution.scenarios import expand_scenarios
+from env_factory_v2.validation.verification import preflight_recipes
 
 
 def test_inherited_negative_runs_full_trajectory_with_unchanged_expectation():

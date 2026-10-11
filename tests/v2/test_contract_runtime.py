@@ -8,15 +8,15 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-from env_factory_v2.contract import ContractError, compile_contract
+from env_factory_v2.contracts.contract import ContractError, compile_contract
 from env_factory_v2.examples import EXAMPLES, direct, simple, retrieval, transaction, lit, ref, answer
-from env_factory_v2.export import export_bundle, verify_bundle
-from env_factory_v2.reward import equivalent, grade
-from env_factory_v2.runtime import Sandbox
-from env_factory_v2.server import serve
-from env_factory_v2.user_simulator import validate_language_event
-from env_factory_v2.verification import qualify, run_scenario
-from env_factory_v2.api_verification import verify_api
+from env_factory_v2.delivery.export import export_bundle, verify_bundle
+from env_factory_v2.execution.reward import equivalent, grade
+from env_factory_v2.execution.runtime import Sandbox
+from env_factory_v2.delivery.server import serve
+from env_factory_v2.execution.user_simulator import validate_language_event
+from env_factory_v2.validation.verification import qualify, run_scenario
+from env_factory_v2.validation.api_verification import verify_api
 
 
 @pytest.mark.parametrize('factory', list(EXAMPLES.values()))
@@ -104,7 +104,7 @@ def test_descending_query_keeps_nulls_last():
 
 
 def test_boolean_guard_short_circuits_unavailable_optional_fact():
-    from env_factory_v2.expressions import evaluate
+    from env_factory_v2.contracts.expressions import evaluate
     assert evaluate({'and': [lit(False), ref('user.missing')]}, {'user': {}}) is False
     assert evaluate({'or': [lit(True), ref('user.missing')]}, {'user': {}}) is True
 
@@ -409,7 +409,7 @@ def test_delivery_content_identity_detects_modified_runtime(tmp_path):
     compiled, report = qualify(direct())
     export_bundle(compiled, report, tmp_path / 'sandbox')
     assert verify_bundle(tmp_path / 'sandbox')['qualified'] is False
-    (tmp_path / 'sandbox/env_factory_v2/runtime.py').write_text('changed')
+    (tmp_path / 'sandbox/env_factory_v2/execution/runtime.py').write_text('changed')
     with pytest.raises(ContractError, match='content changed'):
         verify_bundle(tmp_path / 'sandbox')
 

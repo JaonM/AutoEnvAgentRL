@@ -5,8 +5,8 @@ import hashlib
 import json
 import shutil
 from pathlib import Path
-from env_factory_v2.code_agent import NativeCodeAgent, object_schema
-from env_factory_v2.demand import layered_demand
+from env_factory_v2.native.code_agent import NativeCodeAgent, object_schema
+from env_factory_v2.requirements.demand import layered_demand
 from prepare_v2_natural_pilot import write
 from measure_v2_natural import verify_assets
 

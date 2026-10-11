@@ -2,11 +2,11 @@ import copy
 
 import pytest
 
-from env_factory_v2.contract import ContractError
+from env_factory_v2.contracts.contract import ContractError
 from env_factory_v2.examples import transaction, ref, lit
-from env_factory_v2.runtime import Sandbox
-from env_factory_v2.reward import grade
-from env_factory_v2.verification import run_scenario
+from env_factory_v2.execution.runtime import Sandbox
+from env_factory_v2.execution.reward import grade
+from env_factory_v2.validation.verification import run_scenario
 
 
 def branched_transfer():

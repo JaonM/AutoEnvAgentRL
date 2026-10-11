@@ -2,10 +2,10 @@ import copy
 
 import pytest
 
-from env_factory_v2.contract import compile_contract, ContractError
+from env_factory_v2.contracts.contract import compile_contract, ContractError
 from env_factory_v2.examples import direct, simple, transaction
-from env_factory_v2.tool_interference import augment
-from env_factory_v2.verification import preflight_recipes
+from env_factory_v2.requirements.tool_interference import augment
+from env_factory_v2.validation.verification import preflight_recipes
 
 
 def test_executable_partial_views_preserve_task_and_hide_selection_labels():

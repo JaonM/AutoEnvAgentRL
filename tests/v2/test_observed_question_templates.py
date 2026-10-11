@@ -1,10 +1,10 @@
 import copy
 import pytest
-from env_factory_v2.contract import compile_contract, validate_question
+from env_factory_v2.contracts.contract import compile_contract, validate_question
 from env_factory_v2.examples import retrieval
-from env_factory_v2.runtime import Sandbox
-from env_factory_v2.verification import run_scenario
-from env_factory_v2.expressions import ContractError
+from env_factory_v2.execution.runtime import Sandbox
+from env_factory_v2.validation.verification import run_scenario
+from env_factory_v2.contracts.expressions import ContractError
 
 
 def source():

@@ -18,8 +18,8 @@ from pathlib import Path
 from measure_v2_natural import (PROJECT, read, save, digest, verify_assets, fixture_alignment,
     execute_reference, observation_checks, NativeCodeAgent, require, compile_contract,
     certify, V2Episode, equivalent, canonical, sorted_data)
-from env_factory_v2.expressions import evaluate
-from env_factory_v2.reward import grade
+from env_factory_v2.contracts.expressions import evaluate
+from env_factory_v2.execution.reward import grade
 from v2_natural_oracle import expected
 from v2_natural_semantics import schema, normalize, rename_observations, wrong_projection, fill_projections
 
@@ -133,7 +133,7 @@ def audit_sample(row, assets, original, root, connection, reuse=None):
     compiled = fixture_alignment(read(bundle / 'contract.json'), row, business, user)
     truth = canonical_truth(spec, business, user)
     aliases = {r['id']: r['name'] for r in spec['params'].get('candidates', [])}
-    from env_factory_v2.fixtures import review_contract
+    from env_factory_v2.contracts.fixtures import review_contract
     source, previews = review_contract(compiled['source'])
     agent = NativeCodeAgent.from_connection(connection, evidence_root=root / 'native')
     mapping_path = reuse / f'sample-{row["id"]:02d}/mapping.json' if reuse else None
@@ -170,7 +170,7 @@ def audit_sample(row, assets, original, root, connection, reuse=None):
             selected, checks = scenario, current
             break
     require(selected is not None, 'no independently correct baseline reference execution')
-    from env_factory_v2.contract import ContractError
+    from env_factory_v2.contracts.contract import ContractError
     for entry in entries:
         world = execute_reference(compiled, selected)
         answer = wrong_projection(reference_answer(world, selected), entry, record_roles=truth.get('record_roles'))

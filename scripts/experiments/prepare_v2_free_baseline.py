@@ -7,9 +7,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 from neo4j import GraphDatabase
 import os
-from env_factory_v2.business_graph import install, retrieve
-from env_factory_v2.code_agent import NativeCodeAgent, object_schema
-from env_factory_v2.demand import layered_demand
+from env_factory_v2.requirements.business_graph import install, retrieve
+from env_factory_v2.native.code_agent import NativeCodeAgent, object_schema
+from env_factory_v2.requirements.demand import layered_demand
 from prepare_v2_natural_pilot import cases, write
 
 SCENES = [

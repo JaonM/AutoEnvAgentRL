@@ -3,10 +3,10 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from env_factory_v2.contract import ContractError
+from env_factory_v2.contracts.contract import ContractError
 from env_factory_v2.examples import direct
 from env_factory_v2.pipeline import build
-from env_factory_v2.verification import qualify, attach_independent_review
+from env_factory_v2.validation.verification import qualify, attach_independent_review
 
 
 def review(compiled, passed=True):
@@ -35,7 +35,7 @@ def test_review_cannot_be_attached_to_changed_or_unrelated_execution(change):
 def test_failed_execution_does_not_hide_independent_contract_findings(tmp_path):
     import hashlib
     import json
-    from env_factory_v2.expressions import canonical
+    from env_factory_v2.contracts.expressions import canonical
     source=direct();c,r=qualify(source)
     r['gates']['joint_execution_and_counterexamples']=False
     r.pop('evidence_identity')

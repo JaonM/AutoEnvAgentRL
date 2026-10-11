@@ -6,7 +6,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts/experiments'))
 from v2_natural_semantics import fill_projections, normalize
 from v2_library_oracle import expected
-from env_factory_v2.expressions import ContractError
+from env_factory_v2.contracts.expressions import ContractError
 
 
 ENTRY = {'role': 'eligible', 'selectors': [{'field': 'ids', 'path': ''}],

@@ -1,8 +1,8 @@
 import copy
 
-from env_factory_v2.contract import compile_contract
+from env_factory_v2.contracts.contract import compile_contract
 from env_factory_v2.examples import long_chain, lit, ref
-from env_factory_v2.verification import run_scenario
+from env_factory_v2.validation.verification import run_scenario
 
 
 def test_post_write_observation_requires_real_current_read_after_commit():

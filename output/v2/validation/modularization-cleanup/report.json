@@ -1,0 +1,91 @@
+{
+  "status": "implemented_and_regression_verified",
+  "packages": {
+    "native": [
+      "code_agent",
+      "json_syntax",
+      "json_tree",
+      "response_format"
+    ],
+    "contracts": [
+      "business_definition",
+      "contract",
+      "expressions",
+      "fixtures",
+      "integer_cover",
+      "key_provenance",
+      "transaction_targets"
+    ],
+    "requirements": [
+      "business_graph",
+      "demand",
+      "obligation_index",
+      "tool_interference"
+    ],
+    "authoring": [
+      "author_constraints",
+      "author_mcp",
+      "author_session",
+      "author_workbench",
+      "repair",
+      "repair_evidence"
+    ],
+    "execution": [
+      "free_dialogue",
+      "reward",
+      "runtime",
+      "scenarios",
+      "transaction_semantics",
+      "user_simulator"
+    ],
+    "delivery": [
+      "export",
+      "server",
+      "training"
+    ],
+    "validation": [
+      "api_verification",
+      "challenge",
+      "communication_coverage",
+      "gates",
+      "input_diagnostics",
+      "judgment_reasons",
+      "process_diagnostics",
+      "requirement_review",
+      "temporal_diagnostics",
+      "verification"
+    ]
+  },
+  "implementation_cleanup": [
+    "Replaced three flat package scans with a shared recursive inventory for export, platform identity and semantic evidence cache identity.",
+    "Moved internal modules to responsibility packages and updated maintained callers directly; no forwarding modules added."
+  ],
+  "gate_cleanup": [
+    "Removed always-true structural_contract from new reports; compilation still rejects invalid contracts.",
+    "Execution expectations and deterministic replay now own separate predicates; either failure still blocks delivery.",
+    "Centralized strict delivery gate validation, including historical structural flag reading.",
+    "CLI without-Docker exit status requires both execution expectations and replay after predicate separation."
+  ],
+  "preserved": [
+    "Independent business challenge",
+    "Authorization, atomicity, state integrity and reward discrimination",
+    "Container execution and HTTP conformance",
+    "Training adapter, privacy and dependency identity checks",
+    "Historical immutable output evidence"
+  ],
+  "validation": {
+    "command": "uv run pytest -q tests/v2 --tb=short",
+    "passed": 990,
+    "seconds": 21.46,
+    "export_smoke": "Exported CLI runs with -S -B and empty PYTHONPATH outside the checkout; manifest unchanged.",
+    "fingerprint_regression": "Nested changes and duplicate basenames are tracked independently.",
+    "gate_regression": "Missing, false and unknown gates rejected; historical structural flag remains readable."
+  },
+  "limitations": [
+    "Internal Python import paths changed; root public API and CLI retained.",
+    "Existing implementation-bound certificates require requalification.",
+    "No new native/Docker pipeline measurement or yield round; no measured speed/yield improvement claimed.",
+    "Module organization does not eliminate all pre-existing cross-package dependencies.",
+    "Legacy generation diagnostic and response codecs remain explicitly supported; no wholesale deletion of historical diagnostic functionality."
+  ]
+}

@@ -1,8 +1,8 @@
 """Validate evaluator projection structure without comparing to oracle values."""
 import copy
 
-from env_factory_v2.code_agent import object_schema
-from env_factory_v2.contract import ContractError, require
+from env_factory_v2.native.code_agent import object_schema
+from env_factory_v2.contracts.contract import ContractError, require
 from v2_natural_semantics import COLLECTION_MAPPING_INSTRUCTIONS, path_segments, project
 
 

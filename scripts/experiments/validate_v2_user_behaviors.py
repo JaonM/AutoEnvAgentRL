@@ -4,11 +4,11 @@ import copy
 import json
 from pathlib import Path
 
-from env_factory_v2.code_agent import NativeCodeAgent
+from env_factory_v2.native.code_agent import NativeCodeAgent
 from env_factory_v2.examples import simple, transaction
-from env_factory_v2.free_dialogue import DialogueUser, converse
-from env_factory_v2.runtime import Sandbox
-from env_factory_v2.expressions import ContractError
+from env_factory_v2.execution.free_dialogue import DialogueUser, converse
+from env_factory_v2.execution.runtime import Sandbox
+from env_factory_v2.contracts.expressions import ContractError
 
 
 def run_case(name, agent):

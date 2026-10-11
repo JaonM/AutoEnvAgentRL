@@ -3,12 +3,12 @@ import copy
 
 import pytest
 
-from env_factory_v2.contract import compile_contract
+from env_factory_v2.contracts.contract import compile_contract
 from env_factory_v2.examples import transaction, lit, ref
-from env_factory_v2.expressions import ContractError, evaluate
-from env_factory_v2.runtime import Sandbox
-from env_factory_v2.transaction_semantics import TransactionUnavailable
-from env_factory_v2.transaction_targets import project_transaction
+from env_factory_v2.contracts.expressions import ContractError, evaluate
+from env_factory_v2.execution.runtime import Sandbox
+from env_factory_v2.execution.transaction_semantics import TransactionUnavailable
+from env_factory_v2.contracts.transaction_targets import project_transaction
 
 
 def fixture():

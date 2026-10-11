@@ -5,7 +5,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts/experiments'))
 from v2_natural_semantics import normalize, rename_observations, wrong_projection, fill_projections
-from env_factory_v2.contract import ContractError
+from env_factory_v2.contracts.contract import ContractError
 
 
 def entry(role, selectors, **kwargs):
@@ -100,7 +100,7 @@ def test_correct_changed_answer_preserves_nested_layout_and_integer_schema():
 def test_receipt_evidence_does_not_override_explicit_postquery_requirement():
     from audit_v2_natural import audited_observations
     from env_factory_v2.examples import transaction
-    from env_factory_v2.runtime import Sandbox
+    from env_factory_v2.execution.runtime import Sandbox
     world = Sandbox(transaction())
     world.call('accounts', {}, call_id='before')
     args = {'from_id': {'$result': 'before', 'path': 'items.0.id'},

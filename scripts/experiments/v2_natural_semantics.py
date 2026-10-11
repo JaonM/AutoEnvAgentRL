@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import copy
 
-from env_factory_v2.code_agent import object_schema
-from env_factory_v2.contract import require
+from env_factory_v2.native.code_agent import object_schema
+from env_factory_v2.contracts.contract import require
 
 
 COLLECTION_MAPPING_INSTRUCTIONS = (
@@ -23,7 +23,7 @@ COLLECTION_MAPPING_INSTRUCTIONS = (
 
 def value_shape(value):
     """Describe canonical field structure without revealing oracle answer values."""
-    from env_factory_v2.expressions import canonical
+    from env_factory_v2.contracts.expressions import canonical
     if isinstance(value, dict):
         return {'type': 'object', 'properties': {k: value_shape(v) for k, v in value.items()}}
     if isinstance(value, list):
@@ -111,7 +111,7 @@ def project(answer, entry):
                 'collection transforms require a native collection')
         require(not (exclusions and columns), 'collection transforms cannot be combined')
     if exclusions:
-        from env_factory_v2.expressions import canonical
+        from env_factory_v2.contracts.expressions import canonical
         excluded = []
         for selector in exclusions:
             require(selector['field'] in answer, 'exclusion answer field missing')
@@ -218,7 +218,7 @@ def wrong_projection(answer, entry, *, record_roles=None):
     """Change one actual projected value, preserving the surrounding layout."""
     from v2_natural_oracle import wrong_value
     if entry.get('exclude_selectors') or entry.get('columns'):
-        from env_factory_v2.expressions import canonical
+        from env_factory_v2.contracts.expressions import canonical
         original = canonical(project(answer, entry))
         # Alter an actual primitive leaf, never a computed expected answer. Try
         # all selected records so an excluded first item cannot hide the mutation.
@@ -298,7 +298,7 @@ def fill_projections(answer, entries, truth, *, name_aliases=None, set_membershi
     for e in entries:
         value = copy.deepcopy(truth[e['role']])
         if e.get('exclude_selectors') or e.get('columns'):
-            from env_factory_v2.expressions import canonical
+            from env_factory_v2.contracts.expressions import canonical
             observed = project(result, e)
             require(isinstance(value, list), 'collection truth must be a list')
             if canonical(sorted(observed, key=canonical)) != canonical(sorted(value, key=canonical)):

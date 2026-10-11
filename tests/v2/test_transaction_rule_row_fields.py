@@ -1,8 +1,8 @@
 import pytest
 
-from env_factory_v2.contract import compile_contract, free_row_fields
+from env_factory_v2.contracts.contract import compile_contract, free_row_fields
 from env_factory_v2.examples import transaction, ref, lit
-from env_factory_v2.expressions import ContractError
+from env_factory_v2.contracts.expressions import ContractError
 
 
 def test_collection_rows_do_not_become_operation_row_requirements():

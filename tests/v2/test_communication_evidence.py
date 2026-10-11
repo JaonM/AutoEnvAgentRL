@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts/experiments'))
 from v2_communication_evidence import before_choice_messages, validate_delivery, communication_checks
-from env_factory_v2.expressions import ContractError
+from env_factory_v2.contracts.expressions import ContractError
 
 SITES = [{'id':'S1','name':'家附近'}, {'id':'S2','name':'公司附近'}]
 

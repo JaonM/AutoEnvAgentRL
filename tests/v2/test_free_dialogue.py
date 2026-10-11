@@ -4,9 +4,9 @@ from unittest.mock import Mock
 import pytest
 
 from env_factory_v2.examples import simple, transaction
-from env_factory_v2.free_dialogue import DialogueUser, converse
-from env_factory_v2.runtime import Sandbox
-from env_factory_v2.expressions import ContractError
+from env_factory_v2.execution.free_dialogue import DialogueUser, converse
+from env_factory_v2.execution.runtime import Sandbox
+from env_factory_v2.contracts.expressions import ContractError
 
 
 def world(source=None):
@@ -142,7 +142,7 @@ def test_http_free_interface_hides_stages_and_blocks_structured_mutation():
     import threading
     from urllib.request import Request, urlopen
     from urllib.error import HTTPError
-    from env_factory_v2.server import serve
+    from env_factory_v2.delivery.server import serve
     agent = native({'reply': 'M码', 'events': [{'stage': 'size', 'action': 'respond'}]}, ok())
     server = serve(simple(), port=0, user_mode='free_dialogue', user_agent_factory=lambda _: agent)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -171,8 +171,9 @@ def test_http_free_interface_hides_stages_and_blocks_structured_mutation():
 
 def test_training_adapter_defaults_free_dialogue_and_restores_private_history(tmp_path, monkeypatch):
     import json
-    from env_factory_v2 import server, training
-    from env_factory_v2.code_agent import NativeCodeAgent
+    from env_factory_v2.delivery import server
+    from env_factory_v2.delivery import training
+    from env_factory_v2.native.code_agent import NativeCodeAgent
     from rl.environments.v2 import V2Episode
     (tmp_path / 'contract.json').write_text(json.dumps(simple()))
     (tmp_path / 'manifest.json').write_text(json.dumps({'bundle_identity': 'unit-test-only'}))

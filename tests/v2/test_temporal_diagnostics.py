@@ -3,10 +3,10 @@ from unittest.mock import Mock
 
 import pytest
 
-from env_factory_v2.contract import compile_contract, ContractError
+from env_factory_v2.contracts.contract import compile_contract, ContractError
 from env_factory_v2.examples import transaction, lit, ref
-from env_factory_v2.temporal_diagnostics import temporal_diagnostics
-from env_factory_v2.author_workbench import AuthorWorkbench
+from env_factory_v2.validation.temporal_diagnostics import temporal_diagnostics
+from env_factory_v2.authoring.author_workbench import AuthorWorkbench
 
 
 def source():
