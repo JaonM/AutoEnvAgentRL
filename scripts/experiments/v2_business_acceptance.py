@@ -157,6 +157,33 @@ def state_counterexamples(compiled, scenario, truth, judge):
     return checks
 
 
+def prepare_branch_answer(answer, truth, entries, aliases):
+    """Fail visibly on ambiguous inverses before spending calls on reward probes.
+
+    A mismatch does not locate the defect: the evaluator projection, reference
+    answer, or contract may be wrong. Preserve evidence instead of rewriting any.
+    """
+    from v2_natural_semantics import normalize
+    report = {'status': 'ready'}
+    try:
+        prepared = fill_projections(answer, entries, truth['answer'], name_aliases=aliases,
+            set_memberships=truth.get('set_memberships'), quantity_offsets=truth.get('quantity_offsets'),
+            record_roles=truth.get('record_roles'))
+        return prepared, report
+    except (ValueError, KeyError, TypeError) as error:
+        report = {'status': 'evaluator_projection_unresolved', 'error': str(error),
+                  'observed_answer': answer, 'independent_answer': truth['answer'],
+                  'proven_business_defect': False}
+        try:
+            report['projected_answer'] = normalize(answer, entries, name_aliases=aliases,
+                role_types={k: type(v) for k,v in truth['answer'].items()},
+                set_memberships=truth.get('set_memberships'), quantity_offsets=truth.get('quantity_offsets'),
+                record_roles=truth.get('record_roles'))
+        except (ValueError, KeyError, TypeError) as projection_error:
+            report['projection_error'] = str(projection_error)
+        return None, report
+
+
 def accept(compiled, row, business, user, spec, agent):
     # Calibration helpers are shared with the previous evidence-preserving audit;
     # no old audit scores, model mappings or traces are reused in a new round.
@@ -258,6 +285,27 @@ def accept(compiled, row, business, user, spec, agent):
                 'checks': checks, 'reference_attempts': reference_attempts,
                 'error': 'no independently correct positive reference',
                 'scope': 'predeclared_independent_business_checks_not_posthoc'}
+    # Establish branch answer representability before any negative reward calls.
+    # Reuse these exact executed worlds below; no duplicate branch executions.
+    branch_inputs, branch_projections = {}, {}
+    if spec['mutation']:
+        world = execute_reference(compiled, selected, mutation=spec['mutation'])
+        changed = business_truth(spec, business, user, user_request=row['raw_request'], mutation=spec['mutation'])
+        branch_inputs['changed_answer'] = (world, changed)
+    if any(t['kind'] == 'transaction' for t in compiled['source']['tools']):
+        world = execute_reference(compiled, selected, refuse=True)
+        refused = business_truth(spec, business, user, user_request=row['raw_request'], refuse=True, world=world)
+        branch_inputs['actual_decline'] = (world, refused)
+    for identity, (world, branch_truth) in branch_inputs.items():
+        answer, report = prepare_branch_answer(reference_answer(world, selected), branch_truth, entries, aliases)
+        branch_projections[identity] = report
+        if answer is None:
+            return {'passed': False, 'status': 'evaluator_projection_unresolved',
+                    'mapping': entries, 'review': review, 'provenance': provenance,
+                    'checks': checks, 'reference_attempts': reference_attempts,
+                    'branch_projection_checks': branch_projections,
+                    'scope': 'inconclusive_projection_not_proven_business_defect'}
+        branch_inputs[identity] = (world, branch_truth, answer)
     checks.extend(state_counterexamples(compiled, selected, truth, agent.judge))
     if truth.get('communication'):
         # Preserve business state and consent events, remove only assistant delivery.
@@ -280,20 +328,18 @@ def accept(compiled, row, business, user, spec, agent):
     checks.append({'id': 'caller_id_invariance', 'passed': score['success']})
     if spec['mutation']:
         baseline_answer = reference_answer(execute_reference(compiled, selected), selected)
-        changed = business_truth(spec, business, user, user_request=row['raw_request'], mutation=spec['mutation'])
+        changed_world, changed, changed_answer = branch_inputs['changed_answer']
         answer_changed = canonical(changed['answer']) != canonical(truth['answer'])
         for stale in ([False, True] if answer_changed else [False]):
-            world = execute_reference(compiled, selected, mutation=spec['mutation'])
-            answer = baseline_answer if stale else fill_projections(reference_answer(world, selected), entries, changed['answer'], name_aliases=aliases, set_memberships=changed.get('set_memberships'), quantity_offsets=changed.get('quantity_offsets'), record_roles=changed.get('record_roles'))
+            world = changed_world
+            answer = baseline_answer if stale else changed_answer
             score = grade(world, answer, judge=agent.judge)
             checks.append({'id': 'stale_answer' if stale else 'changed_answer',
                 'passed': not score['success'] if stale else score['success']
                 and all(c['passed'] for c in value_checks(answer, changed, entries, aliases))
                 and canonical(sorted_data(world.data)) == canonical(sorted_data(changed['final_state'])), 'outcome': score})
     if any(t['kind'] == 'transaction' for t in compiled['source']['tools']):
-        world = execute_reference(compiled, selected, refuse=True)
-        refused = business_truth(spec, business, user, user_request=row['raw_request'], refuse=True, world=world)
-        answer = fill_projections(reference_answer(world, selected), entries, refused['answer'], name_aliases=aliases, set_memberships=refused.get('set_memberships'), quantity_offsets=refused.get('quantity_offsets'), record_roles=refused.get('record_roles'))
+        world, refused, answer = branch_inputs['actual_decline']
         for field in compiled['source']['answers']:
             text = field['meaning'].lower()
             if field['schema']['type'] == 'boolean' and ('本次' in text or 'this execution' in text) and any(w in text for w in ['提交', 'commit', '登记']):
@@ -303,4 +349,5 @@ def accept(compiled, row, business, user, spec, agent):
             and all(c['passed'] for c in value_checks(answer, refused, entries, aliases)), 'outcome': score})
     return {'passed': review['business_consistent'] and all(c['passed'] for c in checks),
         'mapping': entries, 'review': review, 'provenance': provenance, 'checks': checks,
+        'branch_projection_checks': branch_projections,
         'scope': 'predeclared_independent_business_checks_not_posthoc'}

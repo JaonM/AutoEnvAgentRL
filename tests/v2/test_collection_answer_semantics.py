@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts/experiment
 from env_factory_v2.expressions import ContractError
 from v2_natural_semantics import project, fill_projections, wrong_projection, value_shape
 from v2_mapping_validation import check_mapping
+from v2_business_acceptance import prepare_branch_answer
 
 
 def entries():
@@ -71,3 +72,27 @@ def test_empty_collections_and_shape_metadata_do_not_disclose_values():
     shape = value_shape([{'identity': 'secret-value', 'count': 1234567}])
     assert shape == {'type': 'array', 'item_shapes': [{'type': 'object', 'properties': {
         'identity': {'type': 'str'}, 'count': {'type': 'int'}}}]}
+
+
+def test_branch_scope_mismatch_is_inconclusive_with_comparable_evidence():
+    observed = answer()
+    before = copy.deepcopy(observed)
+    truth = {'answer': {'done': [], 'pending_counts': [{'identity': 'b', 'count': 3}]}}
+    prepared, report = prepare_branch_answer(observed, truth, entries(), {})
+    assert prepared is None
+    assert report['status'] == 'evaluator_projection_unresolved'
+    assert report['proven_business_defect'] is False
+    assert report['projected_answer']['done'] == ['a']
+    assert report['independent_answer']['done'] == []
+    assert observed == before
+
+
+def test_correct_branch_keeps_real_answer_and_reversible_layouts_still_prepare():
+    actual = answer()
+    truth = {'answer': {'done': ['a'], 'pending_counts': [{'identity': 'b', 'count': 3}]}}
+    prepared, report = prepare_branch_answer(actual, truth, entries(), {})
+    assert prepared == actual and report['status'] == 'ready'
+    entry = {'role': 'x', 'selectors': [{'field': 'value', 'path': ''}],
+             'packing': 'single', 'names': 'native', 'time_unit': 'native'}
+    prepared, report = prepare_branch_answer({'value': 1}, {'answer': {'x': 2}}, [entry], {})
+    assert prepared == {'value': 2} and report['status'] == 'ready'
