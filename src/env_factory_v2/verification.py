@@ -28,13 +28,34 @@ def run_scenario(compiled, scenario, *, judge=None, recipes_only=False):
     validate_user_overrides(sandbox.source, overrides)
     sandbox.user.facts.update(copy.deepcopy(overrides))
     error = None
+    failure_integrity = None
     try:
         for step in scenario['steps']:
             kind = step['kind']
             if kind in {'call', 'traverse'}:
                 function = sandbox.call if kind == 'call' else sandbox.traverse
-                result = function(step['tool'], step['arguments'], call_id=step['id'],
-                                  **({'cursor': sandbox.resolve(step['cursor'])} if 'cursor' in step else {}))
+                expected_failure_state = None
+                if kind == 'call' and sandbox.tools[step['tool']]['kind'] == 'transaction':
+                    # Time-triggered events legitimately precede an attempted
+                    # transaction. Compare against that state, not episode reset
+                    # or the state before earlier successful transactions.
+                    expected_failure_state = copy.deepcopy(sandbox)
+                    try:
+                        expected_failure_state._advance()
+                    except ContractError:
+                        pass
+                try:
+                    result = function(step['tool'], step['arguments'], call_id=step['id'],
+                                      **({'cursor': sandbox.resolve(step['cursor'])} if 'cursor' in step else {}))
+                except ContractError:
+                    if expected_failure_state is not None:
+                        failure_integrity = {
+                            'business_state_preserved': canonical(sandbox.data) == canonical(expected_failure_state.data),
+                            'authorization_state_preserved': canonical(vars(sandbox.user)) == canonical(vars(expected_failure_state.user)),
+                            'state_version_preserved': sandbox.version == expected_failure_state.version,
+                        }
+                        failure_integrity['passed'] = all(failure_integrity.values())
+                    raise
             elif kind == 'user':
                 result = sandbox.interact(step['stage'], question=step['question'],
                     proposal=step.get('proposal'), source_id=step.get('source_id'))
@@ -62,7 +83,8 @@ def run_scenario(compiled, scenario, *, judge=None, recipes_only=False):
         outcome = {'reward': 0.0, 'success': False}
     return {'scenario': scenario['id'], 'answer': answer, 'outcome': outcome,
             'error': error, 'trace': sandbox.trace, 'final_state': sandbox.data,
-            'time': sandbox.time()}
+            'time': sandbox.time(),
+            **({'failure_integrity': failure_integrity} if failure_integrity is not None else {})}
 
 
 def authored_cases(compiled):
@@ -88,6 +110,7 @@ def preflight_recipes(compiled):
         run = run_scenario(compiled, scenario, recipes_only=True)
         expected_error = scenario.get('expect_error')
         passed = (run['error'] is not None and expected_error in run['error']) if expected_error else run['error'] is None
+        passed = passed and run.get('failure_integrity', {}).get('passed', True)
         workflow = run['outcome'].get('workflow')
         deterministic = run['outcome'].get('deterministic_grade')
         if deterministic is not None:
@@ -96,6 +119,7 @@ def preflight_recipes(compiled):
             passed = passed and workflow['passed'] and all(
                 item['passed'] for item in run['outcome']['structured_components'].values())
         checks.append({'id': scenario['id'], 'kind': kind, 'passed': passed, 'error': run['error'],
+                       **({'failure_integrity': run['failure_integrity']} if 'failure_integrity' in run else {}),
                        **({'failure_evidence': {
                            'expected_success': scenario['expect_success'],
                            'expected_error': expected_error,
@@ -113,6 +137,8 @@ def preflight_recipes(compiled):
 
 
 def expected_result(scenario, run):
+    if run.get('failure_integrity', {}).get('passed') is False:
+        return False
     if scenario['expect_success']:
         return run['error'] is None and run['outcome']['success'] is True
     if scenario.get('expect_error'):
@@ -134,10 +160,22 @@ def compact_evidence(value):
 
 def qualify(source, *, judge=None, independent_judge=None, independent_review=None, compact=False):
     compiled = compile_contract(source)
+    independent_evidence = {}
+    def review_once(payload):
+        # This cache lives only inside one qualification with a fixed compiled
+        # contract and judge. Every scenario still executes and replays; only
+        # identical semantic evidence reuses its independent review.
+        identity = canonical(payload)
+        if identity not in independent_evidence:
+            independent_evidence[identity] = copy.deepcopy(independent_judge(payload))
+            return copy.deepcopy(independent_evidence[identity])
+        result = copy.deepcopy(independent_evidence[identity])
+        result['provenance'].update(reused=True, reuse_scope='qualification_independent_evidence')
+        return result
     records = []
     for kind, scenario, rule_ids in authored_cases(compiled):
         first = run_scenario(compiled, scenario, judge=judge)
-        repeat = run_scenario(compiled, scenario, judge=independent_judge or judge)
+        repeat = run_scenario(compiled, scenario, judge=review_once if independent_judge else judge)
         replay_passed = replay_identity(first) == replay_identity(repeat)
         records.append({'id': scenario['id'], 'kind': kind, 'replay_passed': replay_passed,
                         **({'rule_ids': rule_ids} if rule_ids is not None else {}),
