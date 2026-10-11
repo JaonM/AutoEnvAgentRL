@@ -164,3 +164,27 @@ qualification remains mandatory before readiness. A task manifest supports V2
 train/eval splits; mixing V1 and V2 in one run is currently rejected. Related task
 families must be kept in one split. A smoke update proves integration, not reward
 convergence or general task success.
+
+### Behavioral and communication scope
+
+The pre-generation original-source review produces grounded
+`communication_requirements` and `behavior_requirements` in the same call as
+answer scope. Both lists travel in `generation_output_scope`, bound to the
+original request and policy identity. Citations must be exact original text;
+these are model interpretations, not new authority or executable truth. Neither
+list waives rules absent from its summary. Historical scope artifacts without
+both lists remain readable; fresh response schemas request both.
+
+Communication requirements describe what the user must hear, including relevant
+branch conditions and ordering. Behavioral requirements describe what execution
+must enforce. An internal calculation rule alone does not require a tutorial,
+while actual restrictions, choices, results and exact confirmation terms still
+require explanations when grounded in the original request or policy.
+
+Independent reverse review records `communication_basis` for each obligation
+group. A compound communication criterion with supported and unsupported speech
+is `mixed_overconstraint`, not consistent merely because one clause is supported.
+The host rejects a consistent verdict paired with `behavior_only` or
+`mixed_overconstraint`; it does not infer semantic correctness from the label.
+Original-source review and executable independent cases remain required. This
+adds fields to existing reviews, not another scoring call or a keyword gate.

@@ -31,6 +31,43 @@ def fixture():
     return compiled, requirements, review
 
 
+def communication_fixture():
+    compiled, requirements, review = fixture()
+    source = deepcopy(compiled['source'])
+    source['answers'][0]['weight'] = 0.5
+    source['explanations'] = [{'id': 'reason', 'meaning': 'Explain the reported result.', 'weight': 0.5,
+        'context_fields': ['temperature'], 'criteria': [{'id': 'explain', 'rule_id': 'fixed_fact',
+            'obligation': 'Explain the requested result and recite every internal policy rule.'}]}]
+    for scenario in source['scenarios']: scenario['answer']['reason'] = {'literal': 'Temperature is 18.'}
+    compiled = compile_contract(source)
+    item = {'path': '/explanations/0/criteria/0', 'consistent': False, 'reason': 'Extra rule recital is not required.',
+        'requirement_ids': [requirements[0]['id']], 'case_ids': ['yes', 'no'],
+        'communication_basis': 'mixed_overconstraint'}
+    review['obligation_reviews'].append(item)
+    return compiled, requirements, review, item
+
+
+def test_mixed_communication_overconstraint_remains_failed_despite_other_passes():
+    compiled, requirements, review, _ = communication_fixture()
+    result = validate_review(compiled, requirements, review)
+    assert not result['passed']
+    assert all(r['consistent'] for r in result['reviews'])
+
+
+@pytest.mark.parametrize('basis', ['behavior_only', 'mixed_overconstraint', 'not_communication'])
+def test_behavioral_citation_cannot_be_declared_consistent_mandatory_speech(basis):
+    compiled, requirements, review, item = communication_fixture()
+    item.update(communication_basis=basis, consistent=True)
+    with pytest.raises(ContractError): validate_review(compiled, requirements, review)
+
+
+@pytest.mark.parametrize('basis', ['explicit_request', 'explicit_policy', 'necessary_derived'])
+def test_actual_communication_grounds_are_not_rejected_by_a_keyword_gate(basis):
+    compiled, requirements, review, item = communication_fixture()
+    item.update(communication_basis=basis, consistent=True, reason='Unit fixture for grounded review form.')
+    assert validate_review(compiled, requirements, review)['passed']
+
+
 def test_grouped_obligation_evidence_expands_to_identical_per_path_review():
     compiled, requirements, review = fixture()
     original = validate_review(compiled, requirements, review)

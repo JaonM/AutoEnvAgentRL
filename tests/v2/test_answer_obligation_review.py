@@ -136,3 +136,37 @@ def test_declared_shapes_reject_values_constraints_before_model_call(shape):
         review_answer_obligations(agent, user_request='request', business={'policy': ''},
                                  role_shapes={'result': shape}, state_tables=[])
     agent.ask.assert_not_called()
+
+
+def split_review():
+    value = review()
+    value['communication_requirements'] = [{'meaning': 'Explain why requested work remains incomplete.',
+        'citations': [{'source': 'user_request', 'text': '报告未完成原因'}]}]
+    value['behavior_requirements'] = [{'meaning': 'Only execute eligible authorized operations.',
+        'citations': [{'source': 'business_policy', 'text': '仅在资格满足且授权后执行。'}]}]
+    return value
+
+
+def test_generation_receives_distinct_grounded_communication_and_behavior():
+    value = split_review(); agent = Mock(); agent.ask.return_value = (value, {})
+    data = fixture(); original = copy.deepcopy(data)
+    result = review_answer_obligations(agent, **data)
+    assert result['passed'] and data == original
+    scope = generation_output_scope(result, user_request=data['user_request'], business=data['business'])
+    for key in ('communication_requirements', 'behavior_requirements'):
+        assert scope[key] == value[key]
+        assert key in agent.ask.call_args.args[2]['required']
+    assert result['answer_obligations'] == [{'role': 'reasons', 'source': 'user_request', 'text': data['user_request']}]
+    scope['behavior_requirements'].clear()
+    assert result['generation_output_scope']['behavior_requirements']
+
+
+@pytest.mark.parametrize('invalid', ['missing_kind', 'invented_citation', 'extra_value', 'not_list'])
+def test_split_scope_cannot_be_partial_or_leak_uncited_extra_data(invalid):
+    value = split_review()
+    if invalid == 'missing_kind': value.pop('behavior_requirements')
+    elif invalid == 'invented_citation': value['communication_requirements'][0]['citations'][0]['text'] = 'invented'
+    elif invalid == 'extra_value': value['behavior_requirements'][0]['expected'] = 'secret'
+    else: value['behavior_requirements'] = {}
+    agent = Mock(); agent.ask.return_value = (value, {})
+    with pytest.raises(ContractError): review_answer_obligations(agent, **fixture())

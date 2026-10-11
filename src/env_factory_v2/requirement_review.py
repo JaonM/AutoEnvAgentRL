@@ -104,6 +104,8 @@ def review_schema(base_schema, requirements, source):
             'paths': {'type': 'array', 'items': {'type': 'string',
                 'enum': [item['path'] for item in mandatory_obligations(source)]}},
             'consistent': {'type': 'boolean'}, 'reason': {'type': 'string'},
+            'communication_basis': {'type': 'string', 'enum': ['explicit_request', 'explicit_policy',
+                'necessary_derived', 'behavior_only', 'mixed_overconstraint', 'not_communication']},
             'requirement_ids': {'type': 'array', 'items': {'type': 'string',
                 'enum': [r['id'] for r in requirements]}},
             'case_ids': {'type': 'array', 'items': {'type': 'string'}}})}})
@@ -159,7 +161,8 @@ def validate_review(compiled, requirements, value):
                            for path in item['paths'])
         else:
             reverse.append(item)  # Historical evidence remains reproducible.
-    required_paths = {item['path'] for item in mandatory_obligations(compiled['source'])}
+    catalog = {item['path']: item for item in mandatory_obligations(compiled['source'])}
+    required_paths = set(catalog)
     require(len(reverse) == len(required_paths), 'reverse review must cover every mandatory obligation')
     reviewed_paths = set()
     for item in reverse:
@@ -172,6 +175,14 @@ def validate_review(compiled, requirements, value):
         require(isinstance(references, list) and len(references) == len(set(references))
                 and set(references) <= expected, 'obligation cites unknown or duplicate requirement')
         require(not item['consistent'] or references, 'consistent obligation requires original requirement evidence')
+        # Historical reports omit this field; fresh native responses are required
+        # to supply it by review_schema. It records semantic grounds, not keywords.
+        if 'communication_basis' in item and catalog[path]['kind'] == 'communication':
+            basis = item['communication_basis']
+            require(basis in {'explicit_request', 'explicit_policy', 'necessary_derived',
+                             'behavior_only', 'mixed_overconstraint'}, 'communication needs a scope interpretation')
+            require(not item['consistent'] or basis in {'explicit_request', 'explicit_policy', 'necessary_derived'},
+                    'behavior rules alone cannot justify mandatory speech')
         require(cited_cases and len(cited_cases) == len(set(cited_cases)) and set(cited_cases) <= cases,
                 'obligation must cite actual independent executable cases')
     return {'scope': 'independent_model_interpretation_with_validated_text_and_execution_references',

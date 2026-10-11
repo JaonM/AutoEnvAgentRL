@@ -15,7 +15,9 @@ def public_scope_identity(user_request, business):
 
 def validate_public_scope(scope, *, user_request, business):
     """Validate provenance and allowed data, not the semantic correctness of a model interpretation."""
-    require(set(scope) in ({'source_identity', 'roles', 'process_requirements'},
+    split_fields = {'communication_requirements', 'behavior_requirements'}
+    require(not (set(scope) & split_fields) or split_fields <= set(scope), 'incomplete requirement scope split')
+    require(set(scope) - split_fields in ({'source_identity', 'roles', 'process_requirements'},
                            {'source_identity', 'roles', 'process_requirements', 'member_catalog', 'member_reviews'}),
             'invalid public output scope fields')
     require(scope['source_identity'] == public_scope_identity(user_request, business),
@@ -34,6 +36,16 @@ def validate_public_scope(scope, *, user_request, business):
         require(set(c) == {'source', 'text'} and c['source'] in public
                 and isinstance(c['text'], str) and c['text'].strip()
                 and c['text'] in public[c['source']], 'output scope citation must match original text')
+    for key in split_fields:
+        require(isinstance(scope.get(key, []), list), 'scope meanings must be a list')
+        for item in scope.get(key, []):
+            require(isinstance(item, dict) and set(item) == {'meaning', 'citations'}
+                    and isinstance(item['meaning'], str) and item['meaning'].strip()
+                    and isinstance(item['citations'], list) and item['citations'], 'grounded scope meaning required')
+            for c in item['citations']:
+                require(set(c) == {'source', 'text'} and c['source'] in public
+                        and isinstance(c['text'], str) and c['text'].strip()
+                        and c['text'] in public[c['source']], 'scope meaning citation must match original text')
     if 'member_reviews' in scope:
         def citation_check(c):
             require(set(c) == {'source', 'text'} and c['source'] in public
@@ -110,6 +122,9 @@ def review_answer_obligations(agent, *, user_request, business, truth=None, role
     response_fields = {'roles': {'type': 'array', 'items': item},
                        'process_requirements': {'type': 'array', 'items': citation},
                        'uncovered_answers': {'type': 'array', 'items': citation}}
+    meaning = object_schema({'meaning': {'type': 'string'}, 'citations': {'type': 'array', 'items': citation}})
+    for key in ('communication_requirements', 'behavior_requirements'):
+        response_fields[key] = {'type': 'array', 'items': meaning}
     if members:
         response_fields['member_reviews'] = {'type': 'array', 'items': object_schema({
             # Encoded JSON paths contain quotes, unsupported in strict-output enum literals.
@@ -128,6 +143,12 @@ def review_answer_obligations(agent, *, user_request, business, truth=None, role
         'Confirmation questions, disclosure before choice, tool use, authorization and operation ordering are '
         'process_requirements, not missing final answer fields; separate execution/communication verifiers '
         'enforce those requirements. Never turn required user interaction into an extra final answer field. '
+        'Separately list communication_requirements: meanings the user must be told, with branch applicability '
+        'and interaction ordering where required. List behavior_requirements: rules governing calculation, '
+        'eligibility, state changes and safety. A policy describing an algorithm or internal fields does not '
+        'automatically require reciting it to the user. Necessary explanations of actual restrictions remain '
+        'required; distinguish them from a generic tutorial. Neither list waives any original business rule. '
+        'Ground both lists in exact original citations, without assuming private facts have already been disclosed. '
         'Use unsupported for an unresolved role; never guess a scope to obtain acceptance. '
         'When nested_member_paths are supplied, classify EVERY listed member separately in member_reviews. '
         'Paths encode JSON arrays: strings name properties and null means every array element. '
@@ -158,12 +179,16 @@ def review_answer_obligations(agent, *, user_request, business, truth=None, role
         validate_citation(c)
     if members:
         validate_members(members, value['member_reviews'], value['roles'], validate_citation)
+    require(('communication_requirements' in value) == ('behavior_requirements' in value),
+            'incomplete requirement scope interpretation')
     passed = (not value['uncovered_answers']
               and all(r['kind'] != 'unsupported' for r in value['roles'] + value.get('member_reviews', [])))
     scope = None
     if passed:
         scope = validate_public_scope({'source_identity': public_scope_identity(user_request, business),
             'roles': value['roles'], 'process_requirements': value['process_requirements'],
+            **({key: value[key] for key in ('communication_requirements', 'behavior_requirements')}
+               if 'communication_requirements' in value or 'behavior_requirements' in value else {}),
             **({'member_catalog': members, 'member_reviews': value['member_reviews']} if members else {})},
             user_request=user_request, business=business)
     return {'passed': passed, 'answer_obligations': obligations, 'generation_output_scope': scope,
