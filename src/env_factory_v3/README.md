@@ -95,7 +95,7 @@ agree on, so memorised answers do not transfer between worlds.
 OpenAI-compatible model plays k episodes through the HTTP service and the shared agent view
 (`agent_view.py`, which is also what `rl` trains on), one per served world. The gate passes when
 at least one episode succeeds. Provider failures are infrastructure errors, not task results.
-An adversarial agent and natural-language user simulation are M2.
+An adversarial agent is M2. `policy --user-mode natural` plays through the free-dialogue user.
 
 ## Commands
 
