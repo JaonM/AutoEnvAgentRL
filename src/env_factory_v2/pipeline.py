@@ -11,7 +11,7 @@ from .challenge import challenge
 from .contract import ContractError, compile_contract, require
 from .export import export_bundle, verify_container
 from .expressions import canonical
-from .verification import qualify, preflight_recipes
+from .verification import qualify, preflight_recipes, attach_independent_review
 
 
 class InfrastructureError(RuntimeError):
@@ -125,6 +125,13 @@ def build(request, *, agent, output, source=None, repairs=1, docker=True, base_i
             save(folder / 'recipe_preflight.json', augmented_recipes)
             require(augmented_recipes['passed'], 'tool interference changed reference trajectory validity')
             attempt['phases']['tool_interference'] = time.monotonic() - phase_start
+            phase('execution')
+            phase_start = time.monotonic()
+            compiled, report = qualify(compiled['source'], judge=agent.judge)
+            if implementation_identity() != frozen_platform:
+                raise RuntimeError('platform changed during execution; discard this run')
+            attempt['phases']['execution'] = time.monotonic() - phase_start
+            save(folder / 'verification.json', report)
             phase('independent_challenge')
             phase_start = time.monotonic()
             review = challenge(compiled, request, agent)
@@ -132,23 +139,19 @@ def build(request, *, agent, output, source=None, repairs=1, docker=True, base_i
                 raise RuntimeError('platform changed during independent challenge; discard this run')
             attempt['phases']['independent_challenge'] = time.monotonic() - phase_start
             save(folder / 'challenge.json', review)
-            if not review['passed']:
-                rejected.add(compiled['identity'])
-                feedback = {'original_request': request, 'independent_challenge': review,
-                            'instruction': review.get('instruction',
-                                'Repair the actual business contradictions without weakening the original goal.')}
-                raise ContractError('independent business challenge did not pass')
-            phase('execution')
-            phase_start = time.monotonic()
-            compiled, report = qualify(compiled['source'], judge=agent.judge,
-                                       independent_review=review)
-            if implementation_identity() != frozen_platform:
-                raise RuntimeError('platform changed during execution; discard this run')
-            attempt['phases']['execution'] = time.monotonic() - phase_start
+            report = attach_independent_review(compiled, report, review)
             save(folder / 'verification.json', report)
             if not report['passed']:
                 rejected.add(compiled['identity'])
-                feedback = {'original_request': request, 'verification': report}
+                feedback = {'original_request': request, 'verification': report,
+                            'independent_challenge': review,
+                            'instruction': 'Repair original-requirement contradictions and affected reference '
+                                'trajectories together. Execution failure can indicate a bad contract or a bad '
+                                'reference; use independent requirement evidence to distinguish them. Do not '
+                                'weaken requirements or relabel cases to hide failures.'}
+                if not review['passed']:
+                    raise ContractError('independent business challenge did not pass')
+                attempt['active_phase'] = 'execution'
                 raise ContractError('joint execution gates did not pass')
             phase('export')
             phase_start = time.monotonic()

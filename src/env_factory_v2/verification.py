@@ -201,3 +201,22 @@ def qualify(source, *, judge=None, independent_judge=None, independent_review=No
                                  else 'same_judge_exact_evidence_reuse_when_supported')
     report['evidence_identity'] = hashlib.sha256(canonical(report).encode()).hexdigest()
     return compiled, report
+
+
+def attach_independent_review(compiled, execution, review):
+    """Bind a later review to unchanged execution evidence without rerunning it."""
+    from .contract import require
+    report = copy.deepcopy(execution)
+    identity = report.pop('evidence_identity', None)
+    require(identity == hashlib.sha256(canonical(report).encode()).hexdigest(),
+            'execution evidence changed before independent review')
+    require(report['contract_identity'] == compiled['identity'], 'execution contract identity mismatch')
+    require(review.get('contract_identity') == compiled['identity']
+            and review.get('scope') == 'native_independent_contract_challenge',
+            'independent review does not match executed contract')
+    report['independent_review'] = (compact_evidence(review)
+        if report['evidence_detail'] == 'verdicts_and_answers' else copy.deepcopy(review))
+    report['gates']['independent_business_challenge'] = review.get('passed') is True
+    report['passed'] = all(report['gates'].values())
+    report['evidence_identity'] = hashlib.sha256(canonical(report).encode()).hexdigest()
+    return report

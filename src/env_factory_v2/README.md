@@ -204,3 +204,15 @@ valid task obligation. Independent reviewers must use the original requirements
 and executable cases to distinguish valid waiting from erasing an unfulfilled
 obligation when its eligibility expires. Neither replacing all time bases with
 `initial` nor banning waits is a valid general repair.
+
+### Combined contract and trajectory feedback
+
+After deterministic recipe checks and tool augmentation, the pipeline executes
+all authored trajectories and performs independent business review for the same
+frozen candidate. A failed trajectory does not suppress independent review:
+its rubric may itself be wrong. The review is bound to the unchanged execution
+report by evidence hash and contract identity, without rerunning trajectories.
+Both kinds of findings are returned in one repair package, so contract fixes and
+affected references can be repaired together. Both gates and container validation
+remain mandatory. This avoids hiding later-stage findings, but does not establish
+a measured speed gain; collecting both can cost more for a failing attempt.
