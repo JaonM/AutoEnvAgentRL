@@ -1,0 +1,26 @@
+[
+ {
+  "name": "loyalty points redemption",
+  "detail": "积分兑换：积分有效期与先到期先用、兑换门槛、库存、退兑规则、等级加成。"
+ },
+ {
+  "name": "coworking desk booking",
+  "detail": "共享办公：工位与会议室时段、会员时长包扣减、超时计费、取消规则、团队共享额度。"
+ },
+ {
+  "name": "home appliance repair",
+  "detail": "家电维修：保修期判定、上门费与配件费、工单时段与师傅技能匹配、改约与取消、二次维修免费期。"
+ },
+ {
+  "name": "travel visa appointments",
+  "detail": "签证预约：材料清单完整性、预约时段与名额、加急费、改约次数限制、退费规则。"
+ },
+ {
+  "name": "personal income tax refunds",
+  "detail": "个税汇算：收入与预扣、专项附加扣除条件与限额、多处收入合并、应补应退计算、更正申报。"
+ },
+ {
+  "name": "scholarship applications",
+  "detail": "奖学金申请：绩点与学分门槛、名额与排名规则、互斥奖项、材料截止、发放与追回。"
+ }
+]

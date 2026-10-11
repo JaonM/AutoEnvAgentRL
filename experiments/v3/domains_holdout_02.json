@@ -1,0 +1,26 @@
+[
+ {
+  "name": "restaurant reservations",
+  "detail": "餐厅订位：桌型与时段容量、人数限制、定金与取消规则、包间最低消费、等位队列。"
+ },
+ {
+  "name": "event ticketing",
+  "detail": "演出票务：场次与票档库存、限购数量、实名与转赠规则、退票手续费阶梯、优惠券叠加。"
+ },
+ {
+  "name": "school course enrollment",
+  "detail": "课程选课：先修课要求、学分上限、班级容量与候补、时间冲突、退课截止与退费。"
+ },
+ {
+  "name": "bike sharing",
+  "detail": "共享单车：骑行计费与封顶、月卡与次卡抵扣、禁停区调度费、押金与信用分、优惠券有效期。"
+ },
+ {
+  "name": "community group buying",
+  "detail": "社区团购：成团人数、商品库存与限购、截单时间、团长佣金、缺货退款与部分发货。"
+ },
+ {
+  "name": "second-hand trade-in",
+  "detail": "以旧换新：旧机估价规则、成色等级、补贴上限与叠加、新机订单抵扣、质检不符的差价处理。"
+ }
+]
