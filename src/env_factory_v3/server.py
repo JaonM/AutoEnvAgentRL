@@ -6,6 +6,7 @@ POST /step    {"episode", "action": {...}}                     -> {"ok", "result
                  {"type": "confirm", "key", "proposal": {"tool", "args"}} | {"type": "wait", "seconds"}
                  {"type": "answer", "answer"}
 POST /reward  {"episode"}                                      -> grade (after the answer)
+POST /release {"episode"}                                      -> {"released": bool}
 GET  /health
 Private facts, the oracle and source tables are never exposed; a business rejection is an
 observation (ok=false, kind=business), not a transport error.
@@ -85,6 +86,10 @@ class Service:
             return {'ok': False, 'kind': 'invalid', 'error': str(exc), 'now': episode.now}
         return {'ok': True, 'result': result, 'now': episode.now}
 
+    def release(self, identifier):
+        with self.lock:
+            return {'released': self.episodes.pop(identifier, None) is not None}
+
     def reward(self, identifier):
         record = self._get(identifier)
         episode = record['episode']
@@ -130,6 +135,8 @@ def make_handler(service):
                     return self._send(200, service.step(body['episode'], body['action']))
                 if self.path == '/reward':
                     return self._send(200, service.reward(body['episode']))
+                if self.path == '/release':
+                    return self._send(200, service.release(body['episode']))
                 return self._send(404, {'error': 'not found'})
             except KeyError as exc:
                 return self._send(404, {'error': str(exc)})

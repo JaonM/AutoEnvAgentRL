@@ -3,8 +3,9 @@
   python -m env_factory_v3 import-v2 --frozen DIR --sample 4 --output request.json
   python -m env_factory_v3 build --request request.json --output DIR [--repairs 2]
   python -m env_factory_v3 batch --frozen DIR --samples 4,5,9 --output DIR [--parallel 1]
-  python -m env_factory_v3 verify BUNDLE        # re-run every gate on an exported bundle
   python -m env_factory_v3 serve BUNDLE --port 8090
+  python -m env_factory_v3 verify BUNDLE [--resign]   # re-run gates; --resign re-signs for this platform
+  python -m env_factory_v3 docker BUNDLE              # hardened image, verified offline in a container
   python -m env_factory_v3 check {schema|env|oracle|diff}   # same as env_factory_v3.checks
 """
 from __future__ import annotations
@@ -47,6 +48,12 @@ def main(argv=None):
             p.add_argument('--parallel', type=int, default=1)
     p = sub.add_parser('verify')
     p.add_argument('bundle')
+    p.add_argument('--resign', action='store_true', help='on success, re-sign the bundle for this platform')
+    p = sub.add_parser('container-check', help='inside the image: every gate on the bundle, JSON evidence')
+    p.add_argument('bundle')
+    p = sub.add_parser('docker', help='build the hardened image and verify it offline in a container')
+    p.add_argument('bundle')
+    p.add_argument('--base-image', default=None)
     p = sub.add_parser('serve')
     p.add_argument('bundle')
     p.add_argument('--host', default='127.0.0.1')
@@ -73,11 +80,29 @@ def main(argv=None):
         print(json.dumps(summary, ensure_ascii=False, indent=1))
         return 0
     if args.command == 'verify':
-        loaded = bundle.load_bundle(args.bundle, require_current_platform=False)
-        report = gates.qualify(loaded['env'], loaded['oracle'], loaded['schema'], loaded['request'])
+        if args.resign:
+            report = bundle.requalify(args.bundle)
+        else:
+            loaded = bundle.load_bundle(args.bundle, require_current_platform=False)
+            report = gates.qualify(loaded['env'], loaded['oracle'], loaded['schema'], loaded['request'],
+                                   excluded=loaded['gates'].get('excluded_worlds') or [])
         print(json.dumps({g: report[g]['passed'] for g in ('static', 'differential', 'negatives', 'category', 'http')}
                          | {'passed': report['passed']}))
         return 0 if report['passed'] else 1
+    if args.command == 'container-check':
+        loaded = bundle.load_bundle(args.bundle)
+        report = gates.qualify(loaded['env'], loaded['oracle'], loaded['schema'], loaded['request'],
+                               excluded=loaded['gates'].get('excluded_worlds') or [])
+        print(json.dumps({'passed': report['passed'], 'platform_identity': bundle.platform_identity(),
+                          'files': loaded['manifest']['files'],
+                          'gates': {g: report[g]['passed'] for g in ('static', 'differential', 'negatives',
+                                                                       'category', 'http')}}))
+        return 0 if report['passed'] else 1
+    if args.command == 'docker':
+        from env_factory_v3 import docker
+        options = {'base_image': args.base_image} if args.base_image else {}
+        print(json.dumps(docker.build(args.bundle, **options), indent=1))
+        return 0
     if args.command == 'serve':
         loaded = bundle.load_bundle(args.bundle)
         service = server.Service(loaded['env'], loaded['oracle'], loaded['schema'], loaded['request'],

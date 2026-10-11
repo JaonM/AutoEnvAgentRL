@@ -57,3 +57,26 @@ def load_bundle(folder, *, require_current_platform=True):
             'oracle': load_module(folder / 'oracle.py', role='oracle'),
             'valid_worlds': gates_report.get('valid_worlds') or ['original'],
             'manifest': manifest, 'gates': gates_report}
+
+
+def requalify(folder):
+    """Re-run every gate on the current platform; on success re-sign the bundle for it.
+
+    Changing any V3 platform file invalidates every bundle (load_bundle refuses a different
+    platform identity); this is the only way back, and it never skips a gate.
+    """
+    from env_factory_v3 import gates
+    folder = Path(folder)
+    loaded = load_bundle(folder, require_current_platform=False)
+    excluded = loaded['gates'].get('excluded_worlds') or []
+    report = gates.qualify(loaded['env'], loaded['oracle'], loaded['schema'], loaded['request'], excluded=excluded)
+    if report['passed']:
+        slim = {key: value for key, value in report.items() if key != 'worlds'}
+        slim['worlds'] = [{k: w.get(k) for k in ('world', 'status', 'reward')} for w in report.get('worlds', [])]
+        (folder / 'gates.json').write_text(json.dumps(slim, ensure_ascii=False, indent=1, default=str))
+        manifest = loaded['manifest']
+        manifest.update(platform_identity=platform_identity(),
+                        files={name: sha256(folder / name) for name in FILES})
+        manifest.setdefault('requalified', []).append(manifest['platform_identity'])
+        (folder / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=1))
+    return report

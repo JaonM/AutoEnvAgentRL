@@ -86,22 +86,39 @@ Policy gates (frontier pass@k, adversarial agent) and natural-language user simu
 .venv/bin/python -m env_factory_v3 import-v2 --frozen output/env_factory_v2_cross_business_frozen_01 --sample 4 --output r.json
 .venv/bin/python -m env_factory_v3 build --request r.json --output output/v3-build-04
 .venv/bin/python -m env_factory_v3 batch --frozen output/env_factory_v2_cross_business_frozen_01 --samples 4,5,9 --output output/v3-batch
-.venv/bin/python -m env_factory_v3 verify output/v3-build-04/bundle
+.venv/bin/python -m env_factory_v3 verify output/v3-build-04/bundle [--resign]
+.venv/bin/python -m env_factory_v3 docker output/v3-build-04/bundle
 .venv/bin/python -m env_factory_v3 serve output/v3-build-04/bundle --port 8090
 ```
 
 Model sessions run `python -m env_factory_v3.checks {schema|env|oracle|diff}` in their folder.
 
+## Delivery and training
+
+`docker BUNDLE` packs this package and the bundle into `envfactory-v3:<identity>`. It runs every
+gate again inside that image with no network, read-only root, all capabilities dropped,
+no-new-privileges and a non-root user. On success it records the image in `docker_image.json`
+next to the hashed files.
+
+Changing any V3 platform file invalidates every bundle. `verify BUNDLE --resign` re-runs every
+gate on the current platform and re-signs the bundle only when they all pass.
+
+`rl` trains on V3 bundles directly (`--tasks` with bundle paths): `--sandbox-backend docker` starts
+each environment from its verified container (`V3DockerEpisode`); `local` serves it in process
+(`V3Episode`).
+
 ## HTTP protocol
 
 `POST /reset {world?|seed?}` → episode id and public instructions (request, rules, tool specs,
 askable user topics, answer schema). `POST /step {episode, action}` with action types `tool`,
-`ask`, `confirm`, `wait`, `answer`. `POST /reward {episode}` after the answer. Business
+`ask`, `confirm`, `wait`, `answer`. `POST /reward {episode}` after the answer; `POST /release {episode}` frees it. Business
 rejections are observations (`ok: false, kind: business`).
 
 ## M1 limits
 
 - The clock is frozen (`time.tick == 0`); scheduled events and time-advancing actions come later.
 - The user is structured (`ask` / `confirm`); natural-language user simulation is M2.
-- Delivery is a hashed bundle plus HTTP service; a Docker image and the `rl` adapter are M3.
+- The serving container publishes its port on 127.0.0.1, so it keeps a bridge network. Only the
+  container verification runs with `--network=none`; env.py itself is limited by the static
+  sandbox rules (no I/O, no clock, no reflection).
 - Passing gates proves the tested obligations only, not learning effectiveness.
