@@ -429,6 +429,7 @@ def main():
     root.mkdir(parents=True, exist_ok=False)
     protocol = {'version': 2, 'user_mode': 'free_dialogue', 'measurement': 'predeclared_closed_semantic_projections_v2', 'scope': manifest['scope'], 'planned': len(manifest['samples']), 'mix': manifest['mix'],
         'sampling': manifest['sampling'], 'model': 'gpt-6.1-sol', 'concurrency': 1, 'candidate_repairs': 1,
+        'preparation_limitations': manifest.get('preparation_limitations', {}),
         'platform_identity': implementation_identity(), 'runner_identity': runner_identity(),
         'author_tools': args.author_tools,
         'assets_identity': digest(args.assets / 'frozen.json'), 'base_image': args.base_image,

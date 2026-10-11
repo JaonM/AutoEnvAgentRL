@@ -56,11 +56,17 @@ def main():
     parser.add_argument('--connection', type=Path, required=True,
                         help='Native Code Agent connection for pre-generation answer scope review')
     parser.add_argument('--case-pack', type=Path, help='Same explicit preparation pack used for generation and independent reviews')
+    parser.add_argument('--reuse-scope-evidence', type=Path, help='Explicit native review artifacts; reuse exact requests, including failures')
+    parser.add_argument('--defer-unresolved-scopes', action='store_true',
+                        help='Freeze with unresolved scope findings preserved for post-batch analysis; never mark them passed')
     args = parser.parse_args()
     rows, evidence = reviewed_cases(args.openings, args.opening_review, args.business_review, args.case_pack)
     args.output.mkdir(parents=True, exist_ok=False)
     def save(path, value): path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n')
     agent = NativeCodeAgent.from_connection(args.connection, evidence_root=args.output / 'answer-scope-native')
+    if args.reuse_scope_evidence:
+        from v2_preparation_evidence import PreparationEvidence
+        agent = PreparationEvidence(agent, args.reuse_scope_evidence)
     answer_scopes = {}
     for row in rows:
         scope = review_case_answer_obligations(agent, user_request=row['raw_request'], business=row['business'],
@@ -68,9 +74,15 @@ def main():
         answer_scopes[str(row['id'])] = scope
         save(args.output / 'answer_scope_reviews.json', answer_scopes)
         if not scope['passed']:
-            raise ValueError('Independent answer scope unresolved; assets not frozen')
+            continue
         row['acceptance']['answer_obligations'] = scope['answer_obligations']
         row['acceptance']['generation_output_scope'] = scope['generation_output_scope']
+    unresolved = [identity for identity, scope in answer_scopes.items() if not scope['passed']]
+    if unresolved:
+        save(args.output / 'unresolved_scopes.json', {'ids': unresolved, 'reviewed': len(answer_scopes),
+            'scope': 'complete preparation review, not measured yield'})
+        if not args.defer_unresolved_scopes:
+            raise ValueError('Independent answer scopes unresolved: ' + ', '.join(unresolved) + '; assets not frozen')
     documents = [dict(document_id=f"{r['id']:02d}/business.json", title=r['title'], business=r['business']) for r in rows]
     load_dotenv('.env')
     with GraphDatabase.driver(os.getenv('NEO4J_URI', 'bolt://localhost:7687'),
@@ -82,9 +94,12 @@ def main():
         actual = indexed[document['document_id']]
         if (actual['sha256'] != hashlib.sha256(canonical(document['business']).encode()).hexdigest()
                 or actual['policy_summary'] != document['business']['policy']
-                or sorted(actual['relations'], key=lambda r: r['id']) != sorted(document['business']['relations'], key=lambda r: r['id'])):
+                or sorted(actual['relations'], key=lambda r: r['id']) != sorted(document['business'].get('relations', []), key=lambda r: r['id'])):
             raise ValueError('Scoped graph readback does not match reviewed public business assets')
     manifest = {'version': 1, 'scope': 'native_natural_free_dialogue_cross_business_heldout',
+        'preparation_limitations': {'unresolved_answer_scope_ids': unresolved,
+            'disposition': 'deferred_to_post_batch_analysis' if unresolved else 'none',
+            'qualification_basis': 'frozen acceptance; unresolved scopes are not certified as resolved'},
         'sampling': 'synthetic business-rule/composition cases; native openings independently reviewed; not production-user sampling',
         'mix': dict(Counter(row['stratum'] for row in rows)), 'samples': []}
     for row in rows:
