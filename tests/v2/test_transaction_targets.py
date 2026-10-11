@@ -19,6 +19,81 @@ def planned():
     return source
 
 
+def consent_plan(approved=True):
+    source = planned()
+    source['goals'][0]['transaction_plan'][0]['completion'] = 'consent_or_unavailable'
+    source['user']['facts']['approve_approve'] = approved
+    return source
+
+
+def consent_matches(sandbox):
+    return matches_plan(sandbox.source['goals'][0]['transaction_plan'], sandbox.source,
+                        sandbox.context(private=True), trace=sandbox.trace)
+
+
+@pytest.mark.parametrize('approved', [True, False])
+@pytest.mark.parametrize('wrong_proposal', [True, False])
+def test_completion_binds_refusal_and_revocation_to_intended_arguments(approved, wrong_proposal):
+    sandbox = Sandbox(compile_contract(consent_plan(approved)))
+    sandbox.interact('approve', question='Confirm this transfer?', proposal={'tool': 'transfer',
+        'arguments': {'from_id': 'B' if wrong_proposal else 'A',
+                      'to_id': 'A' if wrong_proposal else 'B', 'amount': 20}})
+    if approved:
+        sandbox.revoke('approve')
+    if wrong_proposal:
+        with pytest.raises(ContractError, match='intended proposal'):
+            consent_matches(sandbox)
+    else:
+        assert consent_matches(sandbox)
+
+
+def test_eligible_completion_requires_execution_even_after_approval():
+    sandbox = Sandbox(compile_contract(consent_plan()))
+    with pytest.raises(ContractError, match='completed consent'):
+        consent_matches(sandbox)
+    sandbox.interact('approve', question='Confirm transfer?', proposal={'tool': 'transfer',
+        'arguments': {'from_id': 'A', 'to_id': 'B', 'amount': 20}})
+    with pytest.raises(ContractError, match='completed consent'):
+        consent_matches(sandbox)
+
+
+def test_completion_accepts_real_commit_and_rejects_collateral_writes():
+    source = consent_plan()
+    compiled = compile_contract(source)
+    assert run_scenario(compiled, source['scenarios'][0])['outcome']['success']
+    original = Sandbox(compiled)
+    original.user.states['approve'] = 'consent.consumed'
+    with pytest.raises(ContractError, match='no successful execution'):
+        consent_matches(original)
+
+
+@pytest.mark.parametrize('missing', [False, True])
+def test_unavailable_transaction_needs_no_pointless_consent(missing):
+    source = consent_plan()
+    if missing:
+        source['goals'][0]['transaction_plan'][0]['arguments']['from_id'] = lit('missing')
+    else:
+        source['rules'][0]['predicate'] = lit(False)
+    sandbox = Sandbox(compile_contract(source))
+    assert consent_matches(sandbox)
+    sandbox.data['accounts'][0]['balance'] -= 20
+    assert not consent_matches(sandbox)
+
+
+@pytest.mark.parametrize('mutation', ['when', 'state_argument', 'time_guard'])
+def test_derived_completion_rejects_circular_or_temporal_eligibility(mutation):
+    source = consent_plan()
+    intent = source['goals'][0]['transaction_plan'][0]
+    if mutation == 'when':
+        intent['when'] = lit(False)
+    elif mutation == 'state_argument':
+        intent['arguments']['from_id'] = {'ref': 'user_state.regions.approve'}
+    else:
+        source['rules'][0]['predicate'] = {'gt': [{'ref': 'time.tick'}, lit(1)]}
+    with pytest.raises(ContractError):
+        compile_contract(source)
+
+
 def test_plan_replaces_duplicate_state_formula_and_preserves_negative_checks():
     compiled = compile_contract(planned())
     for scenario in compiled['source']['scenarios']:

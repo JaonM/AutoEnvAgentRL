@@ -12,7 +12,11 @@ def validate_plan(plan, source, tools, rules, *, temporal=False):
     require(isinstance(plan, list) and 1 <= len(plan) <= 64, 'transaction plan requires 1..64 intentions')
     require(temporal or not source.get('events'), 'event-driven worlds require timeline or explicit state goals')
     for intent in plan:
-        fields(intent, ['tool', 'arguments'], ['when'])
+        fields(intent, ['tool', 'arguments'], ['when', 'completion'])
+        if 'completion' in intent:
+            require(intent['completion'] == 'consent_or_unavailable', 'unknown transaction completion mode')
+            require(not temporal and 'when' not in intent,
+                    'derived consent completion uses an unconditional time-independent intention')
         require(intent['tool'] in tools and tools[intent['tool']]['kind'] == 'transaction',
                 'transaction plan requires an existing transaction')
         tool = tools[intent['tool']]
@@ -40,10 +44,56 @@ def validate_plan(plan, source, tools, rules, *, temporal=False):
                     stable(value, allowed, stack)
         for expression in [*intent['arguments'].values(), intent.get('when', {'literal': True})]:
             stable(expression, {'initial', 'user', 'user_state', 'row', 'vars'})
+        if 'completion' in intent:
+            for expression in intent['arguments'].values():
+                stable(expression, {'initial', 'user', 'row', 'vars'})
+            for rule in tool['rule_ids']:
+                stable(rules[rule]['predicate'], {'initial', 'data', 'args', 'row', 'user', 'vars'})
         for operation in tool['operations']:
             for expression in [operation['key'], *operation['set'].values()]:
                 stable(expression, {'initial', 'data', 'args', 'row', 'user', 'vars'}
                        | ({'time'} if temporal else set()))
+
+
+def project_transaction(tool, source, before, context, *, check_eligibility=False):
+    """Apply one declaration to isolated data; use its own preconditions for eligibility."""
+    from .contract import require
+
+    tables = {table['id']: table for table in source['tables']}
+    candidate = copy.deepcopy(before)
+    for operation in tool['operations']:
+        projection_context = {**context, 'data': candidate}
+        key = evaluate(operation['key'], projection_context)
+        table = tables[operation['table']]
+        rows = candidate[table['id']]
+        matches = [row for row in rows if canonical(row[table['primary_key']]) == canonical(key)]
+        create = operation.get('create', False)
+        if (create and matches) or (not create and not matches):
+            if check_eligibility:
+                return copy.deepcopy(before), False
+            require(False, 'transaction intention target is missing or already exists')
+        if create:
+            updates = {name: evaluate(expr, projection_context) for name, expr in operation['set'].items()}
+            row = {table['primary_key']: copy.deepcopy(key), **updates}
+            original_row = copy.deepcopy(row)
+        else:
+            require(len(matches) == 1, 'transaction intention target must identify exactly one row')
+            row = matches[0]
+            original = [r for r in before[table['id']] if canonical(r[table['primary_key']]) == canonical(key)]
+            original_row = original[0] if original else copy.deepcopy(row)
+        if check_eligibility:
+            for identity in tool['rule_ids']:
+                value = evaluate(context['_rules'][identity]['predicate'],
+                                 {**context, 'data': before, 'row': original_row})
+                require(type(value) is bool, 'transaction eligibility rule must produce boolean')
+                if not value:
+                    return copy.deepcopy(before), False
+        if create:
+            rows.append(row)
+        else:
+            row.update({name: evaluate(expr, {**projection_context, 'row': row})
+                        for name, expr in operation['set'].items()})
+    return candidate, True
 
 
 def project_plan(plan, source, context, *, trace=None):
@@ -76,6 +126,25 @@ def project_plan(plan, source, context, *, trace=None):
         args = {name: evaluate(expr, context) for name, expr in intent['arguments'].items()}
         tool = tools[intent['tool']]
         validate_value(args, tool['parameters'], 'transaction intention arguments')
+        target = None
+        if 'completion' in intent:
+            require(commits is not None, 'derived consent completion requires execution evidence')
+            target, eligible = project_transaction(tool, source, projected,
+                {**context, 'args': args}, check_eligibility=True)
+            if not eligible:
+                continue
+            state = context['user_state']['regions'].get(tool['authorization'])
+            require(state in {'consent.consumed', 'consent.declined', 'consent.revoked'},
+                    'eligible intention requires completed consent and execution or explicit refusal/revocation')
+            if state != 'consent.consumed':
+                decisions = [turn for turn in trace if turn.get('kind') == 'user'
+                             and turn.get('stage') == tool['authorization']]
+                require(bool(decisions) and typed_equal(decisions[-1].get('proposal'),
+                        {'tool': intent['tool'], 'arguments': args}),
+                        'refusal or revocation must concern the intended proposal')
+                require(decisions[-1]['result'].get('approved') is (state == 'consent.revoked'),
+                        'consent decision does not support completion')
+                continue
         operation_time = context['time']
         if commits is not None:
             require(commit_index < len(commits), 'intended transaction has no successful execution')
@@ -89,24 +158,8 @@ def project_plan(plan, source, context, *, trace=None):
             previous_seconds, previous_tick = operation_time['elapsed_seconds'], operation_time['tick']
             apply_events(previous_seconds)
             commit_index += 1
-        for operation in tool['operations']:
-            projection_context = {**context, 'data': projected, 'args': args, 'time': operation_time}
-            key = evaluate(operation['key'], projection_context)
-            table = tables[operation['table']]
-            rows = projected[table['id']]
-            matches = [row for row in rows if canonical(row[table['primary_key']]) == canonical(key)]
-            if operation.get('create', False):
-                require(not matches, 'transaction intention creates duplicate key')
-                row = {table['primary_key']: copy.deepcopy(key)}
-                updates = {name: evaluate(expr, projection_context) for name, expr in operation['set'].items()}
-                row.update(updates)
-                rows.append(row)
-            else:
-                require(len(matches) == 1, 'transaction intention target must identify exactly one row')
-                row = matches[0]
-                updates = {name: evaluate(expr, {**projection_context, 'row': row})
-                           for name, expr in operation['set'].items()}
-                row.update(updates)
+        projected = target if target is not None else project_transaction(tool, source, projected,
+            {**context, 'args': args, 'time': operation_time})[0]
     if commits is not None:
         require(commit_index == len(commits), 'unplanned successful transaction')
         apply_events(context['time']['elapsed_seconds'])

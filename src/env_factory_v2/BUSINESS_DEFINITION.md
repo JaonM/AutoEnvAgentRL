@@ -64,6 +64,22 @@ may update existing records or create new records. A disabled intention leaves
 the projected state unchanged. Actual committed-result messages cannot substitute
 for final state. Process checks still enforce evidence and authorization.
 
+For conditional consent in event-free, time-independent transactions, an intention
+may declare `completion: "consent_or_unavailable"` instead of `when`. Intended
+arguments may read initial data and private user facts, never actual consent state.
+Target existence and the transaction's own boolean preconditions determine whether
+the operation is available in the projected world. An unavailable operation leaves
+it unchanged and requires no pointless approval. An available operation requires
+either the exact intended successful commit or explicit refusal/revocation bound
+to the latest matching proposal. Approval without execution cannot complete it.
+All successful commits must match the plan; all final tables must match projection.
+This derives precondition eligibility, not general feasibility: post-commit
+invariants still apply and independent review must detect incomplete guards.
+Time-dependent guards and event-driven worlds retain timeline or explicit goals;
+do not remove time behavior to use this mode. Process requirements must likewise
+follow the original request rather than unconditionally requiring inapplicable
+consent stages.
+
 For scheduled events or time-dependent operations use `transaction_timeline`
 instead of `transaction_plan`, with the same intention entries. This form matches
 each enabled intention to the next successful transaction in the actual trace by

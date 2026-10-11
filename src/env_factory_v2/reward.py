@@ -161,8 +161,9 @@ def assess_process(sandbox):
             if 'transaction_plan' in goal or 'transaction_timeline' in goal:
                 from .transaction_targets import matches_plan
                 temporal = 'transaction_timeline' in goal
-                passed = matches_plan(goal['transaction_timeline' if temporal else 'transaction_plan'],
-                                      sandbox.source, context, trace=sandbox.trace if temporal else None)
+                plan = goal['transaction_timeline' if temporal else 'transaction_plan']
+                needs_trace = temporal or any('completion' in intent for intent in plan)
+                passed = matches_plan(plan, sandbox.source, context, trace=sandbox.trace if needs_trace else None)
             else:
                 passed = evaluate(goal['predicate'], context) is True
         except ContractError:
