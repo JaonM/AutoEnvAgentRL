@@ -230,6 +230,7 @@ def grade(sandbox, answer, *, judge=None):
     require(set(answer) == {field['id'] for field in [*fields, *explanations]}, 'final answer fields mismatch')
     components, targets = assess_answer_fields(sandbox, answer)
     semantic_evidence = {}
+    communication_applicability = {}
     observations = copy.deepcopy([
         turn for turn in sandbox.trace
         if turn.get('status') == 'ok' and (
@@ -246,6 +247,7 @@ def grade(sandbox, answer, *, judge=None):
             applies = evaluate(criterion.get('when', {'literal': True}), sandbox.context(private=True))
             require(type(applies) is bool, 'reasoning applicability must produce boolean')
             (active if applies else inactive).append(criterion)
+            communication_applicability.setdefault(explanation['id'], {})[criterion['id']] = applies
         if not active:
             components[explanation['id']] = {'passed': True, 'weight': explanation['weight']}
             semantic_evidence[explanation['id']] = {'criteria': {}, 'provenance': {
@@ -282,4 +284,5 @@ def grade(sandbox, answer, *, judge=None):
     sandbox.closed = True
     return {'reward': reward, 'business_reward': business_reward, 'efficiency': efficiency, 'success': success, 'components': components,
             **{key: value for key, value in assessment.items() if key != 'passed'},
-            'semantic_evidence': semantic_evidence}
+            'semantic_evidence': semantic_evidence,
+            'communication_applicability': communication_applicability}

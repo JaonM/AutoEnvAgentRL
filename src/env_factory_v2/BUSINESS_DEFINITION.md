@@ -115,3 +115,11 @@ error: an accidental exception is not evidence of correct reward discrimination.
 Original-request interpretation remains independent of authored rules and answers.
 This capability permits missing-branch probes; it does not itself prove complete
 coverage or correct business interpretation.
+
+Independent reports include `communication_coverage` for every conditional
+criterion. Coverage records applicable/inapplicable case IDs only when execution
+and replay agree on the evaluated condition. Failed executions and historical
+evidence without applicability are unobserved. One observed branch is a coverage
+gap to investigate against original requirements and reachability, not an automatic
+rejection or permission to weaken the condition. Two observed branches also do
+not prove that the condition implements the correct original business meaning.

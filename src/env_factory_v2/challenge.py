@@ -65,6 +65,8 @@ def challenge(compiled, original_request, agent):
         all_passed = all(record['passed'] for record in report['records'])
         if report['business_consistent'] != all_passed:
             report = _audit(compiled, original_request, agent, report)
+        from .communication_coverage import communication_coverage
+        report['communication_coverage'] = communication_coverage(compiled, report['records'])
         if report.get('requirement_review', {}).get('passed') is False:
             return {**report, 'passed': False, 'status': 'inconclusive',
                     'instruction': 'Resolve the independently identified public-clause discrepancies. '
@@ -119,6 +121,9 @@ def _challenge(compiled, original_request, agent):
         'to exercise missing branches instead of accepting the author scenario catalog as complete. '
         'An empty array explicitly tests no actions. Independent steps do not inherit expect_error: '
         'they must complete normally, so a runtime error cannot count as a successful negative case. '
+        'For conditional communication criteria inspect when against the ORIGINAL obligation and '
+        'exercise applicable and inapplicable branches when reachable within that obligation. '
+        'Do not demand an unreachable branch or invent an obligation to recite unrelated business rules. '
         'Include at least one positive and one negative. '
         'For stateless direct tasks, empty data mutations are appropriate. Validate boundary predicates '
         'by invoking the actual named public rule with boundary arguments in a conditional answer recipe: '
