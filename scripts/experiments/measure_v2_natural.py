@@ -46,21 +46,46 @@ def digest(path):
 
 
 def runner_identity():
-    experiments = ['v2_natural_oracle.py', 'v2_business_acceptance.py', 'v2_runtime_evidence.py',
-        'v2_library_oracle.py', 'v2_procurement_oracle.py', 'v2_subscription_oracle.py', 'v2_access_oracle.py',
-        'v2_natural_semantics.py', 'audit_v2_natural.py']
-    return {p.name: digest(p) for p in [Path(__file__),
-        *(Path(__file__).with_name(name) for name in experiments),
+    import ast
+    # Follow local imports, including imports inside functions. A hand-maintained
+    # list missed mapping/record evaluators and could allow mid-round changes.
+    pending, scripts = [Path(__file__)], set()
+    while pending:
+        path = pending.pop()
+        if path in scripts:
+            continue
+        scripts.add(path)
+        for node in ast.walk(ast.parse(path.read_text())):
+            modules = ([name.name for name in node.names] if isinstance(node, ast.Import)
+                       else [node.module] if isinstance(node, ast.ImportFrom) and node.module else [])
+            for module in modules:
+                dependency = Path(__file__).with_name(module.split('.')[0] + '.py')
+                if dependency.is_file():
+                    pending.append(dependency)
+    return {p.name: digest(p) for p in [*sorted(scripts),
         PROJECT / 'src/rl/environments/v2.py', PROJECT / 'src/rl/data/contracts.py',
         PROJECT / 'src/rl/data/trajectory.py']}
 
 
 def verify_assets(root):
+    root = Path(root).resolve()
     frozen = read(root / 'frozen.json')['files']
+    require('manifest.json' in frozen, 'sample manifest must be frozen')
+    require(all(not Path(path).is_absolute() and (root / path).resolve().is_relative_to(root)
+                for path in frozen), 'frozen assets must remain inside their root')
     require(all(digest(root / path) == checksum for path, checksum in frozen.items()), 'natural pilot assets changed')
     manifest = read(root / 'manifest.json')
-    require(len(manifest['samples']) == 20 and Counter(r['stratum'] for r in manifest['samples']) == manifest['mix']
-            == {'direct': 4, 'simple': 4, 'ordinary': 4, 'complex': 8}, 'natural pilot mix invalid')
+    samples = manifest['samples']
+    planned = len(samples)
+    require(planned >= 10 and planned % 10 == 0
+            and Counter(r['stratum'] for r in samples) == manifest['mix']
+            == {'direct': planned // 5, 'simple': planned // 5,
+                'ordinary': planned // 5, 'complex': planned * 2 // 5}, 'natural pilot mix invalid')
+    identities = [row['id'] for row in samples]
+    require(all(type(identity) is int and identity > 0 for identity in identities)
+            and len(set(identities)) == planned, 'sample identities must be unique positive integers')
+    required = {row[key] for row in samples for key in ('business', 'user', 'acceptance')}
+    require(required <= set(frozen), 'every sample business, user and acceptance file must be frozen')
     return manifest
 
 
@@ -257,7 +282,7 @@ def worker(args):
         if graph_used:
             graph = read(assets / 'knowledge_graph.json')
             catalog = graph['documents']
-            require(len(catalog) == 20, 'frozen graph corpus incomplete')
+            require(len(catalog) == len(manifest['samples']), 'frozen graph corpus incomplete')
         selected, retrieval_provenance = base.ask(
             'Select the business dossier needed to ground this natural request from the supplied catalog. '
             'Use request meaning, not ordering. Do not invent a document or execute tools.',
@@ -358,23 +383,28 @@ def worker(args):
 
 
 def summarize(protocol, samples, wall):
+    planned = protocol['planned']
+    require(type(planned) is int and planned > 0 and len(samples) == planned,
+            'summary must retain every planned sample')
+    require(len({s['id'] for s in samples}) == planned
+            and Counter(s['stratum'] for s in samples) == protocol['mix'], 'summary sample identity or mix changed')
     terminal = sum(s['status'] not in {'pending', 'running'} for s in samples)
     names = ['sandbox_qualified', 'external_business_qualified', 'training_ready', 'qualified']
     counts = {name: sum(s.get(name) is True for s in samples) for name in names}
-    return {'scope': protocol['scope'], 'planned': 20, 'terminal': terminal, **counts,
-        'verified_end_to_end_yield': counts['qualified'] / 20 if terminal == 20 else None,
-        'sandbox_pipeline_yield': counts['sandbox_qualified'] / 20 if terminal == 20 else None,
-        'external_business_yield': counts['external_business_qualified'] / 20 if terminal == 20 else None,
+    return {'scope': protocol['scope'], 'planned': planned, 'terminal': terminal, **counts,
+        'verified_end_to_end_yield': counts['qualified'] / planned if terminal == planned else None,
+        'sandbox_pipeline_yield': counts['sandbox_qualified'] / planned if terminal == planned else None,
+        'external_business_yield': counts['external_business_qualified'] / planned if terminal == planned else None,
         'policy_attempted': sum(s.get('policy_attempted', s.get('policy_success') is not None) is True for s in samples),
         'policy_successes': sum(s.get('policy_success') is True for s in samples),
         'user_simulation_faults': sum(s.get('user_simulation_fault') is True for s in samples),
-        'user_simulation_fault_rate': sum(s.get('user_simulation_fault') is True for s in samples) / 20,
+        'user_simulation_fault_rate': sum(s.get('user_simulation_fault') is True for s in samples) / planned,
         'failure_classes': dict(Counter(s.get('failure_class', s.get('failed_phase', 'none')) for s in samples if s['status'] not in {'passed', 'pending', 'running'})),
         'model_calls': sum(s.get('model_calls', 0) for s in samples),
         'stage_seconds': {phase: sum(s.get('phases', {}).get(phase, 0) for s in samples) for phase in {p for s in samples for p in s.get('phases', {})}},
         'groups': {g: {'planned': n, 'qualified': sum(s.get('qualified') is True for s in samples if s['stratum'] == g)}
                    for g, n in protocol['mix'].items()}, 'wall_seconds': wall, 'samples': samples,
-        'limitation': 'Synthetic operator-designed natural demands, fixed 4:4:4:8 mix; not production population or independent double-blind sampling. Policy failures are inconclusive sandbox validation, separately classified.'}
+        'limitation': 'Synthetic operator-designed natural demands, fixed 2:2:2:4 ratio; not production population or independent double-blind sampling. Policy failures are inconclusive sandbox validation, separately classified.'}
 
 
 def main():
@@ -392,14 +422,14 @@ def main():
     manifest = verify_assets(args.assets.resolve())
     root = args.output.resolve()
     root.mkdir(parents=True, exist_ok=False)
-    protocol = {'version': 2, 'user_mode': 'free_dialogue', 'measurement': 'predeclared_closed_semantic_projections_v2', 'scope': manifest['scope'], 'planned': 20, 'mix': manifest['mix'],
+    protocol = {'version': 2, 'user_mode': 'free_dialogue', 'measurement': 'predeclared_closed_semantic_projections_v2', 'scope': manifest['scope'], 'planned': len(manifest['samples']), 'mix': manifest['mix'],
         'sampling': manifest['sampling'], 'model': 'gpt-6.1-sol', 'concurrency': 1, 'candidate_repairs': 1,
         'platform_identity': implementation_identity(), 'runner_identity': runner_identity(),
         'author_tools': args.author_tools,
         'assets_identity': digest(args.assets / 'frozen.json'), 'base_image': args.base_image,
         'bridge_timeout_seconds': read(args.connection)['timeout_seconds'], 'sample_timeout_seconds': args.sample_timeout,
         'policy_turn_budget': 40, 'policy_calls_per_turn': 8,
-        'policy': 'All 20 natural requests stay in denominator. No within-round fixes, terminal retries, hidden-oracle feedback to author or policy, or reference-script policy replay.',
+        'policy': 'All planned natural requests stay in denominator. No within-round fixes, terminal retries, hidden-oracle feedback to author or policy, or reference-script policy replay.',
         'qualification': 'Five delivery gates + external frozen business acceptance + training certificate + actual native policy HTTP rollout consistent with independent truth.',
         'acceptance_budget': 'One external semantic review plus at most one structural mapping correction without oracle values; all deterministic tests; no acceptance-driven author repair.'}
     save(root / 'protocol.json', protocol)
