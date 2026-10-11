@@ -17,7 +17,10 @@ from pathlib import Path
 
 from measure_v2_natural import (PROJECT, read, save, digest, verify_assets, fixture_alignment,
     execute_reference, observation_checks, NativeCodeAgent, require, compile_contract,
-    evaluate, grade, certify, V2Episode, expected, equivalent, canonical, sorted_data)
+    certify, V2Episode, equivalent, canonical, sorted_data)
+from env_factory_v2.expressions import evaluate
+from env_factory_v2.reward import grade
+from v2_natural_oracle import expected
 from v2_natural_semantics import schema, normalize, rename_observations, wrong_projection, fill_projections
 
 

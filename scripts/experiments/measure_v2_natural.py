@@ -20,14 +20,13 @@ from pathlib import Path
 PROJECT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT / 'src'))
 from env_factory_v2.code_agent import NativeCodeAgent, object_schema
-from env_factory_v2.contract import compile_contract, require, validate_value
-from env_factory_v2.expressions import ContractError, canonical, evaluate
+from env_factory_v2.contract import compile_contract, require
+from env_factory_v2.expressions import canonical
 from env_factory_v2.pipeline import build, implementation_identity, require_qualified_delivery
 from env_factory_v2.runtime import Sandbox
-from env_factory_v2.reward import grade
 from env_factory_v2.training import certify
 from rl.environments.v2 import V2Episode
-from v2_natural_oracle import expected, expand, equivalent, wrong_value, UNORDERED
+from v2_natural_oracle import expand, equivalent, UNORDERED
 
 
 def read(path):
@@ -162,91 +161,6 @@ def answer_checks(answer, truth, mapping):
         return [{'id': 'answer_' + k, 'passed': k in actual and equivalent(actual[k], v, unordered=k in UNORDERED)} for k,v in truth['answer'].items()]
     return [{'id': 'answer_' + role, 'passed': field in answer and equivalent(answer[field], value, unordered=role in UNORDERED)}
             for role, value in truth['answer'].items() for field in [mapping[role]]]
-
-
-def external_acceptance(compiled, row, business, user, spec, agent):
-    truth = expected(spec, business, user)
-    roles = list(truth['answer'])
-    schema = object_schema({'business_consistent': {'type': 'boolean'}, 'reason': {'type': 'string'},
-        'mapping': {'type': 'array', 'items': object_schema({'role': {'type': 'string', 'enum': roles},
-            'field': {'type': 'string', 'enum': [f['id'] for f in compiled['source']['answers']]}})}})
-    from env_factory_v2.fixtures import review_contract
-    source, previews = review_contract(compiled['source'])
-    value, provenance = agent.ask(
-        'Independently audit this sandbox against the original NATURAL user request and frozen business '
-        'dossier. Do not treat generated rules, expected expressions or reference answers as business truth. '
-        'Check meaning, privacy, missing obligations and extra restrictions. Map each evaluator semantic '
-        'role exactly once to a distinct declared answer field. Map meanings only; do not invent answers '
-        'or change business evidence. If a required role is absent or only a vague explanation can express '
-        'it, business_consistent=false. No tools. The evaluator will independently calculate all values '
-        'and execute positive and negative tests; your opinion alone never proves qualification.',
-        {'raw_request': row['raw_request'], 'business': business, 'private_user_fixture': user,
-         'contract': source, 'fixture_previews': previews, 'compiled_public': compiled['public'],
-         'semantic_roles': roles}, schema)
-    mapping = {entry['role']: entry['field'] for entry in value['mapping']}
-    require(len(value['mapping']) == len(roles) and set(mapping) == set(roles)
-            and len(set(mapping.values())) == len(roles), 'independent answer mapping incomplete or ambiguous')
-    scenarios = [s for s in compiled['source']['scenarios'] if s['expect_success'] and not s.get('mutations')]
-    checks, selected = [], None
-    for scenario in scenarios:
-        try:
-            world = execute_reference(compiled, scenario)
-            authored_answer = {k: evaluate(e, world.context(private=True)) for k, e in scenario['answer'].items()}
-            current = answer_checks(authored_answer, truth, mapping) + observation_checks(world, truth, spec['kind'])
-            current.append({'id': 'full_business_state', 'passed': canonical(sorted_data(world.data)) == canonical(sorted_data(truth['final_state']))})
-            current.append({'id': 'positive_reward', 'passed': grade(world, authored_answer, judge=agent.judge)['success']})
-            if all(c['passed'] for c in current):
-                selected, checks = scenario, current
-                break
-            checks = current
-        except (ContractError, KeyError, TypeError, ValueError) as exc:
-            checks = [{'id': 'external_positive_execution', 'passed': False, 'error': str(exc)}]
-    if selected is not None:
-        # Independently wrong, schema-valid answers must not receive full reward.
-        for role, field in mapping.items():
-            world = execute_reference(compiled, selected)
-            answer = {k: evaluate(e, world.context(private=True)) for k, e in selected['answer'].items()}
-            answer[field] = wrong_value(truth['answer'][role])
-            try:
-                validate_value(answer[field], next(f for f in compiled['source']['answers'] if f['id'] == field)['schema'])
-                outcome = grade(world, answer, judge=agent.judge)
-                checks.append({'id': 'wrong_' + role, 'passed': outcome['reward'] < 1 and outcome['success'] is False})
-            except ContractError as exc:
-                # A schema rejection is still a real guard, but label it separately.
-                checks.append({'id': 'wrong_' + role, 'passed': True, 'protection': 'schema', 'error': str(exc)})
-        if spec['mutation']:
-            for stale in [False, True]:
-                world = execute_reference(compiled, selected, mutation=spec['mutation'])
-                changed = expected(spec, business, user, mutation=spec['mutation'])
-                answer = {k: evaluate(e, world.context(private=True)) for k, e in selected['answer'].items()}
-                for role, field in mapping.items():
-                    answer[field] = (truth if stale else changed)['answer'][role]
-                score = grade(world, answer, judge=agent.judge)
-                checks.append({'id': 'stale_changed_fact' if stale else 'correct_changed_fact',
-                    'passed': (score['reward'] < 1 and not score['success']) if stale else score['success'] is True})
-        if any(t['kind'] == 'transaction' for t in compiled['source']['tools']):
-            try:
-                world = execute_reference(compiled, selected, refuse=True)
-                refused_truth = expected(spec, business, user, refuse=True)
-                answer = {k: evaluate(e, world.context(private=True)) for k, e in selected['answer'].items()}
-                for role, field in mapping.items():
-                    answer[field] = refused_truth['answer'][role]
-                outcome = grade(world, answer, judge=agent.judge)
-                checks.append({'id': 'actual_refusal_no_write', 'passed': canonical(sorted_data(world.data)) == canonical(sorted_data(refused_truth['initial']))
-                    and outcome['success'] is True})
-            except (ContractError, KeyError, TypeError, ValueError) as exc:
-                checks.append({'id': 'actual_refusal_no_write', 'passed': False, 'error': str(exc)})
-            # Correct claimed final values without actual writes must fail.
-            world = Sandbox(compiled)
-            answer = {mapping[k]: v for k, v in truth['answer'].items()}
-            for field in compiled['source'].get('explanations', []):
-                answer[field['id']] = '尚未执行任何查询或提交。'
-            outcome = grade(world, answer, judge=agent.judge)
-            checks.append({'id': 'claimed_write_without_execution', 'passed': outcome['reward'] < 1 and not outcome['success']})
-    return {'passed': value['business_consistent'] and selected is not None and all(c['passed'] for c in checks),
-            'semantic_review': value, 'provenance': provenance, 'mapping': mapping, 'checks': checks,
-            'reference': selected['id'] if selected else None,
-            'scope': 'external_business_truth_not_generated_reward_targets'}
 
 
 ACTION_SCHEMA = object_schema({'calls': {'type': 'array', 'items': object_schema({
