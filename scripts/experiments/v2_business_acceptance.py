@@ -103,10 +103,16 @@ def business_truth(spec, business, user, *, user_request, world=None, **kwargs):
                  and world.tools[event['tool']]['table'] in TIMED_TABLES[spec['kind']]]
         require(calls, 'timed business truth requires an actual relevant query')
         require(set(kwargs) <= {'refuse'}, 'timed variants require their own executed runtime evidence')
-        return runtime_business_truth(spec, business, user, user_request=user_request,
-                                      world=world, time_call_id=calls[-1]['id'], **kwargs)
-    from audit_v2_natural import canonical_truth
-    truth = canonical_truth(spec, business, user, **kwargs)
+        truth = runtime_business_truth(spec, business, user, user_request=user_request,
+                                       world=world, time_call_id=calls[-1]['id'], **kwargs)
+    else:
+        from audit_v2_natural import canonical_truth
+        truth = canonical_truth(spec, business, user, **kwargs)
+    return apply_answer_obligations(truth, spec, user_request=user_request, policy=business['policy'])
+
+
+def apply_answer_obligations(truth, spec, *, user_request, policy):
+    """Answer scope never removes state, timing or process truth."""
     if 'answer_obligations' not in spec:
         return truth
     obligations = spec['answer_obligations']
@@ -117,7 +123,7 @@ def business_truth(spec, business, user, *, user_request, world=None, **kwargs):
                 'answer obligation provenance required')
         role, source, text = (obligation[k] for k in ('role', 'source', 'text'))
         require(role in truth['answer'] and role not in roles, 'unknown or duplicate answer obligation')
-        public = {'user_request': user_request, 'business_policy': business['policy']}
+        public = {'user_request': user_request, 'business_policy': policy}
         require(source in public and isinstance(text, str) and text.strip() and text in public[source],
                 'answer obligation must cite public demand or policy')
         roles.append(role)

@@ -11,6 +11,9 @@ from env_factory_v2.business_graph import install, retrieve
 from env_factory_v2.demand import layered_demand, validate_demand
 from env_factory_v2.expressions import canonical
 from prepare_v2_cross_business import cases
+from env_factory_v2.code_agent import NativeCodeAgent
+from v2_answer_obligations import review_answer_obligations
+from audit_v2_natural import canonical_truth
 
 
 def reviewed_cases(openings_root, opening_review_root, business_review_root):
@@ -46,10 +49,22 @@ def main():
     for name in ('openings', 'opening-review', 'business-review', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--namespace', required=True)
+    parser.add_argument('--connection', type=Path, required=True,
+                        help='Native Code Agent connection for pre-generation answer scope review')
     args = parser.parse_args()
     rows, evidence = reviewed_cases(args.openings, args.opening_review, args.business_review)
     args.output.mkdir(parents=True, exist_ok=False)
     def save(path, value): path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n')
+    agent = NativeCodeAgent.from_connection(args.connection, evidence_root=args.output / 'answer-scope-native')
+    answer_scopes = {}
+    for row in rows:
+        scope = review_answer_obligations(agent, user_request=row['raw_request'], business=row['business'],
+            truth=canonical_truth(row['acceptance'], row['business'], row['user']))
+        answer_scopes[str(row['id'])] = scope
+        save(args.output / 'answer_scope_reviews.json', answer_scopes)
+        if not scope['passed']:
+            raise ValueError('Independent answer scope unresolved; assets not frozen')
+        row['acceptance']['answer_obligations'] = scope['answer_obligations']
     documents = [dict(document_id=f"{r['id']:02d}/business.json", title=r['title'], business=r['business']) for r in rows]
     load_dotenv('.env')
     with GraphDatabase.driver(os.getenv('NEO4J_URI', 'bolt://localhost:7687'),

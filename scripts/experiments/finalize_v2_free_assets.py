@@ -53,12 +53,8 @@ def main():
         row['demand'] = layered_demand(value['user_request'], row['demand']['agent_context']['business_policy'],
             document_id=row['business'], graph_evidence=row['demand']['task_spec']['knowledge_graph'])
         write(scene_path, scene)
-        acceptance_path = args.output / row['acceptance']
-        acceptance = json.loads(acceptance_path.read_text())
-        for obligation in acceptance.get('answer_obligations', []):
-            if obligation['source'] == 'user_request':
-                obligation['text'] = value['user_request']
-        write(acceptance_path, acceptance)
+        # Re-audit all final openings below; replacing a citation's text cannot
+        # establish that a changed utterance preserves the same answer scope.
         write(args.output / f'{identity:02d}/final_opening.json', {'previous':original,'response':value,'provenance':provenance})
     scenes = [{'id':r['id'],'scene':json.loads((args.output/f"{r['id']:02d}/user_scene.json").read_text()),
                'user_request':r['raw_request']} for r in manifest['samples']]
@@ -76,6 +72,19 @@ def main():
     write(args.output / 'final_opening_review.json', {'response':review,'provenance':provenance})
     assert len(review['checks']) == 20 and {c['id'] for c in review['checks']} == set(range(1,21))
     assert all(c['passed'] for c in review['checks']), 'final naturalness review failed; no freeze'
+    from audit_v2_natural import canonical_truth
+    from v2_answer_obligations import review_answer_obligations
+    for row in manifest['samples']:
+        acceptance_path = args.output / row['acceptance']
+        acceptance = json.loads(acceptance_path.read_text())
+        business = json.loads((args.output / row['business']).read_text())
+        user = json.loads((args.output / row['user']).read_text())
+        scope = review_answer_obligations(agent, user_request=row['raw_request'], business=business,
+                                         truth=canonical_truth(acceptance, business, user))
+        write(acceptance_path.parent / 'answer_scope_review.json', scope)
+        assert scope['passed'], 'answer obligation scope unresolved; no freeze'
+        acceptance['answer_obligations'] = scope['answer_obligations']
+        write(acceptance_path, acceptance)
     manifest['preparation_source_sha256'] = hashlib.sha256((args.draft/'frozen.json').read_bytes()).hexdigest()
     write(args.output / 'manifest.json', manifest)
     files = {str(p.relative_to(args.output)):hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(args.output.rglob('*')) if p.is_file()}
