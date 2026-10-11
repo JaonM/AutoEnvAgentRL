@@ -652,3 +652,16 @@ waived by waiting. Future anchors express source-specified later availability.
 Action ticks and lifecycle-dependent eligibility are unsupported in this mode;
 use explicit goals for other temporal policies. See BUSINESS_DEFINITION.md for
 scope, refusal/revocation and independent-review requirements.
+
+### Bounded collection transactions
+
+A transaction operation may include `for_each: <expression>` producing a list.
+Use `item` (for example `{"ref":"item.id"}`) in its `key`, `when` and `set`
+expressions. Membership is evaluated against pre-transaction `data`; updates
+still see sequential tentative data. There are at most 64 operation templates
+and 4096 expanded items in one transaction. Duplicate target keys within one
+collection operation fail closed. Empty collections perform no writes; a whole
+transaction with no applicable operations is unavailable. Every existing row
+precondition, exact consent, schema and invariant check still applies, and any
+failure rolls back the entire transaction. No partial commits are introduced.
+Use collection operations for large write sets instead of enumerating each row.

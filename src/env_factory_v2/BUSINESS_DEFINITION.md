@@ -313,3 +313,28 @@ future-time scope can instead include a target made available by an external eve
 Scope is per intention; independent partial outcomes do not require pointless
 consent for an unavailable target. Independent review must verify the chosen scope
 and whether refusal or revocation legitimately discharges the original requirement.
+
+## Efficient authoring and large transactions
+
+Environment transaction operations support the `for_each` collection form in
+CONTRACT.md. Use a small number of operation templates over actual selected
+records, instead of generating one operation per fixture row. Collection
+membership uses the pre-transaction world; writes use tentative sequential
+state and commit atomically. Consent, rules, schemas and invariants still apply.
+
+The author workbench supports `inspect_contract` for section sizes and check
+status, `read_contract` for narrow JSON Pointer reads, and `read_check` for full
+check diagnostics. `check_contract` returns a concise summary. Once the current
+draft is checked, `submit_contract` seals it for independent validation. A
+submission is not a business qualification or training certificate. Mutations
+invalidate previous checks. Exact unchanged checks may be reused; fixture-only
+changes rerun changed recipes, while any runtime dependency change invalidates
+all recipe runs. Optional diagnostic hints are not new qualification gates.
+
+Host author session budgets are independent from bridge request timeouts:
+connection settings `author_timeout` (default 600 seconds) and
+`author_idle_timeout` (default 240 seconds), each bounded at 600. Successful new
+draft versions or checks refresh idle time; reads, failed/repeated checks and
+returning to old versions do not. Total time is always bounded. Submitted
+sessions may end before the model's final prose, with the checked draft receipt
+as the completion signal; independent execution and review still follow.

@@ -58,8 +58,12 @@ def validate_plan(plan, source, tools, rules, *, temporal=False):
                 stable(rules[rule]['predicate'], {'initial', 'data', 'args', 'row', 'user', 'vars'}
                        | ({'time'} if temporal else set()))
         for operation in tool['operations']:
+            if 'for_each' in operation:
+                stable(operation['for_each'], {'initial', 'data', 'args', 'user', 'vars'}
+                       | ({'time'} if temporal else set()))
             for expression in [operation['key'], operation.get('when', {'literal': True}), *operation['set'].values()]:
                 stable(expression, {'initial', 'data', 'args', 'row', 'user', 'vars'}
+                       | ({'item'} if 'for_each' in operation else set())
                        | ({'time'} if temporal else set()))
 
 

@@ -358,7 +358,12 @@ def compile_contract(source):
             fields(tool, common + ['operations'], optional)
             require(isinstance(tool['operations'], list) and 1 <= len(tool['operations']) <= 64, 'transaction operation limit')
             for operation in tool['operations']:
-                fields(operation, ['table', 'key', 'set'], ['create', 'when'])
+                fields(operation, ['table', 'key', 'set'], ['create', 'when', 'for_each'])
+                operation_roots = {'args', 'data', 'user', 'user_state', 'time'}
+                if 'for_each' in operation:
+                    validate_expr(operation['for_each'], roots=operation_roots)
+                    validate_rule_links(operation['for_each'], rules)
+                    operation_roots |= {'item'}
                 require(type(operation.get('create', False)) is bool, 'create operation flag must be boolean')
                 require(operation['table'] in tables, 'unknown write table')
                 require(isinstance(operation['set'], dict) and operation['set'], 'empty write')
@@ -367,14 +372,13 @@ def compile_contract(source):
                 if operation.get('create'):
                     required = set(tables[operation['table']]['schema']['required']) - {tables[operation['table']]['primary_key']}
                     require(required <= set(operation['set']), 'create operation must supply every required non-key column')
-                validate_expr(operation['key'], roots={'args', 'data', 'user', 'user_state', 'time'})
+                validate_expr(operation['key'], roots=operation_roots)
                 validate_rule_links(operation['key'], rules)
                 if 'when' in operation:
-                    validate_expr(operation['when'], roots={'args', 'data', 'user', 'user_state', 'time'})
+                    validate_expr(operation['when'], roots=operation_roots)
                     validate_rule_links(operation['when'], rules)
                 for expression in operation['set'].values():
-                    validate_expr(expression, roots={'args', 'data', 'user', 'user_state', 'time'}
-                                  if operation.get('create') else {'args', 'row', 'data', 'user', 'user_state', 'time'})
+                    validate_expr(expression, roots=operation_roots if operation.get('create') else operation_roots | {'row'})
                     validate_rule_links(expression, rules, row_scope=True)
         else:
             raise ContractError('unsupported tool kind; add a reviewed platform capability')
@@ -411,6 +415,8 @@ def compile_contract(source):
         expressions = [rules[r]['predicate'] for r in tool['rule_ids']]
         for operation in tool.get('operations', []):
             expressions.extend([operation['key'], operation.get('when', {'literal': True}), *operation['set'].values()])
+            if 'for_each' in operation:
+                expressions.append(operation['for_each'])
         consumed = {reference.split('.')[1] for expression in expressions for reference in refs(expression)
                     if reference.startswith('args.')}
         consumed.update(tool.get('user_bindings', {}))
