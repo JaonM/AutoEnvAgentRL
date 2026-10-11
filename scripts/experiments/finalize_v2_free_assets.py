@@ -8,6 +8,17 @@ from pathlib import Path
 from env_factory_v2.code_agent import NativeCodeAgent, object_schema
 from env_factory_v2.demand import layered_demand
 from prepare_v2_natural_pilot import write
+from measure_v2_natural import verify_assets
+
+
+def validate_review(review, identities):
+    checks = review['checks']
+    if (len(checks) != len(identities)
+            or any(type(check['id']) is not int for check in checks)
+            or {check['id'] for check in checks} != identities):
+        raise ValueError('Opening review must cover every sample exactly once')
+    if not all(check['passed'] is True for check in checks):
+        raise ValueError('final naturalness review failed; no freeze')
 
 
 def main():
@@ -15,44 +26,34 @@ def main():
     parser.add_argument('--draft', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--connection', type=Path, required=True)
-    parser.add_argument('--repair-ids', default='3,16', help='Comma-separated openings to regenerate before batch review')
+    parser.add_argument('--repair-ids', default='', help='Explicit comma-separated sample IDs to regenerate from their unchanged frozen scenes')
     parser.add_argument('--business-fidelity', action='store_true', help='Also audit openings against public business policy')
     args = parser.parse_args()
     assert not args.output.exists()
-    frozen = json.loads((args.draft / 'frozen.json').read_text())
-    assert all(hashlib.sha256((args.draft / p).read_bytes()).hexdigest() == h for p,h in frozen['files'].items())
+    manifest = verify_assets(args.draft)
+    repair_ids = [int(value) for value in args.repair_ids.split(',') if value]
+    identities = {row['id'] for row in manifest['samples']}
+    if len(set(repair_ids)) != len(repair_ids) or not set(repair_ids) <= identities:
+        raise ValueError('Repair IDs must be unique members of the frozen sample set')
+    frozen = json.loads((args.draft / 'frozen.json').read_text())['files']
+    scene_paths = {f"{row['id']:02d}/user_scene.json" for row in manifest['samples']}
+    if not scene_paths <= set(frozen):
+        raise ValueError('Every user scene must be frozen before opening review')
     shutil.copytree(args.draft, args.output)
     (args.output / 'frozen.json').unlink()
-    manifest = json.loads((args.output / 'manifest.json').read_text())
     agent = NativeCodeAgent.from_connection(args.connection, evidence_root=args.output / 'final-review-native')
-    for identity in [int(value) for value in args.repair_ids.split(',') if value]:
+    for identity in repair_ids:
         row = next(r for r in manifest['samples'] if r['id'] == identity)
         scene_path = args.output / f'{identity:02d}/user_scene.json'
         scene = json.loads(scene_path.read_text())
-        if identity == 3:
-            spec = json.loads((args.output / row['acceptance']).read_text())['params']
-            scene['known_information'] = {
-                'start_time': f"{spec['start_minutes']//60:02d}:{spec['start_minutes']%60:02d}",
-                'end_time': f"{spec['end_minutes']//60:02d}:{spec['end_minutes']%60:02d}",
-                'hourly_rate': spec['hourly_rate']}
-        elif identity == 2:
-            spec = json.loads((args.output / row['acceptance']).read_text())['params']
-            scene['known_information'] = {'item_prices': spec['prices'], 'membership': '我是会员',
-                'member_order_discount': {'minimum_order_total': spec['threshold'], 'rate': spec['rate']},
-                'coupon': {'value': spec['coupon'], 'minimum_order_total': 0}}
-        elif identity == 16:
-            scene['desired_outcome'] = '选择兼容且有空余容量的设备替换，并调整维护安排'
-        elif identity == 19:
-            scene['desired_outcome'] = '预订提交前可能更改区域偏好；按最终区域偏好挑选并预订场地'
         value, provenance = agent.ask('Write a natural Chinese user opening from this scene, preserving all inputs and desired outputs. '
-            'Use ordinary clock times; capacity refers to available device capacity, not performance. '
+            'Preserve the meaning and units of all supplied facts. '
             'No tools, implementation steps, invented conditions or computed answers.', scene,
             object_schema({'user_request':{'type':'string'}}))
         original = copy.deepcopy(row)
         row['raw_request'] = value['user_request']
         row['demand'] = layered_demand(value['user_request'], row['demand']['agent_context']['business_policy'],
             document_id=row['business'], graph_evidence=row['demand']['task_spec']['knowledge_graph'])
-        write(scene_path, scene)
         # Re-audit all final openings below; replacing a citation's text cannot
         # establish that a changed utterance preserves the same answer scope.
         write(args.output / f'{identity:02d}/final_opening.json', {'previous':original,'response':value,'provenance':provenance})
@@ -61,17 +62,16 @@ def main():
     if args.business_fidelity:
         for sample, row in zip(scenes, manifest['samples'], strict=True):
             sample['public_business_policy'] = row['demand']['agent_context']['business_policy']
-    review, provenance = agent.ask('Independently review all 20 user openings for naturalness and fidelity to the supplied scenes. '
+    review, provenance = agent.ask('Independently review every supplied user opening for naturalness and fidelity to the supplied scenes. '
         'Preserve desired outputs and known inputs. No unsupported additions, technical artifacts, computed answers or '
-        'meaning changes (available capacity is not performance). When public_business_policy is supplied, '
-        'check that stated eligibility conditions attach to the correct discount or coupon and do not '
-        'contradict policy. Users may omit policy details and ask the agent to apply them. '
+        'meaning changes. When public_business_policy is supplied, check that stated conditions '
+        'apply to the correct objects and do not contradict policy. Users may omit policy details '
+        'and ask the agent to apply them. '
         'Reasonable information gaps are allowed. No tools.',
         {'samples':scenes}, object_schema({'checks':{'type':'array','items':object_schema({'id':{'type':'integer'},
             'passed':{'type':'boolean'},'reason':{'type':'string'}})}}))
     write(args.output / 'final_opening_review.json', {'response':review,'provenance':provenance})
-    assert len(review['checks']) == 20 and {c['id'] for c in review['checks']} == set(range(1,21))
-    assert all(c['passed'] for c in review['checks']), 'final naturalness review failed; no freeze'
+    validate_review(review, identities)
     from audit_v2_natural import canonical_truth
     from v2_answer_obligations import review_answer_obligations
     for row in manifest['samples']:
@@ -82,14 +82,15 @@ def main():
         scope = review_answer_obligations(agent, user_request=row['raw_request'], business=business,
                                          truth=canonical_truth(acceptance, business, user))
         write(acceptance_path.parent / 'answer_scope_review.json', scope)
-        assert scope['passed'], 'answer obligation scope unresolved; no freeze'
+        if scope['passed'] is not True:
+            raise ValueError('answer obligation scope unresolved; no freeze')
         acceptance['answer_obligations'] = scope['answer_obligations']
         write(acceptance_path, acceptance)
     manifest['preparation_source_sha256'] = hashlib.sha256((args.draft/'frozen.json').read_bytes()).hexdigest()
     write(args.output / 'manifest.json', manifest)
     files = {str(p.relative_to(args.output)):hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(args.output.rglob('*')) if p.is_file()}
     write(args.output / 'frozen.json', {'files':files})
-    print(json.dumps({'frozen':True,'count':20,'output':str(args.output)}))
+    print(json.dumps({'frozen':True,'count':len(manifest['samples']),'output':str(args.output)}))
 
 
 if __name__ == '__main__':
