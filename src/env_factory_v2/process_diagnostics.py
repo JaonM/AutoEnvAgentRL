@@ -27,6 +27,7 @@ def process_diagnostics(compiled, *, max_variants=16):
                     found |= dependencies(rules[identity], (*seen, identity))
                 for operation in tool['operations']:
                     found |= dependencies(operation['key'], seen)
+                    found |= dependencies(operation.get('when', {'literal': True}), seen)
                     found |= dependencies(operation['set'], seen)
             for item in value.values():
                 found |= dependencies(item, seen)

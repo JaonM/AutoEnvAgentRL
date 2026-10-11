@@ -50,7 +50,7 @@ def validate_plan(plan, source, tools, rules, *, temporal=False):
             for rule in tool['rule_ids']:
                 stable(rules[rule]['predicate'], {'initial', 'data', 'args', 'row', 'user', 'vars'})
         for operation in tool['operations']:
-            for expression in [operation['key'], *operation['set'].values()]:
+            for expression in [operation['key'], operation.get('when', {'literal': True}), *operation['set'].values()]:
                 stable(expression, {'initial', 'data', 'args', 'row', 'user', 'vars'}
                        | ({'time'} if temporal else set()))
 

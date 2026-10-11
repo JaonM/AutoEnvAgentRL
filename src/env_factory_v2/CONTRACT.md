@@ -163,10 +163,21 @@ state, then validate schemas, FKs and invariants before atomic commit. Invariant
 see the candidate post-commit user state, including consumption of this exact
 authorization. Data and consent consumption commit together; failed validation
 leaves both unchanged. Preconditions still see the live pre-commit user state. key
-identifies exactly one existing row; primary-key writes, insertion and deletion
-are currently unsupported.
+identifies exactly one existing row, unless create:true declares a new row with
+every required non-key field in set. Primary-key writes and deletion are unsupported.
 
-Tool rule_ids apply to EVERY operation row, including operations on different
+An operation may declare when:EXPR, a strictly boolean applicability predicate
+over pre-transaction data, args, user, user_state and time. It cannot read the
+operation row, which has not been resolved. False skips target lookup, row guards
+and updates entirely; malformed conditions are errors, not unavailability.
+Conditions always see the original world, including for later operations; keys
+and updates retain sequential candidate-state semantics. If every operation is
+skipped the transaction is unavailable and cannot commit or consume consent.
+This same behavior is used by runtime, target projection and
+transaction_preconditions. Applicability must be justified by original business
+rules; independent review still rejects unjustified skipped writes.
+
+Tool rule_ids apply to EVERY enabled operation row, including operations on different
 tables. An activity-only row predicate cannot also guard a registration row.
 For heterogeneous transactions, express shared conditions over data and args
 (select identities through public rules), not fields unique to one target row.

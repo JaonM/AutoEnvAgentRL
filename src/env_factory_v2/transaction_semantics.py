@@ -43,6 +43,12 @@ def prepare_transaction(tool, source, before, context, *, check_preconditions=Tr
     tables = {table['id']: table for table in source['tables']}
     candidate, changes = copy.deepcopy(before), []
     for operation in tool['operations']:
+        # Applicability is a pre-state decision, independent of earlier writes.
+        # A skipped operation must not even resolve an irrelevant/missing target.
+        enabled = evaluate(operation.get('when', {'literal': True}), {**context, 'data': before})
+        require(type(enabled) is bool, 'transaction operation condition must produce boolean')
+        if not enabled:
+            continue
         staged = {**context, 'data': candidate}
         key = evaluate(operation['key'], staged)
         table = tables[operation['table']]
@@ -76,4 +82,6 @@ def prepare_transaction(tool, source, before, context, *, check_preconditions=Tr
             row.update(updates)
         changes.append({'table': table['id'], 'key': key, 'set': copy.deepcopy(updates),
                         **({'create': True} if create else {})})
+    if not changes:
+        raise TransactionUnavailable('transaction has no applicable operations')
     return candidate, changes

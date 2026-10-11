@@ -358,7 +358,7 @@ def compile_contract(source):
             fields(tool, common + ['operations'], optional)
             require(isinstance(tool['operations'], list) and 1 <= len(tool['operations']) <= 64, 'transaction operation limit')
             for operation in tool['operations']:
-                fields(operation, ['table', 'key', 'set'], ['create'])
+                fields(operation, ['table', 'key', 'set'], ['create', 'when'])
                 require(type(operation.get('create', False)) is bool, 'create operation flag must be boolean')
                 require(operation['table'] in tables, 'unknown write table')
                 require(isinstance(operation['set'], dict) and operation['set'], 'empty write')
@@ -369,6 +369,9 @@ def compile_contract(source):
                     require(required <= set(operation['set']), 'create operation must supply every required non-key column')
                 validate_expr(operation['key'], roots={'args', 'data', 'user', 'user_state', 'time'})
                 validate_rule_links(operation['key'], rules)
+                if 'when' in operation:
+                    validate_expr(operation['when'], roots={'args', 'data', 'user', 'user_state', 'time'})
+                    validate_rule_links(operation['when'], rules)
                 for expression in operation['set'].values():
                     validate_expr(expression, roots={'args', 'data', 'user', 'user_state', 'time'}
                                   if operation.get('create') else {'args', 'row', 'data', 'user', 'user_state', 'time'})
@@ -407,7 +410,7 @@ def compile_contract(source):
                     require(reference.split('.')[1] in tool['parameters']['properties'], 'rule uses undeclared parameter')
         expressions = [rules[r]['predicate'] for r in tool['rule_ids']]
         for operation in tool.get('operations', []):
-            expressions.extend([operation['key'], *operation['set'].values()])
+            expressions.extend([operation['key'], operation.get('when', {'literal': True}), *operation['set'].values()])
         consumed = {reference.split('.')[1] for expression in expressions for reference in refs(expression)
                     if reference.startswith('args.')}
         consumed.update(tool.get('user_bindings', {}))
