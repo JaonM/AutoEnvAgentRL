@@ -88,3 +88,37 @@ def test_full_review_executes_independent_steps_and_preserves_original_identity(
     assert len(report['records']) == 2
     assert all(r['passed'] for r in report['records'])
     agent.ask.assert_called_once()
+
+
+def test_compact_steps_preserve_exact_trajectory_and_execution():
+    from env_factory_v2.verification import replay_identity
+    compiled, case, scenarios = setup_case()
+    steps = scenarios['correct']['steps']
+    before = copy.deepcopy(scenarios)
+    full = {**case, 'steps_json': json.dumps(steps + [{'kind': 'time'}])}
+    compact = {**case, 'steps_json': json.dumps([{'$step': i} for i in range(len(steps))] + [{'kind': 'time'}])}
+    assert _case_scenario(compiled, compact, scenarios) == _case_scenario(compiled, full, scenarios)
+    first = _execute_case(compiled, full, scenarios, Mock())
+    second = _execute_case(compiled, compact, scenarios, Mock())
+    assert first['passed'] and second['passed']
+    assert replay_identity(first['first']) == replay_identity(second['first'])
+    assert scenarios == before
+
+
+@pytest.mark.parametrize('reference', [-1, 10000, True, '0', None])
+def test_invalid_compact_step_reference_fails_closed(reference):
+    compiled, case, scenarios = setup_case()
+    case['steps_json'] = json.dumps([{'$step': reference}])
+    with pytest.raises(ContractError, match='step reference'):
+        _case_scenario(compiled, case, scenarios)
+
+
+def test_compact_reference_cannot_smuggle_edits_or_bypass_dependencies():
+    compiled, case, scenarios = setup_case()
+    case['steps_json'] = json.dumps([{'$step': 0, 'kind': 'wait', 'seconds': 1}])
+    with pytest.raises(ContractError, match='step reference'):
+        _case_scenario(compiled, case, scenarios)
+    case.update(steps_json=json.dumps([{'$step': 1}]), expect_success=False)
+    result = _execute_case(compiled, case, scenarios, Mock())
+    assert result['first']['error'] is not None
+    assert not result['passed']  # A missing prerequisite is not a valid negative case.

@@ -91,7 +91,8 @@ def review_schema(base_schema, requirements, source):
                 'type': 'string', 'enum': implementation_paths(source)}},
             'case_ids': {'type': 'array', 'items': {'type': 'string'}},
         })}, 'obligation_reviews': {'type': 'array', 'items': object_schema({
-            'path': {'type': 'string', 'enum': [item['path'] for item in mandatory_obligations(source)]},
+            'paths': {'type': 'array', 'items': {'type': 'string',
+                'enum': [item['path'] for item in mandatory_obligations(source)]}},
             'consistent': {'type': 'boolean'}, 'reason': {'type': 'string'},
             'requirement_ids': {'type': 'array', 'items': {'type': 'string',
                 'enum': [r['id'] for r in requirements]}},
@@ -139,7 +140,15 @@ def validate_review(compiled, requirements, value):
                 'requirement must cite actual independent executable cases')
         for path in paths:
             implementation_at(compiled['source'], path)
-    reverse = value.get('obligation_reviews', [])
+    reverse = []
+    for item in value.get('obligation_reviews', []):
+        if 'paths' in item:
+            require('path' not in item and isinstance(item['paths'], list) and item['paths'],
+                    'obligation group requires nonempty paths without a second path field')
+            reverse.extend({**{k:v for k,v in item.items() if k != 'paths'}, 'path': path}
+                           for path in item['paths'])
+        else:
+            reverse.append(item)  # Historical evidence remains reproducible.
     required_paths = {item['path'] for item in mandatory_obligations(compiled['source'])}
     require(len(reverse) == len(required_paths), 'reverse review must cover every mandatory obligation')
     reviewed_paths = set()

@@ -31,6 +31,32 @@ def fixture():
     return compiled, requirements, review
 
 
+def test_grouped_obligation_evidence_expands_to_identical_per_path_review():
+    compiled, requirements, review = fixture()
+    original = validate_review(compiled, requirements, review)
+    grouped = deepcopy(review)
+    item = grouped['obligation_reviews'][0]
+    grouped['obligation_reviews'] = [{**{k:v for k,v in item.items() if k != 'path'},
+        'paths': [i['path'] for i in grouped['obligation_reviews']]}]
+    assert validate_review(compiled, requirements, grouped) == original
+
+
+@pytest.mark.parametrize('mutation', ['empty', 'duplicate', 'missing', 'unknown', 'mixed'])
+def test_grouping_cannot_bypass_complete_unique_obligation_review(mutation):
+    compiled, requirements, review = fixture()
+    item = review['obligation_reviews'][0]
+    group = {**{k:v for k,v in item.items() if k != 'path'},
+             'paths': [i['path'] for i in review['obligation_reviews']]}
+    review['obligation_reviews'] = [group]
+    if mutation == 'empty': group['paths'] = []
+    elif mutation == 'duplicate': group['paths'].append(group['paths'][0])
+    elif mutation == 'missing': group['paths'].pop()
+    elif mutation == 'unknown': group['paths'][0] = '/unknown'
+    else: group['path'] = group['paths'][0]
+    with pytest.raises(ContractError):
+        validate_review(compiled, requirements, review)
+
+
 def test_every_public_clause_links_to_existing_behavior_and_executed_counterexamples():
     compiled, requirements, review = fixture()
     agent = Mock()

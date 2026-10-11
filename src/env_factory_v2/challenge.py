@@ -119,6 +119,10 @@ def _challenge(compiled, original_request, agent):
         'completed episode. Successful no-write paths must finish without an exception. '
         'steps_json is a JSON string: null inherits the base trajectory; an array supplies your own '
         'complete trajectory using the existing public tools and user stages. Use independent steps '
+        'concisely: an array item {"$step":N} copies the zero-based Nth step of the named base '
+        'scenario exactly. Mix references with new full step objects to omit, reorder or add actions. '
+        'A reference cannot change any arguments; write a full replacement step for changes. '
+        'All references are expanded before the same grammar, dependency and runtime checks. '
         'to exercise missing branches instead of accepting the author scenario catalog as complete. '
         'An empty array explicitly tests no actions. Independent steps do not inherit expect_error: '
         'they must complete normally, so a runtime error cannot count as a successful negative case. '
@@ -139,6 +143,10 @@ def _challenge(compiled, original_request, agent):
         'the whole table. Derive unshown values from the documented plan, never invent hidden rows. '
         'When public_requirements is nonempty, review EVERY listed clause exactly once in requirement_reviews. '
         'Also review EVERY mandatory_obligation_catalog entry exactly once in obligation_reviews. '
+        'Use paths arrays to group entries ONLY when the same original requirements, applicability, '
+        'verdict, rationale and executable cases justify EACH member independently. Otherwise use '
+        'separate groups, including every unsupported field. Grouping saves repeated prose, never '
+        'exempts a member from semantic review; the host expands groups and checks exact coverage. '
         'For each mandatory output field, nested property, communication or success constraint, identify '
         'the original requirement_ids that justify requiring it from this user, and actual case_ids that '
         'exercise it. Existence in a business table or tool response does not justify mandatory output '
@@ -247,6 +255,16 @@ def _case_scenario(compiled, case, scenarios):
     steps = json.loads(case.get('steps_json', 'null'))
     require(steps is None or isinstance(steps, list), 'independent steps must be null or an array')
     if steps is not None:
+        inherited_steps = scenario['steps']
+        expanded = []
+        for step in steps:
+            if isinstance(step, dict) and '$step' in step:
+                require(set(step) == {'$step'} and type(step['$step']) is int
+                        and 0 <= step['$step'] < len(inherited_steps), 'invalid independent step reference')
+                expanded.append(copy.deepcopy(inherited_steps[step['$step']]))
+            else:
+                expanded.append(copy.deepcopy(step))
+        steps = expanded
         tool_ids = {tool['id'] for tool in compiled['source']['tools']}
         for step in steps:
             require(isinstance(step, dict), 'independent step must be an object')
