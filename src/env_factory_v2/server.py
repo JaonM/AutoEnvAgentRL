@@ -37,7 +37,7 @@ def serve(source, *, host='127.0.0.1', port=8080, agent=None, user_mode='structu
                     return self.reply(200, {'version': '2.0', 'status': 'ready'})
                 sandbox = episodes.get(self.headers.get('X-Episode'))
                 if self.path == '/time' and sandbox is not None:
-                    return self.reply(200, sandbox.time())
+                    return self.reply(200, sandbox.observe_time())
                 if self.path == '/user-state' and sandbox is not None and user_mode == 'structured':
                     return self.reply(200, sandbox.user.snapshot())
                 return self.reply(404, {'error': 'unknown route/episode'})

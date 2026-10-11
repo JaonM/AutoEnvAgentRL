@@ -101,6 +101,8 @@ def certify(root):
                 call('v2_user', {k: v for k, v in step.items() if k in {'stage', 'question', 'proposal', 'source_id'}}, f'user_{index}')
             elif kind == 'wait':
                 call('v2_wait', {'seconds': step['seconds']}, f'wait_{index}')
+            elif kind == 'time':
+                call('v2_time', {}, f'time_{index}')
             elif kind == 'revoke':
                 call('v2_revoke', {'stage': step['stage']}, f'revoke_{index}')
         world = environment.server.episodes[environment.episode]

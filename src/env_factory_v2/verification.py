@@ -61,6 +61,8 @@ def run_scenario(compiled, scenario, *, judge=None, recipes_only=False):
                     proposal=step.get('proposal'), source_id=step.get('source_id'))
             elif kind == 'wait':
                 result = sandbox.wait(step['seconds'])
+            elif kind == 'time':
+                result = sandbox.observe_time()
             elif kind == 'revoke':
                 result = sandbox.revoke(step['stage'])
             else:

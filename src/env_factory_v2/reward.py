@@ -87,7 +87,8 @@ def equivalent_query_tools(sandbox, tool_id, columns=None):
 def assess_process(sandbox):
     """Deterministic workflow checks shared by preflight and final scoring."""
     context = sandbox.context(private=True)
-    used = {turn['tool'] for turn in sandbox.trace if turn.get('status') == 'ok'}
+    used = {turn['tool'] for turn in sandbox.trace
+            if turn.get('kind') == 'tool' and turn.get('status') == 'ok'}
     branch_checks = []
     for branch in sandbox.source['success']:
         try:
@@ -139,9 +140,19 @@ def assess_process(sandbox):
                 except ContractError as exc:
                     check['error'] = str(exc)
             observations.append(check)
-        passed = passed and all(check['passed'] for check in observations)
+        platform_checks = []
+        for requirement in branch.get('required_platform_observations', []):
+            observed = any(turn.get('kind') == 'platform_observation'
+                           and turn.get('capability') == requirement['capability']
+                           and turn.get('status') == 'ok'
+                           and (requirement['freshness'] == 'any'
+                                or turn['result']['elapsed_seconds'] == sandbox.seconds)
+                           for turn in sandbox.trace)
+            platform_checks.append({**requirement, 'passed': bool(active and observed)})
+        passed = passed and all(check['passed'] for check in observations + platform_checks)
         branch_checks.append({'id': branch['id'], 'active': active, 'passed': bool(passed),
-                              **({'observations': observations} if observations else {})})
+                              **({'observations': observations} if observations else {}),
+                              **({'platform_observations': platform_checks} if platform_checks else {})})
     safety = not sandbox.violations
     invariant_checks = [evaluate(item['predicate'], context) is True for item in sandbox.source.get('invariants', [])]
     goal_checks = []
@@ -217,8 +228,9 @@ def grade(sandbox, answer, *, judge=None):
     semantic_evidence = {}
     observations = copy.deepcopy([
         turn for turn in sandbox.trace
-        if turn.get('kind') == 'tool' and turn.get('status') == 'ok'
-        and turn.get('tool') in sandbox.tools])
+        if turn.get('status') == 'ok' and (
+            (turn.get('kind') == 'tool' and turn.get('tool') in sandbox.tools)
+            or turn.get('kind') == 'platform_observation')])
     for observation in observations:
         result = observation['result']
         if isinstance(result, dict) and result.get('next_cursor') is not None:

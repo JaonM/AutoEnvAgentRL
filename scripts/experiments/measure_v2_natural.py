@@ -113,6 +113,8 @@ def execute_reference(compiled, scenario, *, mutation=None, refuse=False):
             world.interact(step['stage'], question=step['question'], proposal=step.get('proposal'), source_id=step.get('source_id'))
         elif kind == 'wait':
             world.wait(step['seconds'])
+        elif kind == 'time':
+            world.observe_time()
         elif kind == 'revoke':
             world.revoke(step['stage'])
     return world

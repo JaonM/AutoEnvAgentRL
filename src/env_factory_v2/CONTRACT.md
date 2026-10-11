@@ -398,6 +398,16 @@ Use templates for dynamic menus in reference scenarios; final answers need not
 repeat choices already delivered before selection. Free policies still send
 ordinary text through v2_chat; templates do not add a new agent-visible tool.
 Wait steps: {kind:"wait",seconds}; revoke: {kind:"revoke",stage}.
+Clock observation: {kind:"time"} reads the same virtual clock as the public
+GET /time and v2_time interfaces, without advancing time or business-call counts.
+It records an explicit platform observation; timestamps automatically attached
+to other events do not prove an agent clock read. A success branch may declare
+required_platform_observations:[{capability:"time",freshness:"any"|"current"}]
+when the original public requirement requires that observation. "current" means
+the observed elapsed_seconds equals the elapsed_seconds at grading; "any" accepts
+an earlier explicit read. This is conditional on the branch being active. Do not
+add clock-read obligations merely because the platform supports them. Use this
+deterministic evidence instead of requiring extra answer prose about reading time.
 traverse executes all real pages, each consuming one action, and creates evidence
 under the traversal id with items,total,next_cursor=null,pages.
 The helper consumes one collection action after all page calls. Public agents

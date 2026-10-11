@@ -520,6 +520,8 @@ def compile_contract(source):
                 validate_question(step['question'])
             elif step['kind'] == 'wait':
                 fields(step, ['kind', 'seconds'])
+            elif step['kind'] == 'time':
+                fields(step, ['kind'])
             elif step['kind'] == 'revoke':
                 fields(step, ['kind', 'stage'])
             else:
@@ -547,7 +549,16 @@ def compile_contract(source):
     require(bool(success), 'success branches required')
     for branch in named(success, 'success branch').values():
         fields(branch, ['id', 'public', 'when', 'required_tools', 'required_stages'],
-               ['required_observations', 'min_business_calls', 'max_business_calls'])
+               ['required_observations', 'required_platform_observations', 'min_business_calls', 'max_business_calls'])
+        platform_observations = branch.get('required_platform_observations', [])
+        require(isinstance(platform_observations, list), 'platform observations must be a list')
+        seen_capabilities = set()
+        for observation in platform_observations:
+            fields(observation, ['capability', 'freshness'])
+            require(observation['capability'] == 'time' and observation['freshness'] in {'any', 'current'},
+                    'invalid platform observation capability or freshness')
+            require(observation['capability'] not in seen_capabilities, 'duplicate platform observation')
+            seen_capabilities.add(observation['capability'])
         require(isinstance(branch['public'], str) and branch['public'].strip(), 'branch meaning required')
         require(set(branch['required_tools']) <= set(tools) and set(branch['required_stages']) <= set(stages), 'unknown success dependency')
         for bound in ('min_business_calls', 'max_business_calls'):

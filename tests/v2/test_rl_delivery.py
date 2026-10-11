@@ -34,6 +34,17 @@ def action(name, args, identifier):
         'function': {'name': name, 'arguments': json.dumps(args)}}]}
 
 
+def test_training_certificate_executes_explicit_platform_time_step(bundle):
+    source = direct()
+    source['success'] = [{'id': 'clock', 'public': 'Read current virtual time.',
+        'when': {'literal': True}, 'required_tools': [], 'required_stages': [],
+        'required_platform_observations': [{'capability': 'time', 'freshness': 'current'}]}]
+    for case in source['scenarios']:
+        case['steps'] = [{'kind': 'time'}]
+    root = bundle(source)
+    assert training.certify(root)['training_ready']
+
+
 def test_policy_cannot_manufacture_user_withdrawal_even_with_a_known_tool_name(bundle):
     environment = V2Episode(bundle(transaction()), _qualification_only=True)
     # Mocked qualification is unit-only. Exercise the ordinary policy dispatcher.

@@ -109,7 +109,7 @@ class NativeCodeAgent:
             return result
         value, provenance = self.ask(
             'Assess ONLY the declared reasoning obligations using authoritative_facts, actual user turns '
-            'and runtime_observations. Runtime observations are successful executed business tools with '
+            'and runtime_observations. Runtime observations include explicit platform clock reads and successful business tools with '
             'their actual arguments, results and times, not the submitted answer or undisclosed state. '
             'Use them to check stated parent relationships, membership intervals, authorization and '
             'verification. Respect each observation time and state version: an earlier observation '

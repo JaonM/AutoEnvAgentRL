@@ -58,6 +58,8 @@ def augment(source, *, count=2):
                     proposal=step.get('proposal'), source_id=step.get('source_id'))
             elif step['kind'] == 'wait':
                 sandbox.wait(step['seconds'])
+            elif step['kind'] == 'time':
+                sandbox.observe_time()
             elif step['kind'] == 'revoke':
                 sandbox.revoke(step['stage'])
         executions = [event for event in sandbox.trace

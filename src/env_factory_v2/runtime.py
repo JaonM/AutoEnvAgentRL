@@ -51,6 +51,16 @@ class Sandbox:
         return {'datetime': (base + timedelta(seconds=self.seconds)).isoformat(),
                 'tick': self.ticks, 'elapsed_seconds': self.seconds}
 
+    def observe_time(self):
+        """Record an explicit agent clock read; internal timestamps stay passive."""
+        result = self.time()
+        if self.closed:
+            return result  # Post-finalization inspection cannot add grading evidence.
+        self.trace.append({'kind': 'platform_observation', 'capability': 'time',
+                           'status': 'ok', 'result': copy.deepcopy(result),
+                           'time': copy.deepcopy(result), 'state_version': self.version})
+        return result
+
     def context(self, *, args=None, data=None, row=None, private=False, user=None):
         user = self.user if user is None else user
         return {'data': self.data if data is None else data, 'initial': self.initial,

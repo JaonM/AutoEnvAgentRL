@@ -47,6 +47,9 @@ def verify_api(source, report, *, agent=None):
                 post('/collect', {'pages': pages, 'id': step['id']})
             elif kind == 'wait':
                 post('/wait', {'seconds': step['seconds']})
+            elif kind == 'time':
+                with urlopen(Request(base + '/time', headers={'X-Episode': episode}), timeout=5) as response:
+                    json.load(response)
             elif kind == 'revoke':
                 post('/revoke', {'stage': step['stage']})
         result = post('/answer', reference['answer'])
