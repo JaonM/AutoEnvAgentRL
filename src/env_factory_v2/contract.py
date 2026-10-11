@@ -459,9 +459,12 @@ def compile_contract(source):
         require(bool(explanation['criteria']), 'explanation criteria required')
         require(isinstance(explanation['meaning'], str) and explanation['meaning'].strip(), 'explanation meaning required')
         for criterion in named(explanation['criteria'], 'criterion').values():
-            fields(criterion, ['id', 'rule_id', 'obligation'])
+            fields(criterion, ['id', 'rule_id', 'obligation'], ['when'])
             require(criterion['rule_id'] in rules and isinstance(criterion['obligation'], str)
                     and criterion['obligation'].strip(), 'invalid reasoning obligation')
+            if 'when' in criterion:
+                validate_expr(criterion['when'], roots={'data', 'initial', 'user', 'user_state', 'time'})
+                validate_rule_links(criterion['when'], rules, shared_filters=True, tables=tables)
     require(abs(sum(f['weight'] for f in [*answers.values(), *explanations.values()]) - 1) < 1e-9, 'reward weights must sum to one')
     for invariant in source.get('invariants', []):
         fields(invariant, ['rule_id', 'predicate'])

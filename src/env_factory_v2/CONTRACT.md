@@ -282,7 +282,12 @@ eligibility predicate manually in an expected expression. Use filter/map with
 the rule operator to compute the authoritative complete set independently of
 the agent's possibly incomplete tool observations. Scenario/challenge answer
 recipes may use independent expressions to challenge the rule itself.
-explanations: [{id,meaning,criteria:[{id,rule_id,obligation}],context_fields:[answer_id],weight}].
+explanations: [{id,meaning,criteria:[{id,rule_id,obligation,when?}],context_fields:[answer_id],weight}].
+Optional criterion `when` is a boolean EXPR over data,initial,user,user_state,time.
+It scopes a communication obligation to the actual required business branch;
+it cannot depend on submitted answers or policy evidence. Only applicable criteria
+are judged. A non-boolean condition is an error, not an exemption. If all criteria
+are inapplicable, the component is satisfied without a semantic model call.
 Criteria describe invariant reasoning obligations over actual runtime facts,
 not immutable wording or mutable fixture content. Code Agent grades explanations
 against authoritative evaluated context_fields, actual user turns, and successful

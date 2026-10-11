@@ -237,8 +237,20 @@ def grade(sandbox, answer, *, judge=None):
             result['next_cursor'] = '<opaque cursor>'
     for explanation in explanations:
         require(isinstance(answer[explanation['id']], str), 'explanation must be a string')
+        active, inactive = [], []
+        for criterion in explanation['criteria']:
+            applies = evaluate(criterion.get('when', {'literal': True}), sandbox.context(private=True))
+            require(type(applies) is bool, 'reasoning applicability must produce boolean')
+            (active if applies else inactive).append(criterion)
+        if not active:
+            components[explanation['id']] = {'passed': True, 'weight': explanation['weight']}
+            semantic_evidence[explanation['id']] = {'criteria': {}, 'provenance': {
+                'scope': 'no_applicable_communication_obligation',
+                'inactive_criteria': [c['id'] for c in inactive]}}
+            continue
         require(judge is not None, 'native semantic judge required; no mock or fallback in qualification')
-        payload = {'contract_identity': sandbox.compiled['identity'], 'task': sandbox.compiled['public'], 'field': explanation,
+        payload = {'contract_identity': sandbox.compiled['identity'], 'task': sandbox.compiled['public'],
+                   'field': {**explanation, 'criteria': active},
                    'text': answer[explanation['id']],
                    'authoritative_facts': {key: targets[key] for key in explanation['context_fields'] if key in targets},
                    'unresolved_fields': [key for key in explanation['context_fields'] if key not in targets],
@@ -247,7 +259,7 @@ def grade(sandbox, answer, *, judge=None):
                    'user_turns': [turn for turn in sandbox.trace if turn['kind'] == 'user']}
         result = judge(payload)
         require(set(result) == {'criteria', 'provenance'}, 'invalid semantic judgment')
-        require(set(result['criteria']) == {c['id'] for c in explanation['criteria']}
+        require(set(result['criteria']) == {c['id'] for c in active}
                 and all(type(v) is bool for v in result['criteria'].values()), 'criterion identity mismatch')
         components[explanation['id']] = {'passed': all(result['criteria'].values()), 'weight': explanation['weight']}
         semantic_evidence[explanation['id']] = result

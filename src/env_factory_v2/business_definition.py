@@ -10,12 +10,12 @@ from .expressions import canonical, refs
 
 def assemble_contract(environment, task):
     environment, task = copy.deepcopy(environment), copy.deepcopy(task)
-    fields(environment, ['version', 'id', 'tables', 'rules', 'tools', 'time'], ['invariants', 'events'])
+    fields(environment, ['version', 'id', 'tables', 'rules', 'tools', 'time'], ['invariants', 'events', 'communications'])
     require(environment['version'] == '1.0' and isinstance(environment['id'], str)
             and environment['id'], 'invalid business environment identity')
     # Task definitions cannot replace rules, tables, operations or event logic.
     fields(task, ['version', 'id', 'category', 'request', 'user', 'scenarios', 'probes', 'limits'],
-           ['answers', 'reports', 'explanations', 'success', 'goals', 'demand'])
+           ['answers', 'reports', 'messages', 'explanations', 'success', 'goals', 'demand'])
     require(task['version'] == '1.0', 'unsupported task definition version')
     tables = named(environment['tables'], 'table')
     tools = named(environment['tools'], 'tool')
@@ -56,9 +56,24 @@ def assemble_contract(environment, task):
             'comparison': 'unordered', 'schema': {'type': 'array', 'items': {
                 'type': 'object', 'properties': {c: copy.deepcopy(properties[c]) for c in columns},
                 'required': columns, 'additionalProperties': False}}, 'expected': expected})
-    source = {k: copy.deepcopy(v) for k, v in environment.items() if k not in {'id', 'version'}}
-    source.update({k: copy.deepcopy(v) for k, v in task.items() if k not in {'version', 'request', 'reports', 'answers'}})
+    communications = named(environment.get('communications', []), 'communication')
+    for obligation in communications.values():
+        fields(obligation, ['id', 'rule_id', 'obligation'], ['when'])
+        require(obligation['rule_id'] in rules, 'unknown communication rule')
+    explanations = copy.deepcopy(task.get('explanations', []))
+    for message in named(task.get('messages', []), 'message').values():
+        fields(message, ['id', 'meaning', 'obligations', 'context_fields', 'weight'])
+        ids = message['obligations']
+        require(isinstance(ids, list) and ids and all(isinstance(i, str) for i in ids)
+                and len(ids) == len(set(ids)) and set(ids) <= set(communications),
+                'message must reference distinct environment communication obligations')
+        explanations.append({k: copy.deepcopy(v) for k, v in message.items() if k != 'obligations'})
+        explanations[-1]['criteria'] = [copy.deepcopy(communications[i]) for i in ids]
+    source = {k: copy.deepcopy(v) for k, v in environment.items() if k not in {'id', 'version', 'communications'}}
+    source.update({k: copy.deepcopy(v) for k, v in task.items() if k not in {'version', 'request', 'reports', 'messages', 'answers'}})
     source.update(version='2.0', task=task['request'], answers=answers)
+    if explanations:
+        source['explanations'] = explanations
     return source
 
 
@@ -69,6 +84,7 @@ def compile_definition(environment, task):
         'task_identity': hashlib.sha256(canonical(task).encode()).hexdigest(),
         'contract_identity': compiled['identity'],
         'derived_reports': [report['id'] for report in task.get('reports', [])],
+        'derived_messages': [message['id'] for message in task.get('messages', [])],
         'scope': 'compiled_definition_not_independent_business_acceptance'}
 
 
