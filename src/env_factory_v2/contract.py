@@ -472,11 +472,16 @@ def compile_contract(source):
         validate_expr(invariant['predicate'], roots={'data', 'initial', 'user', 'user_state', 'time'})
         validate_rule_links(invariant['predicate'], rules, shared_filters=True, tables=tables)
     for goal in named(source.get('goals', []), 'state goal').values():
-        fields(goal, ['id', 'rule_ids', 'predicate'])
+        fields(goal, ['id', 'rule_ids'], ['predicate', 'transaction_plan'])
+        require(('predicate' in goal) != ('transaction_plan' in goal), 'state goal needs exactly one target form')
         require(bool(goal['rule_ids']) and set(goal['rule_ids']) <= set(rules), 'state goal rule provenance required')
-        policy_independent_target(goal['predicate'])
-        validate_expr(goal['predicate'], roots={'data', 'initial', 'evidence', 'user', 'user_state', 'time'})
-        validate_rule_links(goal['predicate'], rules, shared_filters=True, tables=tables)
+        if 'transaction_plan' in goal:
+            from .transaction_targets import validate_plan
+            validate_plan(goal['transaction_plan'], source, tools, rules)
+        else:
+            policy_independent_target(goal['predicate'])
+            validate_expr(goal['predicate'], roots={'data', 'initial', 'evidence', 'user', 'user_state', 'time'})
+            validate_rule_links(goal['predicate'], rules, shared_filters=True, tables=tables)
     require(not any(t['kind'] == 'transaction' for t in tools.values()) or source.get('goals'), 'writes require actual-state goals')
     fields(source['limits'], ['max_actions'])
     require(type(source['limits']['max_actions']) is int and 1 <= source['limits']['max_actions'] <= 4096, 'invalid action budget')

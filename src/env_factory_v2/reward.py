@@ -158,7 +158,11 @@ def assess_process(sandbox):
     goal_checks = []
     for goal in sandbox.source.get('goals', []):
         try:
-            passed = evaluate(goal['predicate'], context) is True
+            if 'transaction_plan' in goal:
+                from .transaction_targets import matches_plan
+                passed = matches_plan(goal['transaction_plan'], sandbox.source, context)
+            else:
+                passed = evaluate(goal['predicate'], context) is True
         except ContractError:
             passed = False
         goal_checks.append({'id': goal['id'], 'passed': passed})

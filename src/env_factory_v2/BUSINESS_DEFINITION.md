@@ -37,7 +37,7 @@ authorization, observation and negative-case checks remain in force.
 
 Reports currently describe unordered complete collections, not ranked subsets or
 transaction completion. `answers` remains available for existing contracts;
-transaction goals are not yet derived by this compiler. New generation requests use an envelope with exactly `environment`
+Transaction goals may use the declarative plans described below. New generation requests use an envelope with exactly `environment`
 and `task`; both JSON transports and the author workbench support this envelope.
 The build pipeline stores `definition.json` and `compilation.json` before tool
 augmentation. `source.json` contains the executable, potentially augmented contract.
@@ -46,6 +46,29 @@ reports back to handwritten answer expressions. Existing flat contracts remain
 accepted for historical reproduction and repair.
 These are implementation limits, not grounds to reduce task difficulty or bypass
 the independent business verifier.
+
+## Transaction outcome plans
+
+A task goal may be `{id, rule_ids, transaction_plan: [{tool, arguments, when?}]}`
+instead of a handwritten `predicate`. `tool` names an environment transaction;
+`arguments` are expressions over `initial`, `user`, and `user_state`. Optional
+`when` is a boolean over the same roots and defaults to true. The plan states the
+intended business actions, not the actions the agent happened to execute.
+
+The evaluator starts from the actual initial world, applies the referenced
+operations in declaration order with the intended parameters, and compares all
+tables and columns against the final world, ignoring storage order. Operations
+may update existing records or create new records. A disabled intention leaves
+the projected state unchanged. Actual committed-result messages cannot substitute
+for final state. Process checks still enforce evidence and authorization.
+
+Plans deliberately do not infer commit times. Environments with scheduled events,
+or operations depending on time or consent lifecycle state, must use explicit
+state predicates. This restriction applies to this projection form only: keep
+these capabilities and task difficulty in the sandbox. Do not delete events or
+time dependencies merely to use a plan. Independent acceptance must still verify
+that the intended operations and their definitions implement the original request;
+matching an incorrectly authored operation is not independent business proof.
 
 ## Shared communication obligations
 
