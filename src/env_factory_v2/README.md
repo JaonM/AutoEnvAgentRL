@@ -235,6 +235,20 @@ identities; this boundary does not by itself deduplicate all authored semantics.
 
 ### Combined contract and trajectory feedback
 
+The reverse-review obligation catalog and implementation paths are shared through
+`obligation_index`. Each compiled candidate records a derived `obligations.json`
+with original textual clauses, current enforced obligations and reference
+dependency identities. It does not introduce another authored business schema.
+The index is not proof of semantic correctness and cannot authorize score reuse.
+
+Author checks report changes since the preceding successful compilation, and
+pipeline repair attempts save/forward `reference_changes.json`. Changes to the
+environment, user, time, public context or reward contract conservatively affect
+all references. A recipe-only change affects its own materialized trajectory and
+inheriting probes. No-change results mean unchanged dependencies, not semantic
+validation; judge/provider and runtime identity checks remain separately required.
+The report does not change local pass/fail or permit deleting affected coverage.
+
 After deterministic recipe checks and tool augmentation, the pipeline executes
 all authored trajectories and performs independent business review for the same
 frozen candidate. A failed trajectory does not suppress independent review:

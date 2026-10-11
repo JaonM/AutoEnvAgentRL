@@ -90,6 +90,7 @@ class AuthorWorkbench:
         self.operations = 0
         self.last_check = None
         self.request = copy.deepcopy(request or {})
+        self.last_index = None
 
     def call(self, tool, arguments):
         require(self.operations < self.max_operations, 'author operation budget exceeded')
@@ -114,10 +115,16 @@ class AuthorWorkbench:
             compiled, compilation = compile_source(copy.deepcopy(self.source))
             from .author_constraints import check_author_inputs
             check_author_inputs(compiled, self.request)
+            from .obligation_index import obligation_index, reference_changes
+            index = obligation_index(compiled)
+            changes = reference_changes(self.last_index, index) if self.last_index is not None else None
+            self.last_index = index
             recipes = preflight_recipes(compiled)
             self.last_check = {'passed': recipes['passed'], 'phase': 'recipe_preflight',
                                'checks': recipes['checks'],
                                'scope': 'authored_recipe_validation_not_business_acceptance'}
+            if changes is not None:
+                self.last_check['reference_changes'] = changes
             from .input_diagnostics import input_diagnostics
             self.last_check['input_diagnostics'] = input_diagnostics(compiled)
             from .process_diagnostics import process_diagnostics

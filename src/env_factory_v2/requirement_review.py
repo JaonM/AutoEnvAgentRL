@@ -2,6 +2,7 @@
 from .code_agent import object_schema
 from .contract import require
 from .demand import cited_requirements
+from .obligation_index import mandatory_obligations, implementation_paths
 
 
 def obligations(compiled, original_request=None):
@@ -17,76 +18,6 @@ def obligations(compiled, original_request=None):
     if not isinstance(text, str) or not text.strip():
         text = compiled['source']['task']
     return cited_requirements({'user_request': text})
-
-
-def mandatory_obligations(source):
-    """Reverse-review catalog of authored outputs and enforced success conditions."""
-    result = []
-    def add(path, kind, value):
-        result.append({'path': path, 'kind': kind, 'definition': value})
-    def fields(schema, path):
-        if schema.get('type') == 'array':
-            fields(schema['items'], path + '/items')
-        elif schema.get('type') == 'object':
-            for key, child in schema['properties'].items():
-                escaped = key.replace('~', '~0').replace('/', '~1')
-                child_path = path + '/properties/' + escaped
-                add(child_path, 'answer_property', child)
-                fields(child, child_path)
-    for index, answer in enumerate(source['answers']):
-        path = f'/answers/{index}'
-        add(path, 'answer_field', {key: answer[key] for key in ('id', 'meaning', 'weight', 'comparison')})
-        fields(answer['schema'], path + '/schema')
-    for index, explanation in enumerate(source.get('explanations', [])):
-        for position, criterion in enumerate(explanation['criteria']):
-            add(f'/explanations/{index}/criteria/{position}', 'communication', criterion)
-    for root in ('goals', 'invariants'):
-        for index, item in enumerate(source.get(root, [])):
-            add(f'/{root}/{index}', 'world_constraint', item)
-    for index, branch in enumerate(source.get('success', [])):
-        prefix = f'/success/{index}'
-        add(prefix + '/when', 'completion_branch', {'public': branch['public'], 'when': branch['when']})
-        for key in ('required_tools', 'required_stages', 'required_platform_observations'):
-            for position, item in enumerate(branch.get(key, [])):
-                add(f'{prefix}/{key}/{position}', key, item)
-        for position, observation in enumerate(branch.get('required_observations', [])):
-            for column_index, column in enumerate(observation['columns']):
-                add(f'{prefix}/required_observations/{position}/columns/{column_index}',
-                    'required_observation_column', {'column': column, 'tools': observation['tools']})
-        for key in ('min_business_calls', 'max_business_calls'):
-            if key in branch:
-                add(prefix + '/' + key, 'call_constraint', branch[key])
-    return result
-
-
-def implementation_paths(source):
-    """A finite catalog prevents response paths from referring to payload wrappers."""
-    paths = []
-    for root in ('rules', 'tools', 'answers', 'goals', 'invariants', 'explanations', 'success'):
-        if root not in source:
-            continue
-        value = source[root]
-        if not value or root == 'success':
-            paths.append('/' + root)
-        if isinstance(value, list):
-            for index, item in enumerate(value):
-                prefix = f'/{root}/{index}'
-                paths.append(prefix)
-                if isinstance(item, dict):
-                    paths.extend(prefix + '/' + key.replace('~', '~0').replace('/', '~1') for key in item)
-    stages = source.get('user', {}).get('stages', [])
-    if not stages:
-        paths.append('/user/stages')
-    for index, stage in enumerate(stages):
-        prefix = f'/user/stages/{index}'
-        paths.append(prefix)
-        paths.extend(prefix + '/' + key.replace('~', '~0').replace('/', '~1') for key in stage)
-    # Declared integrity constraints are executable evidence. Fixture rows and
-    # generators are deliberately excluded: example values cannot prove rules.
-    for index, table in enumerate(source.get('tables', [])):
-        paths.extend(f'/tables/{index}/{key}' for key in ('schema', 'primary_key', 'foreign_keys')
-                     if key in table)
-    return paths
 
 
 def review_schema(base_schema, requirements, source):

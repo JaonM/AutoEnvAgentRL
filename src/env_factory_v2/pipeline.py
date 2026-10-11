@@ -52,6 +52,7 @@ def build(request, *, agent, output, source=None, repairs=1, docker=True, base_i
     agent.start_scope()
     attempts, feedback, rejected = [], None, set()
     previous_source = None
+    previous_index = None
     started = time.monotonic()
     for index in range(repairs + 1):
         require(implementation_identity() == frozen_platform, 'platform changed during pipeline')
@@ -126,6 +127,13 @@ def build(request, *, agent, output, source=None, repairs=1, docker=True, base_i
             require(augmented_recipes['passed'], 'tool interference changed reference trajectory validity')
             attempt['phases']['tool_interference'] = time.monotonic() - phase_start
             phase('execution')
+            from .obligation_index import obligation_index, reference_changes
+            index_manifest = obligation_index(compiled)
+            save(folder / 'obligations.json', index_manifest)
+            changes = reference_changes(previous_index, index_manifest) if previous_index is not None else None
+            previous_index = index_manifest
+            if changes is not None:
+                save(folder / 'reference_changes.json', changes)
             phase_start = time.monotonic()
             compiled, report = qualify(compiled['source'], judge=agent.judge)
             if implementation_identity() != frozen_platform:
@@ -191,6 +199,8 @@ def build(request, *, agent, output, source=None, repairs=1, docker=True, base_i
             attempt.update(status='failed', error=str(exc), failed_phase=attempt.pop('active_phase', None))
             feedback = {**(feedback or {}), 'error': str(exc),
                         'failed_phase': attempt['failed_phase'], 'original_request': request}
+            if (folder / 'reference_changes.json').exists():
+                feedback['reference_changes'] = json.loads((folder / 'reference_changes.json').read_text())
             save(folder / 'feedback.json', feedback)
             save(output / 'progress.json', {'qualified': False, 'attempts': attempts, 'status': 'repair_pending' if index < repairs else 'failed'})
         except Exception as exc:
