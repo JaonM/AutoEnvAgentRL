@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 
 from .contract import ContractError, require
 from .business_definition import compile_source
@@ -14,6 +15,32 @@ from .verification import preflight_recipes
 SECTIONS = frozenset({'version', 'id', 'category', 'task', 'rules', 'tables', 'tools',
     'user', 'answers', 'explanations', 'invariants', 'goals', 'success', 'scenarios',
     'probes', 'limits', 'time', 'events', 'demand', 'environment'})
+
+
+def read_draft(source, arguments):
+    """Bounded JSON text slices from the draft only; paths never address files."""
+    require(set(arguments) == {'path', 'offset'}, 'read requires path and offset')
+    pointer, offset = arguments['path'], arguments['offset']
+    require(isinstance(pointer, str) and len(pointer) <= 2048
+            and (pointer == '' or pointer.startswith('/'))
+            and not re.search(r'~(?![01])', pointer), 'invalid read JSON pointer')
+    require(type(offset) is int and offset >= 0, 'invalid read offset')
+    node = source
+    for token in ([] if pointer == '' else pointer[1:].split('/')):
+        key = token.replace('~1', '/').replace('~0', '~')
+        if isinstance(node, list):
+            require(key.isdecimal() and str(int(key)) == key and int(key) < len(node), 'read array index invalid')
+            node = node[int(key)]
+        else:
+            require(isinstance(node, dict) and key in node, 'read path does not exist')
+            node = node[key]
+    text = canonical(node)
+    require(offset <= len(text), 'read offset exceeds value')
+    end = min(offset + 8192, len(text))
+    return {'passed': True, 'path': pointer, 'offset': offset, 'total_chars': len(text),
+            'json_fragment': text[offset:end], 'next_offset': end if end < len(text) else None,
+            'complete': offset == 0 and end == len(text),
+            'sections': sorted(source), 'scope': 'draft_data_only_not_validation'}
 
 
 def author_feedback(report):
@@ -61,6 +88,8 @@ class AuthorWorkbench:
         self.operations += 1
         try:
             require(isinstance(arguments, dict), 'author arguments must be an object')
+            if tool == 'read_contract':
+                return read_draft(self.source, arguments)
             if tool == 'put_section':
                 require(set(arguments) == {'section', 'value_json'} and
                         isinstance(arguments['section'], str) and

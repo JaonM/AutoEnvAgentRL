@@ -14,6 +14,8 @@ from .expressions import canonical
 
 
 TOOLS = [
+    {'name': 'read_contract', 'description': 'Read the current draft at a JSON Pointer (empty path means root). Offset is a character offset into canonical JSON; start at 0. Responses contain at most 8192 characters; follow next_offset or select a narrower path. Partial fragments are not complete JSON. Reading does not validate or change the draft.',
+     'inputSchema': object_schema({'path': {'type': 'string'}, 'offset': {'type': 'integer'}})},
     {'name': 'put_section', 'description': 'Replace one draft contract section with JSON. Invalid JSON leaves the draft unchanged.',
      'inputSchema': object_schema({'section': {'type': 'string', 'enum': sorted(SECTIONS)},
                                   'value_json': {'type': 'string'}})},
@@ -54,14 +56,16 @@ class AuthorMCP:
             source = self.workbench.snapshot()
             digest = hashlib.sha256(canonical(source).encode()).hexdigest()
             value['source_identity'] = digest
-            self._save('draft.json', source)
+            if params.get('name') != 'read_contract':
+                self._save('draft.json', source)
             if params.get('name') == 'check_contract' and self.workbench.last_check is not None:
                 self._save(f'check-{self.workbench.operations:04d}.json',
                            {'source_identity': digest, 'result': self.workbench.last_check})
             # This receipt always describes the current draft, never an older
             # successful check after the model has changed a section.
-            self._save('latest_operation.json', {'tool': params.get('name'), 'result': value,
-                                                'operations': self.workbench.operations})
+            if params.get('name') != 'read_contract':
+                self._save('latest_operation.json', {'tool': params.get('name'), 'result': value,
+                                                    'operations': self.workbench.operations})
             with (self.output / 'operations.jsonl').open('a') as stream:
                 stream.write(canonical({'tool': params.get('name'), 'result': value}) + '\n')
             result = {'content': [{'type': 'text', 'text': canonical(value)}],

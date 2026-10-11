@@ -63,3 +63,58 @@ def test_compact_feedback_preserves_all_failure_evidence_and_case_counts():
     assert len(json.dumps(compact)) < len(json.dumps(report))
     compact['checks'][1]['failure_evidence']['answer']['actual'] = 9
     assert report['checks'][1]['failure_evidence']['answer']['actual'] == 7
+
+
+def test_read_existing_draft_then_edit_without_rewriting_other_sections():
+    source = simple()
+    bench = AuthorWorkbench(source=source)
+    response = bench.call('read_contract', {'path': '/scenarios/0/answer', 'offset': 0})
+    assert response['complete'] and response['next_offset'] is None
+    assert json.loads(response['json_fragment']) == source['scenarios'][0]['answer']
+    assert bench.snapshot() == source
+    assert bench.call('edit_contract', {'edits': [{'op': 'replace', 'path': '/task',
+                         'value_json': json.dumps('New wording')} ]})['passed']
+    actual = bench.snapshot()
+    assert actual.pop('task') == 'New wording'
+    source.pop('task')
+    assert actual == source
+
+
+def test_paged_reads_are_exact_bounded_and_unicode_safe():
+    from env_factory_v2.expressions import canonical
+    value = {'a/b~c': ['多字节\\\"' * 10000]}
+    bench = AuthorWorkbench(source={'environment': value})
+    text, offset = '', 0
+    while offset is not None:
+        response = bench.call('read_contract', {'path': '/environment/a~1b~0c/0', 'offset': offset})
+        assert response['passed'] and len(response['json_fragment']) <= 8192
+        assert not response['complete']
+        text += response['json_fragment']
+        offset = response['next_offset']
+    assert text == canonical(value['a/b~c'][0])
+    assert json.loads(text) == value['a/b~c'][0]
+    assert bench.snapshot() == {'environment': value}
+
+
+@pytest.mark.parametrize('arguments', [
+    {'path': '../secret', 'offset': 0}, {'path': '/environment/~2', 'offset': 0},
+    {'path': '/environment/0', 'offset': 0}, {'path': '', 'offset': -1},
+    {'path': '', 'offset': True}, {'path': '', 'offset': 10**9},
+    {'path': '/environment/items/01', 'offset': 0},
+    {'path': '/environment/items/-1', 'offset': 0},
+    {'path': '', 'offset': 0, 'file': '/etc/passwd'}])
+def test_reads_reject_invalid_paths_offsets_and_extra_access(arguments):
+    bench = AuthorWorkbench(source={'environment': {'items': [1]}})
+    original = bench.snapshot()
+    assert not bench.call('read_contract', arguments)['passed']
+    assert bench.snapshot() == original
+
+
+def test_reads_consume_operation_budget_without_invalidating_checks():
+    bench = AuthorWorkbench(source=direct(), max_operations=2)
+    assert bench.call('check_contract', {})['passed']
+    previous = bench.last_check
+    assert bench.call('read_contract', {'path': '', 'offset': 0})['passed']
+    assert bench.last_check is previous
+    with pytest.raises(ContractError, match='budget exceeded'):
+        bench.call('read_contract', {'path': '', 'offset': 0})

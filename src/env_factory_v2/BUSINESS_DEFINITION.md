@@ -130,8 +130,20 @@ data-only draft for the next existing repair attempt. `author_draft.json` and
 `feedback.json` record that handoff. A check receipt is attached only when its
 source identity matches the retained draft. A retained draft is not qualified;
 the next attempt still requires compilation, independent review and execution.
-Recovery adds no attempts. Process failures, timeouts and failed transport turns
-remain infrastructure failures, not requests to weaken the business contract.
+Recovery adds no attempts. A timed-out author may also retain changed, valid
+draft data after the process is stopped and its tool events are audited, provided
+a permitted write completed. No progress, malformed event logs, and other process
+or transport failures do not authorize recovery. Even a checked interrupted draft
+remains unqualified; no deadline or attempt budget is increased.
+
+The author can inspect existing work with `read_contract({path, offset})`.
+`path` is a JSON Pointer into the draft, not a filesystem path; an empty path
+selects the root. Start `offset` at 0. Responses contain at most 8192 characters
+of canonical JSON; use `next_offset` or a narrower path to read large values.
+Only `complete: true` means the returned fragment is a complete JSON value.
+Read responses carry the current source identity so slices from different draft
+versions cannot be confused. Reads count against the workbench operation budget
+but do not change the source, invalidate a check, or supply independent oracle data.
 
 ## Shared communication obligations
 

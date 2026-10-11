@@ -155,6 +155,9 @@ def test_interrupted_author_recovers_only_audited_progress(tmp_path, case):
         if case == 'inflight':
             event['type'] = 'item.started'; event['item']['status'] = 'in_progress'
         events = [event]
+        if case == 'partial':
+            events.append({'type': 'item.completed', 'item': {'type': 'mcp_tool_call',
+                'server': 'envfactory_author', 'tool': 'read_contract', 'status': 'completed'}})
         if case == 'forbidden': events.append({'type': 'item.started', 'item': {'type': 'command_execution'}})
         (folder / 'events.jsonl').write_text('\n'.join(json.dumps(e) for e in events) + '\n'
                                             + ('{"type":' if case == 'truncated' else ''))

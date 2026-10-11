@@ -33,7 +33,7 @@ def author_command(folder, *, initial=None, request_file=None):
     if request_file is not None:
         server_args += ['--request', str(request_file)]
     settings = {'command': sys.executable, 'args': server_args, 'required': True,
-                'enabled_tools': ['put_section', 'edit_contract', 'check_contract'],
+                'enabled_tools': ['read_contract', 'put_section', 'edit_contract', 'check_contract'],
                 'default_tools_approval_mode': 'approve', 'tool_timeout_sec': 60}
     for key, value in settings.items():
         args += ['-c', f'mcp_servers.envfactory_author.{key}={canonical(value)}']
@@ -111,6 +111,9 @@ def generate_in_session(request, *, evidence_root, timeout=240, previous_source=
               'Preserve temporal and other unsupported dependencies using timeline or explicit goals; '
               'never simplify the task to fit a projection mode. '
               'Use put_section to build sections or edit_contract to repair the existing draft. '
+              'Use read_contract to inspect the current draft before continuing or editing existing work; '
+              'read the needed JSON Pointer with offset 0 and follow next_offset for a partial response. '
+              'The workbench may already contain an unfinished draft; preserve valid work instead of guessing its contents. '
               'Use check_contract to compile and execute your reference scenarios; fix actual errors '
               'without removing obligations, negative cases, task difficulty or changing expectations '
               'to conceal defects. Preserve original facts, rules, authorization and user wording. '
@@ -147,7 +150,7 @@ def generate_in_session(request, *, evidence_root, timeout=240, previous_source=
                 'native author attempted an out-of-scope tool')
         if item.get('type') == 'mcp_tool_call':
             require(item.get('server') == 'envfactory_author' and item.get('tool') in
-                    {'put_section', 'edit_contract', 'check_contract'}, 'unexpected author MCP tool')
+                    {'read_contract', 'put_section', 'edit_contract', 'check_contract'}, 'unexpected author MCP tool')
     if timed_out:
         message = 'author session deadline exceeded'
         recovery = incomplete_draft(folder, message)
