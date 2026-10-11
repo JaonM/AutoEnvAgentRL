@@ -74,14 +74,21 @@ def build(request, *, agent, output, source=None, repairs=1, docker=True, base_i
                 attempt['generation_provenance'] = provenance
             else:
                 candidate = copy.deepcopy(source)
+            from .business_definition import compile_source, is_definition
+            definition_input = is_definition(candidate)
             if 'demand' in request:
-                candidate['demand'] = copy.deepcopy(request['demand'])
+                (candidate['task'] if definition_input else candidate)['demand'] = copy.deepcopy(request['demand'])
             previous_source = copy.deepcopy(candidate)
             attempt['phases']['generation'] = time.monotonic() - phase_start
             save(folder / 'source.json', candidate)
             phase('compile')
             phase_start = time.monotonic()
-            compiled = compile_contract(candidate)
+            compiled, compilation = compile_source(candidate)
+            if compilation is not None:
+                save(folder / 'definition.json', candidate)
+                save(folder / 'compilation.json', compilation)
+                candidate = copy.deepcopy(compiled['source'])
+                save(folder / 'source.json', candidate)
             if candidate_validator is not None:
                 candidate_validator(candidate)
             require(request.get('category', compiled['source']['category']) == compiled['source']['category'], 'original category changed')
@@ -103,7 +110,8 @@ def build(request, *, agent, output, source=None, repairs=1, docker=True, base_i
             from .tool_interference import augment
             candidate, interference = augment(candidate, count=tool_interference)
             save(folder / 'tool_interference.json', interference)
-            previous_source = copy.deepcopy(candidate)
+            if not definition_input:
+                previous_source = copy.deepcopy(candidate)
             save(folder / 'source.json', candidate)
             compiled = compile_contract(candidate)
             if candidate_validator is not None:

@@ -38,6 +38,12 @@ authorization, observation and negative-case checks remain in force.
 Reports currently describe unordered complete collections, not ranked subsets or
 transaction completion. `answers` remains available for existing contracts;
 transaction goals and semantic communication obligations are not yet derived by
-this compiler. Automatic generation is not yet switched to these definitions.
+this compiler. New generation requests use an envelope with exactly `environment`
+and `task`; both JSON transports and the author workbench support this envelope.
+The build pipeline stores `definition.json` and `compilation.json` before tool
+augmentation. `source.json` contains the executable, potentially augmented contract.
+Repair feedback preserves the original envelope rather than converting derived
+reports back to handwritten answer expressions. Existing flat contracts remain
+accepted for historical reproduction and repair.
 These are implementation limits, not grounds to reduce task difficulty or bypass
 the independent business verifier.

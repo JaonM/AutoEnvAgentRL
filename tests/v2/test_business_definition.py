@@ -120,3 +120,70 @@ def test_cli_emits_reproducible_sources_without_qualification(tmp_path, monkeypa
     assert not (output / 'verification.json').exists()
     with pytest.raises(FileExistsError):
         main()
+
+
+def test_workbench_checks_definitions_and_atomic_nested_repairs():
+    import json
+    from env_factory_v2.author_workbench import AuthorWorkbench
+
+    environment, task = report_definition()
+    bench = AuthorWorkbench()
+    for key, value in [('environment', environment), ('task', task)]:
+        assert bench.call('put_section', {'section': key, 'value_json': json.dumps(value)})['passed']
+    result = bench.call('check_contract', {})
+    assert result['passed']
+    assert result['compilation']['derived_reports'] == ['ids']
+    assert bench.call('edit_contract', {'edits': [{'op': 'add', 'path': '/task/rules',
+                                                'value_json': '[]'}]})['passed']
+    result = bench.call('check_contract', {})
+    assert not result['passed']
+    assert 'fields mismatch' in result['error']
+
+
+def test_pipeline_retains_definition_on_bounded_repair(tmp_path, monkeypatch):
+    import json
+    from unittest.mock import Mock
+    from env_factory_v2.pipeline import build
+
+    environment, task = report_definition()
+    definition = {'environment': environment, 'task': task}
+    repaired = copy.deepcopy(definition)
+    repaired['task']['id'] = 'repaired_task'
+    agent = Mock()
+    agent.generate.return_value = (repaired, {'unit_test': True})
+    challenge = Mock(return_value={'passed': False, 'instruction': 'unit-test rejection'})
+    monkeypatch.setattr('env_factory_v2.pipeline.challenge', challenge)
+    output = tmp_path / 'build'
+    result = build({'category': task['category']}, agent=agent, source=definition,
+                   output=output, repairs=1, docker=False, tool_interference=2)
+    assert not result['qualified']
+    assert challenge.call_count == 2
+    assert agent.generate.call_args.kwargs['feedback']['previous_source'] == definition
+    assert json.loads((output / 'attempt-1/definition.json').read_text()) == definition
+    source = json.loads((output / 'attempt-1/source.json').read_text())
+    assert source['version'] == '2.0'
+    assert len(source['tools']) > len(environment['tools'])
+    receipt = json.loads((output / 'attempt-1/compilation.json').read_text())
+    assert receipt['contract_identity'] == compile_definition(environment, task)[0]['identity']
+    assert receipt['contract_identity'] != compile_contract(source)['identity']
+
+
+def test_generation_requests_separate_definition_and_preserves_nested_edits(tmp_path):
+    import json
+    from unittest.mock import Mock
+    from env_factory_v2.code_agent import NativeCodeAgent
+
+    environment, task = report_definition()
+    definition = {'environment': environment, 'task': task}
+    agent = NativeCodeAgent(base_url='http://127.0.0.1:9999/v1',
+                            token='test-only-token-000000000000000000', evidence_root=tmp_path)
+    agent.ask = Mock(return_value=({'source_json': json.dumps(definition)}, {'unit_test': True}))
+    generated, _ = agent.generate({'goal': task['request']})
+    assert generated == definition
+    assert '"environment": ENVIRONMENT' in agent.ask.call_args.args[0]
+    agent.ask.return_value = ({'edits': [{'op': 'replace', 'path': '/task/id',
+                                        'value_json': '"repaired"'}]}, {'unit_test': True})
+    repaired, _ = agent.generate({'goal': task['request']}, feedback={'previous_source': generated})
+    assert repaired['task']['id'] == 'repaired'
+    assert repaired['environment'] == environment
+    assert generated['task']['id'] == task['id']

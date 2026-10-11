@@ -70,3 +70,15 @@ def compile_definition(environment, task):
         'contract_identity': compiled['identity'],
         'derived_reports': [report['id'] for report in task.get('reports', [])],
         'scope': 'compiled_definition_not_independent_business_acceptance'}
+
+
+def is_definition(source):
+    return isinstance(source, dict) and 'environment' in source
+
+
+def compile_source(source):
+    """Compile authored input without discarding its separate source identities."""
+    if not is_definition(source):
+        return compile_contract(source), None
+    fields(source, ['environment', 'task'])
+    return compile_definition(source['environment'], source['task'])

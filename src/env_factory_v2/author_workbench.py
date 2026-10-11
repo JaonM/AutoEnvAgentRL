@@ -4,7 +4,8 @@ from __future__ import annotations
 import copy
 import json
 
-from .contract import ContractError, compile_contract, require
+from .contract import ContractError, require
+from .business_definition import compile_source
 from .expressions import canonical
 from .repair import apply_edits
 from .verification import preflight_recipes
@@ -12,7 +13,7 @@ from .verification import preflight_recipes
 
 SECTIONS = frozenset({'version', 'id', 'category', 'task', 'rules', 'tables', 'tools',
     'user', 'answers', 'explanations', 'invariants', 'goals', 'success', 'scenarios',
-    'probes', 'limits', 'time', 'events', 'demand'})
+    'probes', 'limits', 'time', 'events', 'demand', 'environment'})
 
 
 def author_feedback(report):
@@ -73,13 +74,15 @@ class AuthorWorkbench:
                 return {'passed': True, 'sections': sorted(self.source)}
             require(tool == 'check_contract' and not arguments, 'unknown author tool')
             self.last_check = None
-            compiled = compile_contract(copy.deepcopy(self.source))
+            compiled, compilation = compile_source(copy.deepcopy(self.source))
             from .author_constraints import check_author_inputs
             check_author_inputs(compiled, self.request)
             recipes = preflight_recipes(compiled)
             self.last_check = {'passed': recipes['passed'], 'phase': 'recipe_preflight',
                                'checks': recipes['checks'],
                                'scope': 'authored_recipe_validation_not_business_acceptance'}
+            if compilation is not None:
+                self.last_check['compilation'] = compilation
             return author_feedback(self.last_check)
         except ContractError as exc:
             return {'passed': False, 'error': str(exc)}

@@ -184,7 +184,8 @@ class NativeCodeAgent:
             return source, provenance
         require(type(source_object) is bool, 'source object selector must be boolean')
         require(type(source_tree) is bool and not (source_object and source_tree), 'invalid JSON tree selector')
-        grammar = (Path(__file__).parent / 'CONTRACT.md').read_text()
+        grammar = ((Path(__file__).parent / 'BUSINESS_DEFINITION.md').read_text() + '\n\n'
+                   + (Path(__file__).parent / 'CONTRACT.md').read_text())
         previous = feedback.get('previous_source') if feedback is not None else None
         # Capability refusals are parsed JSON too, but contain no contract to edit.
         # Retry generation within the existing attempt budget, retaining the refusal
@@ -237,6 +238,12 @@ class NativeCodeAgent:
             'satisfy the full business grammar. Wire encoding must not simplify any obligation. '
             if source_tree else '')
         value, provenance = self.ask('Generate a NEW business contract following the supplied grammar. '
+            'Return source as {"environment": ENVIRONMENT, "task": TASK} with separate version 1.0 '
+            'documents as described in BUSINESS_DEFINITION. The compiler assembles executable version 2.0. '
+            'Keep tables, rules, operations and time in the environment; task goals cannot override them. '
+            'Use derived reports for complete unordered query record collections so eligibility and '
+            'field types come from the environment, not a duplicate reward implementation. Preserve '
+            'ranked, scalar, transactional and semantic obligations with the full supported grammar. '
             'This is full generation, even when repair_feedback describes an earlier failure. '
             'There is no editable previous contract in this branch: generate the complete source from '
             'original_request and grammar; never return generation_incomplete or demand an omitted source. '
