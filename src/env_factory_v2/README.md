@@ -188,3 +188,19 @@ The host rejects a consistent verdict paired with `behavior_only` or
 `mixed_overconstraint`; it does not infer semantic correctness from the label.
 Original-source review and executable independent cases remain required. This
 adds fields to existing reviews, not another scoring call or a keyword gate.
+
+### Clock sensitivity evidence
+
+Author checks and the existing independent review receive bounded no-model
+`clock_sensitivity`/`temporal_diagnostics` evidence. At most 16 wait-only probes
+use numeric candidate boundaries from facts, events, rules and goals (a bounded
+4096-node scan). The report identifies boolean predicate goals changing from
+false to true while business data, version and user lifecycle remain unchanged.
+It is finite diagnostic coverage, not a complete search or full reward test.
+World-changing events are excluded from this particular comparison.
+
+These findings never alter rewards or the local check verdict. Waiting may be a
+valid task obligation. Independent reviewers must use the original requirements
+and executable cases to distinguish valid waiting from erasing an unfulfilled
+obligation when its eligibility expires. Neither replacing all time bases with
+`initial` nor banning waits is a valid general repair.

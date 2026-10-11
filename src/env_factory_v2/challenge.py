@@ -92,6 +92,8 @@ def _challenge(compiled, original_request, agent):
     review_source, fixture_evidence = review_contract(compiled['source'])
     from .requirement_review import obligations, review_schema, validate_review, implementation_paths, mandatory_obligations
     requirements = obligations(compiled, original_request)
+    from .temporal_diagnostics import temporal_diagnostics
+    clock_evidence = temporal_diagnostics(compiled)
     value, provenance = agent.ask(
         'Independently compare the ORIGINAL request with this proposed business contract. compiled_public '
         'is the actual agent-visible interface; authored tool descriptions are not independently published. Do not trust its '
@@ -182,10 +184,16 @@ def _challenge(compiled, original_request, agent):
         'are not implementation evidence. Do not invent an implementation or omit an unmet obligation: '
         'mark consistent false and explain the discrepancy. Trace communication and authorization obligations '
         'to actual stages and trajectories too. A citation is not proof by itself: inspect semantics. '
+        'clock_sensitivity contains executed wait-only goal transitions, not business verdicts or full rewards. '
+        'Judge any reported transition against ORIGINAL time obligations: legitimate waiting may satisfy '
+        'a goal, but losing eligibility must not automatically erase a previously required action. '
+        'Use executable cases to distinguish these interpretations; do not globally ban waiting or '
+        'replace every current-time condition with initial time. '
         'Unexecuted model opinions are not proof. Do not execute tools.',
         {'original_request': original_request, 'contract': review_source,
          'compiled_public': compiled['public'], 'fixture_evidence': fixture_evidence,
          'public_requirements': requirements,
+         'clock_sensitivity': clock_evidence,
          'mandatory_obligation_catalog': mandatory_obligations(compiled['source']) if requirements else [],
          'implementation_citation_catalog': implementation_paths(compiled['source']) if requirements else [],
          'grammar': (__import__('pathlib').Path(__file__).parent / 'CONTRACT.md').read_text()},

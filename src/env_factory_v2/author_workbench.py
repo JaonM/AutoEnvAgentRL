@@ -114,6 +114,8 @@ class AuthorWorkbench:
             self.last_check['input_diagnostics'] = input_diagnostics(compiled)
             from .process_diagnostics import process_diagnostics
             self.last_check['process_diagnostics'] = process_diagnostics(compiled)
+            from .temporal_diagnostics import temporal_diagnostics
+            self.last_check['temporal_diagnostics'] = temporal_diagnostics(compiled)
             if compilation is not None:
                 self.last_check['compilation'] = compilation
             return author_feedback(self.last_check)

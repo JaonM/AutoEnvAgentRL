@@ -105,6 +105,7 @@ def test_every_public_clause_links_to_existing_behavior_and_executed_counterexam
     assert all(r['passed'] for r in result['records'])
     assert agent.ask.call_count == 1
     assert agent.ask.call_args.args[1]['public_requirements'] == requirements
+    assert agent.ask.call_args.args[1]['clock_sensitivity']['scope'] == 'clock_only_goal_sensitivity_not_business_verdict'
 
 
 @pytest.mark.parametrize('defect', ['omitted', 'duplicate', 'unknown_case', 'nonexistent_path',
