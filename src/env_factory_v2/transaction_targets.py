@@ -57,42 +57,15 @@ def validate_plan(plan, source, tools, rules, *, temporal=False):
 
 def project_transaction(tool, source, before, context, *, check_eligibility=False):
     """Apply one declaration to isolated data; use its own preconditions for eligibility."""
-    from .contract import require
+    from .transaction_semantics import TransactionUnavailable, prepare_transaction
 
-    tables = {table['id']: table for table in source['tables']}
-    candidate = copy.deepcopy(before)
-    for operation in tool['operations']:
-        projection_context = {**context, 'data': candidate}
-        key = evaluate(operation['key'], projection_context)
-        table = tables[operation['table']]
-        rows = candidate[table['id']]
-        matches = [row for row in rows if canonical(row[table['primary_key']]) == canonical(key)]
-        create = operation.get('create', False)
-        if (create and matches) or (not create and not matches):
-            if check_eligibility:
-                return copy.deepcopy(before), False
-            require(False, 'transaction intention target is missing or already exists')
-        if create:
-            updates = {name: evaluate(expr, projection_context) for name, expr in operation['set'].items()}
-            row = {table['primary_key']: copy.deepcopy(key), **updates}
-            original_row = copy.deepcopy(row)
-        else:
-            require(len(matches) == 1, 'transaction intention target must identify exactly one row')
-            row = matches[0]
-            original = [r for r in before[table['id']] if canonical(r[table['primary_key']]) == canonical(key)]
-            original_row = original[0] if original else copy.deepcopy(row)
+    try:
+        candidate, _ = prepare_transaction(tool, source, before, context,
+                                           check_preconditions=check_eligibility)
+    except TransactionUnavailable:
         if check_eligibility:
-            for identity in tool['rule_ids']:
-                value = evaluate(context['_rules'][identity]['predicate'],
-                                 {**context, 'data': before, 'row': original_row})
-                require(type(value) is bool, 'transaction eligibility rule must produce boolean')
-                if not value:
-                    return copy.deepcopy(before), False
-        if create:
-            rows.append(row)
-        else:
-            row.update({name: evaluate(expr, {**projection_context, 'row': row})
-                        for name, expr in operation['set'].items()})
+            return copy.deepcopy(before), False
+        raise
     return candidate, True
 
 

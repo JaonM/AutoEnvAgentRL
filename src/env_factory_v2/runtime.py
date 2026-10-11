@@ -233,38 +233,8 @@ class Sandbox:
                 'query_identity': signature, 'state_version': self.version}
 
     def _transaction(self, tool, args):
-        before = copy.deepcopy(self.data)
-        candidate = copy.deepcopy(self.data)
-        changes = []
-        for operation in tool['operations']:
-            key = evaluate(operation['key'], self.context(args=args, data=candidate))
-            create = operation.get('create', False)
-            if create:
-                table = next(t for t in self.source['tables'] if t['id'] == operation['table'])
-                require(not any(canonical(item[table['primary_key']]) == canonical(key)
-                                for item in candidate[operation['table']]), 'create target already exists')
-                updates = {column: evaluate(expression, self.context(args=args, data=candidate))
-                           for column, expression in operation['set'].items()}
-                row = {table['primary_key']: copy.deepcopy(key), **updates}
-                original_row = copy.deepcopy(row)
-            else:
-                row = self._row(candidate, operation['table'], key)
-                table = next(t for t in self.source['tables'] if t['id'] == operation['table'])
-                existing = [item for item in before[operation['table']]
-                            if canonical(item[table['primary_key']]) == canonical(key)]
-                original_row = existing[0] if existing else copy.deepcopy(row)
-            precondition_context = self.context(args=args, data=before, row=original_row)
-            checks = [evaluate(self.rules[r]['predicate'], precondition_context) for r in tool['rule_ids']]
-            failed = [rule for rule, check in zip(tool['rule_ids'], checks) if type(check) is not bool or not check]
-            require(not failed, 'transaction business precondition failed: ' + ', '.join(failed))
-            if create:
-                candidate[operation['table']].append(row)
-            else:
-                context = self.context(args=args, data=candidate, row=row)
-                updates = {column: evaluate(expression, context) for column, expression in operation['set'].items()}
-                row.update(updates)
-            changes.append({'table': operation['table'], 'key': key, 'set': copy.deepcopy(updates),
-                            **({'create': True} if create else {})})
+        from .transaction_semantics import prepare_transaction
+        candidate, changes = prepare_transaction(tool, self.source, self.data, self.context(args=args))
         validate_data(self.source, candidate)
         # Invariants describe the complete post-commit state. Project consent
         # consumption on an isolated simulator; failed validation commits neither

@@ -111,6 +111,14 @@ different world fail, as do violations of explicit authorization dependencies.
 Timeline goals retain ordered commit matching. Neither mode ignores unrelated data.
 This derives precondition eligibility, not general feasibility: post-commit
 invariants still apply and independent review must detect incomplete guards.
+Execution and transaction projection share the same pure operation interpreter:
+keys and updates see sequential tentative data, while all preconditions see the
+original pre-transaction world and original target row. Missing targets, existing
+create targets and false boolean predicates are concrete unavailability; malformed
+or non-boolean predicates remain errors, never a reason to waive completion.
+The shared interpreter does not consume consent, advance time or commit data.
+Schema validation, invariants and consent consumption remain in the execution
+commit layer. A successful projection is not proof that a real commit is allowed.
 Time-dependent guards and event-driven worlds retain timeline or explicit goals;
 do not remove time behavior to use this mode. Process requirements must likewise
 follow the original request rather than unconditionally requiring inapplicable
