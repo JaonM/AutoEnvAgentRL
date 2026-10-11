@@ -382,6 +382,12 @@ def worker(args):
         result['candidate_repairs'] = max(0, len(attempts) - 1)
     result['model_calls'] = len(completions)
     result['model_seconds'] = sum(p.get('seconds', 0) for p in completions)
+    author_sessions = [read(path) for path in root.glob('author-native/author-sessions/*/budget.json')]
+    result['author_session_accounting'] = {
+        'sessions': len(author_sessions),
+        'seconds_including_failed': sum(session['elapsed_seconds'] for session in author_sessions),
+        'stop_reasons': dict(Counter(session['stop_reason'] for session in author_sessions)),
+        'scope': 'session wall time, not a count of underlying model requests or billable tokens'}
     save(root / 'result.json', result)
     print(json.dumps({k: result.get(k) for k in ('id', 'qualified', 'status', 'failed_phase', 'error', 'seconds')}, ensure_ascii=False), flush=True)
     return 0 if result['qualified'] else 1
@@ -419,6 +425,7 @@ def main():
     parser.add_argument('--connection', type=Path, required=True)
     parser.add_argument('--base-image', default='docker.m.daocloud.io/library/python:3.14-slim')
     parser.add_argument('--sample-timeout', type=int, default=1800)
+    parser.add_argument('--concurrency', type=int, choices=(1, 2), default=1)
     parser.add_argument('--author-tools', action='store_true', default=True, help='Compatibility flag: the author workbench is always enabled.')
     parser.add_argument('--worker', type=int, help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -428,12 +435,14 @@ def main():
     root = args.output.resolve()
     root.mkdir(parents=True, exist_ok=False)
     protocol = {'version': 2, 'user_mode': 'free_dialogue', 'measurement': 'predeclared_closed_semantic_projections_v2', 'scope': manifest['scope'], 'planned': len(manifest['samples']), 'mix': manifest['mix'],
-        'sampling': manifest['sampling'], 'model': 'gpt-6.1-sol', 'concurrency': 1, 'candidate_repairs': 1,
+        'sampling': manifest['sampling'], 'model': 'gpt-6.1-sol', 'concurrency': args.concurrency, 'candidate_repairs': 1,
         'preparation_limitations': manifest.get('preparation_limitations', {}),
         'platform_identity': implementation_identity(), 'runner_identity': runner_identity(),
         'author_tools': args.author_tools,
         'assets_identity': digest(args.assets / 'frozen.json'), 'base_image': args.base_image,
         'bridge_timeout_seconds': read(args.connection)['timeout_seconds'], 'sample_timeout_seconds': args.sample_timeout,
+        'author_timeout_seconds': read(args.connection).get('author_timeout', 600),
+        'author_idle_timeout_seconds': read(args.connection).get('author_idle_timeout', 240),
         'policy_turn_budget': 40, 'policy_calls_per_turn': 8,
         'policy': 'All planned natural requests stay in denominator. No within-round fixes, terminal retries, hidden-oracle feedback to author or policy, or reference-script policy replay.',
         'delivery_gates': sorted(DELIVERY_GATES),
@@ -446,12 +455,14 @@ def main():
     def publish():
         save(root / 'results.json', summarize(protocol, samples, time.monotonic() - start))
     publish()
-    for sample in samples:
+    def started(sample):
         verify_assets(args.assets.resolve())
         require(implementation_identity() == protocol['platform_identity'] and runner_identity() == protocol['runner_identity']
                 and digest(args.assets / 'frozen.json') == protocol['assets_identity'], 'experiment implementation or evidence changed')
         sample['status'] = 'running'
         publish()
+
+    def execute(sample):
         folder = root / f'sample-{sample["id"]:02d}'
         command = [sys.executable, str(Path(__file__).resolve()), '--assets', str(args.assets.resolve()),
             '--output', str(folder), '--connection', str(args.connection.resolve()), '--base-image', args.base_image,
@@ -473,8 +484,14 @@ def main():
         else:
             sample.update(status='process_failed', error='Worker did not publish results', qualified=False)
         sample.update(exit_code=exit_code, seconds=time.monotonic() - tick)
+        return sample
+
+    def completed(sample, value):
+        sample.update(value)
         publish()
         print(json.dumps({k: sample.get(k) for k in ('id', 'title', 'status', 'qualified', 'failed_phase', 'seconds')}, ensure_ascii=False), flush=True)
+    from v2_batch_scheduler import run_batch
+    run_batch(samples, concurrency=args.concurrency, execute=execute, started=started, completed=completed)
     require(implementation_identity() == protocol['platform_identity'] and runner_identity() == protocol['runner_identity'], 'implementation changed before seal')
     hashes = {str(p.relative_to(root)): digest(p) for p in sorted(root.rglob('*'))
               if p.is_file() and '__pycache__' not in p.parts and p.suffix != '.pyc'}

@@ -1,0 +1,1252 @@
+{
+  "scope": "Read-only full cohort evidence analysis; no sample rerun, source modification or historical relabeling.",
+  "evidence_root": "output/v2/experiments/fresh20-priority-round01",
+  "integrity": {
+    "sealed_files_verified": 1764,
+    "mismatches": 0
+  },
+  "summary": {
+    "planned": 20,
+    "qualified": 11,
+    "yield": 0.55,
+    "wall_minutes": 132.99613520833373,
+    "all_passed_native_rollouts": 11,
+    "strata": {
+      "direct": {
+        "total": 4,
+        "qualified": 4,
+        "average_minutes": 2.289580827604368
+      },
+      "simple": {
+        "total": 4,
+        "qualified": 4,
+        "average_minutes": 4.709811413362574
+      },
+      "ordinary": {
+        "total": 4,
+        "qualified": 3,
+        "average_minutes": 8.141114131941867
+      },
+      "complex": {
+        "total": 8,
+        "qualified": 0,
+        "average_minutes": 9.052419572220849
+      }
+    },
+    "families": {
+      "parcel": {
+        "total": 5,
+        "qualified": 3
+      },
+      "parking": {
+        "total": 5,
+        "qualified": 2
+      },
+      "warehouse": {
+        "total": 5,
+        "qualified": 3
+      },
+      "archive": {
+        "total": 5,
+        "qualified": 3
+      }
+    },
+    "first_attempt_qualified": 7,
+    "qualified_after_repair": 4,
+    "sandbox_build_wall_fraction": 0.8734454218869998
+  },
+  "terminal_bottlenecks": {
+    "author_timeout_before_independent_validation": [
+      5,
+      9,
+      15
+    ],
+    "contract_overconstraints_or_output_scope": [
+      4,
+      8,
+      10
+    ],
+    "invalid_challenge_schema": [
+      14
+    ],
+    "mixed_scope_and_incorrect_challenge_expectation": [
+      19
+    ],
+    "transaction_representation_limit": [
+      20
+    ]
+  },
+  "timeout_sessions": [
+    {
+      "sample": 4,
+      "evidence": "output/v2/experiments/fresh20-priority-round01/sample-04/author-native/author-sessions/f282bb6c686a4f27969df3b924fd3ae9/failure.json",
+      "last_operation": "check_contract",
+      "checked_current_draft": true,
+      "error": null
+    },
+    {
+      "sample": 5,
+      "evidence": "output/v2/experiments/fresh20-priority-round01/sample-05/author-native/author-sessions/cb826d18a1c34ca294282d45a95848d0/failure.json",
+      "last_operation": "check_contract",
+      "checked_current_draft": true,
+      "error": null
+    },
+    {
+      "sample": 5,
+      "evidence": "output/v2/experiments/fresh20-priority-round01/sample-05/author-native/author-sessions/9d4ffd6c5a7d4fc59eef377831fc534a/failure.json",
+      "last_operation": "put_section",
+      "checked_current_draft": false,
+      "error": null
+    },
+    {
+      "sample": 9,
+      "evidence": "output/v2/experiments/fresh20-priority-round01/sample-09/author-native/author-sessions/df9e55aeb2e74bb8b044ec4389d3b40f/failure.json",
+      "last_operation": "check_contract",
+      "checked_current_draft": false,
+      "error": "transaction plan dependencies require explicit state goals"
+    },
+    {
+      "sample": 9,
+      "evidence": "output/v2/experiments/fresh20-priority-round01/sample-09/author-native/author-sessions/2fdec7e88a9149cd824d1ee528ab744d/failure.json",
+      "last_operation": "check_contract",
+      "checked_current_draft": true,
+      "error": null
+    },
+    {
+      "sample": 10,
+      "evidence": "output/v2/experiments/fresh20-priority-round01/sample-10/author-native/author-sessions/03f22bec570040e89dbfc13673d56afd/failure.json",
+      "last_operation": "check_contract",
+      "checked_current_draft": true,
+      "error": null
+    },
+    {
+      "sample": 14,
+      "evidence": "output/v2/experiments/fresh20-priority-round01/sample-14/author-native/author-sessions/fffa4d9d9fad43e0a26243dd00af6952/failure.json",
+      "last_operation": "check_contract",
+      "checked_current_draft": true,
+      "error": null
+    },
+    {
+      "sample": 15,
+      "evidence": "output/v2/experiments/fresh20-priority-round01/sample-15/author-native/author-sessions/88140f3389564fffa832a00d65f3d099/failure.json",
+      "last_operation": "edit_contract",
+      "checked_current_draft": false,
+      "error": null
+    },
+    {
+      "sample": 15,
+      "evidence": "output/v2/experiments/fresh20-priority-round01/sample-15/author-native/author-sessions/b52dfe779dfd4cff8d556029013ab8b7/failure.json",
+      "last_operation": "check_contract",
+      "checked_current_draft": true,
+      "error": null
+    },
+    {
+      "sample": 19,
+      "evidence": "output/v2/experiments/fresh20-priority-round01/sample-19/author-native/author-sessions/50d2cc52d588413a8f933d3577827b09/failure.json",
+      "last_operation": "check_contract",
+      "checked_current_draft": false,
+      "error": "invalid internal task spec"
+    }
+  ],
+  "timeout_total_seconds": 2401.3707897909917,
+  "build_subphase_seconds": {
+    "generation": 4342.431587293802,
+    "compile": 0.2413307108799927,
+    "recipe_preflight": 8.879609582189005,
+    "tool_interference": 8.930719665193465,
+    "execution": 490.26858904003166,
+    "independent_challenge": 2077.4081798741827,
+    "export": 0.17181399901164696,
+    "container": 41.04838187393034
+  },
+  "samples": [
+    {
+      "id": 1,
+      "title": "体积重量与偏远附加费",
+      "stratum": "direct",
+      "qualified": true,
+      "minutes": 2.095,
+      "analysis": "首轮通过；计费规则计算与真实 rollout 一致。",
+      "attempts": [
+        {
+          "index": 1,
+          "status": "passed",
+          "failed_phase": null,
+          "error": null,
+          "phases": {
+            "generation": 48.171748458989896,
+            "compile": 0.006718624965287745,
+            "recipe_preflight": 0.017911125032696873,
+            "tool_interference": 0.0029179580160416663,
+            "execution": 0.03235666698310524,
+            "independent_challenge": 37.26606279204134,
+            "export": 0.015453708008863032,
+            "container": 4.939450457983185
+          },
+          "challenge": {
+            "evidence": "output/v2/experiments/fresh20-priority-round01/sample-01/build/attempt-1/challenge.json",
+            "reason": "The public interface and executable formula faithfully implement the original calculation: 790 cents. Authored probes cover exact and exceeded tier boundaries, either weight dominating, remote and nonremote charges, and zero weight; the independent cases additionally test a false rule predicate and incorrect totals. There are no records, menus, private facts, transactions or time-dependent obligations requiring further branches. These are executable proposed cases assessed from supplied expressions, not claims of tool execution.",
+            "inconsistent_requirements": [],
+            "failed_cases": []
+          }
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "承运资格核验",
+      "stratum": "simple",
+      "qualified": true,
+      "minutes": 3.779,
+      "analysis": "首轮通过；资格查询与真实 rollout 一致。",
+      "attempts": [
+        {
+          "index": 1,
+          "status": "passed",
+          "failed_phase": null,
+          "error": null,
+          "phases": {
+            "generation": 84.91178187500918,
+            "compile": 0.008814500004518777,
+            "recipe_preflight": 0.03277083300054073,
+            "tool_interference": 0.0321358329965733,
+            "execution": 0.05214137502480298,
+            "independent_challenge": 73.34585345798405,
+            "export": 0.015279292012564838,
+            "container": 1.4073581249685958
+          },
+          "challenge": {
+            "evidence": "output/v2/experiments/fresh20-priority-round01/sample-02/build/attempt-1/challenge.json",
+            "reason": "The predicates implement the requested identity-specific eligibility check, with observable mutable facts and successful empty-result paths. Authored probes cover weight dominance, equality, slot, zone and hazardous-license boundaries; independent cases add absence, identity changes, irrelevant-field invariance, reordered reads and inadequate evidence. Pricing, ranking alternatives and dispatch transactions are outside this request. Cases are executable proposals assessed from supplied messages, not reported tool executions.",
+            "inconsistent_requirements": [],
+            "failed_cases": []
+          }
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "完整承运方案比较",
+      "stratum": "ordinary",
+      "qualified": true,
+      "minutes": 7.789,
+      "analysis": "首次挑战发现不存在包裹时解引用空结果、无条件要求下游查询；一次修复后通过。",
+      "attempts": [
+        {
+          "index": 1,
+          "status": "failed",
+          "failed_phase": "independent_challenge",
+          "error": "independent business challenge did not pass",
+          "phases": {
+            "generation": 125.52727529197,
+            "compile": 0.011393749970011413,
+            "recipe_preflight": 0.05334170797141269,
+            "tool_interference": 0.06294941599480808,
+            "execution": 0.08355820795986801,
+            "independent_challenge": 78.57467862503836
+          },
+          "challenge": {
+            "evidence": "output/v2/experiments/fresh20-priority-round01/sample-03/build/attempt-1/challenge.json",
+            "reason": "Pricing, eligibility, complete retrieval and requested output scope are faithful for identified parcels. The missing-parcel branch is unsupported: answer targets dereference a nonexistent row and unconditional success requires service-query dependencies that cannot exist. The missing_parcel_no_downstream case finishes its actions normally and exposes this discrepancy; a missing-row exception cannot count as successful completion. No selection, dispatch, transaction, authorization decision or clock obligation is requested. The different_disclosed_parcel case intentionally submits a wrong minimum and must have expect_success=false.",
+            "inconsistent_requirements": [
+              {
+                "applicability": "applicable",
+                "case_ids": [
+                  "baseline_correct",
+                  "inclusive_weight_boundary",
+                  "hazardous_empty",
+                  "missing_parcel_no_downstream",
+                  "missing_observations"
+                ],
+                "consistent": false,
+                "implementation_paths": [
+                  "/answers/0/expected",
+                  "/answers/1/expected",
+                  "/success/0/when",
+                  "/success/0/required_tools",
+                  "/tools/1/result_bindings"
+                ],
+                "reason": "The normal complete comparison is correct, but both answer targets assume a matching parcel and downstream retrieval remains unconditional. A truthful absent-parcel completion is not supported.",
+                "requirement_id": "user_request_1"
+              }
+            ],
+            "failed_cases": [
+              {
+                "id": "missing_parcel_no_downstream",
+                "reason": "No public rule guarantees that the disclosed parcel ID exists. P404 produces an empty parcel query. Truthful completion reports no identified parcel and no determinable options or minimum; it must not dereference items.0 or require lookup_services. The submitted null and empty set represent this unavailable result, with the missing-parcel explanation supported by the actual query.",
+                "expect_success": true,
+                "actual_success": false,
+                "actual_error": null,
+                "reward": 0.0
+              },
+              {
+                "id": "different_disclosed_parcel",
+                "reason": "This case follows the disclosed P2 and mutable actual-weight and address facts rather than P1 or fixture constants. Four weight bands cost S1=400 and S2=300 cents; the deliberately wrong submitted minimum 350 must be rejected.",
+                "expect_success": true,
+                "actual_success": false,
+                "actual_error": null,
+                "reward": 0.475
+              }
+            ]
+          }
+        },
+        {
+          "index": 2,
+          "status": "passed",
+          "failed_phase": null,
+          "error": null,
+          "phases": {
+            "generation": 86.07038391695824,
+            "compile": 0.010004208015743643,
+            "recipe_preflight": 0.0643293330213055,
+            "tool_interference": 0.06978345901006833,
+            "execution": 0.12397962500108406,
+            "independent_challenge": 90.89914354099892,
+            "export": 0.014756291988305748,
+            "container": 4.543921999982558
+          },
+          "challenge": {
+            "evidence": "output/v2/experiments/fresh20-priority-round01/sample-03/build/attempt-2/challenge.json",
+            "reason": "The contract faithfully implements complete read-only service comparison, observable pricing inputs, eligibility, cents, and normal empty-result completion. It adds no unsupported answer columns or confirmation requirements. Authored probes and independent cases cover mutable parcel facts, capacity and weight boundaries, hazardous permission, zone exclusion, remote pricing, multiple pages, ties, identity changes, absence, incorrect answers, and observed-result dependencies. No selection, transaction, approval preference, display-name field, or temporal business obligation exists here. Cases are executable proposals assessed from the supplied messages; no execution was performed.",
+            "inconsistent_requirements": [],
+            "failed_cases": []
+          }
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "动态承运名额与独立寄件",
+      "stratum": "complex",
+      "qualified": false,
+      "minutes": 8.756,
+      "analysis": "首次超时；恢复后业务计算、状态目标和答案通过，但已完成包裹的无写入分支仍强制 service_lookup，正确行为被清零。",
+      "attempts": [
+        {
+          "index": 1,
+          "status": "failed",
+          "failed_phase": "generation",
+          "error": "author session deadline exceeded",
+          "phases": {
+            "generation": 240.19296937499894
+          }
+        },
+        {
+          "index": 2,
+          "status": "failed",
+          "failed_phase": "independent_challenge",
+          "error": "independent business challenge did not pass",
+          "phases": {
+            "generation": 44.0769078329904,
+            "compile": 0.02234329195925966,
+            "recipe_preflight": 0.0851008749450557,
+            "tool_interference": 0.09917158301686868,
+            "execution": 90.96962341701146,
+            "independent_challenge": 126.65461858396884
+          },
+          "challenge": {
+            "evidence": "output/v2/experiments/fresh20-priority-round01/sample-04/build/attempt-2/challenge.json",
+            "reason": "Core pricing, selection, exact consent and atomic updates match the policy. Reject the unconditional service-read completion requirement: historical_no_service is a concrete normal no-write completion that should succeed. Cases are proposed executable evidence, not claimed tool executions. Missing requested-record handling and resource-rejection rollback beyond the inherited authorization failure remain inconclusive; no runtime exception is treated as a successful absence path.",
+            "inconsistent_requirements": [
+              {
+                "applicability": "applicable",
+                "case_ids": [
+                  "partial",
+                  "decline",
+                  "historical_no_service"
+                ],
+                "consistent": false,
+                "implementation_paths": [
+                  "/answers/0",
+                  "/answers/1",
+                  "/goals/0",
+                  "/success/0/required_tools"
+                ],
+                "reason": "Summaries and independent preservation are correct, but unconditional service lookup rejects a valid completed no-write branch.",
+                "requirement_id": "user_request_2"
+              },
+              {
+                "applicability": "conditional",
+                "case_ids": [
+                  "empty_services",
+                  "decline",
+                  "partial",
+                  "historical_no_service"
+                ],
+                "consistent": false,
+                "implementation_paths": [
+                  "/rules/6",
+                  "/rules/7",
+                  "/goals/0",
+                  "/success/0/required_tools"
+                ],
+                "reason": "No-write preservation is implemented, but service lookup remains mandatory even when completed status already makes both parcels unavailable. The historical case exposes the unnecessary requirement.",
+                "requirement_id": "business_policy_10"
+              }
+            ],
+            "failed_cases": [
+              {
+                "id": "historical_no_service",
+                "reason": "A normally completed, truthful no-write path: both parcels are already completed, so service selection and confirmation are unnecessary. The unconditional service_lookup requirement incorrectly rejects this path. No nonexistent capture is dereferenced.",
+                "expect_success": true,
+                "actual_success": false,
+                "actual_error": null,
+                "reward": 0.0
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "大目录承运检索与原子寄件",
+      "stratum": "complex",
+      "qualified": false,
+      "minutes": 8.318,
+      "analysis": "两次超时；第二次恢复草稿已有本地检查成功记录，未完成会话收尾，未进入独立验收。",
+      "attempts": [
+        {
+          "index": 1,
+          "status": "failed",
+          "failed_phase": "generation",
+          "error": "author session deadline exceeded",
+          "phases": {
+            "generation": 240.15290129202185
+          }
+        },
+        {
+          "index": 2,
+          "status": "failed",
+          "failed_phase": "generation",
+          "error": "author session deadline exceeded",
+          "phases": {
+            "generation": 240.049698082963
+          }
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "阶梯停车计费与封顶",
+      "stratum": "direct",
+      "qualified": true,
+      "minutes": 2.205,
+      "analysis": "首轮通过；阶梯计费与封顶。",
+      "attempts": [
+        {
+          "index": 1,
+          "status": "passed",
+          "failed_phase": null,
+          "error": null,
+          "phases": {
+            "generation": 50.224429874971975,
+            "compile": 0.006211666972376406,
+            "recipe_preflight": 0.02284129202598706,
+            "tool_interference": 0.0025043750065378845,
+            "execution": 0.04006841598311439,
+            "independent_challenge": 41.63311300001806,
+            "export": 0.016441332991234958,
+            "container": 4.447945666033775
+          },
+          "challenge": {
+            "evidence": "output/v2/experiments/fresh20-priority-round01/sample-06/build/attempt-1/challenge.json",
+            "reason": "The contract faithfully computes 900 cents and requires only the requested result. Authored probes cover first-hour, half-hour and cap boundaries plus overlapping, disjoint and empty intervals; independent cases add wrong-charge predicate rejection and reversed endpoint contact. There are no records, identity filters, menus, private facts, writes or authorization stages to exercise. Interval policies are correctly implemented but do not trigger extra communication for this duration-only request.",
+            "inconsistent_requirements": [],
+            "failed_cases": []
+          }
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "端点相接的车位资格",
+      "stratum": "simple",
+      "qualified": true,
+      "minutes": 7.248,
+      "analysis": "首次要求固定完整字段的查询提供者，拒绝足以证明布尔答案的 ID-only 查询；修复后通过。",
+      "attempts": [
+        {
+          "index": 1,
+          "status": "failed",
+          "failed_phase": "independent_challenge",
+          "error": "independent business challenge did not pass",
+          "phases": {
+            "generation": 116.93611858302029,
+            "compile": 0.006493500026408583,
+            "recipe_preflight": 0.025400959013495594,
+            "tool_interference": 0.03244508302304894,
+            "execution": 0.0489065830479376,
+            "independent_challenge": 103.08345970901428
+          },
+          "challenge": {
+            "evidence": "output/v2/experiments/fresh20-priority-round01/sample-07/build/attempt-1/challenge.json",
+            "reason": "Eligibility predicates and ordinary no-result handling match the original request. The contract adds an unsupported full-projection provider requirement: complete ID-only queries already decide the requested boolean. The proposed alternative-provider cases expose that discrepancy. No tools were executed; executable cases are proposed evidence, not reported execution results. Pricing, reservation writes, actual menus, display names and transaction refusal are outside this query's reachable operations.",
+            "inconsistent_requirements": [
+              {
+                "applicability": "applicable",
+                "case_ids": [
+                  "available",
+                  "wrong_boolean",
+                  "absent_identity",
+                  "no_lookup",
+                  "sufficient_id_view",
+                  "sufficient_empty_view"
+                ],
+                "consistent": false,
+                "implementation_paths": [
+                  "/answers/0",
+                  "/rules/1/predicate",
+                  "/tools/0/user_bindings",
+                  "/tools/1",
+                  "/success/0/required_tools"
+                ],
+                "reason": "The result and disclosed-input binding are faithful, but requiring the full-projection lookup excludes sufficient actual queries through publicly available equivalent eligibility filters.",
+                "requirement_id": "user_request_1"
+              }
+            ],
+            "failed_cases": [
+              {
+                "id": "sufficient_id_view",
+                "reason": "The public ID-only tool applies exactly the same eligibility rule and disclosed bindings. Its nonempty complete result establishes the requested boolean without needing active and charger columns. The contract nevertheless requires the full-projection tool.",
+                "expect_success": true,
+                "actual_success": false,
+                "actual_error": null,
+                "reward": 0.0
+              },
+              {
+                "id": "sufficient_empty_view",
+                "reason": "An empty complete ID-only eligibility query truthfully proves unavailability. No full record or downstream result dependency is necessary.",
+                "expect_success": true,
+                "actual_success": false,
+                "actual_error": null,
+                "reward": 0.0
+              }
+            ]
+          }
+        },
+        {
+          "index": 2,
+          "status": "passed",
+          "failed_phase": null,
+          "error": null,
+          "phases": {
+            "generation": 31.671613166981842,
+            "compile": 0.0025720419944263995,
+            "recipe_preflight": 0.01706879201810807,
+            "tool_interference": 0.0038119590026326478,
+            "execution": 0.051743082993198186,
+            "independent_challenge": 97.16228279197821,
+            "export": 0.014188624976668507,
+            "container": 4.414748249982949
+          },
+          "challenge": {
+            "evidence": "output/v2/experiments/fresh20-priority-round01/sample-07/build/attempt-2/challenge.json",
+            "reason": "The contract faithfully implements the requested read-only charging availability lookup. Its predicates enforce identity, current activity and charging capability, valid daily intervals, and booked-only overlap with strict endpoints. It supports truthful empty-result completion and requires only necessary input clarification and an actual query. Authored probes and these independent cases cover the relevant mutable facts and boundaries. No display-name filters, choice menu, protected write, or transaction exists; write authorization and rollback boundaries cannot be executed through this interface and are not claimed as tested. Cases are proposed from the supplied specification, not tool-executed.",
+            "inconsistent_requirements": [],
+            "failed_cases": []
+          }
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "车位与区间占用关联检索",
+      "stratum": "ordinary",
+      "qualified": false,
+      "minutes": 5.308,
+      "analysis": "首次空候选仍要求占用查询；修复后空候选仍要求追问起止时间。两次均正确空结果被过程要求清零。",
+      "attempts": [
+        {
+          "index": 1,
+          "status": "failed",
+          "failed_phase": "independent_challenge",
+          "error": "independent business challenge did not pass",
+          "phases": {
+            "generation": 87.91800345905358,
+            "compile": 0.007294874987564981,
+            "recipe_preflight": 0.02006654196884483,
+            "tool_interference": 0.004849833028856665,
+            "execution": 0.03579341695876792,
+            "independent_challenge": 76.20807204098674
+          },
+          "challenge": {
+            "evidence": "output/v2/experiments/fresh20-priority-round01/sample-08/build/attempt-1/challenge.json",
+            "reason": "Eligibility, half-open overlap, booked-only occupancy, complete pagination, identifier output, and query access match the original request. The unconditional downstream available_bays call overconstrains a successful empty-candidate completion. Cases are executable proposals assessed from the supplied contract; no tools were executed. No choice, write, display-name field, or personal-booking stage exists within this task, so those unrelated branches cannot be fabricated.",
+            "inconsistent_requirements": [
+              {
+                "applicability": "applicable",
+                "case_ids": [
+                  "occupied_baseline",
+                  "all_three_unordered",
+                  "empty_candidates_short_circuit",
+                  "unobserved_guess"
+                ],
+                "consistent": false,
+                "implementation_paths": [
+                  "/answers/0",
+                  "/tools/0/complete_retrieval",
+                  "/tools/1/complete_retrieval",
+                  "/success/0/required_tools"
+                ],
+                "reason": "Complete identifier output and real retrieval are faithful, but mandatory downstream retrieval after an observed empty candidate set adds an unnecessary completion condition.",
+                "requirement_id": "user_request_1"
+              }
+            ],
+            "failed_cases": [
+              {
+                "id": "empty_candidates_short_circuit",
+                "reason": "After disclosing the interval and completely observing an empty charging-candidate set, the complete available set is necessarily empty. A truthful no-write completion needs no downstream occupancy query or nonexistent row dependency. The unconditional available_bays requirement rejects this valid completion.",
+                "expect_success": true,
+                "actual_success": false,
+                "actual_error": null,
+                "reward": 0.0
+              }
+            ]
+          }
+        },
+        {
+          "index": 2,
+          "status": "failed",
+          "failed_phase": "independent_challenge",
+          "error": "independent business challenge did not pass",
+          "phases": {
+            "generation": 47.332208333944436,
+            "compile": 0.005691792001016438,
+            "recipe_preflight": 0.026046833023428917,
+            "tool_interference": 0.0048090839991346,
+            "execution": 0.042587417003232986,
+            "independent_challenge": 84.60413262504153
+          },
+          "challenge": {
+            "evidence": "output/v2/experiments/fresh20-priority-round01/sample-08/build/attempt-2/challenge.json",
+            "reason": "Eligibility, occupancy joins, endpoint handling, pagination, identifier output and read-only permission scope faithfully implement the request. The empty-candidate branch nevertheless requires unnecessary start/end disclosures even though a complete candidate query already proves the result empty for every interval. The supplied normal-completion counterexample isolates that overconstraint. Cases are proposed executable evidence; no tools were executed.",
+            "inconsistent_requirements": [
+              {
+                "applicability": "applicable",
+                "case_ids": [
+                  "baseline_correct",
+                  "occupied_wrong_answer",
+                  "complete_unordered_pending",
+                  "empty_without_unnecessary_questions",
+                  "observed_dependency_required"
+                ],
+                "consistent": false,
+                "implementation_paths": [
+                  "/answers/0",
+                  "/tools/0/complete_retrieval",
+                  "/tools/1/complete_retrieval",
+                  "/tools/1/result_bindings",
+                  "/success/0/required_stages",
+                  "/success/1"
+                ],
+                "reason": "Complete identifiers and observed retrieval are implemented, with no display-name filters or extra output columns. However mandatory time disclosure in the empty-candidate branch rejects a truthful fully observed empty result.",
+                "requirement_id": "user_request_1"
+              }
+            ],
+            "failed_cases": [
+              {
+                "id": "empty_without_unnecessary_questions",
+                "reason": "An actual complete candidate query proves no enabled charging bays exist for any interval. Truthful empty completion needs neither time disclosure nor occupancy lookup. The contract incorrectly rejects it through mandatory start/end stages.",
+                "expect_success": true,
+                "actual_success": false,
+                "actual_error": null,
+                "reward": 0.0
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "逐项停车预约和钱包事务",
+      "stratum": "complex",
+      "qualified": false,
+      "minutes": 8.345,
+      "analysis": "两次超时；首次本地检查已过，恢复后编辑使静态事务计划包含不允许的依赖，最终编译未过。",
+      "attempts": [
+        {
+          "index": 1,
+          "status": "failed",
+          "failed_phase": "generation",
+          "error": "author session deadline exceeded",
+          "phases": {
+            "generation": 240.14560750004603
+          }
+        },
+        {
+          "index": 2,
+          "status": "failed",
+          "failed_phase": "generation",
+          "error": "author session deadline exceeded",
+          "phases": {
+            "generation": 240.0424006660469
+          }
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "续时冲突与差额原子扣款",
+      "stratum": "complex",
+      "qualified": false,
+      "minutes": 12.777,
+      "analysis": "首次超时；恢复后重复追问用户已经明确的半小时与无需充电条件，独立审查拒绝；基准轨迹语义通信评分也未过。",
+      "attempts": [
+        {
+          "index": 1,
+          "status": "failed",
+          "failed_phase": "generation",
+          "error": "author session deadline exceeded",
+          "phases": {
+            "generation": 240.15090837498428
+          }
+        },
+        {
+          "index": 2,
+          "status": "failed",
+          "failed_phase": "independent_challenge",
+          "error": "independent business challenge did not pass",
+          "phases": {
+            "generation": 60.672623041959014,
+            "compile": 0.02395808300934732,
+            "recipe_preflight": 0.14762037503533065,
+            "tool_interference": 0.1732633329811506,
+            "execution": 166.97576779103838,
+            "independent_challenge": 271.8051286669797
+          },
+          "challenge": {
+            "evidence": "output/v2/experiments/fresh20-priority-round01/sample-10/build/attempt-2/challenge.json",
+            "reason": "The pricing, conflict checks, exact consent, atomic updates and requested final fields are substantially grounded. The contract adds mandatory redisclosure of the already specified charging preference and thirty-minute extension. Every reference trajectory demonstrates these unnecessary questions, and transaction user bindings enforce the extra stages. No display-name filters or choice menus exist, and authenticated query access is appropriately broad. These are proposed executable cases, not claims of tool execution; missing-identity exception behavior and additional rounding boundaries remain inconclusive.",
+            "inconsistent_requirements": [
+              {
+                "applicability": "applicable",
+                "case_ids": [
+                  "baseline_correct",
+                  "endpoint_correct"
+                ],
+                "consistent": false,
+                "implementation_paths": [
+                  "/tools/3/user_bindings",
+                  "/tools/4/user_bindings",
+                  "/user/stages/1",
+                  "/user/stages/2",
+                  "/success/0/required_stages"
+                ],
+                "reason": "The extension values are applied correctly after disclosure, but the implementation unnecessarily requires asking again for the explicit thirty-minute and noncharging preferences.",
+                "requirement_id": "user_request_1"
+              }
+            ],
+            "failed_cases": []
+          }
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "按质退料抵扣与处理费",
+      "stratum": "direct",
+      "qualified": true,
+      "minutes": 2.348,
+      "analysis": "首轮通过；按品质过滤和费用计算。",
+      "attempts": [
+        {
+          "index": 1,
+          "status": "passed",
+          "failed_phase": null,
+          "error": null,
+          "phases": {
+            "generation": 56.36463229096262,
+            "compile": 0.006089292000979185,
+            "recipe_preflight": 0.01711229101056233,
+            "tool_interference": 0.002503916039131582,
+            "execution": 0.033142958011012524,
+            "independent_challenge": 38.25435645802645,
+            "export": 0.016381290974095464,
+            "container": 4.686135334020946
+          },
+          "challenge": {
+            "evidence": "output/v2/experiments/fresh20-priority-round01/sample-11/build/attempt-1/challenge.json",
+            "reason": "The contract faithfully computes 245 cents using inclusive quality eligibility, aggregation before a single fee deduction, and a zero floor. Authored probes additionally cover above-threshold eligibility, fee equality and excess, all-ineligible and empty collections, and aggregation order. No tables, menus, private facts, writes, or temporal obligations apply. Proposed cases are executable recipes; no tools were executed during this review.",
+            "inconsistent_requirements": [],
+            "failed_cases": []
+          }
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "隔离批次可用性",
+      "stratum": "simple",
+      "qualified": true,
+      "minutes": 3.83,
+      "analysis": "首轮通过；隔离库存资格。",
+      "attempts": [
+        {
+          "index": 1,
+          "status": "passed",
+          "failed_phase": null,
+          "error": null,
+          "phases": {
+            "generation": 76.64656708395341,
+            "compile": 0.005886791972443461,
+            "recipe_preflight": 0.017334708012640476,
+            "tool_interference": 0.023108041030354798,
+            "execution": 0.029517167015001178,
+            "independent_challenge": 78.04782025003806,
+            "export": 0.016915167041588575,
+            "container": 1.3709462499828078
+          },
+          "challenge": {
+            "evidence": "output/v2/experiments/fresh20-priority-round01/sample-12/build/attempt-1/challenge.json",
+            "reason": "The contract faithfully implements a read-only availability inquiry with current-record evidence, exact identity matching, all stated eligibility conditions and successful empty-result handling. Authored probes and the proposed executable cases jointly cover eligibility boundaries, stale answers, partial observations and fixed-day waiting. Allocation ordering and transaction confirmation have no triggering operation here; no menu selection, protected write or unrelated private-information disclosure is introduced. Cases are proposed from supplied evidence, not claimed tool executions.",
+            "inconsistent_requirements": [],
+            "failed_cases": []
+          }
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "先到期先出分配与缺口",
+      "stratum": "ordinary",
+      "qualified": true,
+      "minutes": 8.614,
+      "analysis": "首次空库存分支强制下游查询并要求额外 SKU/到期日展示；修复后冻结口径通过。准备期输出范围歧义仍保留。",
+      "attempts": [
+        {
+          "index": 1,
+          "status": "failed",
+          "failed_phase": "independent_challenge",
+          "error": "independent business challenge did not pass",
+          "phases": {
+            "generation": 152.38293466699542,
+            "compile": 0.011213416990358382,
+            "recipe_preflight": 0.038174834044184536,
+            "tool_interference": 0.0441431250073947,
+            "execution": 0.07706566603155807,
+            "independent_challenge": 99.47916633402929
+          },
+          "challenge": {
+            "evidence": "output/v2/experiments/fresh20-priority-round01/sample-13/build/attempt-1/challenge.json",
+            "reason": "Eligibility, FEFO arithmetic, complete nonempty retrieval, user clarification and inventory preservation faithfully implement the request. Reject the unconditional downstream details call on empty results and mandatory final repetition of SKU and expiry dates. Cases are executable proposals evaluated from supplied semantics, not claimed tool executions. No transactions, choice stages, approval facts or display-name fields exist; authorization refusal, rollback and menu-selection boundaries are therefore not executable within this task.",
+            "inconsistent_requirements": [
+              {
+                "applicability": "applicable",
+                "case_ids": [
+                  "baseline_independent",
+                  "wrong_shortage_independent",
+                  "empty_without_details",
+                  "tie_and_partial"
+                ],
+                "consistent": false,
+                "implementation_paths": [
+                  "/answers/0",
+                  "/answers/1",
+                  "/answers/2",
+                  "/tools/0/complete_retrieval",
+                  "/tools/1/result_bindings",
+                  "/success/0/when",
+                  "/success/0/required_tools",
+                  "/goals/0",
+                  "/user/stages/0",
+                  "/user/stages/1"
+                ],
+                "reason": "Allocation, shortage and no deduction are correct, with necessary clarification and actual complete reads. However, successful empty completion is overconstrained by unconditional read_quantities, and the inventory answer adds mandatory display fields.",
+                "requirement_id": "user_request_1"
+              }
+            ],
+            "failed_cases": [
+              {
+                "id": "empty_without_details",
+                "reason": "After a complete empty catalog query, there are no quantities to retrieve. Truthful empty inventory, empty allocation and shortage 25 complete the original request without writes or exceptions. The unconditional read_quantities requirement incorrectly rejects this completion.",
+                "expect_success": true,
+                "actual_success": false,
+                "actual_error": null,
+                "reward": 0.0
+              }
+            ]
+          }
+        },
+        {
+          "index": 2,
+          "status": "passed",
+          "failed_phase": null,
+          "error": null,
+          "phases": {
+            "generation": 45.99074629100505,
+            "compile": 0.014972250035498291,
+            "recipe_preflight": 0.046036707994062454,
+            "tool_interference": 0.053205834003165364,
+            "execution": 0.07389383303234354,
+            "independent_challenge": 109.23574558296241,
+            "export": 0.014245792001020163,
+            "container": 4.467003124998882
+          },
+          "challenge": {
+            "evidence": "output/v2/experiments/fresh20-priority-round01/sample-13/build/attempt-2/challenge.json",
+            "reason": "The contract faithfully implements complete eligible-stock retrieval, current-record FEFO preview, shortage reporting, necessary clarification, and no deduction. Empty inventory has a normal successful branch. Public projections and result bindings make the requested facts observable without exposing private preferences or demanding authorization for clarification. Proposed cases are executable qualification recipes; tools were not executed here. Write authorization, rollback, user-choice menus, and mid-episode record changes cannot be independently exercised because this task declares no transactions, choice stages, corrections, or events.",
+            "inconsistent_requirements": [],
+            "failed_cases": []
+          }
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "title": "跨批次原子预留",
+      "stratum": "complex",
+      "qualified": false,
+      "minutes": 9.183,
+      "analysis": "首次超时；恢复后独立挑战遗漏 plan_disclosure 字段，挑战本身无效，被归类 infrastructure；沙箱业务正确性未被独立证实。",
+      "attempts": [
+        {
+          "index": 1,
+          "status": "failed",
+          "failed_phase": "generation",
+          "error": "author session deadline exceeded",
+          "phases": {
+            "generation": 240.21009037498152
+          }
+        },
+        {
+          "index": 2,
+          "status": "infrastructure_failed",
+          "failed_phase": "independent_challenge",
+          "error": "RuntimeError: independent challenge invalid; do not repair source from an ungrounded claim: scenario answer fields mismatch: scenario=__independent_case; missing=['plan_disclosure']; unexpected=[]; include both structured answers and explanation fields",
+          "phases": {
+            "generation": 71.78855470899725,
+            "compile": 0.028295124997384846,
+            "recipe_preflight": 0.17544333304977044,
+            "tool_interference": 0.20994420803617686,
+            "execution": 71.00970062497072,
+            "independent_challenge": 143.98951887496514
+          }
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "title": "大规模批次筛选与原子预留",
+      "stratum": "complex",
+      "qualified": false,
+      "minutes": 8.426,
+      "analysis": "两次超时；首次已有本地检查成功，恢复后继续大草稿读取及编辑，最终没有当前草稿的成功收尾。",
+      "attempts": [
+        {
+          "index": 1,
+          "status": "failed",
+          "failed_phase": "generation",
+          "error": "author session deadline exceeded",
+          "phases": {
+            "generation": 240.18872724997345
+          }
+        },
+        {
+          "index": 2,
+          "status": "failed",
+          "failed_phase": "generation",
+          "error": "author session deadline exceeded",
+          "phases": {
+            "generation": 240.0445535419858
+          }
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "title": "保留版本的物理空间去重",
+      "stratum": "direct",
+      "qualified": true,
+      "minutes": 2.51,
+      "analysis": "首轮通过；共享物理内容去重。",
+      "attempts": [
+        {
+          "index": 1,
+          "status": "passed",
+          "failed_phase": null,
+          "error": null,
+          "phases": {
+            "generation": 57.84109154198086,
+            "compile": 0.004190125036984682,
+            "recipe_preflight": 0.007862000027671456,
+            "tool_interference": 0.0017227079952135682,
+            "execution": 0.016919791989494115,
+            "independent_challenge": 50.686466499988455,
+            "export": 0.01727383304387331,
+            "container": 4.419727500004228
+          },
+          "challenge": {
+            "evidence": "output/v2/experiments/fresh20-priority-round01/sample-16/build/attempt-1/challenge.json",
+            "reason": "The independently calculated result is 300 bytes. The retention predicate matches the inclusive cutoff and pinned exception; deduplication of blob_id/bytes objects is equivalent to deduplication by blob_id under the supplied equal-byte invariant. Authored probes and independent cases cover retention boundaries and principal wrong totals. This stateless task has no mutable records, identities to resolve, menus, private facts, transactions, or reachable absence branch. No tools were executed; cases are executable proposals, not claimed execution results.",
+            "inconsistent_requirements": [],
+            "failed_cases": []
+          }
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "title": "被后续版本引用的删除资格",
+      "stratum": "simple",
+      "qualified": true,
+      "minutes": 3.983,
+      "analysis": "首轮通过；父版本引用约束。",
+      "attempts": [
+        {
+          "index": 1,
+          "status": "passed",
+          "failed_phase": null,
+          "error": null,
+          "phases": {
+            "generation": 94.64054254203802,
+            "compile": 0.00555074994917959,
+            "recipe_preflight": 0.021115500014275312,
+            "tool_interference": 0.027178874996025115,
+            "execution": 0.03595983301056549,
+            "independent_challenge": 74.63683658302762,
+            "export": 0.015236583014484495,
+            "container": 1.4003391659935005
+          },
+          "challenge": {
+            "evidence": "output/v2/experiments/fresh20-priority-round01/sample-17/build/attempt-1/challenge.json",
+            "reason": "The contract faithfully implements a read-only current eligibility lookup, with exact disclosed identity, retention and pin protection, live direct-child blocking, and successful empty-result handling. Authored probes and the independent cases cover changing target facts, relevant relationships, shared-blob invariance, pagination, absence, and incorrect or unobserved answers. There are no transaction or choice stages to test, no unsupported mandatory speech, and no time-dependent eligibility predicate. Cases are executable proposals assessed from supplied evidence; no tools were executed.",
+            "inconsistent_requirements": [],
+            "failed_cases": []
+          }
+        }
+      ]
+    },
+    {
+      "id": 18,
+      "title": "版本链追溯与共享物理内容计量",
+      "stratum": "ordinary",
+      "qualified": true,
+      "minutes": 10.854,
+      "analysis": "首次不存在版本时 walk 报错且下游依赖不可用；修复后通过，真实 rollout 完成 24 tick 的工具执行轨迹（容器记录）。",
+      "attempts": [
+        {
+          "index": 1,
+          "status": "failed",
+          "failed_phase": "independent_challenge",
+          "error": "independent business challenge did not pass",
+          "phases": {
+            "generation": 228.2030086669838,
+            "compile": 0.013926916988566518,
+            "recipe_preflight": 0.09816941601457074,
+            "tool_interference": 0.11109675001353025,
+            "execution": 0.17986854194896296,
+            "independent_challenge": 99.41769508301513
+          },
+          "challenge": {
+            "evidence": "output/v2/experiments/fresh20-priority-round01/sample-18/build/attempt-1/challenge.json",
+            "reason": "Existing-version traversal, order, deduplication, observation evidence, and read-only scope are faithful. The contract is incomplete for schema-valid nonexistent start identifiers: authoritative walks throw and the terminal branch requires a blob call with no available result dependency. No original rule guarantees start existence. Cases are supplied executable recipes, not claimed tool executions. No menu, transaction, approval preference, display-name field, or time-dependent business condition exists here; those boundaries cannot be fabricated.",
+            "inconsistent_requirements": [
+              {
+                "applicability": "applicable",
+                "case_ids": [
+                  "baseline",
+                  "terminal",
+                  "absent_start",
+                  "reverse_order",
+                  "double_count"
+                ],
+                "consistent": false,
+                "implementation_paths": [
+                  "/answers/0/expected",
+                  "/answers/1/expected",
+                  "/success/1/when",
+                  "/success/1/required_tools",
+                  "/user/stages/0"
+                ],
+                "reason": "Existing starts yield the requested chain and total, and clarification obtains the missing identifier. A nonexistent disclosed identifier is not prohibited, yet both answer evaluation and branch evaluation throw rather than completing truthfully without downstream captures.",
+                "requirement_id": "user_request_1"
+              },
+              {
+                "applicability": "applicable",
+                "case_ids": [
+                  "baseline",
+                  "double_count",
+                  "mutable_facts",
+                  "absent_start"
+                ],
+                "consistent": false,
+                "implementation_paths": [
+                  "/rules/2/predicate",
+                  "/answers/1/expected",
+                  "/tools/2/columns",
+                  "/tables/0/foreign_keys"
+                ],
+                "reason": "For existing starts, membership in unique chain blob identifiers selects physical rows once and follows current bytes. For an absent start, the same predicate raises during walk instead of selecting no physical rows and yielding zero.",
+                "requirement_id": "business_policy_6"
+              }
+            ],
+            "failed_cases": [
+              {
+                "id": "absent_start",
+                "reason": "The original rules do not guarantee that the disclosed identifier exists. A normal empty get_start result permits truthful no-write completion, represented by an empty chain and zero bytes. No blob dependency exists. The contract instead evaluates walk with a missing start and unconditionally requires get_blob in its terminal branch; an exception is not successful absence handling.",
+                "expect_success": true,
+                "actual_success": false,
+                "actual_error": null,
+                "reward": 0.0
+              }
+            ]
+          }
+        },
+        {
+          "index": 2,
+          "status": "passed",
+          "failed_phase": null,
+          "error": null,
+          "phases": {
+            "generation": 43.815924041031394,
+            "compile": 0.01491112500661984,
+            "recipe_preflight": 0.1356916669756174,
+            "tool_interference": 0.1351927500218153,
+            "execution": 0.23676395800430328,
+            "independent_challenge": 98.46126070804894,
+            "export": 0.015642082958947867,
+            "container": 4.950805999978911
+          },
+          "challenge": {
+            "evidence": "output/v2/experiments/fresh20-priority-round01/sample-18/build/attempt-2/challenge.json",
+            "reason": "The contract faithfully implements the requested read-only traversal and deduplicated physical-byte calculation, with conditional terminal and successful empty-result paths. It adds no unrelated speech, identity filters, deletion or consent operation. Authored probes also cover reciprocal blob associations, stale totals and protected/inactive reads. Cases are proposed executable evidence; no tools were executed. Cyclic inputs violate the public dataset premise, so cycle enforcement at ingestion is not established by a valid-input counterexample.",
+            "inconsistent_requirements": [],
+            "failed_cases": []
+          }
+        }
+      ]
+    },
+    {
+      "id": 19,
+      "title": "版本链清理与物理配额事务",
+      "stratum": "complex",
+      "qualified": false,
+      "minutes": 12.682,
+      "analysis": "首次超时；恢复后要求完整链的额外 blob_id 字段，独立审查认为超出需求；另有挑战将错误520字节答案标为预期成功，实际正确状态514并拒绝错误答案。混合问题，不能算修好挑战即合格。",
+      "attempts": [
+        {
+          "index": 1,
+          "status": "failed",
+          "failed_phase": "generation",
+          "error": "author session deadline exceeded",
+          "phases": {
+            "generation": 240.19293333298992
+          }
+        },
+        {
+          "index": 2,
+          "status": "failed",
+          "failed_phase": "independent_challenge",
+          "error": "independent business challenge did not pass",
+          "phases": {
+            "generation": 114.98506187502062,
+            "compile": 0.024798583996016532,
+            "recipe_preflight": 7.810170457989443,
+            "tool_interference": 7.833981541974936,
+            "execution": 160.11923066701274,
+            "independent_challenge": 203.96276766603114
+          },
+          "challenge": {
+            "evidence": "output/v2/experiments/fresh20-priority-round01/sample-19/build/attempt-2/challenge.json",
+            "reason": "The core cleanup algorithm, atomic operations and consent branches match the original policy. Mandatory reporting of every blob_id adds an unsupported communication burden. Cases are proposed executable fixtures, not executed results. The shared_and_orphan case intentionally supplies a schema-valid wrong byte answer (520 rather than independently correct 514), so its success expectation must be false; this negative checks physical counting. Missing version identities remain inconclusive: candidate uses walk, whose missing-start behavior raises rather than returns an empty result, but no exception-free absent-identity trajectory is established here. There are no display-name filters, clock obligations or extra choice stages.",
+            "inconsistent_requirements": [
+              {
+                "applicability": "applicable",
+                "case_ids": [
+                  "baseline",
+                  "unfinished_approval",
+                  "real_refusal",
+                  "protected_empty"
+                ],
+                "consistent": false,
+                "implementation_paths": [
+                  "/answers/0",
+                  "/answers/1",
+                  "/answers/2",
+                  "/explanations/0/criteria",
+                  "/goals/0",
+                  "/user/stages/2"
+                ],
+                "reason": "The requested process and results are implemented, but the mandatory full-chain record output additionally requires internal blob identifiers.",
+                "requirement_id": "user_request_1"
+              }
+            ],
+            "failed_cases": [
+              {
+                "id": "shared_and_orphan",
+                "reason": "Age 30 protects V05 and its ancestors. Shared H05 remains referenced; orphan H01 and H06 are reclaimed even though H01 belonged to a retained candidate. Remaining physical bytes are 100+102+103+104+105=514.",
+                "expect_success": true,
+                "actual_success": false,
+                "actual_error": null,
+                "reward": 0.6649999999999999
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "title": "大规模版本与共享物理内容回收",
+      "stratum": "complex",
+      "qualified": false,
+      "minutes": 3.932,
+      "analysis": "两次 completed=false 的底层原因均为 transaction operation limit：草稿展开577项操作，平台上限64；不是单纯收尾格式或超时问题。",
+      "attempts": [
+        {
+          "index": 1,
+          "status": "failed",
+          "failed_phase": "generation",
+          "error": "native author did not report completion",
+          "phases": {
+            "generation": 158.14320574997691
+          }
+        },
+        {
+          "index": 2,
+          "status": "failed",
+          "failed_phase": "generation",
+          "error": "native author did not report completion",
+          "phases": {
+            "generation": 56.74543420801638
+          }
+        }
+      ]
+    }
+  ],
+  "priorities": [
+    {
+      "priority": 0,
+      "action": "分离请求超时和构建总预算；按当前草稿校验回执、成功编辑与真实进展管理续时及终止，保留总硬预算。",
+      "evidence": "10次超时中6次末次回执为当前草稿本地检查通过；检查通过不能替代独立业务验收。",
+      "validation": "有效进展可续时，重复读取/同一草稿无进展不可无限续时；草稿变化使旧回执失效；超时进程清理；无自动放行。"
+    },
+    {
+      "priority": 1,
+      "action": "补足有界集合式原子事务表达，避免按每行生成写操作；独立验收挑战先校验完整结构及可验证的期望一致性。",
+      "evidence": "577操作超过64上限；样本14字段缺失；样本19数值正确但期望标志错误。",
+      "validation": "大规模多表原子提交、拒绝/撤销保持、任何一步失败全回滚、重复执行防护；错误挑战不计为产物缺陷但也不计通过。"
+    },
+    {
+      "priority": 2,
+      "action": "通用完成契约按证据充分性和分支适用性约束，统一已知事实来源与输出字段必要性；对整类路径做消融和反例检查。",
+      "evidence": "4/8正确完成被多余过程要求清零；10重复获取已知条件；3/7/13/18一次修复后通过。",
+      "validation": "空结果/缺失记录/拒绝/已办理可合法完成；漏检导致错误答案、绕过授权仍须失败；不按业务名或样本ID添加分支。"
+    },
+    {
+      "priority": 3,
+      "action": "缩小工作台读取与诊断上下文；超时和失败会话也记录模型成本；之后再评估并发2。",
+      "evidence": "大草稿分片读取与重复编辑显著；当前model_calls只覆盖部分已返回调用，不能当作完整模型调用总数。",
+      "validation": "记录队列、请求、会话与工具耗时；同口径冻结回归后用另一批新业务评估泛化，不混淆提速与换题。"
+    }
+  ],
+  "limitations": [
+    "固定20样本、四个合成业务族、非生产用户分布或严格双盲。",
+    "复杂0/8是交付未验证，不等于八个业务算法均错误；不能删除失败样本分母。",
+    "13/19准备期输出歧义被明确延后；13仅按冻结验收合格。",
+    "延时后收益和修复后良品率尚未实测，不能把超时样本或无效挑战样本直接补算通过。",
+    "新样本与旧批次非匹配语料，不能宣称同比提速。"
+  ]
+}

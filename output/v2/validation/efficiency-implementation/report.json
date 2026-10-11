@@ -1,0 +1,90 @@
+{
+  "status": "implementation_and_regression_verified_measurement_pending",
+  "baseline": {
+    "report": "output/v2/analysis/fresh20-priority-round01/sample-analysis.json",
+    "yield": 0.55,
+    "samples": 20,
+    "complex_passed": 0,
+    "wall_minutes": 132.99613520833373
+  },
+  "verification": {
+    "full_v2_tests": 1068,
+    "seconds": 30.01,
+    "native_submission": {
+      "completion_signal": "submit_contract",
+      "seconds": 20.112348958966322,
+      "deterministic_recipes_passed": true,
+      "evidence": "native-submit/integration-result.json",
+      "scope": "explicit submission integration, not fresh end-to-end yield"
+    }
+  },
+  "implemented": [
+    {
+      "priority": "P0",
+      "item": "independent author budgets and explicit submission",
+      "details": "bridge request timeout unchanged; author total600/idle240 defaults configurable within600. Fresh successful edits/checks refresh idle; reads/repeats/oscillation do not. Submitted draft is immutable and current hash verified. Independent qualification still mandatory."
+    },
+    {
+      "priority": "P0",
+      "item": "reliable continuation",
+      "details": "existing draft recovery retained; recheck then submit checked current draft before optional rewriting; failures keep receipts; exact check cache max8 with correct reference-change recomputation."
+    },
+    {
+      "priority": "P1",
+      "item": "bounded collection atomic transactions",
+      "details": "for_each pre-state membership, item context, at most64 templates and4096 expanded items, per-template duplicate targets rejected; shared execution/projection, consent, row checks, invariants and rollback retained."
+    },
+    {
+      "priority": "P1",
+      "item": "compact workbench and incremental deterministic execution",
+      "details": "section inspection, narrow reads, concise check summary, on-demand full diagnostics. Fixture-only changes reexecute changed cases; any runtime change invalidates all cases; cache max128, includes failed evidence."
+    },
+    {
+      "priority": "P1",
+      "item": "independent challenge validation",
+      "details": "validate all case structures before semantic execution, one append-only missing-answer repair. Audit conflicting executed cases even with separate clause failure; clause failure remains blocking."
+    },
+    {
+      "priority": "P1",
+      "item": "generic overconstraint diagnosis",
+      "details": "no-write query ablation added alongside fact-stage ablation; preserve same answer/world/safety/goals checks. Diagnostic only; no gate is automatically removed."
+    },
+    {
+      "priority": "P2",
+      "item": "bounded concurrency and accounting",
+      "details": "--concurrency 1|2 default1; main controller publishes all samples and validates freeze. Record all author-session wall time/stop reasons, including failures; no claim of complete underlying model token accounting."
+    }
+  ],
+  "next_experiments": [
+    {
+      "order": 1,
+      "item": "Freeze this implementation and run the same20 at concurrency1",
+      "purpose": "matched runtime/yield regression; preserve original outputs and20 denominator",
+      "targets": {
+        "wall_reduction": 0.3,
+        "wall_minutes_at_most": 93.1,
+        "yield_no_regression": true
+      },
+      "status": "not_started"
+    },
+    {
+      "order": 2,
+      "item": "Evaluate bounded concurrency2 with queue/timeout statistics",
+      "purpose": "throughput comparison separately attributed to concurrency",
+      "status": "not_started"
+    },
+    {
+      "order": 3,
+      "item": "Freeze another20 new-business cases at unchanged2:2:2:4 mix",
+      "purpose": "unseen-business generalization after generic fixes; no per-case prompt patches",
+      "status": "not_started"
+    }
+  ],
+  "limitations": [
+    "No new measured yield/speed claim; historical55% unchanged.",
+    "End-to-end resolution of process/output overconstraints still requires independent review; diagnostics are not semantic proof.",
+    "Original13/19 scope ambiguity remains deferred; not silently relabeled.",
+    "Collection transaction native author adoption and concurrency2 capacity behavior have not been measured end-to-end.",
+    "Native submission integration used an independent complete fixture; it is not a rerun of a failed cohort artifact."
+  ]
+}
