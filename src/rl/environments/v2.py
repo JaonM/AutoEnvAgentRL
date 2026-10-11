@@ -236,7 +236,7 @@ class V2Episode:
         with self.server.episode_lock:
             world = self.server.episodes[self.episode]
             state = {k: copy.deepcopy(getattr(world, k)) for k in
-                ('data', 'initial', 'observations', 'evidence', 'trace', 'ticks', 'seconds',
+                ('data', 'initial', 'eligibility_initial', 'observations', 'evidence', 'trace', 'ticks', 'seconds',
                  'version', 'cursors', 'violations', 'closed', 'business_attempts')}
             state['applied_events'] = sorted(world.applied_events)
             state['user'] = {k: copy.deepcopy(getattr(world.user, k)) for k in
@@ -256,6 +256,8 @@ class V2Episode:
             raise ValueError('V2 continuation bundle mismatch')
         if snapshot.get('user_mode', 'structured') != self.user_mode:
             raise ValueError('V2 continuation user mode mismatch')
+        if 'eligibility_initial' not in snapshot['world']:
+            raise ValueError('V2 continuation lacks initial transaction basis; cannot safely reconstruct it')
         self.reset(snapshot['seed'])
         with self.server.episode_lock:
             world = self.server.episodes[self.episode]

@@ -158,6 +158,12 @@ Snapshots contain private world context in trainer-only continuations, never
 policy messages or loss targets. Rollout seeds identify policy groups; the world
 uses the contract's fixed fixtures and configured virtual epoch.
 
+Trainer continuations also retain `eligibility_initial`: the post-reset world,
+clock and user lifecycle basis used by initial transaction precondition queries.
+Restoring current data and time must not regenerate that basis from default
+fixtures. Snapshots missing this basis are rejected before resetting the current
+episode; start a new episode instead of silently changing reward semantics.
+
 The current supported training backend is local HTTP in isolated environment
 processes. The V1 Docker service manager is explicitly rejected for V2. Container
 qualification remains mandatory before readiness. A task manifest supports V2
