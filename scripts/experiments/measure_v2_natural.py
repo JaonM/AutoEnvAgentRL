@@ -27,6 +27,7 @@ from env_factory_v2.runtime import Sandbox
 from env_factory_v2.training import certify
 from rl.environments.v2 import V2Episode
 from v2_natural_oracle import expand, equivalent, UNORDERED
+from v2_mapping_validation import MappingValidationError
 
 
 def read(path):
@@ -333,7 +334,10 @@ def worker(args):
         result['user_simulation_fault'] = getattr(exc, 'user_simulation_fault', False)
         if hasattr(exc, 'upstream_phase'):
             result['upstream_failed_phase'] = exc.upstream_phase
-        result['failure_class'] = 'user_simulation' if result['user_simulation_fault'] else 'infrastructure' if type(exc).__name__ in {'InfrastructureError', 'RuntimeError', 'URLError', 'TimeoutError'} else 'business_or_contract'
+        result['failure_class'] = ('user_simulation' if result['user_simulation_fault'] else
+                                  'evaluator_mapping' if isinstance(exc, MappingValidationError) else
+                                  'infrastructure' if type(exc).__name__ in {'InfrastructureError', 'RuntimeError', 'URLError', 'TimeoutError'} else
+                                  'business_or_contract')
         result.update(status='failed', failed_phase=phase_name, error=f'{type(exc).__name__}: {exc}')
     result.pop('active_phase', None)
     result['seconds'] = time.monotonic() - start
@@ -397,7 +401,7 @@ def main():
         'policy_turn_budget': 40, 'policy_calls_per_turn': 8,
         'policy': 'All 20 natural requests stay in denominator. No within-round fixes, terminal retries, hidden-oracle feedback to author or policy, or reference-script policy replay.',
         'qualification': 'Five delivery gates + external frozen business acceptance + training certificate + actual native policy HTTP rollout consistent with independent truth.',
-        'acceptance_budget': 'One external semantic mapping review, all deterministic tests; no acceptance-driven author repair.'}
+        'acceptance_budget': 'One external semantic review plus at most one structural mapping correction without oracle values; all deterministic tests; no acceptance-driven author repair.'}
     save(root / 'protocol.json', protocol)
     samples = [{k: row[k] for k in ('id', 'title', 'stratum', 'raw_request')} | {'status': 'pending', 'qualified': False}
                for row in manifest['samples']]

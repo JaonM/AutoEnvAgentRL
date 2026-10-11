@@ -64,23 +64,27 @@ def path_segments(path):
     return segments
 
 
+def project(answer, entry):
+    """One closed selector implementation for preflight and value checking."""
+    selectors = entry['selectors']
+    require(1 <= len(selectors) <= 16, 'bounded answer selectors required')
+    require(entry['packing'] in {'single', 'list'}, 'invalid packing')
+    values = []
+    for item in selectors:
+        require(item['field'] in answer, 'declared answer field missing')
+        values.append(select(answer[item['field']], path_segments(item['path'])))
+    if entry['packing'] == 'single':
+        require(len(values) == 1, 'single projection requires exactly one selector')
+        return values[0]
+    return [part for value in values for part in (value if isinstance(value, list) else [value])]
+
+
 def normalize(answer, entries, *, name_aliases=None, role_types=None, set_memberships=None, quantity_offsets=None, record_roles=None):
     output = {}
     for entry in entries:
         role = entry['role']
         require(role not in output, 'duplicate semantic role')
-        selectors = entry['selectors']
-        require(1 <= len(selectors) <= 16, 'bounded answer selectors required')
-        values = []
-        for item in selectors:
-            require(item['field'] in answer, 'declared answer field missing')
-            segments = path_segments(item['path'])
-            values.append(select(answer[item['field']], segments))
-        if entry['packing'] == 'single':
-            require(len(values) == 1, 'single projection requires exactly one selector')
-            value = values[0]
-        else:
-            value = [part for v in values for part in (v if isinstance(v, list) else [v])]
+        value = project(answer, entry)
         if entry.get('representation', 'native') == 'set_membership':
             descriptor = (set_memberships or {}).get(role)
             require(descriptor is not None and role_types and role_types.get(role) is bool,

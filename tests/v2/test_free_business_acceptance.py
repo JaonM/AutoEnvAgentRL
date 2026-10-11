@@ -30,6 +30,29 @@ def test_empty_answer_mapping_uses_supported_native_schema():
     validate_value({'business_consistent': True, 'reason': 'state-only task', 'mapping': []}, output_schema)
 
 
+def test_mapping_recovery_runs_full_acceptance_without_revising_business_verdict():
+    source = direct()
+    source['answers'] = [answer('result', '实付金额', lit(186.6), {'type': 'number'})]
+    source['scenarios'] = [scenario('correct', [], {'result': lit(186.6)}),
+                           scenario('wrong', [], {'result': lit(1)}, False)]
+    entries = [{'role': 'payable', 'selectors': [{'field': 'result', 'path': ''}],
+                'packing': 'single', 'time_unit': 'native', 'names': 'native'}]
+    spec = {'kind': 'discount', 'params': {'prices': [128, 96], 'threshold': 200,
+            'rate': 0.9, 'coupon': 15}, 'observations': {}, 'mutation': None,
+            'answer_obligations': [{'role': 'payable', 'source': 'user_request', 'text': source['task']}]}
+    for business_consistent in (True, False):
+        agent = Mock()
+        agent.ask.side_effect = [({'business_consistent': business_consistent,
+            'reason': 'independent review', 'mapping': []}, {}), ({'mapping': entries}, {})]
+        result = accept(compile_contract(source), {'raw_request': source['task']},
+                        {'policy': '优惠规则', 'tables': []}, {'facts': {}}, spec, agent)
+        assert result['passed'] is business_consistent
+        assert result['review']['business_consistent'] is business_consistent
+        assert result['review']['mapping_recovery']['original_mapping'] == []
+        assert agent.ask.call_count == 2
+        assert all(check['passed'] for check in result['checks'])
+
+
 def test_failed_positive_reference_retains_business_evidence():
     source = direct()
     source['answers'] = [answer('result', '实付金额', lit(186.6), {'type': 'number'})]

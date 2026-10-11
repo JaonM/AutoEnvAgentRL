@@ -204,14 +204,37 @@ def accept(compiled, row, business, user, spec, agent):
          'executed_direct_refusal': refusal_evidence,
          'communication_obligations': {k: {'kind': v['kind']} for k,v in truth.get('communication', {}).items()}, 'required_roles': [{'id': k, 'canonical_type': type(v).__name__} for k,v in truth['answer'].items()],
          'record_roles': truth.get('record_roles', {}), 'quantity_offsets': truth.get('quantity_offsets', {}), 'public_name_aliases': aliases, 'set_membership_roles': list(truth.get('set_memberships', {}))}, schema(truth['answer'], [f['id'] for f in source['answers']], set_memberships=truth.get('set_memberships'), quantity_offsets=truth.get('quantity_offsets'), record_roles=truth.get('record_roles')))
-    entries = review['mapping']
-    require(len(entries) == len(truth['answer']) and {e['role'] for e in entries} == set(truth['answer']), 'incomplete semantic mapping')
-    selected, checks, reference_attempts = None, [], []
+    # Check evaluator projections before comparing their values to business
+    # truth. Reuse these executed worlds in the positive acceptance below.
+    from v2_mapping_validation import validated_mapping
+    baseline_worlds, observed_answers = {}, []
     for scenario in compiled['source']['scenarios']:
         if not scenario['expect_success'] or scenario.get('mutations') or scenario.get('user_overrides'):
             continue
         try:
             world = execute_reference(compiled, scenario)
+            observed_answers.append(reference_answer(world, scenario))
+            baseline_worlds[scenario['id']] = world
+        except (ValueError, KeyError, TypeError):
+            pass  # Preserve execution failures for the existing acceptance report.
+    entries, mapping_recovery = validated_mapping(review, agent=agent,
+        mapping_schema=schema(truth['answer'], [f['id'] for f in source['answers']],
+            set_memberships=truth.get('set_memberships'), quantity_offsets=truth.get('quantity_offsets'),
+            record_roles=truth.get('record_roles'))['properties']['mapping'],
+        role_types={key: type(value) for key, value in truth['answer'].items()},
+        fields={field['id']: {'meaning': field['meaning'], 'schema': field['schema']}
+                for field in source['answers']}, answers=observed_answers,
+        user_request=row['raw_request'], public_context=compiled['public'])
+    review = {**review, 'mapping': entries,
+              **({'mapping_recovery': mapping_recovery} if mapping_recovery else {})}
+    selected, checks, reference_attempts = None, [], []
+    for scenario in compiled['source']['scenarios']:
+        if not scenario['expect_success'] or scenario.get('mutations') or scenario.get('user_overrides'):
+            continue
+        try:
+            world = baseline_worlds.get(scenario['id'])
+            if world is None:
+                world = execute_reference(compiled, scenario)
             if spec['kind'] in TIMED_TABLES:
                 truth = business_truth(spec, business, user, user_request=row['raw_request'], world=world)
             answer = reference_answer(world, scenario)
