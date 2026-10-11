@@ -26,6 +26,7 @@ def process_diagnostics(compiled, *, max_variants=16):
                 for identity in tool['rule_ids']:
                     found |= dependencies(rules[identity], (*seen, identity))
                 for operation in tool['operations']:
+                    found |= dependencies(operation.get('for_each', {'literal': []}), seen)
                     found |= dependencies(operation['key'], seen)
                     found |= dependencies(operation.get('when', {'literal': True}), seen)
                     found |= dependencies(operation['set'], seen)
@@ -62,25 +63,31 @@ def process_diagnostics(compiled, *, max_variants=16):
             if step['kind'] != 'user':
                 continue
             stage = stages[step['stage']]
-            if stage['kind'] != 'fact' or stage['id'] in candidates:
+            if stage['kind'] != 'fact' or ('stage', stage['id']) in candidates:
                 continue
             # Private answer recipes must not fake knowledge after its disclosure
             # is removed. A hint is still not proof of semantic independence.
             fact_ref = 'user.' + stage['fact']
             if any(p == 'user' or p == fact_ref or p.startswith(fact_ref + '.') for p in used_refs):
                 continue
-            candidates.append(stage['id'])
+            candidates.append(('stage', stage['id']))
+        # Remove only read calls; dependency errors suppress a finding. These
+        # are counterexample candidates, not automatic permission to waive reads.
+        candidates += [('call', step['id']) for step in scenario['steps']
+                       if step['kind'] in {'call', 'traverse'} and tools[step['tool']]['kind'] == 'query']
         if not candidates:
             continue
         baselines += 1
         baseline = run_scenario(compiled, scenario, recipes_only=True)
         if not otherwise_valid(baseline) or not any(b['passed'] for b in evidence(baseline).get('process', [])):
             continue
-        for stage in candidates:
+        for kind, target in candidates:
             if tested >= max_variants:
                 break
             variant = copy.deepcopy(scenario)
-            variant['steps'] = [s for s in variant['steps'] if not (s['kind'] == 'user' and s['stage'] == stage)]
+            variant['steps'] = [s for s in variant['steps'] if not (
+                (kind == 'stage' and s['kind'] == 'user' and s['stage'] == target)
+                or (kind == 'call' and s['kind'] in {'call', 'traverse'} and s['id'] == target))]
             tested += 1
             run = run_scenario(compiled, variant, recipes_only=True)
             if not otherwise_valid(run) or not typed_equal(run['answer'], baseline['answer']) \
@@ -91,19 +98,20 @@ def process_diagnostics(compiled, *, max_variants=16):
             after = {b['id']: b for b in evidence(run)['process']}
             if any(b['passed'] for b in after.values()):
                 continue
-            branches = [b['id'] for b in source['success'] if stage in b['required_stages']
+            branches = [b['id'] for b in source['success'] if (kind == 'call' or target in b['required_stages'])
                         and before[b['id']]['passed'] and after[b['id']]['active']
                         and not after[b['id']]['passed']]
             if branches:
-                findings.append({'scenario': scenario['id'], 'omitted_fact_stage': stage,
+                findings.append({'scenario': scenario['id'],
+                    **({'omitted_fact_stage': target} if kind == 'stage' else {'omitted_query_call': target}),
                     'rejected_branches': branches, 'steps': variant['steps'],
                     'same_answer_and_world': True, 'safety_and_goals_passed': True,
                     'semantic_communication_checked': False})
     return {'scope': 'author_process_ablation_hint_not_business_verdict',
             'baseline_limit': 8, 'baselines_tested': baselines, 'variant_limit': max_variants,
             'variants_tested': tested, 'findings': findings,
-            'instruction': 'Review these no-write paths against original requirements: omitting a fact question '
-            'preserves recipe answers, final state, safety and goals but fails an explicit stage gate. '
+            'instruction': 'Review these no-write paths against original requirements: omitting a fact question or read call '
+            'preserves recipe answers, final state, safety and goals but fails an explicit process gate. '
             'A question may still have a real business or communication purpose. Keep necessary questions; '
             'make genuinely write-only requirements branch-applicable using shared business rules. '
             'Do not remove authorization, change expectations, or waive independent review to silence hints.'}

@@ -64,6 +64,11 @@ def challenge(compiled, original_request, agent):
         report = _challenge(compiled, original_request, agent)
         from env_factory_v2.validation.communication_coverage import communication_coverage
         report['communication_coverage'] = communication_coverage(compiled, report['records'])
+        # A failed clause review and a mislabeled execution can coexist. Audit
+        # the case labels without allowing them to erase the clause finding.
+        if (report.get('requirement_review', {}).get('passed') is False
+                and any(not record['passed'] for record in report['records'])):
+            report = _audit(compiled, original_request, agent, report)
         if report.get('requirement_review', {}).get('passed') is False:
             return {**report, 'passed': False, 'status': 'inconclusive',
                     'instruction': 'Resolve the independently identified public-clause discrepancies. '
@@ -201,6 +206,7 @@ def _challenge(compiled, original_request, agent):
     value, completion = _complete_review(compiled, original_request, agent, value)
     require(2 <= len(value['cases']) <= 32, 'independent challenge requires 2..32 concrete cases')
     value, format_repair = _repair_recipe_json(value, agent)
+    value, answer_repair = _complete_case_answers(compiled, original_request, agent, value)
     require(any(c['expect_success'] for c in value['cases']) and any(not c['expect_success'] for c in value['cases']),
             'challenge needs positive and negative behavior')
     rules = {r['id'] for r in compiled['source']['rules']}
@@ -210,6 +216,10 @@ def _challenge(compiled, original_request, agent):
     records = []
     identities = set()
     mutation_repair_budget = [1]
+    # Check the entire batch before spending semantic calls on its first case.
+    for case in value['cases']:
+        require(case['scenario_id'] in scenarios, 'invalid challenge scenario')
+        _case_scenario(compiled, case, scenarios)
     for case in value['cases']:
         require(case['id'] and case['id'] not in identities and case['scenario_id'] in scenarios, 'invalid challenge identity')
         identities.add(case['id'])
@@ -222,7 +232,48 @@ def _challenge(compiled, original_request, agent):
             'provenance': provenance, 'records': records,
             **({'requirement_review': requirement_review} if requirement_review else {}),
             **({'completeness_recovery': completion} if completion else {}),
-            **({'format_repair': format_repair} if format_repair else {})}
+            **({'format_repair': format_repair} if format_repair else {}),
+            **({'answer_completion': answer_repair} if answer_repair else {})}
+
+
+def _complete_case_answers(compiled, original_request, agent, value):
+    """One append-only repair of omitted answer members, never a label/source edit."""
+    expected = {a['id'] for a in compiled['source']['answers']} | {
+        a['id'] for a in compiled['source'].get('explanations', [])}
+    missing = []
+    for index, case in enumerate(value['cases']):
+        answer = json.loads(case['answer_json'])
+        require(isinstance(answer, dict), 'invalid challenge answer recipe')
+        if answer:
+            require(set(answer) <= expected, 'unexpected challenge answer fields')
+            for field in sorted(expected - set(answer)):
+                missing.append({'index': index, 'field': field})
+    if not missing:
+        return value, None
+    repaired, provenance = agent.ask(
+        'Complete ONLY the missing answer recipe members for these independent cases. '
+        'Derive each value from the ORIGINAL request, actual case trajectory and field criteria. '
+        'Do not assert communication occurred unless its trajectory provides evidence. '
+        'Preserve all existing answers, steps, mutations, success labels and contract. '
+        'Return exactly the requested index/field pairs, with an expression encoded as JSON. '
+        'This is validation-fixture repair, not permission to change business expectations. Do not execute tools.',
+        {'original_request': original_request, 'missing': missing, 'cases': value['cases'],
+         'answers': compiled['source']['answers'], 'explanations': compiled['source'].get('explanations', []),
+         'scenarios': compiled['source']['scenarios']},
+        object_schema({'repairs': {'type': 'array', 'items': object_schema({
+            'index': {'type': 'integer'}, 'field': {'type': 'string'}, 'expression_json': {'type': 'string'}})}}))
+    result = copy.deepcopy(value)
+    wanted = {(entry['index'], entry['field']) for entry in missing}
+    seen = set()
+    for entry in repaired['repairs']:
+        key = (entry['index'], entry['field'])
+        require(key in wanted and key not in seen, 'answer completion must preserve missing members exactly once')
+        seen.add(key)
+        answer = json.loads(result['cases'][entry['index']]['answer_json'])
+        answer[entry['field']] = json.loads(entry['expression_json'])
+        result['cases'][entry['index']]['answer_json'] = json.dumps(answer, ensure_ascii=False)
+    require(seen == wanted, 'answer completion omitted a member')
+    return result, {'original_cases': value['cases'], 'provenance': provenance, 'repairs': repaired, 'budget': 1}
 
 
 def _complete_review(compiled, original_request, agent, value):
@@ -292,16 +343,16 @@ def _case_scenario(compiled, case, scenarios):
                         'invalid independent wait; each wait must be 0..86400 seconds')
         scenario['steps'] = steps
         scenario.pop('expect_error', None)
-        # Validate the new trajectory with the production grammar, without
-        # changing the contract executed or its scoring identity.
-        from env_factory_v2.contracts.contract import compile_contract
-        validation_source = copy.deepcopy(compiled['source'])
-        validation_case = copy.deepcopy(scenario)
-        validation_case['id'] = '__independent_case'
-        while any(s['id'] == validation_case['id'] for s in validation_source['scenarios']):
-            validation_case['id'] += '_'
-        validation_source['scenarios'].append(validation_case)
-        compile_contract(validation_source)
+    # Validate the new trajectory with the production grammar, without
+    # changing the contract executed or its scoring identity.
+    from env_factory_v2.contracts.contract import compile_contract
+    validation_source = copy.deepcopy(compiled['source'])
+    validation_case = copy.deepcopy(scenario)
+    validation_case['id'] = '__independent_case'
+    while any(s['id'] == validation_case['id'] for s in validation_source['scenarios']):
+        validation_case['id'] += '_'
+    validation_source['scenarios'].append(validation_case)
+    compile_contract(validation_source)
     return scenario
 
 
