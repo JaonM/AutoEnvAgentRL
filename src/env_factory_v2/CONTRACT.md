@@ -310,6 +310,17 @@ transaction_timeline with the same intention format: actual successful commits
 must match intended tool/arguments in order. Projection uses actual commit clocks,
 applies due events before each commit and remaining events through episode end,
 and rejects missing or extra successful commits. Result summaries are not truth.
+Static plan intentions may use completion="consent_or_unavailable" instead of when.
+Arguments then depend only on initial data and private user facts. Target existence
+and declared transaction guards derive availability; unavailable intentions need no
+consent, while available ones require the exact commit or explicit refusal/revocation
+bound to the intended proposal. Missing, extra and different commits fail. Static
+commits match by tool and arguments rather than declaration order: independent
+operations may be reordered only if the entire resulting world still equals the
+declaration-order projection. Explicit authorization dependencies remain enforced.
+Time-dependent or event-driven consent completion retains explicit goals; temporal
+plans still match commits in order. Every table and column, including unrelated
+records and tables with no planned operation, remains part of the state comparison.
 Exactly one of predicate, transaction_plan or transaction_timeline is required.
 Keep explicit predicates for other unsupported dependencies; never simplify the
 original business merely to use the projection form.

@@ -96,7 +96,7 @@ def project_transaction(tool, source, before, context, *, check_eligibility=Fals
     return candidate, True
 
 
-def project_plan(plan, source, context, *, trace=None):
+def project_plan(plan, source, context, *, trace=None, ordered_commits=True):
     from .contract import require, validate_value
 
     tables = {table['id']: table for table in source['tables']}
@@ -106,6 +106,19 @@ def project_plan(plan, source, context, *, trace=None):
         if turn.get('kind') == 'tool' and turn.get('status') == 'ok'
         and turn.get('tool') in tools and tools[turn['tool']]['kind'] == 'transaction']
     commit_index, event_index = 0, 0
+    unmatched = list(commits or [])
+    if not ordered_commits:
+        require(not source.get('events'), 'unordered commits require an event-free static plan')
+        # Validate the real chronology before matching by identity. Declaration
+        # order still defines the expected world; it does not impose execution
+        # order on independent static actions that reach that same world.
+        previous_seconds, previous_tick = 0, 0
+        for commit in unmatched:
+            clock = commit['time']
+            require(previous_seconds <= clock['elapsed_seconds'] <= context['time']['elapsed_seconds']
+                    and previous_tick < clock['tick'] <= context['time']['tick'],
+                    'transaction timeline is not monotonic')
+            previous_seconds, previous_tick = clock['elapsed_seconds'], clock['tick']
     events = sorted(enumerate(source.get('events', [])), key=lambda pair: (pair[1]['at_seconds'], pair[0]))
     def apply_events(seconds):
         nonlocal event_index
@@ -148,13 +161,20 @@ def project_plan(plan, source, context, *, trace=None):
         operation_time = context['time']
         if commits is not None:
             require(commit_index < len(commits), 'intended transaction has no successful execution')
-            commit = commits[commit_index]
+            if ordered_commits:
+                commit = commits[commit_index]
+            else:
+                match = next((i for i,c in enumerate(unmatched)
+                              if c['tool'] == intent['tool'] and typed_equal(c['arguments'], args)), None)
+                require(match is not None, 'executed transaction differs from intended plan')
+                commit = unmatched.pop(match)
             require(commit['tool'] == intent['tool'] and typed_equal(commit['arguments'], args),
                     'executed transaction differs from intended plan')
             operation_time = commit['time']
-            require(previous_seconds <= operation_time['elapsed_seconds'] <= context['time']['elapsed_seconds']
-                    and previous_tick < operation_time['tick'] <= context['time']['tick'],
-                    'transaction timeline is not monotonic')
+            if ordered_commits:
+                require(previous_seconds <= operation_time['elapsed_seconds'] <= context['time']['elapsed_seconds']
+                        and previous_tick < operation_time['tick'] <= context['time']['tick'],
+                        'transaction timeline is not monotonic')
             previous_seconds, previous_tick = operation_time['elapsed_seconds'], operation_time['tick']
             apply_events(previous_seconds)
             commit_index += 1
@@ -166,8 +186,8 @@ def project_plan(plan, source, context, *, trace=None):
     return projected
 
 
-def matches_plan(plan, source, context, *, trace=None):
-    projected = project_plan(plan, source, context, trace=trace)
+def matches_plan(plan, source, context, *, trace=None, ordered_commits=True):
+    projected = project_plan(plan, source, context, trace=trace, ordered_commits=ordered_commits)
     # Compare every table and column, independent of storage order. This also
     # rejects collateral writes and preserves optional fields untouched by ops.
     return all(typed_equal(sorted(context['data'][table], key=canonical), sorted(rows, key=canonical))

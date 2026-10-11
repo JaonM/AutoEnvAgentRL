@@ -175,3 +175,92 @@ def test_create_projection_uses_operations_and_detects_missing_rows():
     assert not matches_plan(plan, source, context)
     context['data'] = target
     assert matches_plan(plan, source, context)
+
+
+def two_independent_transactions():
+    source = consent_plan()
+    source['tables'][0]['rows'] += [{'id': 'C', 'balance': 100}, {'id': 'D', 'balance': 10}]
+    second = copy.deepcopy(source['tools'][1])
+    second.update(id='transfer_second', authorization='approve_second')
+    source['tools'].append(second)
+    source['user']['stages'].append({'id': 'approve_second', 'kind': 'authorization',
+                                     'tool': 'transfer_second', 'depends_on': []})
+    source['user']['facts']['approve_approve_second'] = True
+    source['goals'][0]['transaction_plan'].append({'tool': 'transfer_second',
+        'arguments': {'from_id': lit('C'), 'to_id': lit('D'), 'amount': lit(20)},
+        'completion': 'consent_or_unavailable'})
+    original = copy.deepcopy(source['scenarios'][0])
+    extra = copy.deepcopy(original['steps'][1:])
+    extra[0]['stage'] = 'approve_second'
+    extra[0]['proposal']['tool'] = 'transfer_second'
+    extra[1].update(tool='transfer_second', id='second_result')
+    for args in [extra[0]['proposal']['arguments'], extra[1]['arguments']]:
+        args['from_id']['path'] = 'items.2.id'
+        args['to_id']['path'] = 'items.3.id'
+    original['steps'] = [original['steps'][0], *extra, *original['steps'][1:]]
+    source['scenarios'] = [original, *source['scenarios'][1:]]
+    source['probes'] = []
+    return source
+
+
+def test_static_goal_accepts_independent_commits_in_reverse_order():
+    source = two_independent_transactions()
+    run = run_scenario(compile_contract(source), source['scenarios'][0])
+    assert run['error'] is None and run['outcome']['success']
+    assert [r['balance'] for r in run['final_state']['accounts']] == [80, 30, 80, 30]
+
+
+def test_reordering_noncommuting_operations_still_fails_exact_world_target():
+    source = two_independent_transactions()
+    source['invariants'] = []
+    for tool, op in zip([source['tools'][1], source['tools'][2]], ['add', 'mul']):
+        tool['operations'] = [{'table': 'accounts', 'key': lit('A'),
+                              'set': {'balance': {op: [{'ref': 'row.balance'}, {'ref': 'args.amount'}]}}}]
+    run = run_scenario(compile_contract(source), source['scenarios'][0])
+    assert run['error'] is None
+    assert all(c['passed'] for c in run['outcome']['components'].values())
+    assert not run['outcome']['success']
+    assert run['final_state']['accounts'][0]['balance'] == 2020  # declared target is 2400
+
+
+def test_explicit_authorization_dependency_still_rejects_reordering():
+    source = two_independent_transactions()
+    source['user']['stages'][1]['depends_on'] = ['approve']
+    run = run_scenario(compile_contract(source), source['scenarios'][0])
+    assert 'prerequisites' in run['error']
+    assert not run['outcome']['success']
+
+
+def test_temporal_goal_still_requires_declared_commit_order():
+    source = two_independent_transactions()
+    goal = source['goals'][0]
+    goal['transaction_timeline'] = goal.pop('transaction_plan')
+    for intent in goal['transaction_timeline']:
+        intent.pop('completion')
+    run = run_scenario(compile_contract(source), source['scenarios'][0])
+    assert run['error'] is None and not run['outcome']['success']
+
+
+@pytest.mark.parametrize('corruption', ['missing', 'extra', 'wrong_parameters', 'clock'])
+def test_unordered_matching_keeps_exact_commit_multiset_and_real_clock(corruption):
+    source = two_independent_transactions()
+    compiled = compile_contract(source)
+    run = run_scenario(compiled, source['scenarios'][0])
+    context = Sandbox(compiled).context(private=True)
+    context.update(data=run['final_state'], time=run['time'])
+    for stage in context['user_state']['regions']:
+        context['user_state']['regions'][stage] = 'consent.consumed'
+    trace = copy.deepcopy(run['trace'])
+    commits = [t for t in trace if t.get('tool') in {'transfer', 'transfer_second'}]
+    if corruption == 'missing': trace.remove(commits[0])
+    elif corruption == 'extra':
+        extra = copy.deepcopy(commits[0])
+        extra['time'] = copy.deepcopy(context['time'])
+        extra['time']['tick'] += 1
+        context['time'] = copy.deepcopy(extra['time'])
+        trace.append(extra)
+    elif corruption == 'wrong_parameters': commits[0]['arguments']['amount'] = 19
+    else: commits[0]['time']['tick'] = commits[1]['time']['tick']
+    with pytest.raises(ContractError):
+        project_plan(source['goals'][0]['transaction_plan'], source, context,
+                     trace=trace, ordered_commits=False)

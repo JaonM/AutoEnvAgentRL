@@ -73,6 +73,11 @@ it unchanged and requires no pointless approval. An available operation requires
 either the exact intended successful commit or explicit refusal/revocation bound
 to the latest matching proposal. Approval without execution cannot complete it.
 All successful commits must match the plan; all final tables must match projection.
+Static commits match the multiset of intended tool/argument pairs, not their list
+order. Independent operations may execute in either order if their final world
+matches the declaration-order projection. Noncommuting changes that produce a
+different world fail, as do violations of explicit authorization dependencies.
+Timeline goals retain ordered commit matching. Neither mode ignores unrelated data.
 This derives precondition eligibility, not general feasibility: post-commit
 invariants still apply and independent review must detect incomplete guards.
 Time-dependent guards and event-driven worlds retain timeline or explicit goals;

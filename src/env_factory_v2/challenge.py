@@ -356,7 +356,8 @@ def _audit(compiled, original_request, agent, report):
         'Do not execute tools.',
         {'original_request': original_request, 'contract': source, 'compiled_public': compiled['public'],
          'fixture_evidence': fixtures, 'prior_review': {'business_consistent': report['business_consistent'],
-         'reason': report['reason']}, 'executed_cases': observations}, AUDIT_SCHEMA)
+         'reason': report['reason']}, 'executed_cases': observations,
+         'grammar': (__import__('pathlib').Path(__file__).parent / 'CONTRACT.md').read_text()}, AUDIT_SCHEMA)
     labels = {case['id']: case for case in value['cases']}
     require(len(labels) == len(value['cases']) and set(labels) == {r['case']['id'] for r in report['records']},
             'audit must preserve every independent case exactly once')
