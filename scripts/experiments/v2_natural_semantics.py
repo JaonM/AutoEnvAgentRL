@@ -12,6 +12,26 @@ from env_factory_v2.code_agent import object_schema
 from env_factory_v2.contract import require
 
 
+COLLECTION_MAPPING_INSTRUCTIONS = (
+    'For native collections, exclude_selectors may select complete unique primitive subsets '
+    'to subtract from selectors; exclusions must be contained in the selected collection. '
+    'Alternatively columns maps each selected object to canonical names via record-relative '
+    'paths. Use only relationships justified by answer meanings and original requirements. '
+    'Do not combine exclusions and columns, or add constants, calculations or expected values. '
+    'Use empty arrays for unused exclude_selectors and columns. ')
+
+
+def value_shape(value):
+    """Describe canonical field structure without revealing oracle answer values."""
+    from env_factory_v2.expressions import canonical
+    if isinstance(value, dict):
+        return {'type': 'object', 'properties': {k: value_shape(v) for k, v in value.items()}}
+    if isinstance(value, list):
+        shapes = {canonical(value_shape(item)): value_shape(item) for item in value}
+        return {'type': 'array', 'item_shapes': list(shapes.values())}
+    return {'type': type(value).__name__}
+
+
 def schema(roles, fields, *, set_memberships=None, quantity_offsets=None, record_roles=None):
     if not roles:
         return object_schema({'business_consistent': {'type': 'boolean'}, 'reason': {'type': 'string'},
@@ -23,6 +43,10 @@ def schema(roles, fields, *, set_memberships=None, quantity_offsets=None, record
             'packing': {'type': 'string', 'enum': ['single', 'list']},
             'time_unit': {'type': 'string', 'enum': ['native', 'minutes', 'seconds']},
             'names': {'type': 'string', 'enum': ['native', 'public_id_to_name']}}
+    projection['exclude_selectors'] = {'type': 'array', 'items': object_schema({
+        'field': {'type': 'string', 'enum': list(fields)}, 'path': {'type': 'string'}})}
+    projection['columns'] = {'type': 'array', 'items': object_schema({
+        'name': {'type': 'string'}, 'path': {'type': 'string'}})}
     if record_roles:
         projection['record_layout'] = object_schema({
             'identity_path': {'type': 'string'}, 'details_path': {'type': 'string'},
@@ -75,8 +99,40 @@ def project(answer, entry):
         values.append(select(answer[item['field']], path_segments(item['path'])))
     if entry['packing'] == 'single':
         require(len(values) == 1, 'single projection requires exactly one selector')
-        return values[0]
-    return [part for value in values for part in (value if isinstance(value, list) else [value])]
+        value = values[0]
+    else:
+        value = [part for value in values for part in (value if isinstance(value, list) else [value])]
+    exclusions, columns = entry.get('exclude_selectors', []), entry.get('columns', [])
+    require(isinstance(exclusions, list) and len(exclusions) <= 16
+            and isinstance(columns, list) and len(columns) <= 32, 'bounded collection transforms required')
+    if exclusions or columns:
+        require(isinstance(value, list) and entry.get('representation', 'native') == 'native'
+                and entry['names'] == entry['time_unit'] == 'native',
+                'collection transforms require a native collection')
+        require(not (exclusions and columns), 'collection transforms cannot be combined')
+    if exclusions:
+        from env_factory_v2.expressions import canonical
+        excluded = []
+        for selector in exclusions:
+            require(selector['field'] in answer, 'exclusion answer field missing')
+            part = select(answer[selector['field']], path_segments(selector['path']))
+            require(isinstance(part, list), 'exclusion selector requires a collection')
+            excluded.extend(part)
+        require(all(type(v) in {str, int, float, bool} for v in value + excluded),
+                'difference requires primitive collection elements')
+        require(len({canonical(v) for v in value}) == len(value)
+                and len({canonical(v) for v in excluded}) == len(excluded),
+                'difference requires unique collections')
+        require({canonical(v) for v in excluded} <= {canonical(v) for v in value},
+                'excluded collection must be a subset')
+        value = [v for v in value if canonical(v) not in {canonical(v) for v in excluded}]
+    if columns:
+        require(len({c['name'] for c in columns}) == len(columns)
+                and all(isinstance(c['name'], str) and c['name'] for c in columns),
+                'unique mapped column names required')
+        require(all(isinstance(row, dict) for row in value), 'column mapping requires record objects')
+        value = [{c['name']: select(row, path_segments(c['path'])) for c in columns} for row in value]
+    return value
 
 
 def normalize(answer, entries, *, name_aliases=None, role_types=None, set_memberships=None, quantity_offsets=None, record_roles=None):
@@ -161,6 +217,35 @@ def rename_observations(scenario, prefix='independent_'):
 def wrong_projection(answer, entry, *, record_roles=None):
     """Change one actual projected value, preserving the surrounding layout."""
     from v2_natural_oracle import wrong_value
+    if entry.get('exclude_selectors') or entry.get('columns'):
+        from env_factory_v2.expressions import canonical
+        original = canonical(project(answer, entry))
+        # Alter an actual primitive leaf, never a computed expected answer. Try
+        # all selected records so an excluded first item cannot hide the mutation.
+        def leaves(value, path=()):
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    yield from leaves(item, (*path, key))
+            elif isinstance(value, list):
+                for key, item in enumerate(value):
+                    yield from leaves(item, (*path, key))
+            else:
+                yield path, value
+        for selector in entry['selectors']:
+            for path, value in leaves(answer[selector['field']]):
+                candidate = copy.deepcopy(answer)
+                current = candidate
+                full_path = (selector['field'], *path)
+                for key in full_path[:-1]:
+                    current = current[key]
+                current[full_path[-1]] = wrong_value(value)
+                try:
+                    changed = canonical(project(candidate, entry)) != original
+                except ValueError:
+                    continue
+                if changed:
+                    return candidate
+        require(False, 'no observable negative collection projection')
     if entry.get('representation', 'native') == 'records':
         descriptor = (record_roles or {})[entry['role']]
         if descriptor.get('kind') == 'selected_boolean':
@@ -212,6 +297,15 @@ def fill_projections(answer, entries, truth, *, name_aliases=None, set_membershi
         return current
     for e in entries:
         value = copy.deepcopy(truth[e['role']])
+        if e.get('exclude_selectors') or e.get('columns'):
+            from env_factory_v2.expressions import canonical
+            observed = project(result, e)
+            require(isinstance(value, list) and canonical(sorted(observed, key=canonical))
+                    == canonical(sorted(value, key=canonical)),
+                    'derived collection differs from independent truth; inverse is ambiguous')
+            # Preserve an independently correct real answer. Do not manufacture
+            # records or choose one of several possible inverse representations.
+            continue
         if e.get('representation', 'native') == 'set_membership':
             descriptor = (set_memberships or {}).get(e['role'])
             require(descriptor is not None and type(value) is bool

@@ -3,7 +3,8 @@ from env_factory_v2.contract import require
 from env_factory_v2.fixtures import review_contract
 from env_factory_v2.reward import grade
 from env_factory_v2.expressions import canonical
-from v2_natural_semantics import schema, fill_projections, wrong_projection, rename_observations
+from v2_natural_semantics import (schema, fill_projections, wrong_projection, rename_observations,
+                                 COLLECTION_MAPPING_INSTRUCTIONS, value_shape)
 
 
 def runtime_business_truth(spec, business, user, *, user_request, world,
@@ -198,11 +199,13 @@ def accept(compiled, row, business, user, spec, agent):
         'A revoked-only success branch does not cover direct refusal. Verify an actual declined '
         'no-write path earns success with truthful submission fields. The supplied executed refusal '
         'evidence also exercises this path even if no separate named fixture declares it; do not '
-        'require duplicate fixtures when actual execution evidence exists. No tools.',
+        'require duplicate fixtures when actual execution evidence exists. '
+        + COLLECTION_MAPPING_INSTRUCTIONS + 'No tools.',
         {'user_request': row['raw_request'], 'business': business, 'private_user_fixture': user,
          'contract': source, 'fixture_previews': previews, 'public': compiled['public'],
          'executed_direct_refusal': refusal_evidence,
          'communication_obligations': {k: {'kind': v['kind']} for k,v in truth.get('communication', {}).items()}, 'required_roles': [{'id': k, 'canonical_type': type(v).__name__} for k,v in truth['answer'].items()],
+         'canonical_role_shapes': {k: value_shape(v) for k,v in truth['answer'].items()},
          'record_roles': truth.get('record_roles', {}), 'quantity_offsets': truth.get('quantity_offsets', {}), 'public_name_aliases': aliases, 'set_membership_roles': list(truth.get('set_memberships', {}))}, schema(truth['answer'], [f['id'] for f in source['answers']], set_memberships=truth.get('set_memberships'), quantity_offsets=truth.get('quantity_offsets'), record_roles=truth.get('record_roles')))
     # Check evaluator projections before comparing their values to business
     # truth. Reuse these executed worlds in the positive acceptance below.

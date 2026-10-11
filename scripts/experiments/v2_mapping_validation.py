@@ -3,7 +3,7 @@ import copy
 
 from env_factory_v2.code_agent import object_schema
 from env_factory_v2.contract import ContractError, require
-from v2_natural_semantics import path_segments, project
+from v2_natural_semantics import COLLECTION_MAPPING_INSTRUCTIONS, path_segments, project
 
 
 class MappingValidationError(RuntimeError):
@@ -18,8 +18,11 @@ def check_mapping(entries, role_types, fields, answers):
         require(selectors and all(s['field'] in fields for s in selectors), 'unknown or empty answer selectors')
         require(entry['packing'] in {'single', 'list'}, 'invalid packing')
         require(entry['packing'] != 'single' or len(selectors) == 1, 'single packing requires one selector')
-        for selector in selectors:
+        for selector in selectors + entry.get('exclude_selectors', []):
+            require(selector['field'] in fields, 'unknown answer selector')
             path_segments(selector['path'])
+        for column in entry.get('columns', []):
+            path_segments(column['path'])
         for answer in answers:
             value = project(answer, entry)
             representation = entry.get('representation', 'native')
@@ -50,7 +53,7 @@ def validated_mapping(review, *, agent, mapping_schema, role_types, fields, answ
         'task semantics, not an expected answer. Paths are closed property/index/wildcard selectors. '
         'Preserve every required role exactly once. Do not invent computed selectors or change the '
         'contract, observations, business verdict or task. If no faithful mapping exists, return an '
-        'empty mapping; do not guess a matching value. No tools.',
+        'empty mapping; do not guess a matching value. ' + COLLECTION_MAPPING_INSTRUCTIONS + 'No tools.',
         {'user_request': user_request, 'public_context': public_context,
          'answer_fields': fields, 'observed_answers': answers,
          'required_roles': {key: value.__name__ for key, value in role_types.items()},
