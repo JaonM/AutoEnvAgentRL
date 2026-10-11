@@ -305,9 +305,14 @@ event-free world with time-independent transaction operations. Intention argumen
 and optional boolean when use initial,user,user_state only. Expected final state
 is projected from initial data by the referenced transaction operations; all tables
 and columns must match, independent of record order. Plans cannot copy actual
-observations or final data. Exactly one of predicate or transaction_plan is required.
-Keep explicit predicates for temporal/event-dependent outcomes; never simplify
-the original business merely to use the projection form.
+observations or final data. For scheduled events or time-dependent operations use
+transaction_timeline with the same intention format: actual successful commits
+must match intended tool/arguments in order. Projection uses actual commit clocks,
+applies due events before each commit and remaining events through episode end,
+and rejects missing or extra successful commits. Result summaries are not truth.
+Exactly one of predicate, transaction_plan or transaction_timeline is required.
+Keep explicit predicates for other unsupported dependencies; never simplify the
+original business merely to use the projection form.
 Goals enforce real world outcomes separately from answer accuracy. Writes require
 at least one goal. Example: actual destination balance equals initial balance+20.
 success: [{id,public,when:EXPR,required_tools:[id],required_stages:[id]}].

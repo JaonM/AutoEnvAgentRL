@@ -6,11 +6,11 @@ import copy
 from .expressions import canonical, evaluate, refs, typed_equal, validate_expr
 
 
-def validate_plan(plan, source, tools, rules):
+def validate_plan(plan, source, tools, rules, *, temporal=False):
     from .contract import fields, require, validate_rule_links
 
     require(isinstance(plan, list) and 1 <= len(plan) <= 64, 'transaction plan requires 1..64 intentions')
-    require(not source.get('events'), 'event-driven worlds require explicit state goals')
+    require(temporal or not source.get('events'), 'event-driven worlds require timeline or explicit state goals')
     for intent in plan:
         fields(intent, ['tool', 'arguments'], ['when'])
         require(intent['tool'] in tools and tools[intent['tool']]['kind'] == 'transaction',
@@ -42,15 +42,32 @@ def validate_plan(plan, source, tools, rules):
             stable(expression, {'initial', 'user', 'user_state', 'row', 'vars'})
         for operation in tool['operations']:
             for expression in [operation['key'], *operation['set'].values()]:
-                stable(expression, {'initial', 'data', 'args', 'row', 'user', 'vars'})
+                stable(expression, {'initial', 'data', 'args', 'row', 'user', 'vars'}
+                       | ({'time'} if temporal else set()))
 
 
-def project_plan(plan, source, context):
+def project_plan(plan, source, context, *, trace=None):
     from .contract import require, validate_value
 
     tables = {table['id']: table for table in source['tables']}
     tools = {tool['id']: tool for tool in source['tools']}
     projected = copy.deepcopy(context['initial'])
+    commits = None if trace is None else [turn for turn in trace
+        if turn.get('kind') == 'tool' and turn.get('status') == 'ok'
+        and turn.get('tool') in tools and tools[turn['tool']]['kind'] == 'transaction']
+    commit_index, event_index = 0, 0
+    events = sorted(enumerate(source.get('events', [])), key=lambda pair: (pair[1]['at_seconds'], pair[0]))
+    def apply_events(seconds):
+        nonlocal event_index
+        while event_index < len(events) and events[event_index][1]['at_seconds'] <= seconds:
+            event = events[event_index][1]
+            table = tables[event['table']]
+            matches = [row for row in projected[event['table']]
+                       if canonical(row[table['primary_key']]) == canonical(event['key'])]
+            require(len(matches) == 1, 'projected event target must identify exactly one row')
+            matches[0].update(copy.deepcopy(event['set']))
+            event_index += 1
+    previous_seconds, previous_tick = 0, 0
     for intent in plan:
         enabled = evaluate(intent.get('when', {'literal': True}), context)
         require(type(enabled) is bool, 'transaction intention condition must be boolean')
@@ -59,8 +76,21 @@ def project_plan(plan, source, context):
         args = {name: evaluate(expr, context) for name, expr in intent['arguments'].items()}
         tool = tools[intent['tool']]
         validate_value(args, tool['parameters'], 'transaction intention arguments')
+        operation_time = context['time']
+        if commits is not None:
+            require(commit_index < len(commits), 'intended transaction has no successful execution')
+            commit = commits[commit_index]
+            require(commit['tool'] == intent['tool'] and typed_equal(commit['arguments'], args),
+                    'executed transaction differs from intended plan')
+            operation_time = commit['time']
+            require(previous_seconds <= operation_time['elapsed_seconds'] <= context['time']['elapsed_seconds']
+                    and previous_tick < operation_time['tick'] <= context['time']['tick'],
+                    'transaction timeline is not monotonic')
+            previous_seconds, previous_tick = operation_time['elapsed_seconds'], operation_time['tick']
+            apply_events(previous_seconds)
+            commit_index += 1
         for operation in tool['operations']:
-            projection_context = {**context, 'data': projected, 'args': args}
+            projection_context = {**context, 'data': projected, 'args': args, 'time': operation_time}
             key = evaluate(operation['key'], projection_context)
             table = tables[operation['table']]
             rows = projected[table['id']]
@@ -77,11 +107,14 @@ def project_plan(plan, source, context):
                 updates = {name: evaluate(expr, {**projection_context, 'row': row})
                            for name, expr in operation['set'].items()}
                 row.update(updates)
+    if commits is not None:
+        require(commit_index == len(commits), 'unplanned successful transaction')
+        apply_events(context['time']['elapsed_seconds'])
     return projected
 
 
-def matches_plan(plan, source, context):
-    projected = project_plan(plan, source, context)
+def matches_plan(plan, source, context, *, trace=None):
+    projected = project_plan(plan, source, context, trace=trace)
     # Compare every table and column, independent of storage order. This also
     # rejects collateral writes and preserves optional fields untouched by ops.
     return all(typed_equal(sorted(context['data'][table], key=canonical), sorted(rows, key=canonical))

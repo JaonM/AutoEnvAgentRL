@@ -472,12 +472,15 @@ def compile_contract(source):
         validate_expr(invariant['predicate'], roots={'data', 'initial', 'user', 'user_state', 'time'})
         validate_rule_links(invariant['predicate'], rules, shared_filters=True, tables=tables)
     for goal in named(source.get('goals', []), 'state goal').values():
-        fields(goal, ['id', 'rule_ids'], ['predicate', 'transaction_plan'])
-        require(('predicate' in goal) != ('transaction_plan' in goal), 'state goal needs exactly one target form')
+        fields(goal, ['id', 'rule_ids'], ['predicate', 'transaction_plan', 'transaction_timeline'])
+        require(sum(key in goal for key in ('predicate', 'transaction_plan', 'transaction_timeline')) == 1,
+                'state goal needs exactly one target form')
         require(bool(goal['rule_ids']) and set(goal['rule_ids']) <= set(rules), 'state goal rule provenance required')
-        if 'transaction_plan' in goal:
+        if 'transaction_plan' in goal or 'transaction_timeline' in goal:
             from .transaction_targets import validate_plan
-            validate_plan(goal['transaction_plan'], source, tools, rules)
+            temporal = 'transaction_timeline' in goal
+            validate_plan(goal['transaction_timeline' if temporal else 'transaction_plan'], source, tools, rules,
+                          temporal=temporal)
         else:
             policy_independent_target(goal['predicate'])
             validate_expr(goal['predicate'], roots={'data', 'initial', 'evidence', 'user', 'user_state', 'time'})

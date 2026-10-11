@@ -158,9 +158,11 @@ def assess_process(sandbox):
     goal_checks = []
     for goal in sandbox.source.get('goals', []):
         try:
-            if 'transaction_plan' in goal:
+            if 'transaction_plan' in goal or 'transaction_timeline' in goal:
                 from .transaction_targets import matches_plan
-                passed = matches_plan(goal['transaction_plan'], sandbox.source, context)
+                temporal = 'transaction_timeline' in goal
+                passed = matches_plan(goal['transaction_timeline' if temporal else 'transaction_plan'],
+                                      sandbox.source, context, trace=sandbox.trace if temporal else None)
             else:
                 passed = evaluate(goal['predicate'], context) is True
         except ContractError:

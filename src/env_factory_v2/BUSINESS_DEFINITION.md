@@ -62,11 +62,20 @@ may update existing records or create new records. A disabled intention leaves
 the projected state unchanged. Actual committed-result messages cannot substitute
 for final state. Process checks still enforce evidence and authorization.
 
-Plans deliberately do not infer commit times. Environments with scheduled events,
-or operations depending on time or consent lifecycle state, must use explicit
-state predicates. This restriction applies to this projection form only: keep
-these capabilities and task difficulty in the sandbox. Do not delete events or
-time dependencies merely to use a plan. Independent acceptance must still verify
+For scheduled events or time-dependent operations use `transaction_timeline`
+instead of `transaction_plan`, with the same intention entries. This form matches
+each enabled intention to the next successful transaction in the actual trace by
+tool and independently evaluated intended arguments; missing, extra or different
+transactions fail. Only the actual commit clock is used, never result summaries or
+actual final state as the expected state. Due events apply before each commit;
+remaining events apply through episode end. Equal-time events preserve declaration
+order. Monotonic tick and elapsed time are required. Transaction arguments and
+conditions still cannot copy actual tool arguments or final state.
+
+Operations depending on consent lifecycle state still use explicit state
+predicates. This restriction applies to this projection form only: keep these
+capabilities and task difficulty in the sandbox. Do not delete dependencies merely
+to use a plan. Independent acceptance must still verify
 that the intended operations and their definitions implement the original request;
 matching an incorrectly authored operation is not independent business proof.
 
