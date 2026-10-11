@@ -39,12 +39,12 @@ def test_native_transport_rejects_unbounded_or_invalid_timeout(tmp_path, timeout
 
 
 def payload():
-    return {'contract_identity': 'test-contract', 'field': {'criteria': [{'id': 'facts'}]},
+    return {'contract_identity': 'test-contract', 'field': {'criteria': [{'id': 'facts', 'obligation': 'facts'}]},
             'authoritative_facts': {'ids': ['I1']}}
 
 
 def judgment(passed=True):
-    return ({'criteria': {'facts': passed}}, {'model': 'gpt-6.1-sol', 'backend': 'codex_cli', 'response_id': 'unit-test-only'})
+    return ({'criteria': {'facts': passed}, 'reasons': {'facts': {'reason': 'Test evidence.', 'obligation_quote': 'facts', 'evidence': [{'path': '/field/criteria/0/obligation', 'quote': 'facts'}]}}}, {'model': 'gpt-6.1-sol', 'backend': 'codex_cli', 'response_id': 'unit-test-only'})
 
 
 def test_exact_judgment_reuse_and_fresh_independent_replay(tmp_path):

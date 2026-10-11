@@ -53,7 +53,7 @@ def test_conflicting_independent_review_cannot_pass_by_reuse():
 def native_judge(tmp_path):
     agent = NativeCodeAgent(base_url='http://127.0.0.1:9999/v1',
         token='test-only-token-000000000000000000', evidence_root=tmp_path)
-    agent.ask = Mock(return_value=({'criteria': {'fact': True}}, {'response_id': 'test-only'}))
+    agent.ask = Mock(return_value=({'criteria': {'fact': True}, 'reasons': {'fact': {'reason': 'Test evidence.', 'obligation_quote': '符合公开温度事实', 'evidence': [{'path': '/field/criteria/0/obligation', 'quote': '符合公开温度事实'}]}}}, {'response_id': 'test-only'}))
     agent.independent_judge = Mock(side_effect=AssertionError('no implicit resampling in deterministic replay'))
     return agent
 

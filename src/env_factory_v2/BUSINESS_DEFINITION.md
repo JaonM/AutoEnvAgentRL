@@ -45,6 +45,16 @@ Repeated stochastic scoring is not evidence of execution determinism. Use
 audit; a discovered contradiction still poisons that dependency within its
 scope. No cached judgment proves semantic correctness or learning utility.
 
+Native semantic assessments return criterion-level reasons in the same call.
+Each reason cites an exact portion of its declared obligation and supplied
+evidence using payload-relative JSON Pointers and quotes. The host verifies
+identity, path existence and exact quotation before retaining reasons in
+judgment provenance. This verifies citation grounding, not semantic correctness.
+An invalid rationale is flagged and excluded from verified repair evidence; it
+does not change boolean scores or add a business qualification gate. Raw model
+responses remain archived. Cached replay reuses the reason with its judgment;
+fresh audits compare boolean verdicts, not arbitrary differences in wording.
+
 A task may declare a report instead of repeating a query's eligibility expression
 in an answer specification:
 
