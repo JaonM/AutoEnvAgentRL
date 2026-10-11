@@ -1,0 +1,8 @@
+{
+  "kind": "library_partial_renewal",
+  "params": {
+    "current_day": 10
+  },
+  "observations": {},
+  "mutation": null
+}

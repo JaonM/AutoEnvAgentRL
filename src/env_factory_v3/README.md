@@ -1,0 +1,107 @@
+# EnvFactory V3 (M1)
+
+V3 builds agent-RL business environments as plain Python and qualifies them by independent
+differential checks. It does not import V1 or V2 code. Design rationale and evidence:
+the "EnvFactory V3 设计文档" and the 2026-10-12 spike (`experiments/v3_spike/`), where this
+representation got 7/8 frozen complex cross-business samples correct against V2's
+handwritten oracles (V2: 0/24).
+
+## Flow
+
+```
+request.json ─► schema session ─► answer_schema.json
+                     │
+          ┌──────────┴──────────┐   (parallel, isolated folders, same schema)
+   author session          oracle session
+   env.py: tools+reference  oracle.py: expected(data, facts, now)
+          └──────────┬──────────┘
+          differential check on original, approval flips, 20 perturbed worlds
+                     │ disagreement → arbiter (verbatim brief quote; ambiguous → report)
+          branch audit: refusal cascades env and oracle share → fresh auditor (verbatim quote)
+          gates: static · differential · negatives · category · http
+                     │
+               bundle/ (+ manifest hashes) ─► serve / train
+```
+
+Arbitration rules: every decision quotes the user request or the business rules verbatim (checked
+by the host; the model-written answer schema and the platform's summaries in brief.md never count) and names the
+worlds it covers. A rule that genuinely supports two readings is reported, never decided: on the
+original world or an approval flip the build fails as `spec_ambiguous`; when only perturbed worlds
+are affected, those worlds are excluded from comparison and from training and listed in
+`spec_findings` for the business owner.
+
+Branch audit: env and oracle can make the same mistake, which the differential check cannot
+see. The likeliest one is what happens after the user refuses an approval, because the original
+world approves everything. When an approval flip makes the reference drop a step it takes in the
+original world after that approval (a later confirmation, or a tool call with arguments never seen
+in the refused world), a fresh auditor that sees only the brief and the two traces must justify
+each cascade with a verbatim quote: `supported` passes, `ambiguous` fails as `spec_ambiguous`
+(ordering words alone never decide it). On `unsupported`, a repair session (one unit of repair
+budget) fixes env.py and oracle.py together from the auditor's finding; the build fails as
+`branch_unsupported` when no budget is left, the checks fail afterwards, or a cascade the auditor did
+not support remains. Builds without a cascade run no audit; the audit itself spends no budget.
+
+Answer contract rule: every outcome is graded exactly (ids, numbers, booleans, string enums).
+User-facing prose must be marked `"graded": false`; the schema check rejects fields that look like
+free text without an enum or that mark. Two correct implementations never agree on wording.
+
+One repair budget (default 2, so an arbitration and a branch repair can both happen) covers every
+corrective session. Infrastructure refusals (OpenAI 403/429/5xx) are retried once after a backoff
+and never count as business failures.
+At most two codex sessions run at once.
+
+## Artifacts
+
+| file | written by | meaning |
+| --- | --- | --- |
+| `request.json` | operator / `import-v2` | user request, business rules, tables, private user facts, frozen clock |
+| `answer_schema.json` | schema session | the final answer contract shared by env, oracle and reward |
+| `env.py` | author session | `make_tools()` (read tools, `@write` tools) and `reference(api)` |
+| `oracle.py` | oracle session, never sees env.py | `expected(data, facts, now) -> {answer, final_state}` |
+| `audit/audit.json` | audit session, sees neither implementation | verdict per refusal cascade (only when one exists) |
+| `gates.json` | platform | every gate result and the worlds env/oracle agree on |
+| `manifest.json` | platform | file hashes and V3 platform identity |
+
+## Reward (no author-written reward code)
+
+`reward = 0.95 · business + 0.05 · efficiency`, derived from the oracle. Business: the final
+state must equal the oracle's (half the weight when the task changes state) and each answer
+field must equal the oracle's (sharing the rest). A write attempted without valid consent is a
+safety violation and zeroes the reward. Episodes may be served on any world the env and oracle
+agree on, so memorised answers do not transfer between worlds.
+
+## Gates (all mandatory)
+
+1. **static**: sandbox rules (no I/O, no clock, no reflection) and a valid answer schema
+2. **differential**: reference and oracle agree on the original world, every approval flip and at least five perturbed worlds; the reference earns 1.0
+3. **negatives**, all derived automatically: do nothing, replay a stale answer on a changed world, skip consent, stop after the first write, forge consent (must earn 0)
+4. **category**: the reference trace has the structure the category needs (direct: no tools; simple: reads only, no result dependency; multi-step: ≥2 calls with a result dependency or a write)
+5. **http**: the reference replayed through the HTTP service earns the same full reward
+
+Policy gates (frontier pass@k, adversarial agent) and natural-language user simulation are M2.
+
+## Commands
+
+```sh
+.venv/bin/python -m env_factory_v3 import-v2 --frozen output/env_factory_v2_cross_business_frozen_01 --sample 4 --output r.json
+.venv/bin/python -m env_factory_v3 build --request r.json --output output/v3-build-04
+.venv/bin/python -m env_factory_v3 batch --frozen output/env_factory_v2_cross_business_frozen_01 --samples 4,5,9 --output output/v3-batch
+.venv/bin/python -m env_factory_v3 verify output/v3-build-04/bundle
+.venv/bin/python -m env_factory_v3 serve output/v3-build-04/bundle --port 8090
+```
+
+Model sessions run `python -m env_factory_v3.checks {schema|env|oracle|diff}` in their folder.
+
+## HTTP protocol
+
+`POST /reset {world?|seed?}` → episode id and public instructions (request, rules, tool specs,
+askable user topics, answer schema). `POST /step {episode, action}` with action types `tool`,
+`ask`, `confirm`, `wait`, `answer`. `POST /reward {episode}` after the answer. Business
+rejections are observations (`ok: false, kind: business`).
+
+## M1 limits
+
+- The clock is frozen (`time.tick == 0`); scheduled events and time-advancing actions come later.
+- The user is structured (`ask` / `confirm`); natural-language user simulation is M2.
+- Delivery is a hashed bundle plus HTTP service; a Docker image and the `rl` adapter are M3.
+- Passing gates proves the tested obligations only, not learning effectiveness.

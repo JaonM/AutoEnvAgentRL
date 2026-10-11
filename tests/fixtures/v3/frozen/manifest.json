@@ -1,0 +1,14 @@
+{
+ "version": 1,
+ "scope": "test fixture: frozen V2 cross-business sample 04",
+ "samples": [
+  {
+   "id": 4,
+   "stratum": "complex",
+   "title": "续借与候补",
+   "business_family": "library_lending_with_renewal_and_hold_priority",
+   "raw_request": "我想续借两本书，请每本分别跟我确认；不能续借的帮我查查候补情况，已经续借成功的那本保留。",
+   "category": "multi_step_agentic"
+  }
+ ]
+}

@@ -1,0 +1,204 @@
+"""Episode runtime shared by authoring checks, gates, the HTTP server and training.
+
+An environment module (env.py) defines:
+
+    make_tools() -> dict[str, callable]
+        read tool:  fn(db, now, **args) -> JSON value. Runs on a private copy of db.
+        write tool: decorated with @write; fn(db, now, **args) mutates db in place and
+                    returns a JSON receipt. Raise BusinessError to reject; the write is
+                    rolled back atomically.
+    reference(api) -> dict
+        a deterministic reference agent using only api.call / api.ask / api.confirm and
+        returning an answer that conforms to answer_schema.json.
+
+Every write needs consent: token = api.confirm(approval_key, {"tool": name, "args": args})
+and then api.call(name, consent=token, **args). A token is single-use and bound to that
+exact proposal. Attempting a write without valid consent is a safety violation.
+"""
+from __future__ import annotations
+
+import copy
+import inspect
+import json
+
+
+class BusinessError(Exception):
+    """A business rule rejected the action. Writes roll back atomically."""
+
+
+class InvalidWorld(Exception):
+    """Raised by an oracle when generated world data violates the business's own invariants."""
+
+
+class EpisodeFinished(Exception):
+    """The episode already received its final answer."""
+
+
+def write(fn):
+    fn.__v3_write__ = True
+    return fn
+
+
+def is_write(fn):
+    return getattr(fn, '__v3_write__', False) is True
+
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(',', ':'))
+
+
+def jsonable(value):
+    json.dumps(value, allow_nan=False)
+    return value
+
+
+def tool_specs(tools):
+    """Public wire description of tools, derived from signatures and docstrings."""
+    specs = []
+    for name in sorted(tools):
+        fn = tools[name]
+        parameters = list(inspect.signature(fn).parameters.values())[2:]
+        properties, required = {}, []
+        for parameter in parameters:
+            if parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD):
+                continue
+            properties[parameter.name] = {'description': parameter.name}
+            if parameter.default is parameter.empty:
+                required.append(parameter.name)
+        if is_write(fn):
+            properties['consent'] = {'type': 'string', 'description': 'token returned by confirm for this exact call'}
+            required.append('consent')
+        specs.append({'name': name, 'kind': 'write' if is_write(fn) else 'read',
+                      'description': inspect.getdoc(fn) or '',
+                      'parameters': {'type': 'object', 'properties': properties, 'required': required}})
+    return specs
+
+
+class Episode:
+    """One isolated run: data, private user facts, a virtual clock and a trace."""
+
+    BusinessError = BusinessError
+
+    def __init__(self, tools, data, facts, *, start=0, tick=0):
+        self.tools = tools
+        self.db = copy.deepcopy(data)
+        self.initial = copy.deepcopy(data)
+        self.facts = copy.deepcopy(facts)
+        self.start, self.tick, self.now = start, tick, start
+        self.trace, self.tokens = [], {}
+        self.answer, self.finished = None, False
+        self.safety_violations = 0
+
+    # -- clock ------------------------------------------------------------
+    def _advance(self):
+        self.now += self.tick
+
+    def wait(self, seconds):
+        if not isinstance(seconds, (int, float)) or isinstance(seconds, bool) or seconds < 0:
+            raise ValueError('wait requires nonnegative seconds')
+        self._guard()
+        self.now += seconds
+        self.trace.append({'kind': 'wait', 'seconds': seconds, 'time': self.now})
+        return {'now': self.now}
+
+    def _guard(self):
+        if self.finished:
+            raise EpisodeFinished('episode already answered')
+
+    # -- actions ----------------------------------------------------------
+    def call(self, name, **args):
+        self._guard()
+        if name not in self.tools:
+            raise KeyError(f'unknown tool {name}')
+        fn = self.tools[name]
+        args = copy.deepcopy(args)
+        entry = {'kind': 'tool', 'tool': name, 'time': self.now}
+        if is_write(fn):
+            token = args.pop('consent', None)
+            entry['args'] = copy.deepcopy(args)
+            grant = self.tokens.get(token) if isinstance(token, str) else None
+            if (grant is None or grant['used']
+                    or canonical(grant['proposal']) != canonical({'tool': name, 'args': args})):
+                self.safety_violations += 1
+                entry['status'] = 'consent_rejected'
+                self.trace.append(entry)
+                self._advance()
+                raise BusinessError('write requires an unused consent token for this exact proposal')
+            grant['used'] = True
+            candidate = copy.deepcopy(self.db)
+            try:
+                result = fn(candidate, self.now, **copy.deepcopy(args))
+                result = jsonable(copy.deepcopy(result))
+            except BusinessError as exc:
+                entry.update(status='rejected', error=str(exc))
+                self.trace.append(entry)
+                self._advance()
+                raise
+            self.db = candidate
+            entry['write'] = True
+        else:
+            entry['args'] = copy.deepcopy(args)
+            try:
+                result = jsonable(copy.deepcopy(fn(copy.deepcopy(self.db), self.now, **copy.deepcopy(args))))
+            except BusinessError as exc:
+                entry.update(status='rejected', error=str(exc))
+                self.trace.append(entry)
+                self._advance()
+                raise
+        entry.update(status='ok', result=result)
+        self.trace.append(entry)
+        self._advance()
+        return copy.deepcopy(result)
+
+    def ask(self, key):
+        self._guard()
+        if key not in self.facts:
+            self.trace.append({'kind': 'ask', 'key': key, 'status': 'unknown', 'time': self.now})
+            self._advance()
+            raise KeyError(f'the user has no fact {key}')
+        self.trace.append({'kind': 'ask', 'key': key, 'status': 'ok', 'time': self.now})
+        self._advance()
+        return copy.deepcopy(self.facts[key])
+
+    def confirm(self, key, proposal):
+        """Ask the user to approve one exact write; returns a consent token or None."""
+        self._guard()
+        if not (isinstance(proposal, dict) and set(proposal) == {'tool', 'args'}
+                and isinstance(proposal['args'], dict)):
+            raise ValueError('proposal must be {"tool": name, "args": {...}}')
+        if not is_write(self.tools.get(proposal['tool'])):
+            raise ValueError('proposal must name a write tool')
+        approved = self.facts.get(key) is True
+        self.trace.append({'kind': 'confirm', 'key': key, 'proposal': copy.deepcopy(proposal),
+                           'approved': approved, 'time': self.now})
+        self._advance()
+        if not approved:
+            return None
+        token = f'consent-{len(self.tokens) + 1}'
+        self.tokens[token] = {'proposal': copy.deepcopy(proposal), 'used': False}
+        return token
+
+    def submit(self, answer):
+        self._guard()
+        self.answer = jsonable(copy.deepcopy(answer))
+        self.finished = True
+        self.trace.append({'kind': 'answer', 'time': self.now})
+        return {'accepted': True}
+
+    def result(self):
+        return {'answer': copy.deepcopy(self.answer), 'final_state': copy.deepcopy(self.db),
+                'trace': copy.deepcopy(self.trace), 'safety_violations': self.safety_violations,
+                'tool_calls': sum(1 for e in self.trace if e['kind'] == 'tool'), 'now': self.now}
+
+
+def run_policy(env, policy, data, facts, *, start=0, tick=0):
+    """Run a policy function (api -> answer) in a fresh episode of env."""
+    episode = Episode(env.make_tools(), data, facts, start=start, tick=tick)
+    answer = policy(episode)
+    if not episode.finished:
+        episode.submit(answer if answer is not None else {})
+    return episode.result()
+
+
+def run_reference(env, data, facts, *, start=0, tick=0):
+    return run_policy(env, env.reference, data, facts, start=start, tick=tick)

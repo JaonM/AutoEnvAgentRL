@@ -42,4 +42,4 @@ testpaths = ["tests"]
 pythonpath = ["."]
 
 [tool.uv.build-backend]
-module-name = ["env_factory", "env_factory_v2", "rl"]
+module-name = ["env_factory", "env_factory_v2", "env_factory_v3", "rl"]

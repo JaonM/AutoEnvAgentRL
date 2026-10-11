@@ -1,0 +1,115 @@
+{
+  "provenance": "operator-authored synthetic heldout preparation; not frozen",
+  "policy": "逐本执行资格检查与独立授权；允许部分成功。成功续借更新到期日与续借次数，拒绝或被有效预约阻拦时保持该借阅不变。不得使其他读者失去排队位置。本实验业务日固定为第10日；仅本人有效借阅可续借，到期当天未逾期，次数未达实际关联书目上限且无其他读者有效预约。新到期日为原到期日加该书renewal_days，次数加1。对续不了的书报告同书目有效预约人数，保持预约不变。\n业务关联：loans.book_id 指向 books.id，必须关联已有记录。\n业务关联：holds.book_id 指向 books.id，必须关联已有记录。",
+  "tables": [
+    {
+      "id": "books",
+      "rows": [
+        {
+          "id": "B2",
+          "renewal_limit": 1,
+          "renewal_days": 3
+        },
+        {
+          "id": "B1",
+          "renewal_limit": 2,
+          "renewal_days": 7
+        }
+      ]
+    },
+    {
+      "id": "loans",
+      "rows": [
+        {
+          "id": "L1",
+          "reader_id": "R1",
+          "book_id": "B1",
+          "active": true,
+          "due_day": 10,
+          "renewals": 0
+        },
+        {
+          "id": "L2",
+          "reader_id": "R1",
+          "book_id": "B2",
+          "active": true,
+          "due_day": 10,
+          "renewals": 0
+        },
+        {
+          "id": "L3",
+          "reader_id": "R2",
+          "book_id": "B1",
+          "active": true,
+          "due_day": 9,
+          "renewals": 1
+        }
+      ]
+    },
+    {
+      "id": "holds",
+      "rows": [
+        {
+          "id": "H1",
+          "reader_id": "R1",
+          "book_id": "B1",
+          "active": true,
+          "requested_day": 2,
+          "copy_id": "K0"
+        },
+        {
+          "id": "H2",
+          "reader_id": "R2",
+          "book_id": "B2",
+          "active": true,
+          "requested_day": 1,
+          "copy_id": null
+        },
+        {
+          "id": "H3",
+          "reader_id": "R1",
+          "book_id": "B2",
+          "active": true,
+          "requested_day": 1,
+          "copy_id": null
+        },
+        {
+          "id": "H4",
+          "reader_id": "R2",
+          "book_id": "B2",
+          "active": false,
+          "requested_day": 0,
+          "copy_id": null
+        },
+        {
+          "id": "H5",
+          "reader_id": "R1",
+          "book_id": "B1",
+          "active": true,
+          "requested_day": 3,
+          "copy_id": "K3"
+        }
+      ]
+    }
+  ],
+  "relations": [
+    {
+      "id": "loans_book_id",
+      "source_table": "loans",
+      "source_column": "book_id",
+      "target_table": "books",
+      "target_column": "id",
+      "nullable": false,
+      "policy_text": "业务关联：loans.book_id 指向 books.id，必须关联已有记录。"
+    },
+    {
+      "id": "holds_book_id",
+      "source_table": "holds",
+      "source_column": "book_id",
+      "target_table": "books",
+      "target_column": "id",
+      "nullable": false,
+      "policy_text": "业务关联：holds.book_id 指向 books.id，必须关联已有记录。"
+    }
+  ]
+}

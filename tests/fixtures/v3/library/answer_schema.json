@@ -1,0 +1,22 @@
+{
+ "fields": {
+  "renewed_loan_ids": {
+   "type": "array",
+   "items": {"type": "string"},
+   "order": "any",
+   "description": "Ids of the user's loans renewed in this conversation."
+  },
+  "blocked": {
+   "type": "array",
+   "order": "any",
+   "items": {
+    "type": "object",
+    "properties": {
+     "loan_id": {"type": "string"},
+     "active_hold_count": {"type": "integer"}
+    }
+   },
+   "description": "Loans that could not be renewed because they were ineligible, each with the number of active holds on the same book (all readers). Declined renewals are not listed."
+  }
+ }
+}
