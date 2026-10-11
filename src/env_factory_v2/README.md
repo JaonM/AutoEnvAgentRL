@@ -222,8 +222,16 @@ String/object/tree generation and their atomic response-repair route have moved
 out of the production module to `scripts/experiments/v2_legacy_generation.py`.
 That explicit historical diagnostic helper has no production entry or fallback.
 Existing artifact decoding and compilation remain supported. This migration
-unifies generation transport; it does not yet remove flat authored contracts or
-all legacy parsers, and it does not imply a measured quality or speed improvement.
+unifies generation transport; it does not imply a measured quality or speed improvement.
+
+Fresh workbench drafts accept only `environment` and `task` object documents.
+The advertised MCP section schema and atomic edit validation enforce this same
+boundary. Either document may be written first, and a resumed task-only draft
+retains the definition format. Flat contracts remain runtime/compiler artifacts
+and explicit historical imports: an imported flat draft can be repaired in its
+own format but cannot mix environment-definition sections into it. Definition
+compilation still owns flattening and preserves separate environment/task
+identities; this boundary does not by itself deduplicate all authored semantics.
 
 ### Combined contract and trajectory feedback
 

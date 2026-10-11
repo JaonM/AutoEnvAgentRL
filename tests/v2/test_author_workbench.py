@@ -9,10 +9,13 @@ from env_factory_v2.examples import direct, simple
 @pytest.mark.parametrize('factory', [direct, simple])
 def test_incremental_sections_compile_and_execute_real_recipes(factory):
     source = factory()
+    from test_business_definition import split
+    environment, task = split(source)
+    definition = {'environment': environment, 'task': task}
     bench = AuthorWorkbench()
-    for section, value in source.items():
+    for section, value in definition.items():
         assert bench.call('put_section', {'section': section, 'value_json': json.dumps(value)})['passed']
-    assert bench.snapshot() == source
+    assert bench.snapshot() == definition
     result = bench.call('check_contract', {})
     assert result['passed'] and all(c['passed'] for c in result['checks'])
     assert result['scope'] == 'authored_recipe_validation_not_business_acceptance'
@@ -118,3 +121,27 @@ def test_reads_consume_operation_budget_without_invalidating_checks():
     assert bench.last_check is previous
     with pytest.raises(ContractError, match='budget exceeded'):
         bench.call('read_contract', {'path': '', 'offset': 0})
+
+
+def test_fresh_draft_cannot_switch_to_flat_or_mixed_contract():
+    bench=AuthorWorkbench()
+    assert not bench.call('put_section',{'section':'rules','value_json':'[]'})['passed']
+    assert not bench.call('put_section',{'section':'task','value_json':'"flat task"'})['passed']
+    assert not bench.call('edit_contract',{'edits':[{'op':'add','path':'/tables','value_json':'[]'}]})['passed']
+    assert bench.snapshot()=={}
+
+
+def test_task_first_partial_definition_retains_format_after_resume():
+    from test_business_definition import split
+    environment,task=split(simple())
+    bench=AuthorWorkbench(source={'task':task})
+    assert not bench.call('put_section',{'section':'tables','value_json':'[]'})['passed']
+    assert bench.call('put_section',{'section':'environment','value_json':json.dumps(environment)})['passed']
+    assert bench.call('check_contract',{})['passed']
+
+
+def test_explicit_historical_flat_import_remains_editable_without_mixing_formats():
+    bench=AuthorWorkbench(source=direct())
+    assert bench.call('check_contract',{})['passed']
+    assert not bench.call('put_section',{'section':'environment','value_json':'{}'})['passed']
+    assert bench.snapshot()==direct()

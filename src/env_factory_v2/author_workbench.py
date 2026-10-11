@@ -15,6 +15,8 @@ from .verification import preflight_recipes
 SECTIONS = frozenset({'version', 'id', 'category', 'task', 'rules', 'tables', 'tools',
     'user', 'answers', 'explanations', 'invariants', 'goals', 'success', 'scenarios',
     'probes', 'limits', 'time', 'events', 'demand', 'environment'})
+DEFINITION_SECTIONS = frozenset({'environment', 'task'})
+LEGACY_SECTIONS = SECTIONS - {'environment'}
 
 
 def read_draft(source, arguments):
@@ -77,6 +79,12 @@ class AuthorWorkbench:
         require(type(max_operations) is int and 1 <= max_operations <= 512,
                 'invalid author operation budget')
         self.source = {}
+        # Fresh production drafts have one authored representation. A supplied
+        # flat draft is an explicit historical import, never an automatic fallback.
+        require(source is None or isinstance(source, dict), 'author draft must be an object')
+        self.sections = (DEFINITION_SECTIONS if not source or 'environment' in source
+                         or isinstance(source.get('task'), dict)
+                         else LEGACY_SECTIONS)
         self._replace(source if source is not None else {})
         self.max_operations = max_operations
         self.operations = 0
@@ -93,7 +101,7 @@ class AuthorWorkbench:
             if tool == 'put_section':
                 require(set(arguments) == {'section', 'value_json'} and
                         isinstance(arguments['section'], str) and
-                        arguments['section'] in SECTIONS, 'unknown author section')
+                        arguments['section'] in self.sections, 'unknown author section for this draft format')
                 candidate = {**self.source, arguments['section']: decode_json(arguments['value_json'])}
                 self._replace(candidate)
                 return {'passed': True, 'sections': sorted(self.source)}
@@ -123,8 +131,11 @@ class AuthorWorkbench:
             return {'passed': False, 'error': str(exc)}
 
     def _replace(self, candidate):
-        require(isinstance(candidate, dict) and set(candidate) <= SECTIONS,
-                'unknown author contract section')
+        require(isinstance(candidate, dict) and set(candidate) <= self.sections,
+                'unknown author contract section for this draft format')
+        if self.sections == DEFINITION_SECTIONS:
+            require(all(isinstance(value, dict) for value in candidate.values()),
+                    'authored environment and task must be documents, not flat contract fields')
         require(len(canonical(candidate).encode()) <= 4 * 1024 * 1024,
                 'author contract size limit')
         self.source = copy.deepcopy(candidate)

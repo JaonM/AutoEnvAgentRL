@@ -67,3 +67,14 @@ def test_read_preserves_current_check_and_cannot_create_a_check(tmp_path):
     assert (folder/'latest_operation.json').read_bytes() == receipt
     assert checked_source(tmp_path)[0] == direct()
     assert len((folder/'operations.jsonl').read_text().splitlines()) == 4
+
+
+def test_mcp_advertises_only_the_selected_author_format(tmp_path):
+    fresh=AuthorMCP(tmp_path/'fresh')
+    legacy=AuthorMCP(tmp_path/'legacy',source=direct())
+    def sections(server):
+        value=server.dispatch({'id':1,'method':'tools/list'})['result']['tools']
+        return next(t for t in value if t['name']=='put_section')['inputSchema']['properties']['section']['enum']
+    assert sections(fresh)==['environment','task']
+    assert 'rules' in sections(legacy) and 'environment' not in sections(legacy)
+    assert sections(fresh)==['environment','task']

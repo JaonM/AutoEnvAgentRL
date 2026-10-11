@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -46,7 +47,9 @@ class AuthorMCP:
         elif method == 'ping':
             result = {}
         elif method == 'tools/list':
-            result = {'tools': TOOLS}
+            tools = copy.deepcopy(TOOLS)
+            next(t for t in tools if t['name'] == 'put_section')['inputSchema']['properties']['section']['enum'] = sorted(self.workbench.sections)
+            result = {'tools': tools}
         elif method == 'tools/call':
             params = request.get('params', {})
             try:
