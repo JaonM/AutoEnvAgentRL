@@ -9,6 +9,30 @@ class TransactionUnavailable(ContractError):
     """A concrete target/boolean precondition prevents the declared operation."""
 
 
+def evaluate_preconditions(value, context):
+    """Task-facing precondition query over an explicit world/clock basis."""
+    from .contract import validate_value
+    source = context.get('_source')
+    require(isinstance(source, dict), 'transaction preconditions require runtime source context')
+    tool = next((t for t in source['tools'] if t['id'] == value['tool']), None)
+    require(tool is not None and tool['kind'] == 'transaction', 'unknown transaction precondition target')
+    arguments = {key: evaluate(expr, context) for key, expr in value['arguments'].items()}
+    validate_value(arguments, tool['parameters'], 'transaction precondition arguments')
+    basis = value['basis']
+    require(basis in {'initial', 'current'}, 'unknown transaction precondition basis')
+    selected = context if basis == 'current' else context.get('_eligibility_initial')
+    require(isinstance(selected, dict), 'initial transaction precondition snapshot unavailable')
+    # Arguments/facts retain the declared task inputs. Initial freezes world,
+    # clock and lifecycle after reset events; current uses the caller's world.
+    preview = {**context, **{key: selected[key] for key in ('data', 'time', 'user_state')},
+               'args': arguments}
+    try:
+        prepare_transaction(tool, source, selected['data'], preview)
+    except TransactionUnavailable:
+        return False
+    return True
+
+
 def prepare_transaction(tool, source, before, context, *, check_preconditions=True):
     """Return candidate data and changes; never authorize, commit or advance time.
 

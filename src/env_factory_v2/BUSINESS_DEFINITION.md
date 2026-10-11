@@ -82,6 +82,43 @@ the independent business verifier.
 
 ## Transaction outcome plans
 
+Task expressions in answers, goals, communication applicability, process branches
+and scenario answers may query the actual transaction's preconditions:
+
+```json
+{"transaction_preconditions": {
+  "tool": "transfer",
+  "arguments": {"from_id": {"ref": "user.from_id"},
+                "to_id": {"ref": "user.to_id"},
+                "amount": {"ref": "user.amount"}},
+  "basis": "initial"
+}}
+```
+
+Use this instead of independently rewriting transaction record selection and
+eligibility guards in task completion conditions. The named transaction and
+argument names must exist. `basis` is mandatory: `initial` uses business data,
+clock and user lifecycle immediately after reset and time-zero events; `current`
+uses the expression's current world, clock and lifecycle. Declared argument
+expressions and task facts remain the caller's inputs, including corrected facts.
+Neither basis copies successful tool arguments or infers which action was intended.
+
+This is a pure precondition query, not an authorization or completion assertion.
+It checks target existence/create conflicts and the transaction's own boolean
+guards using the same interpreter as execution. It does not consume consent,
+advance time, write data, enforce result provenance or certify final invariants.
+Malformed arguments or broken guards are errors, not legitimate unavailability.
+The operator is forbidden inside environment rules, operations and invariants,
+preventing recursive transaction definitions.
+
+Keep exact authorization, execution evidence and full-state goals independently
+enforced. The original task determines the correct reference basis: choosing
+`current` merely because waiting makes a previously required operation impossible
+can incorrectly waive the task. Likewise, an initially blocked operation may
+become available later; an initial snapshot does not prove all later obligations.
+Do not remove temporal behavior to fit a completion mode. Independent review must
+verify the intended action, basis, branch requirements and time-boundary cases.
+
 A task goal may be `{id, rule_ids, transaction_plan: [{tool, arguments, when?}]}`
 instead of a handwritten `predicate`. `tool` names an environment transaction;
 `arguments` are expressions over `initial`, `user`, and `user_state`. Optional

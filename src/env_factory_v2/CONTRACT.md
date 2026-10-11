@@ -24,6 +24,14 @@ revocations or stale captures instead of repeating long trajectories. Expectatio
 must remain grounded in original business; inheritance never skips execution.
 
 Expressions have exactly one operator. Literals always use {"literal":VALUE};
+transaction_preconditions:{tool:TRANSACTION_ID,arguments:{parameter:EXPR},
+basis:"initial"|"current"} is a task-only boolean query sharing the real
+transaction's target/precondition interpreter. Initial uses the post-reset,
+time-zero-event world and clock; current uses the evaluation world and clock.
+It grants no authorization, writes nothing, and does not certify final invariants
+or task completion. It is forbidden in environment rules, writes and invariants.
+Use the original requirement to select the basis; waiting until an obligation
+becomes impossible must not silently waive it. See BUSINESS_DEFINITION for details.
 bounded_cover:{items:EXPR,target:EXPR,max_states:1..10000,
 max_transitions:1..1000000,max_plans:1..10000} exactly solves bounded integer
 covering. Each item is {key:unique nonempty string,units:positive integer,

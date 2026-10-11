@@ -181,7 +181,7 @@ def validate_rule_links(expression, rules, *, shared_filters=False, row_scope=Fa
     if 'filter' in expression and shared_filters:
         table = row_table(expression['filter']['items'], tables)
         def shared(predicate, environment, scope_table=table):
-            if set(predicate) == {'rule'}:
+            if set(predicate) in ({'rule'}, {'transaction_preconditions'}):
                 return True
             if set(predicate) == {'let'}:
                 # Capturing lexical values does not add an eligibility clause.
@@ -231,7 +231,7 @@ def expression_children(expression):
     op, value = next(iter(expression.items()))
     if op in {'literal', 'ref'}:
         return []
-    if op == 'rule':
+    if op in {'rule', 'transaction_preconditions'}:
         return value['arguments'].values()
     if op == 'let':
         return [*value['bindings'].values(), value['value']]
@@ -447,7 +447,7 @@ def compile_contract(source):
         require(field['comparison'] != 'numeric' or field['schema']['type'] in {'integer', 'number'},
                 'numeric comparison requires a scalar numeric answer')
         policy_independent_target(field['expected'])
-        validate_expr(field['expected'], roots={'data', 'initial', 'evidence', 'user', 'user_state', 'time'})
+        validate_expr(field['expected'], roots={'data', 'initial', 'evidence', 'user', 'user_state', 'time'}, transactions=tools)
         validate_rule_links(field['expected'], rules, shared_filters=True, tables=tables)
     explanations = named(source.get('explanations', []), 'explanation')
     require(not (set(answers) & set(explanations)), 'duplicate answer/explanation id')
@@ -463,7 +463,7 @@ def compile_contract(source):
             require(criterion['rule_id'] in rules and isinstance(criterion['obligation'], str)
                     and criterion['obligation'].strip(), 'invalid reasoning obligation')
             if 'when' in criterion:
-                validate_expr(criterion['when'], roots={'data', 'initial', 'user', 'user_state', 'time'})
+                validate_expr(criterion['when'], roots={'data', 'initial', 'user', 'user_state', 'time'}, transactions=tools)
                 validate_rule_links(criterion['when'], rules, shared_filters=True, tables=tables)
     require(abs(sum(f['weight'] for f in [*answers.values(), *explanations.values()]) - 1) < 1e-9, 'reward weights must sum to one')
     for invariant in source.get('invariants', []):
@@ -483,7 +483,7 @@ def compile_contract(source):
                           temporal=temporal)
         else:
             policy_independent_target(goal['predicate'])
-            validate_expr(goal['predicate'], roots={'data', 'initial', 'evidence', 'user', 'user_state', 'time'})
+            validate_expr(goal['predicate'], roots={'data', 'initial', 'evidence', 'user', 'user_state', 'time'}, transactions=tools)
             validate_rule_links(goal['predicate'], rules, shared_filters=True, tables=tables)
     require(not any(t['kind'] == 'transaction' for t in tools.values()) or source.get('goals'), 'writes require actual-state goals')
     fields(source['limits'], ['max_actions'])
@@ -515,7 +515,7 @@ def compile_contract(source):
                 f"unexpected={sorted(actual_fields - expected_fields)}; "
                 'include both structured answers and explanation fields')
         for expression in scenario['answer'].values():
-            validate_expr(expression, roots={'data', 'initial', 'evidence', 'user', 'user_state', 'time'})
+            validate_expr(expression, roots={'data', 'initial', 'evidence', 'user', 'user_state', 'time'}, transactions=tools)
             validate_rule_links(expression, rules)
         call_ids = set()
         for step in scenario['steps']:
@@ -547,7 +547,7 @@ def compile_contract(source):
         if 'answer' in probe:
             require(isinstance(probe['answer'], dict), 'probe answer must be an object')
             for expression in probe['answer'].values():
-                validate_expr(expression, roots={'data', 'initial', 'evidence', 'user', 'user_state', 'time'})
+                validate_expr(expression, roots={'data', 'initial', 'evidence', 'user', 'user_state', 'time'}, transactions=tools)
                 validate_rule_links(expression, rules)
     category = source['category']
     require((category != 'direct_response' or not tools and not stages and not tables and not source['user']['facts']), 'direct response must be stateless and have no private facts')
@@ -578,7 +578,7 @@ def compile_contract(source):
         require(branch.get('min_business_calls', 0) <= branch.get('max_business_calls', source['limits']['max_actions']),
                 'business call bounds inverted')
         policy_independent_target(branch['when'])
-        validate_expr(branch['when'], roots={'data', 'initial', 'evidence', 'user', 'user_state', 'time'})
+        validate_expr(branch['when'], roots={'data', 'initial', 'evidence', 'user', 'user_state', 'time'}, transactions=tools)
         validate_rule_links(branch['when'], rules)
         for observation in named(branch.get('required_observations', []), 'required observation').values():
             fields(observation, ['id', 'tools', 'columns', 'expected'], ['after_tools'])
@@ -595,7 +595,7 @@ def compile_contract(source):
             for provider in observation['tools']:
                 require(tools[provider]['kind'] == 'query'
                         and set(observation['columns']) <= set(tools[provider]['columns']), 'observation columns must be actual query results')
-            validate_expr(observation['expected'], roots={'data', 'initial', 'evidence', 'user', 'user_state', 'time'})
+            validate_expr(observation['expected'], roots={'data', 'initial', 'evidence', 'user', 'user_state', 'time'}, transactions=tools)
             policy_independent_target(observation['expected'])
             validate_rule_links(observation['expected'], rules, shared_filters=True, tables=tables)
     digest = hashlib.sha256(canonical(source).encode()).hexdigest()

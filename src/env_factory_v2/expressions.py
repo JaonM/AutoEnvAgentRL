@@ -57,12 +57,26 @@ def refs(expression):
     return []
 
 
-def validate_expr(expression, *, roots, depth=0):
+def validate_expr(expression, *, roots, depth=0, transactions=None):
     if depth > 32:
         raise ContractError('expression exceeds depth limit')
     if not isinstance(expression, dict) or len(expression) != 1:
         raise ContractError('expression must have exactly one operator')
     op, value = next(iter(expression.items()))
+    if op == 'transaction_preconditions':
+        if (not isinstance(value, dict) or set(value) != {'tool', 'arguments', 'basis'}
+                or not isinstance(value.get('basis'), str) or value['basis'] not in {'initial', 'current'}
+                or not isinstance(value.get('tool'), str) or not isinstance(value.get('arguments'), dict)):
+            raise ContractError('invalid transaction precondition expression')
+        tool = (transactions or {}).get(value['tool'])
+        if not tool or tool['kind'] != 'transaction':
+            raise ContractError('transaction preconditions require an allowed existing transaction')
+        schema = tool['parameters']
+        if not set(schema.get('required', [])) <= set(value['arguments']) <= set(schema['properties']):
+            raise ContractError('transaction precondition argument mismatch')
+        for child in value['arguments'].values():
+            validate_expr(child, roots=roots, depth=depth + 1, transactions=transactions)
+        return
     if op == 'literal':
         canonical(value)
         return
@@ -74,7 +88,7 @@ def validate_expr(expression, *, roots, depth=0):
         if not isinstance(value, dict) or set(value) != {'id', 'arguments'} or not isinstance(value['id'], str) or not isinstance(value['arguments'], dict):
             raise ContractError('invalid public rule invocation')
         for expression in value['arguments'].values():
-            validate_expr(expression, roots=roots, depth=depth + 1)
+            validate_expr(expression, roots=roots, depth=depth + 1, transactions=transactions)
         return
     if op == 'let':
         if not isinstance(value, dict) or set(value) != {'bindings', 'value'}:
@@ -85,8 +99,8 @@ def validate_expr(expression, *, roots, depth=0):
                 for name in bindings):
             raise ContractError('invalid local binding names')
         for item in bindings.values():
-            validate_expr(item, roots=roots, depth=depth + 1)
-        validate_expr(value['value'], roots=roots | {'vars'}, depth=depth + 1)
+            validate_expr(item, roots=roots, depth=depth + 1, transactions=transactions)
+        validate_expr(value['value'], roots=roots | {'vars'}, depth=depth + 1, transactions=transactions)
         return
     if op in {'and', 'or', 'list', 'object'} or op in ARITY:
         values = list(value.values()) if op == 'object' and isinstance(value, dict) else value
@@ -97,13 +111,13 @@ def validate_expr(expression, *, roots, depth=0):
         if op in {'and', 'or'} and not values:
             raise ContractError('empty boolean expression')
         for item in values:
-            validate_expr(item, roots=roots, depth=depth + 1)
+            validate_expr(item, roots=roots, depth=depth + 1, transactions=transactions)
         return
     if op in {'filter', 'map', 'flat_map'}:
         if not isinstance(value, dict) or set(value) != {'items', 'value'}:
             raise ContractError(f'invalid {op} expression')
-        validate_expr(value['items'], roots=roots, depth=depth + 1)
-        validate_expr(value['value'], roots=roots | {'row'}, depth=depth + 1)
+        validate_expr(value['items'], roots=roots, depth=depth + 1, transactions=transactions)
+        validate_expr(value['value'], roots=roots | {'row'}, depth=depth + 1, transactions=transactions)
         return
     if op == 'range':
         if not isinstance(value, dict) or set(value) != {'start', 'stop', 'max_items'}:
@@ -111,7 +125,7 @@ def validate_expr(expression, *, roots, depth=0):
         if type(value['max_items']) is not int or not 1 <= value['max_items'] <= 10000:
             raise ContractError('range max_items must be 1..10000')
         for field in ('start', 'stop'):
-            validate_expr(value[field], roots=roots, depth=depth + 1)
+            validate_expr(value[field], roots=roots, depth=depth + 1, transactions=transactions)
         return
     if op == 'bounded_cover':
         if not isinstance(value, dict) or set(value) != {'items', 'target', 'max_states', 'max_transitions', 'max_plans'}:
@@ -120,13 +134,13 @@ def validate_expr(expression, *, roots, depth=0):
             if type(value[field]) is not int or not 1 <= value[field] <= ceiling:
                 raise ContractError('cover budget outside allowed bounds')
         for field in ['items', 'target']:
-            validate_expr(value[field], roots=roots, depth=depth + 1)
+            validate_expr(value[field], roots=roots, depth=depth + 1, transactions=transactions)
         return
     if op == 'if':
         if not isinstance(value, dict) or set(value) != {'condition', 'then', 'else'}:
             raise ContractError('invalid conditional')
         for item in value.values():
-            validate_expr(item, roots=roots, depth=depth + 1)
+            validate_expr(item, roots=roots, depth=depth + 1, transactions=transactions)
         return
     if op == 'sort':
         if not isinstance(value, dict) or set(value) != {'items', 'order_by'}:
@@ -137,7 +151,7 @@ def validate_expr(expression, *, roots, depth=0):
                 or not isinstance(order['field'], str) or not order['field']
                 or order['direction'] not in {'asc', 'desc'} for order in orders):
             raise ContractError('invalid sort order')
-        validate_expr(value['items'], roots=roots, depth=depth + 1)
+        validate_expr(value['items'], roots=roots, depth=depth + 1, transactions=transactions)
         return
     if op == 'walk':
         if not isinstance(value, dict) or set(value) != {'items', 'start', 'key', 'next', 'max_nodes'}:
@@ -147,13 +161,16 @@ def validate_expr(expression, *, roots, depth=0):
         if type(value['max_nodes']) is not int or not 1 <= value['max_nodes'] <= 10000:
             raise ContractError('walk max_nodes must be 1..10000')
         for field in ('items', 'start'):
-            validate_expr(value[field], roots=roots, depth=depth + 1)
+            validate_expr(value[field], roots=roots, depth=depth + 1, transactions=transactions)
         return
     raise ContractError(f'unsupported expression operator: {op}')
 
 
 def evaluate(expression, context):
     op, value = next(iter(expression.items()))
+    if op == 'transaction_preconditions':
+        from .transaction_semantics import evaluate_preconditions
+        return evaluate_preconditions(value, context)
     if op == 'bounded_cover':
         from .integer_cover import bounded_cover
         return bounded_cover(evaluate(value['items'], context), evaluate(value['target'], context),

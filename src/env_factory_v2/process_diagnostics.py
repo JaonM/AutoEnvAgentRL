@@ -21,6 +21,13 @@ def process_diagnostics(compiled, *, max_variants=16):
                 identity = value['rule']['id']
                 if identity not in seen:
                     found |= dependencies(rules[identity], (*seen, identity))
+            if set(value) == {'transaction_preconditions'}:
+                tool = tools[value['transaction_preconditions']['tool']]
+                for identity in tool['rule_ids']:
+                    found |= dependencies(rules[identity], (*seen, identity))
+                for operation in tool['operations']:
+                    found |= dependencies(operation['key'], seen)
+                    found |= dependencies(operation['set'], seen)
             for item in value.values():
                 found |= dependencies(item, seen)
         elif isinstance(value, list):

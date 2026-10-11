@@ -44,6 +44,8 @@ class Sandbox:
         self.closed = False
         self.business_attempts = 0
         self._events()
+        self.eligibility_initial = {'data': copy.deepcopy(self.data), 'time': self.time(),
+                                    'user_state': self.user.snapshot()}
         return {'episode': secrets.token_hex(16), 'public': copy.deepcopy(self.compiled['public'])}
 
     def time(self):
@@ -67,7 +69,8 @@ class Sandbox:
                 'args': args or {}, 'row': row or {}, 'evidence': self.evidence,
                 'user': {**user.facts, **user.disclosed} if private else user.disclosed,
                 'user_state': user.snapshot(),
-                'time': self.time(), '_rules': self.rules}
+                'time': self.time(), '_rules': self.rules, '_source': self.source,
+                '_eligibility_initial': self.eligibility_initial}
 
     def _row(self, data, table_id, key):
         table = next(t for t in self.source['tables'] if t['id'] == table_id)
