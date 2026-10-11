@@ -30,6 +30,10 @@ def main():
     demo = sub.add_parser('demo', help='Offline examples: executable checks only, never native qualification')
     demo.add_argument('--example', choices=EXAMPLES, required=True)
     demo.add_argument('--output', type=Path, required=True)
+    definition = sub.add_parser('compile-definition', help='Compile a reusable environment and task; does not qualify delivery')
+    definition.add_argument('--environment', type=Path, required=True)
+    definition.add_argument('--task', type=Path, required=True)
+    definition.add_argument('--output', type=Path, required=True)
     for name in ('generate', 'build'):
         command = sub.add_parser(name)
         command.add_argument('--request', type=Path, required=True)
@@ -50,6 +54,17 @@ def main():
         if name == 'verify':
             command.add_argument('--connection', type=Path)
     args = parser.parse_args()
+    if args.command == 'compile-definition':
+        from .business_definition import compile_definition
+        environment = json.loads(args.environment.read_text())
+        task = json.loads(args.task.read_text())
+        compiled, provenance = compile_definition(environment, task)
+        args.output.mkdir(parents=True, exist_ok=False)
+        for name, value in [('environment', environment), ('task', task),
+                            ('contract', compiled['source']), ('compilation', provenance)]:
+            (args.output / (name + '.json')).write_text(canonical(value) + '\n')
+        print(canonical(provenance))
+        return 0
     if args.command == 'demo':
         args.output.mkdir(parents=True, exist_ok=False)
         source = EXAMPLES[args.example]()
