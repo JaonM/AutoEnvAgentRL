@@ -66,6 +66,9 @@ def scalar_literals(answer, truth, entries):
 def audited_observations(world, truth, kind, business, agent=None):
     from v2_communication_evidence import communication_checks
     checks = observation_checks(world, truth, kind) + communication_checks(world, truth, agent)
+    if 'transaction_groups' in truth:
+        from v2_fresh_business_oracle import transaction_group_checks
+        checks += transaction_group_checks(world, truth['transaction_groups'])
     # An atomic receipt is authoritative evidence of a committed update unless
     # the dossier explicitly requires a post-commit query. No invented read gate.
     if '提交后查询' in business['policy'] or '提交后核验' in business['policy']:

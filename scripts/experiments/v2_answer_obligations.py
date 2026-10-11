@@ -39,9 +39,14 @@ def validate_public_scope(scope, *, user_request, business):
     for key in split_fields:
         require(isinstance(scope.get(key, []), list), 'scope meanings must be a list')
         for item in scope.get(key, []):
-            require(isinstance(item, dict) and set(item) == {'meaning', 'citations'}
+            require(isinstance(item, dict) and set(item) in ({'meaning', 'citations'},
+                    {'meaning', 'citations', 'basis', 'necessity_reason'})
                     and isinstance(item['meaning'], str) and item['meaning'].strip()
                     and isinstance(item['citations'], list) and item['citations'], 'grounded scope meaning required')
+            if 'basis' in item:
+                require(item['basis'] in {'explicit_request', 'explicit_policy', 'necessary_to_disambiguate'}
+                        and isinstance(item['necessity_reason'], str) and item['necessity_reason'].strip(),
+                        'mandatory communication needs a grounded necessity basis')
             for c in item['citations']:
                 require(set(c) == {'source', 'text'} and c['source'] in public
                         and isinstance(c['text'], str) and c['text'].strip()
@@ -118,13 +123,19 @@ def review_answer_obligations(agent, *, user_request, business, truth=None, role
     item = object_schema({'role': {'type': 'string', **({'enum': roles} if roles else {})},
         'kind': {'type': 'string', 'enum': ['answer', 'state_only', 'optional', 'unsupported']},
         'reason': {'type': 'string'}, 'citations': {'type': 'array', 'items': citation}})
+    basis = {'type': 'string', 'enum': ['explicit_request', 'explicit_policy',
+        'necessary_to_disambiguate', 'optional_help', 'behavior_only']}
+    missing = object_schema({**citation['properties'], 'meaning': {'type': 'string'},
+        'basis': basis, 'necessity_reason': {'type': 'string'}})
     members = member_paths(role_shapes)
     response_fields = {'roles': {'type': 'array', 'items': item},
                        'process_requirements': {'type': 'array', 'items': citation},
-                       'uncovered_answers': {'type': 'array', 'items': citation}}
+                       'uncovered_answers': {'type': 'array', 'items': missing}}
     meaning = object_schema({'meaning': {'type': 'string'}, 'citations': {'type': 'array', 'items': citation}})
     for key in ('communication_requirements', 'behavior_requirements'):
         response_fields[key] = {'type': 'array', 'items': meaning}
+    response_fields['communication_requirements']['items'] = object_schema({
+        **meaning['properties'], 'basis': basis, 'necessity_reason': {'type': 'string'}})
     if members:
         response_fields['member_reviews'] = {'type': 'array', 'items': object_schema({
             # Encoded JSON paths contain quotes, unsupported in strict-output enum literals.
@@ -146,8 +157,15 @@ def review_answer_obligations(agent, *, user_request, business, truth=None, role
         'Separately list communication_requirements: meanings the user must be told, with branch applicability '
         'and interaction ordering where required. List behavior_requirements: rules governing calculation, '
         'eligibility, state changes and safety. A policy describing an algorithm or internal fields does not '
-        'automatically require reciting it to the user. Necessary explanations of actual restrictions remain '
-        'required; distinguish them from a generic tutorial. Neither list waives any original business rule. '
+        'automatically require reciting it to the user. A yes/no eligibility query alone does not require '
+        'an explanation of the blocking reason. Helpful elaboration is optional unless explicitly '
+        'required by the original request/policy or needed to disambiguate the requested answer. '
+        'For every communication requirement and uncovered answer, identify its exact meaning, '
+        'basis and necessity_reason. For necessary_to_disambiguate, name the actual ambiguity '
+        'that remains after providing the requested roles; general helpfulness is not necessity. '
+        'Mark optional help and behavior-only findings as such, never as missing mandatory answers. '
+        'Do not suppress explicitly requested reasons, identifiers or explanations. '
+        'Neither list waives any original business rule. '
         'Ground both lists in exact original citations, without assuming private facts have already been disclosed. '
         'Use unsupported for an unresolved role; never guess a scope to obtain acceptance. '
         'When nested_member_paths are supplied, classify EVERY listed member separately in member_reviews. '
@@ -177,6 +195,27 @@ def review_answer_obligations(agent, *, user_request, business, truth=None, role
             obligations.append({'role': role['role'], **role['citations'][0]})
     for c in value['uncovered_answers'] + value['process_requirements']:
         validate_citation(c)
+    nonmandatory = []
+    for key in ('uncovered_answers', 'communication_requirements'):
+        retained = []
+        for finding in value.get(key, []):
+            if 'basis' in finding:
+                require(finding['basis'] in basis['enum']
+                        and isinstance(finding.get('meaning'), str) and finding['meaning'].strip()
+                        and isinstance(finding.get('necessity_reason'), str) and finding['necessity_reason'].strip(),
+                        'communication necessity classification required')
+                citations = finding.get('citations', [finding])
+                for citation_value in citations:
+                    validate_citation(citation_value)
+                expected_source = {'explicit_request': 'user_request', 'explicit_policy': 'business_policy'}.get(finding['basis'])
+                require(expected_source is None or any(c['source'] == expected_source for c in citations),
+                        'communication necessity basis disagrees with citation source')
+                if finding['basis'] in {'optional_help', 'behavior_only'}:
+                    nonmandatory.append({'location': key, **copy.deepcopy(finding)})
+                    continue
+            retained.append(finding)
+        if key in value:
+            value[key] = retained
     if members:
         validate_members(members, value['member_reviews'], value['roles'], validate_citation)
     require(('communication_requirements' in value) == ('behavior_requirements' in value),
@@ -192,5 +231,5 @@ def review_answer_obligations(agent, *, user_request, business, truth=None, role
             **({'member_catalog': members, 'member_reviews': value['member_reviews']} if members else {})},
             user_request=user_request, business=business)
     return {'passed': passed, 'answer_obligations': obligations, 'generation_output_scope': scope,
-            'review': value, 'provenance': provenance,
+            'review': value, 'nonmandatory_findings': nonmandatory, 'provenance': provenance,
             'scope': 'pre_generation_original_requirement_interpretation_not_sandbox_qualification'}

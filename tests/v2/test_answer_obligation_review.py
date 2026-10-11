@@ -170,3 +170,37 @@ def test_split_scope_cannot_be_partial_or_leak_uncited_extra_data(invalid):
     else: value['behavior_requirements'] = {}
     agent = Mock(); agent.ask.return_value = (value, {})
     with pytest.raises(ContractError): review_answer_obligations(agent, **fixture())
+
+
+def test_optional_help_is_not_promoted_to_a_missing_answer_gate():
+    value=review()
+    citation={'source':'business_policy','text':'仅在资格满足且授权后执行。'}
+    value['uncovered_answers']=[{**citation,'meaning':'Explain the general algorithm.',
+        'basis':'optional_help','necessity_reason':'Additional help; requested result is already complete.'}]
+    value['communication_requirements']=[{'meaning':'Explain the general algorithm.',
+        'citations':[citation],'basis':'optional_help','necessity_reason':'Additional help only.'}]
+    value['behavior_requirements']=[]
+    agent=Mock();agent.ask.return_value=(value,{})
+    result=review_answer_obligations(agent,**fixture())
+    assert result['passed']
+    assert result['generation_output_scope']['communication_requirements']==[]
+    assert len(result['nonmandatory_findings'])==2
+
+
+def test_explicit_missing_reason_still_blocks_scope_freeze():
+    value=review()
+    value['uncovered_answers']=[{'source':'user_request','text':'报告未完成原因',
+        'meaning':'Explain why work remains incomplete.','basis':'explicit_request',
+        'necessity_reason':'User explicitly requests reasons.'}]
+    agent=Mock();agent.ask.return_value=(value,{})
+    assert not review_answer_obligations(agent,**fixture())['passed']
+
+
+def test_necessity_claim_cannot_cite_the_wrong_source():
+    value=review()
+    value['uncovered_answers']=[{'source':'business_policy','text':'授权后执行',
+        'meaning':'Explain authorization.','basis':'explicit_request',
+        'necessity_reason':'Claims this was explicitly requested.'}]
+    agent=Mock();agent.ask.return_value=(value,{})
+    with pytest.raises(ContractError,match='citation source'):
+        review_answer_obligations(agent,**fixture())

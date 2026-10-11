@@ -49,6 +49,9 @@ def expected(spec, business, user, *, mutation=None, refuse=False, now=None,
     data = expand(business)
     if mutation:
         change(data, mutation)
+    if spec['kind'].startswith('fresh_'):
+        from v2_fresh_business_oracle import expected as fresh_expected
+        return fresh_expected(spec, data, user['facts'], refuse=refuse)
     if spec['kind'].startswith('procurement_'):
         from v2_procurement_oracle import expected as procurement_expected
         return procurement_expected(spec, data, user['facts'], now=now, refuse=refuse,

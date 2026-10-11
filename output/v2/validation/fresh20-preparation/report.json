@@ -1,0 +1,42 @@
+{
+  "status": "implementation_verified_asset_freeze_pending",
+  "tests": {
+    "passed": 1041,
+    "seconds": 20.86
+  },
+  "holdout": {
+    "count": 20,
+    "mix": {
+      "direct": 4,
+      "simple": 4,
+      "ordinary": 4,
+      "complex": 8
+    },
+    "families": [
+      "parcel",
+      "parking",
+      "warehouse",
+      "archive"
+    ],
+    "preparation_revision": "fresh20-priority-02",
+    "opening_review": "20/20",
+    "business_review": "20/20",
+    "independent_truth": "Separate Python reference implementation imports neither generated contracts nor the V2 reward/DSL; checks state, declared atomic groups and source-required observations."
+  },
+  "invalid_gate_fix": {
+    "finding": "Scope reviewer promoted an unrequested explanatory reason into a missing mandatory answer for a yes/no query.",
+    "general_fix": "Require explicit source/necessity classification for communication and uncovered answers; retain optional help/behavior as diagnostic evidence rather than missing-answer gates. Required missing reasons remain blocking.",
+    "scope": "All businesses; no sample identifier or business-name branching.",
+    "native_validation": "Whole unchanged 20-case scope review in progress; no measured yield."
+  },
+  "acceptance_integrity": [
+    "Ignore no-op writes in independent transaction grouping; efficiency may penalize them.",
+    "Use declared primary keys to resolve receipt rows into business identities.",
+    "A rejected or incomplete preparation is never counted as a measured generation failure.",
+    "Keep all model preparation evidence, including rejected first preparation and failed first scope review."
+  ],
+  "limitations": [
+    "Synthetic operator-authored holdout, not production-population or strict double-blind sampling.",
+    "No new end-to-end yield or matched speed claim."
+  ]
+}

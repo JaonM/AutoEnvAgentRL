@@ -25,6 +25,7 @@ from env_factory_v2.contracts.expressions import canonical
 from env_factory_v2.pipeline import build, implementation_identity, require_qualified_delivery
 from env_factory_v2.execution.runtime import Sandbox
 from env_factory_v2.delivery.training import certify
+from env_factory_v2.validation.gates import DELIVERY_GATES
 from rl.environments.v2 import V2Episode
 from v2_natural_oracle import expand, equivalent, UNORDERED
 from v2_mapping_validation import MappingValidationError
@@ -434,7 +435,8 @@ def main():
         'bridge_timeout_seconds': read(args.connection)['timeout_seconds'], 'sample_timeout_seconds': args.sample_timeout,
         'policy_turn_budget': 40, 'policy_calls_per_turn': 8,
         'policy': 'All planned natural requests stay in denominator. No within-round fixes, terminal retries, hidden-oracle feedback to author or policy, or reference-script policy replay.',
-        'qualification': 'Five delivery gates + external frozen business acceptance + training certificate + actual native policy HTTP rollout consistent with independent truth.',
+        'delivery_gates': sorted(DELIVERY_GATES),
+        'qualification': 'Declared effective delivery gates + external frozen business acceptance + training certificate + actual native policy HTTP rollout consistent with independent truth.',
         'acceptance_budget': 'One external semantic review plus at most one structural mapping correction without oracle values; all deterministic tests; no acceptance-driven author repair.'}
     save(root / 'protocol.json', protocol)
     samples = [{k: row[k] for k in ('id', 'title', 'stratum', 'raw_request')} | {'status': 'pending', 'qualified': False}
