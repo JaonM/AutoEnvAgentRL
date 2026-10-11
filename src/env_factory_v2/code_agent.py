@@ -163,6 +163,15 @@ class NativeCodeAgent:
 
     def generate(self, request, *, feedback=None, source_object=False, source_tree=False, author_tools=False):
         require(type(author_tools) is bool, 'author tools selector must be boolean')
+        if feedback is not None:
+            from .repair_evidence import compact_repair_feedback
+            compact, receipt = compact_repair_feedback(feedback)
+            if receipt['compacted_passing_records']:
+                folder = self.evidence_root / 'repair-feedback' / uuid.uuid4().hex
+                folder.mkdir(parents=True)
+                for name, value in [('original', feedback), ('compact', compact), ('receipt', receipt)]:
+                    (folder / f'{name}.json').write_text(canonical(value) + '\n')
+                feedback = compact
         if author_tools:
             require(not source_object and not source_tree, 'author tools use the workbench transport')
             require(not self.base_url.startswith('http://host.docker.internal:'),
