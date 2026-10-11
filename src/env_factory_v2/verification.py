@@ -197,5 +197,7 @@ def qualify(source, *, judge=None, independent_judge=None, independent_review=No
               'independent_review': compact_evidence(independent_review) if compact else independent_review,
               'scope': 'executable_contract_not_learning_effectiveness', 'container_verified': False}
     report['evidence_detail'] = 'verdicts_and_answers' if compact else 'full_execution'
+    report['semantic_replay'] = ('explicit_independent_judge' if independent_judge
+                                 else 'same_judge_exact_evidence_reuse_when_supported')
     report['evidence_identity'] = hashlib.sha256(canonical(report).encode()).hexdigest()
     return compiled, report

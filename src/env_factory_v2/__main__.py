@@ -53,6 +53,8 @@ def main():
             command.add_argument('--user-mode', choices=['structured', 'free_dialogue'], default='structured')
         if name == 'verify':
             command.add_argument('--connection', type=Path)
+            command.add_argument('--fresh-semantic-audit', action='store_true',
+                                 help='Explicitly resample semantic judgments during replay; disagreements fail the audit')
     args = parser.parse_args()
     if args.command == 'compile-definition':
         from .business_definition import compile_definition
@@ -102,8 +104,11 @@ def main():
     review = None
     if args.command == 'container-check':
         review = json.loads((args.contract.parent / 'verification.json').read_text()).get('independent_review')
+    fresh_audit = getattr(args, 'fresh_semantic_audit', False)
+    if fresh_audit and agent is None:
+        raise RuntimeError('fresh semantic audit requires a native agent connection')
     compiled, report = qualify(source, judge=agent.judge if agent else None,
-                              independent_judge=agent.independent_judge if agent else None, independent_review=review,
+                              independent_judge=agent.independent_judge if fresh_audit else None, independent_review=review,
                               compact=args.command == 'container-check')
     executable = report['gates']['joint_execution_and_counterexamples'] and report['gates']['deterministic_reset_and_replay']
     if args.command == 'container-check':

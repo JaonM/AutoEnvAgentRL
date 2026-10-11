@@ -3,6 +3,9 @@ from unittest.mock import Mock, patch
 
 from env_factory_v2.examples import direct, lit
 from env_factory_v2.verification import qualify, run_scenario
+from env_factory_v2.code_agent import NativeCodeAgent
+from env_factory_v2.contract import compile_contract
+from env_factory_v2.challenge import _execute_case
 
 
 def explained():
@@ -45,3 +48,55 @@ def test_conflicting_independent_review_cannot_pass_by_reuse():
                         independent_judge=lambda p: judgment(False))
     assert not report['gates']['joint_execution_and_counterexamples']
     assert not report['gates']['deterministic_reset_and_replay']
+
+
+def native_judge(tmp_path):
+    agent = NativeCodeAgent(base_url='http://127.0.0.1:9999/v1',
+        token='test-only-token-000000000000000000', evidence_root=tmp_path)
+    agent.ask = Mock(return_value=({'criteria': {'fact': True}}, {'response_id': 'test-only'}))
+    agent.independent_judge = Mock(side_effect=AssertionError('no implicit resampling in deterministic replay'))
+    return agent
+
+
+def test_native_replay_executes_twice_without_resampling_identical_semantics(tmp_path):
+    agent = native_judge(tmp_path)
+    with patch('env_factory_v2.verification.run_scenario', wraps=run_scenario) as execute:
+        _, report = qualify(explained(), judge=agent.judge)
+    assert execute.call_count == 6
+    assert agent.ask.call_count == 2  # original text and distinct paraphrase
+    assert report['gates']['joint_execution_and_counterexamples']
+    assert report['gates']['deterministic_reset_and_replay']
+    assert not report['gates']['independent_business_challenge']  # not bypassed by cached grades
+    assert report['semantic_replay'] == 'same_judge_exact_evidence_reuse_when_supported'
+    agent.independent_judge.assert_not_called()
+
+
+def test_independent_case_uses_one_semantic_assessment_but_two_executions(tmp_path):
+    compiled = compile_contract(explained())
+    scenario = compiled['source']['scenarios'][0]
+    case = {'id': 'external', 'scenario_id': scenario['id'], 'rule_ids': ['fixed_fact'],
+            'reason': 'Test case', 'mutations_json': '[]', 'answer_json': '{}',
+            'user_overrides_json': '{}', 'steps_json': 'null', 'expect_success': True}
+    agent = native_judge(tmp_path)
+    with patch('env_factory_v2.challenge.run_scenario', wraps=run_scenario) as execute:
+        record = _execute_case(compiled, case, {scenario['id']: scenario}, agent)
+    assert execute.call_count == 2 and agent.ask.call_count == 1
+    assert record['passed']
+    assert record['repeat']['outcome']['semantic_evidence']['reason']['provenance']['reused']
+    agent.independent_judge.assert_not_called()
+
+
+def test_reused_semantic_assessment_does_not_hide_execution_difference(tmp_path):
+    agent = native_judge(tmp_path)
+    calls = 0
+    def corrupt_repeat(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        result = run_scenario(*args, **kwargs)
+        if calls == 2:
+            result['final_state']['unexpected'] = [{'id': 'wrong'}]
+        return result
+    with patch('env_factory_v2.verification.run_scenario', side_effect=corrupt_repeat):
+        _, report = qualify(explained(), judge=agent.judge)
+    assert not report['gates']['deterministic_reset_and_replay']
+    assert not report['records'][0]['passed']

@@ -24,6 +24,16 @@ empty results need truthful completion and guarded downstream dependencies.
 No findings does not prove branch coverage, and independent business review
 remains required. These probes do not execute a policy or simulate consent.
 
+Normal qualification re-executes every scenario and compares full execution
+evidence, while the native semantic judge reuses an assessment for identical
+contract, implementation, text, facts, observations and times. A changed
+dependency requires another assessment. Independent business interpretation
+and executable counterexamples remain separate qualification requirements.
+Repeated stochastic scoring is not evidence of execution determinism. Use
+`verify --fresh-semantic-audit` or `independent_judge` for an explicit resampling
+audit; a discovered contradiction still poisons that dependency within its
+scope. No cached judgment proves semantic correctness or learning utility.
+
 A task may declare a report instead of repeating a query's eligibility expression
 in an answer specification:
 

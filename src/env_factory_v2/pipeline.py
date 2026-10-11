@@ -141,7 +141,7 @@ def build(request, *, agent, output, source=None, repairs=1, docker=True, base_i
             phase('execution')
             phase_start = time.monotonic()
             compiled, report = qualify(compiled['source'], judge=agent.judge,
-                                       independent_judge=agent.independent_judge, independent_review=review)
+                                       independent_review=review)
             if implementation_identity() != frozen_platform:
                 raise RuntimeError('platform changed during execution; discard this run')
             attempt['phases']['execution'] = time.monotonic() - phase_start

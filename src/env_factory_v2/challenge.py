@@ -322,7 +322,11 @@ def _execute_case(compiled, case, scenarios, agent, mutation_repair_budget=None)
         scenario['mutations'] = copy.deepcopy(scenarios[case['scenario_id']].get('mutations', [])) + reordered
         first = run_scenario(compiled, scenario, judge=agent.judge)
         mutation_repair = {'provenance': provenance, 'order': order, 'original_case': original_case}
-    repeat = run_scenario(compiled, scenario, judge=agent.independent_judge)
+    # Replay tests sandbox determinism. Native judge identities already bind the
+    # complete evidence and implementation; resampling identical evidence tests
+    # model variability, not an additional business path. Explicit fresh audits
+    # remain available through independent_judge, with contradiction poisoning.
+    repeat = run_scenario(compiled, scenario, judge=agent.judge)
     passed = expected_result(scenario, first) and expected_result(scenario, repeat)
     return {'case': case, 'passed': passed and replay_identity(first) == replay_identity(repeat),
             'first': first, 'repeat': repeat,
