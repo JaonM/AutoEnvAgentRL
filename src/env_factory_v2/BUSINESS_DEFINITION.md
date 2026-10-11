@@ -14,6 +14,16 @@ contract identities are recorded separately in `compilation.json`.
 
 ## Derived collection reports
 
+The author workbench's `check_contract` also returns `input_diagnostics` hints.
+These bounded probes vary query-bound string facts within declared schemas and
+check indexed answer/transaction-argument expressions against initial state.
+An expression error is a debugging hint, not a business verdict or an added
+qualification gate. Check original input guarantees before changing behavior;
+do not restrict valid inputs or invent records to suppress a hint. Reachable
+empty results need truthful completion and guarded downstream dependencies.
+No findings does not prove branch coverage, and independent business review
+remains required. These probes do not execute a policy or simulate consent.
+
 A task may declare a report instead of repeating a query's eligibility expression
 in an answer specification:
 

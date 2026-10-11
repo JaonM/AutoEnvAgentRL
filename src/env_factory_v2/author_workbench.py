@@ -81,6 +81,8 @@ class AuthorWorkbench:
             self.last_check = {'passed': recipes['passed'], 'phase': 'recipe_preflight',
                                'checks': recipes['checks'],
                                'scope': 'authored_recipe_validation_not_business_acceptance'}
+            from .input_diagnostics import input_diagnostics
+            self.last_check['input_diagnostics'] = input_diagnostics(compiled)
             if compilation is not None:
                 self.last_check['compilation'] = compilation
             return author_feedback(self.last_check)
