@@ -30,6 +30,14 @@ def train(config: Config):
             config.environment_factory = 'rl.environments.v2:V2Episode'
         if config.environment_factory != 'rl.environments.v2:V2Episode':
             raise ValueError('V2 tasks require rl.environments.v2:V2Episode')
+    from rl.environments.v3 import is_v3_bundle
+    if any(is_v3_bundle(root) for root in candidates):
+        if not all(is_v3_bundle(root) for root in candidates) or config.sandbox_backend != 'local' or config.sandbox_services:
+            raise ValueError('V3 currently requires an all-V3 task set and --sandbox-backend local')
+        if config.environment_factory == 'rl.environment:SandboxEpisode':
+            config.environment_factory = 'rl.environments.v3:V3Episode'
+        if config.environment_factory != 'rl.environments.v3:V3Episode':
+            raise ValueError('V3 tasks require rl.environments.v3:V3Episode')
     manager = None
     try:
         if config.sandbox_backend == "docker" and (not config.sandbox_services):

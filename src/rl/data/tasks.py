@@ -50,6 +50,13 @@ def load_tasks(*, sandbox='', manifest=''):
             root, identity = candidate, certificate['identity']
             public = json.loads((candidate / 'public.json').read_text())
             v2_texts.append({'item_id': identifier, 'task': public['task'], 'split': split})
+        elif (candidate / 'manifest.json').is_file() and (candidate / 'env.py').is_file():
+            from rl.environments.v3 import bundle_identity, is_v3_bundle
+            if not is_v3_bundle(candidate):
+                raise ValueError(f'incomplete V3 bundle: {candidate}')
+            root, identity = candidate, bundle_identity(candidate)
+            request = json.loads((candidate / 'request.json').read_text())
+            v2_texts.append({'item_id': identifier, 'task': request['user_request'], 'split': split})
         else:
             root = verify_training_sandbox(candidate)
             status = json.loads((root / 'status.json').read_text())
