@@ -52,7 +52,7 @@ def checked_source(folder):
 
 
 class AuthorDraftError(ContractError):
-    """A completed, scope-audited author turn left a recoverable draft."""
+    """A scope-audited author turn left an unqualified recoverable draft."""
 
     def __init__(self, message, recovery):
         super().__init__(message)
@@ -122,6 +122,7 @@ def generate_in_session(request, *, evidence_root, timeout=240, previous_source=
                            'grammar': (Path(__file__).parent/'BUSINESS_DEFINITION.md').read_text()
                                       + '\n\n' + (Path(__file__).parent/'CONTRACT.md').read_text()}))
     started = time.monotonic()
+    timed_out = False
     environment = {key:value for key,value in os.environ.items()
                    if not key.startswith(('SANDBOX_', 'LLM_', 'ROLLOUT_LLM_'))}
     with tempfile.TemporaryDirectory(prefix='envfactory-author-') as cwd:
@@ -138,13 +139,8 @@ def generate_in_session(request, *, evidence_root, timeout=240, previous_source=
                 except subprocess.TimeoutExpired:
                     os.killpg(process.pid, signal.SIGKILL)
                     process.wait()
-                raise RuntimeError('author session deadline exceeded')
-    if process.returncode != 0:
-        raise RuntimeError('native author process failed')
+                timed_out = True
     events = [json.loads(line) for line in (folder/'events.jsonl').read_text().splitlines() if line.strip()]
-    completed = [event for event in events if event.get('type') == 'turn.completed']
-    if len(completed) != 1 or any(event.get('type') == 'turn.failed' for event in events):
-        raise RuntimeError('native author turn did not complete')
     for event in events:
         item = event.get('item', {})
         require(item.get('type') not in {'command_execution', 'file_change', 'web_search', 'collab_tool_call'},
@@ -152,6 +148,27 @@ def generate_in_session(request, *, evidence_root, timeout=240, previous_source=
         if item.get('type') == 'mcp_tool_call':
             require(item.get('server') == 'envfactory_author' and item.get('tool') in
                     {'put_section', 'edit_contract', 'check_contract'}, 'unexpected author MCP tool')
+    if timed_out:
+        message = 'author session deadline exceeded'
+        recovery = incomplete_draft(folder, message)
+        # An unchanged starting draft is not progress and must not turn a stalled
+        # transport into repeated model attempts. Completed writes are auditable;
+        # an in-flight tool or a truncated event log cannot authorize recovery.
+        writes = [event for event in events if event.get('type') == 'item.completed'
+                  and event.get('item', {}).get('type') == 'mcp_tool_call'
+                  and event['item'].get('status') == 'completed'
+                  and event['item'].get('tool') in {'put_section', 'edit_contract'}]
+        draft = recovery.recovery.get('previous_source')
+        if writes and draft is not None and canonical(draft) != canonical(previous_source):
+            recovery.recovery['interrupted'] = True
+            (folder/'failure.json').write_text(canonical(recovery.recovery) + '\n')
+            raise recovery
+        raise RuntimeError(message)
+    if process.returncode != 0:
+        raise RuntimeError('native author process failed')
+    completed = [event for event in events if event.get('type') == 'turn.completed']
+    if len(completed) != 1 or any(event.get('type') == 'turn.failed' for event in events):
+        raise RuntimeError('native author turn did not complete')
     if json.loads((folder/'completion.json').read_text()) != {'completed': True}:
         raise incomplete_draft(folder, 'native author did not report completion')
     try:

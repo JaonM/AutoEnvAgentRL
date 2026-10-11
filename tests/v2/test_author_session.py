@@ -133,3 +133,58 @@ def test_completed_but_unfinished_session_raises_recoverable_draft(tmp_path):
             generate_in_session({'goal': 'test'}, evidence_root=tmp_path)
     assert error.value.recovery['previous_source'] == draft
     assert error.value.recovery['latest_operation']['result']['passed'] is False
+
+
+@pytest.mark.parametrize('case', ['partial', 'checked', 'missing', 'unchanged', 'inflight', 'forbidden', 'truncated'])
+def test_interrupted_author_recovers_only_audited_progress(tmp_path, case):
+    from pathlib import Path
+    import subprocess
+    from unittest.mock import Mock
+    from env_factory_v2.author_session import AuthorDraftError, generate_in_session
+
+    draft = direct() if case == 'checked' else {'environment': {'version': '1.0', 'id': 'partial'}}
+    previous = draft if case == 'unchanged' else None
+    def process(args, **kwargs):
+        folder = Path(args[args.index('--output-last-message') + 1]).parent
+        if case != 'missing':
+            server = AuthorMCP(folder / 'workbench', source=draft)
+            server.dispatch({'id': 1, 'method': 'tools/call',
+                'params': {'name': 'check_contract', 'arguments': {}}})
+        event = {'type': 'item.completed', 'item': {'type': 'mcp_tool_call',
+            'server': 'envfactory_author', 'tool': 'put_section', 'status': 'completed'}}
+        if case == 'inflight':
+            event['type'] = 'item.started'; event['item']['status'] = 'in_progress'
+        events = [event]
+        if case == 'forbidden': events.append({'type': 'item.started', 'item': {'type': 'command_execution'}})
+        (folder / 'events.jsonl').write_text('\n'.join(json.dumps(e) for e in events) + '\n'
+                                            + ('{"type":' if case == 'truncated' else ''))
+        return Mock(pid=123, returncode=-15, communicate=Mock(side_effect=subprocess.TimeoutExpired('codex', 1)))
+    with patch('env_factory_v2.author_session.subprocess.Popen', side_effect=process), \
+         patch('env_factory_v2.author_session.os.killpg') as kill:
+        expected = AuthorDraftError if case in {'partial', 'checked'} else (ContractError if case == 'forbidden'
+                   else json.JSONDecodeError if case == 'truncated' else RuntimeError)
+        with pytest.raises(expected) as error:
+            generate_in_session({'goal': 'test'}, evidence_root=tmp_path, timeout=1, previous_source=previous)
+        kill.assert_called_once()
+    if case in {'partial', 'checked'}:
+        assert error.value.recovery['previous_source'] == draft
+        assert error.value.recovery['interrupted'] is True
+        assert error.value.recovery['scope'] == 'unqualified_author_draft'
+        # Even a successful authored check is only a draft when the turn times out.
+        assert error.value.recovery['latest_operation']['result']['passed'] is (case == 'checked')
+    else:
+        assert not isinstance(error.value, AuthorDraftError)
+
+
+def test_interrupted_draft_does_not_increase_pipeline_repair_budget(tmp_path):
+    from unittest.mock import Mock
+    from env_factory_v2.author_session import AuthorDraftError
+    from env_factory_v2.pipeline import build
+    draft = {'environment': {'version': '1.0', 'id': 'partial'}}
+    agent = Mock()
+    agent.generate.side_effect = AuthorDraftError('author session deadline exceeded', {
+        'previous_source': draft, 'scope': 'unqualified_author_draft', 'interrupted': True})
+    result = build({'goal': 'test'}, agent=agent, output=tmp_path / 'build', repairs=1, author_tools=True)
+    assert agent.generate.call_count == 2 and len(result['attempts']) == 2
+    assert not result['qualified']
+    assert all(a['failed_phase'] == 'generation' for a in result['attempts'])
