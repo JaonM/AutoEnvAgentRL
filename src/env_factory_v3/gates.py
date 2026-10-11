@@ -2,6 +2,8 @@
 
 G1 static      generated code passes the sandbox rules, the answer schema is valid and every
               tool parameter has a type and a description (the agent sees nothing else)
+natural        (readiness for the free-dialogue user, not a G1-G5 gate) approval_key maps each
+              exact write to the approval topic the reference confirms
 G2 differential env.py's reference and the independent oracle agree (state and answer) on the
                original world, every approval flip and perturbed worlds; the reference earns
                reward 1.0 everywhere
@@ -205,12 +207,41 @@ def category(request, env):
     return {'passed': ok, 'declared': declared, 'structure': structure}
 
 
+def approval_problems(env, request):
+    """Free dialogue needs env.approval_key(tool, args, facts): the approval topic that governs an
+    exact write (platform side; the agent never sees it). It must name the topic the reference
+    itself confirms, on every approval world."""
+    from env_factory_v3 import spec
+    approvals = {t['key'] for t in spec.fact_topics(request) if t['kind'] == 'approval'}
+    if not approvals:
+        return []
+    if not callable(getattr(env, 'approval_key', None)):
+        return ['env.py must define approval_key(tool, args, facts) -> approval topic for an exact write']
+    problems = []
+    for name, data, facts in variants(request['tables'], request['user_facts'], perturbed=0):
+        for entry in run_reference(env, data, facts, start=request['time']['start'])['trace']:
+            if entry.get('kind') != 'confirm':
+                continue
+            proposal = entry['proposal']
+            try:
+                key = env.approval_key(proposal['tool'], copy.deepcopy(proposal['args']), copy.deepcopy(facts))
+            except Exception as exc:
+                key = f'<raised {type(exc).__name__}>'
+            if key != entry['key']:
+                problems.append(f'{name}: approval_key({proposal["tool"]}, ...) = {key!r} but the reference '
+                                f'confirms {entry["key"]!r}')
+    return problems[:10]
+
+
 def qualify(env, oracle, schema, request, *, perturbed=20, http=True, excluded=()):
     """Run G2-G5 (G1 is enforced when modules are loaded). Returns the full gate report."""
     schema_problems = answers.check_schema(schema)
     tool_problems = tool_spec_problems(env.make_tools())
+    approval = approval_problems(env, request)
     report = {'static': {'passed': not schema_problems and not tool_problems, 'schema_problems': schema_problems,
                          'tool_problems': tool_problems[:10]},
+              # Free dialogue readiness: not needed for the structured user, required for the natural one.
+              'natural': {'passed': not approval, 'approval_problems': approval},
               'excluded_worlds': sorted(excluded)}
     worlds = compare_worlds(env, oracle, schema, request, perturbed=perturbed, excluded=excluded)
     report['differential'] = differential(worlds)

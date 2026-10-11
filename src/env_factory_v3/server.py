@@ -5,15 +5,18 @@ POST /step    {"episode", "action": {...}}                     -> {"ok", "result
         actions: {"type": "tool", "name", "args"} | {"type": "ask", "key"}
                  {"type": "confirm", "key", "proposal": {"tool", "args"}} | {"type": "wait", "seconds"}
                  {"type": "answer", "answer"}
+                 natural user mode: {"type": "chat", "message", "proposal"?} replaces ask/confirm
 POST /reward  {"episode"}                                      -> grade (after the answer)
 POST /release {"episode"}                                      -> {"released": bool}
 GET  /health
+With V3_SERVICE_TOKEN set (serve) every POST needs `Authorization: Bearer <token>`.
 Private facts, the oracle and source tables are never exposed; a business rejection is an
 observation (ok=false, kind=business), not a transport error.
 """
 from __future__ import annotations
 
 import copy
+import hmac
 import json
 import threading
 import uuid
@@ -26,8 +29,20 @@ from env_factory_v3.worlds import variants
 
 
 class Service:
-    def __init__(self, env, oracle, schema, request, *, valid_worlds=None, perturbed=20):
+    def __init__(self, env, oracle, schema, request, *, valid_worlds=None, perturbed=20, user_mode='structured',
+                 user_client=None):
+        if user_mode not in ('structured', 'natural'):
+            raise ValueError(f'unknown user mode {user_mode}')
+        if user_mode == 'natural' and user_client is None:
+            raise ValueError('natural user mode needs a user simulator client')
         self.env, self.oracle, self.schema, self.request = env, oracle, schema, request
+        self.user_mode, self.user_client = user_mode, user_client
+        if user_mode == 'natural':
+            from env_factory_v3.gates import approval_problems
+            problems = approval_problems(env, request)
+            if problems:
+                raise ValueError(f'bundle is not ready for the natural user: {problems[:3]}')
+        self.approvals = {t['key'] for t in spec.fact_topics(request) if t['kind'] == 'approval'}
         worlds = {name: (data, facts) for name, data, facts in
                   variants(request['tables'], request['user_facts'], perturbed=perturbed)}
         names = valid_worlds or ['original']
@@ -41,7 +56,14 @@ class Service:
             'user_topics': spec.fact_topics(request), 'answer_schema': schema,
             'time': {'start': request['time']['start']},
             'protocol': 'Use ask to learn user facts and confirm before every write; '
-                        'pass the returned consent token to that exact write; finish with answer.'}
+                        'pass the returned consent token to that exact write; finish with answer.',
+            'user_mode': user_mode}
+        if user_mode == 'natural':
+            # The agent must find out what to ask; no topic keys, no approval keys.
+            self.instructions.pop('user_topics')
+            self.instructions['protocol'] = ('Talk with the user in natural language (chat). Before every write, '
+                                             'propose that exact write in a chat message; the reply carries a '
+                                             'consent token when the user agrees. Finish with answer.')
 
     def reset(self, world=None, seed=None):
         name = world if world is not None else self.order[(seed or 0) % len(self.order)]
@@ -52,8 +74,12 @@ class Service:
         expected = self.oracle.expected(copy.deepcopy(data), copy.deepcopy(facts), start)
         episode = Episode(self.env.make_tools(), data, facts, start=start)
         identifier = uuid.uuid4().hex
+        record = {'episode': episode, 'expected': expected, 'world': name, 'data': data, 'facts': facts}
+        if self.user_mode == 'natural':
+            from env_factory_v3.user_sim import UserSimulator
+            record['user'] = UserSimulator(self.user_client, self.request, facts, self.approvals)
         with self.lock:
-            self.episodes[identifier] = {'episode': episode, 'expected': expected, 'world': name, 'data': data}
+            self.episodes[identifier] = record
         return {'episode': identifier, 'world': name, 'instructions': self.instructions}
 
     def _get(self, identifier):
@@ -62,11 +88,37 @@ class Service:
                 raise KeyError('unknown episode')
             return self.episodes[identifier]
 
+    def chat(self, record, action):
+        """One natural-language turn. Consent is decided here, never by the simulator."""
+        episode, proposal = record['episode'], action.get('proposal')
+        token, decision = None, None
+        if proposal is not None:
+            try:
+                key = self.env.approval_key(proposal['tool'], copy.deepcopy(proposal['args']),
+                                            copy.deepcopy(record['facts']))
+            except Exception as exc:
+                raise ValueError(f'proposal does not name an approvable write: {exc}') from exc
+            if key not in self.approvals:
+                raise ValueError(f'approval_key returned {key!r}, not an approval topic')
+            token = episode.confirm(key, proposal)
+            decision = token is not None
+        reply = record['user'].reply(str(action.get('message') or ''), decision)
+        episode.trace.append({'kind': 'chat', 'message': action.get('message'), 'reply': reply,
+                              'proposal': copy.deepcopy(proposal), 'time': episode.now})
+        return {'reply': reply, **({'consent': token} if proposal is not None else {})}
+
     def step(self, identifier, action):
-        episode = self._get(identifier)['episode']
+        record = self._get(identifier)
+        episode = record['episode']
         kind = action.get('type')
+        if self.user_mode == 'natural' and kind in ('ask', 'confirm'):
+            return {'ok': False, 'kind': 'invalid', 'error': 'use chat to talk with the user', 'now': episode.now}
+        if self.user_mode == 'structured' and kind == 'chat':
+            return {'ok': False, 'kind': 'invalid', 'error': 'chat needs the natural user mode', 'now': episode.now}
         try:
-            if kind == 'tool':
+            if kind == 'chat':
+                result = self.chat(record, action)
+            elif kind == 'tool':
                 result = episode.call(action['name'], **(action.get('args') or {}))
             elif kind == 'ask':
                 result = episode.ask(action['key'])
@@ -107,8 +159,11 @@ class Service:
         return {**grade, 'world': record['world']}
 
 
-def make_handler(service):
+def make_handler(service, token=None):
     class Handler(BaseHTTPRequestHandler):
+        def _authorized(self):
+            return token is None or hmac.compare_digest(self.headers.get('Authorization', ''), f'Bearer {token}')
+
         def _send(self, status, body):
             payload = json.dumps(body, ensure_ascii=False).encode()
             self.send_response(status)
@@ -126,6 +181,8 @@ def make_handler(service):
             return self._send(404, {'error': 'not found'})
 
         def do_POST(self):
+            if not self._authorized():
+                return self._send(401, {'error': 'missing or wrong service token'})
             try:
                 length = int(self.headers.get('Content-Length') or 0)
                 body = json.loads(self.rfile.read(length) or b'{}')
@@ -145,8 +202,9 @@ def make_handler(service):
     return Handler
 
 
-def start(service, host='127.0.0.1', port=0):
-    server = ThreadingHTTPServer((host, port), make_handler(service))
+def start(service, host='127.0.0.1', port=0, token=None):
+    """Serve in a daemon thread; with a token every POST needs `Authorization: Bearer <token>`."""
+    server = ThreadingHTTPServer((host, port), make_handler(service, token))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server

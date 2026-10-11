@@ -5,64 +5,20 @@ episodes through the bundle's HTTP service and the shared agent view, one world 
 the bundle's served order. A task no strong policy solves gives a learner no successful
 trajectories to start from. Provider failures are infrastructure errors, never business results.
 
-    python -m env_factory_v3 policy BUNDLE [--k 4] [--prefix LLM]   # uses <PREFIX>_API_KEY/BASE_URL/MODEL
+    python -m env_factory_v3 policy BUNDLE [--k 4] [--prefix LLM] [--user-mode natural]
+    # player: <PREFIX>_API_KEY/BASE_URL/MODEL; natural user simulator: V3_USER_* (falls back to LLM_*)
 """
 from __future__ import annotations
 
 import json
-import os
-import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
 from env_factory_v3 import agent_view, bundle, server
+from env_factory_v3.llm import ChatClient, ProviderError, load_env_file  # noqa: F401  (re-exported)
 
 RESULT = 'policy.json'
-
-
-class ProviderError(Exception):
-    """The model provider failed; the episode says nothing about the task."""
-
-
-def load_env_file(path='.env'):
-    """KEY=VALUE lines into os.environ, never overriding what is already set."""
-    path = Path(path)
-    if not path.exists():
-        return
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if line and not line.startswith('#') and '=' in line:
-            key, value = line.split('=', 1)
-            os.environ.setdefault(key.strip(), value.strip().strip('\'"'))
-
-
-class ChatClient:
-    def __init__(self, prefix='LLM', *, timeout=180, retries=2):
-        self.base_url = os.environ[f'{prefix}_BASE_URL'].rstrip('/')
-        self.api_key = os.environ[f'{prefix}_API_KEY']
-        self.model = os.environ[f'{prefix}_MODEL']
-        self.timeout, self.retries = timeout, retries
-        self.opener = build_opener(ProxyHandler())
-
-    def chat(self, messages, tools):
-        body = json.dumps({'model': self.model, 'messages': messages, 'tools': tools, 'stream': False}).encode()
-        for attempt in range(self.retries + 1):
-            request = Request(self.base_url + '/chat/completions', data=body, method='POST',
-                              headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + self.api_key})
-            try:
-                with self.opener.open(request, timeout=self.timeout) as response:
-                    return json.load(response)['choices'][0]['message']
-            except HTTPError as error:
-                if error.code not in (408, 429) and error.code < 500:
-                    raise ProviderError(f'provider rejected the request: HTTP {error.code}') from error
-                failure = f'HTTP {error.code}'
-            except (URLError, TimeoutError, OSError, KeyError, ValueError) as error:
-                failure = type(error).__name__
-            if attempt < self.retries:
-                time.sleep(5 * (attempt + 1))
-        raise ProviderError(f'provider failed after retries: {failure}')
 
 
 def _post(opener, url, body):
@@ -122,12 +78,12 @@ def play(base_url, client, world, category, *, max_turns=30):
         _post(opener, base_url + '/release', {'episode': episode})
 
 
-def gate(folder, client, *, k=4, parallel=4, max_turns=30):
+def gate(folder, client, *, k=4, parallel=4, max_turns=30, user_mode='structured', user_client=None):
     """k episodes on the bundle's served worlds; passes when at least one succeeds."""
     folder = Path(folder)
     loaded = bundle.load_bundle(folder)
     service = server.Service(loaded['env'], loaded['oracle'], loaded['schema'], loaded['request'],
-                             valid_worlds=loaded['valid_worlds'])
+                             valid_worlds=loaded['valid_worlds'], user_mode=user_mode, user_client=user_client)
     httpd = server.start(service)
     base_url = f'http://127.0.0.1:{httpd.server_address[1]}'
     worlds = [service.order[i % len(service.order)] for i in range(k)]
@@ -146,10 +102,12 @@ def gate(folder, client, *, k=4, parallel=4, max_turns=30):
         httpd.server_close()
     played = [e for e in episodes if 'infrastructure' not in e]
     successes = sum(e['success'] for e in played)
-    report = {'model': client.model, 'k': k, 'played': len(played), 'successes': successes,
+    report = {'model': client.model, 'user_mode': user_mode,
+              'user_model': getattr(user_client, 'model', None), 'k': k, 'played': len(played), 'successes': successes,
               'success_rate': round(successes / len(played), 3) if played else None,
               'mean_reward': round(sum(e['reward'] or 0 for e in played) / len(played), 3) if played else None,
               'status': ('infrastructure' if not played else 'passed' if successes else 'unsolved'),
               'platform_identity': loaded['manifest']['platform_identity'], 'episodes': episodes}
-    (folder / RESULT).write_text(json.dumps(report, ensure_ascii=False, indent=1))
+    name = RESULT if user_mode == 'structured' else f'policy-{user_mode}.json'
+    (folder / name).write_text(json.dumps(report, ensure_ascii=False, indent=1))
     return report

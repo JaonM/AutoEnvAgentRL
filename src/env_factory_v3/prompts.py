@@ -16,7 +16,10 @@ Format: {{"fields": {{"<name>": {{"type": ..., "description": ..., ...}}}}}}
   the user must get one, add at most one such field with "graded": false and put the actual
   outcome in a graded field (for example a "failure" enum next to it). The same applies to
   string properties inside objects and array items.
-- Do not decide the business outcome here; only its shape.
+- Do not decide the business outcome here; only its shape. Descriptions define meaning, units
+  and how an absent value is written; they must not prescribe control flow (what happens after a
+  refusal or failure, whether later steps still run, which rule wins) beyond what brief.md says.
+  An enum may list possible outcomes; it must not imply which branch the business takes.
 
 Run `{python} -m env_factory_v3.checks schema` until it prints PASS. Do not read or write
 files outside this folder. End with one line naming the fields.
@@ -41,7 +44,13 @@ Write env.py:
    - Tools enforce every rule in brief.md on whatever data they receive. They run on
      perturbed worlds, so never depend on particular ids or values from data.json.
    - Expose what an agent needs to do the task through tools; never expose facts.json.
-2. reference(api) -> dict: a deterministic agent that handles the request correctly using only
+2. approval_key(tool, args, facts) -> str (only when facts.json has approval topics): the
+   approval topic in facts.json that governs this exact write, derived from the arguments and
+   the user's facts (for example: the loan is the first id the user listed -> approve_first).
+   A user talking freely approves proposals, never topic keys, so this mapping must follow the
+   business meaning of the write, not the order calls happen to arrive in. It runs on the
+   platform side only.
+3. reference(api) -> dict: a deterministic agent that handles the request correctly using only
    api.ask(fact_key), api.call(tool, **args) and api.confirm(approval_key, proposal).
    Before every write: token = api.confirm(approval_key, {{"tool": name, "args": exact_args}}),
    then api.call(name, consent=token, **exact_args). confirm returns None when the user
@@ -195,6 +204,34 @@ perturbation_audit.json.
 Run `{python} -m env_factory_v3.checks env`, `{python} -m env_factory_v3.checks oracle` and
 `{python} -m env_factory_v3.checks diff` until all three print PASS.
 Do not read or write files outside this folder. End with a two-line summary of the fix.
+"""
+
+REQUEST_AUTHOR = """You design one new business task for training customer-facing agents. Business domain:
+{domain}. {detail}
+Write request.json in this folder (assignment.json repeats the assignment):
+{{"id": "{id}", "family": "<short domain slug>", "category": "{category}", "title": "<short Chinese title>",
+  "user_request": "...", "business_rules": "...", "tables": {{...}}, "user_facts": {{...}},
+  "time": {{"start": 10, "tick": 0}}}}
+
+Task shape: {shape}
+
+- business_rules (Chinese): the complete and only authority. State every rule the outcome
+  depends on precisely (eligibility, limits, rounding, ordering, ties, what happens on refusal or
+  failure, partial success). Amounts are integer cents in data; times are virtual integers.
+  No rule may be open to two readings.
+- tables: synthetic rows, each with a unique "id"; columns consistent within a table; enough
+  rows that wrong rules give different results (decoys, boundary values, an ineligible row).
+- user_facts: what only the user knows and an agent must ask for (ids, quantities, choices),
+  plus one boolean approve_* fact per write the user is asked to approve.
+- user_request (Chinese): what a real user would say in a chat. Only their goal, what they know
+  and what they want to be told. Never restate business rules or transaction semantics, never use
+  field names, say amounts in 元, keep it to one to three short sentences. Do not include the
+  user_facts values unless a real user would open with them.
+- Use a domain different from library loans, procurement, subscriptions, document access,
+  parcels, parking, warehouse lots and file versions.
+
+Run `{python} -m env_factory_v3.checks request` until it prints PASS. Do not read or write
+files outside this folder. End with one line: the title.
 """
 
 REPAIR = """The environment in this folder failed qualification. gate_report.json lists the

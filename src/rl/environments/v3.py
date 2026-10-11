@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
+import secrets
 import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -38,6 +40,12 @@ class V3Episode:
 
     def __init__(self, root):
         from env_factory_v3 import bundle
+        from env_factory_v3.llm import load_env_file
+        from rl.paths import PROJECT_ROOT
+        load_env_file(PROJECT_ROOT / '.env')
+        # structured: ask/confirm by topic key; natural: free dialogue with a simulated user.
+        self.user_mode = os.environ.get('ENVFACTORY_V3_USER_MODE', 'structured')
+        self.token = secrets.token_hex(16)  # only this runtime may drive its service
         self.root = Path(root).resolve()
         loaded = bundle.load_bundle(self.root)
         self.base_url = self._start(loaded)
@@ -52,9 +60,13 @@ class V3Episode:
     # -- transport --------------------------------------------------------------
     def _start(self, loaded):
         from env_factory_v3 import server
+        user = None
+        if self.user_mode == 'natural':
+            from env_factory_v3.llm import ChatClient
+            user = ChatClient('V3_USER')
         self.service = server.Service(loaded['env'], loaded['oracle'], loaded['schema'], loaded['request'],
-                                      valid_worlds=loaded['valid_worlds'])
-        self.server = server.start(self.service)
+                                      valid_worlds=loaded['valid_worlds'], user_mode=self.user_mode, user_client=user)
+        self.server = server.start(self.service, token=self.token)
         return f'http://127.0.0.1:{self.server.server_address[1]}'
 
     def _stop(self):
@@ -64,7 +76,8 @@ class V3Episode:
     def request(self, route, body):
         started = time.monotonic()
         request = Request(self.base_url + route, data=json.dumps(body, ensure_ascii=False).encode(),
-                          method='POST', headers={'Content-Type': 'application/json'})
+                          method='POST', headers={'Content-Type': 'application/json',
+                                                  'Authorization': f'Bearer {self.token}'})
         try:
             with self.opener.open(request, timeout=120) as response:
                 status, value = response.status, json.load(response)
@@ -170,7 +183,7 @@ class V3Episode:
             self.score = {'reward': 0.0, 'success': False, 'reason': 'no_final_answer'}
         return {'final_reward': float(self.score['reward']), 'terminated': self.terminated,
                 'trace': copy.deepcopy(self.trace), 'score': copy.deepcopy(self.score),
-                'world': self.world, 'trainable': True}
+                'world': self.world, 'user_mode': self.user_mode, 'trainable': True}
 
     # -- continuation (trainer-side only) -----------------------------------------
     def snapshot(self):
@@ -211,7 +224,7 @@ class V3DockerEpisode(V3Episode):
 
     def _start(self, loaded):
         from env_factory_v3 import docker
-        started = docker.run(self.root)
+        started = docker.run(self.root, user_mode=self.user_mode, token=self.token)
         self.container = started['container']
         return started['url']
 

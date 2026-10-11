@@ -48,6 +48,9 @@ def validate(request):
     for text in ('user_request', 'business_rules', 'title'):
         if not isinstance(request.get(text), str) or not request[text].strip():
             problems.append(f'{text} must be nonempty text')
+    clarifications = request.get('clarifications', [])
+    if not (isinstance(clarifications, list) and all(isinstance(c, str) and c.strip() for c in clarifications)):
+        problems.append('clarifications must be a list of nonempty texts')
     return problems
 
 
@@ -75,9 +78,10 @@ def fact_topics(request):
 
 
 def authority_texts(request):
-    """The only text a verdict may quote: the user's request and the business rules (never the
-    model-written answer schema or the platform's table and topic summaries)."""
-    return [' '.join(request['user_request'].split()), ' '.join(request['business_rules'].split())]
+    """The only text a verdict may quote: the user's request, the business rules and the business
+    owner's clarifications (never the model-written answer schema or the platform's summaries)."""
+    return [' '.join(text.split()) for text in
+            (request['user_request'], request['business_rules'], *request.get('clarifications', []))]
 
 
 def quoted(request, quote):
@@ -90,6 +94,9 @@ def brief(request, schema=None):
     tables = '\n'.join(f'- {name}: {len(rows)} rows; columns {sorted(rows[0]) if rows else "(empty)"}'
                        for name, rows in request['tables'].items())
     topics = '\n'.join(f'- {t["key"]} ({t["kind"]}): {t["description"]}' for t in fact_topics(request))
+    clarified = ''.join(f'- {c}\n' for c in request.get('clarifications', []))
+    if clarified:
+        clarified = '\n## Business owner clarifications (part of the business rules)\n' + clarified
     text = f"""# {request['title']}
 
 Category: {request['category']}
@@ -99,7 +106,7 @@ Category: {request['category']}
 
 ## Business rules (the only authority)
 {request['business_rules']}
-
+{clarified}
 ## Tables (full initial rows in data.json)
 {tables}
 
@@ -162,12 +169,38 @@ def from_v2_frozen(frozen_root, sample_id, *, start=10):
     folder = root / f'{sample_id:02d}'
     business = json.loads((folder / 'business.json').read_text())
     facts = json.loads((folder / 'user.json').read_text())['facts']
-    request = {'id': f'v2-cross-{sample_id:02d}', 'family': sample['business_family'],
+    request = {'id': f"v2-{sample['business_family'].split('_')[0]}-{sample_id:02d}",
+               'family': sample['business_family'],
                'category': sample['category'], 'title': sample['title'],
                'user_request': sample['raw_request'], 'business_rules': business['policy'],
                'tables': expand_tables(business), 'user_facts': facts, 'fact_descriptions': {},
                'time': {'start': start, 'tick': 0},
                'source': {'frozen': str(root), 'sample': sample_id}}
+    problems = validate(request)
+    if problems:
+        raise RequestError('; '.join(problems))
+    return request
+
+
+def findings_report(status):
+    """Open questions for the business owner from a build's spec_findings (markdown)."""
+    lines = [f"# Open business-rule questions: {status['id']}", '']
+    for index, finding in enumerate(status.get('spec_findings', []), 1):
+        worlds = finding.get('worlds') or ([finding['world']] if finding.get('world') else [])
+        lines += [f"## {index}. {finding.get('issue') or finding.get('verdict', 'finding')}",
+                  f"- rule text in question: {finding.get('brief_quote', '')}",
+                  f"- why it is unclear: {finding.get('reason', '')}",
+                  f"- worlds affected: {', '.join(worlds) or 'the task itself'}", '']
+    if len(lines) == 2:
+        lines.append('No open questions.')
+    lines.append('Answer each question in one sentence; `clarify` adds the answers to the request.')
+    return '\n'.join(lines) + '\n'
+
+
+def clarify(request, answers):
+    """A new request whose business rules carry the owner's answers."""
+    request = json.loads(json.dumps(request))
+    request['clarifications'] = [*request.get('clarifications', []), *[a.strip() for a in answers if a.strip()]]
     problems = validate(request)
     if problems:
         raise RequestError('; '.join(problems))

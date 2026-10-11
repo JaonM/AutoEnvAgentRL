@@ -7,11 +7,15 @@ from __future__ import annotations
 import copy
 import json
 
-RESERVED = ('v3_ask', 'v3_confirm', 'v3_answer')
+RESERVED = ('v3_ask', 'v3_confirm', 'v3_chat', 'v3_answer')
 SYSTEM = ('Handle the user request using only the public tools. Never guess private user facts: use '
           'v3_ask. Before every write call v3_confirm with the exact tool and args, then pass the returned '
           'token as `consent`. Finish with v3_answer, or a final JSON object with exactly the answer '
           'schema fields.')
+SYSTEM_NATURAL = ('You are a business assistant talking with a user. Use only the public tools. Learn what you '
+                  'need by talking with the user through v3_chat; never guess private details. Before every '
+                  'write, propose that exact write through v3_chat and pass the returned consent token as '
+                  '`consent`. Finish with v3_answer, or a final JSON object with exactly the answer schema fields.')
 PUBLIC = ('title', 'user_request', 'business_rules', 'user_topics', 'answer_schema', 'time')
 
 
@@ -27,6 +31,19 @@ def tools(instructions, category):
         raise ValueError('business tool collides with a V3 runtime tool')
     out = [function(t['name'], t['description'], copy.deepcopy(t['parameters']['properties']),
                     t['parameters']['required']) for t in instructions['tools']]
+    if instructions.get('user_mode') == 'natural':
+        out.append(function(
+            'v3_chat', 'Say something to the user and get their reply. To ask for approval of a write, include '
+            'the exact proposal; when the user agrees the result carries a consent token to pass as `consent` '
+            'to exactly that write.',
+            {'message': {'type': 'string', 'description': 'what you say to the user, in their language'},
+             'proposal': {'type': 'object', 'properties': {'tool': {'type': 'string'}, 'args': {'type': 'object'}},
+                          'required': ['tool', 'args'],
+                          'description': 'only when asking approval for one exact write'}}, ['message']))
+        fields = instructions['answer_schema']['fields']
+        out.append(function('v3_answer', 'Submit the final answer and end the episode.', copy.deepcopy(fields),
+                            list(fields)))
+        return [out[-1]] if category == 'direct_response' else out
     facts = [t['key'] for t in instructions['user_topics'] if t['kind'] != 'approval']
     approvals = [t['key'] for t in instructions['user_topics'] if t['kind'] == 'approval']
     if facts:
@@ -46,6 +63,11 @@ def tools(instructions, category):
 
 
 def messages(instructions):
+    if instructions.get('user_mode') == 'natural':
+        # The user's opening is a user turn; the rest is the assistant's working context.
+        context = {key: instructions[key] for key in ('business_rules', 'answer_schema', 'time')}
+        return [{'role': 'system', 'content': SYSTEM_NATURAL + '\n\n' + json.dumps(context, ensure_ascii=False)},
+                {'role': 'user', 'content': instructions['user_request']}]
     public = {key: instructions[key] for key in PUBLIC}
     return [{'role': 'system', 'content': SYSTEM},
             {'role': 'user', 'content': json.dumps(public, ensure_ascii=False)}]
@@ -59,6 +81,8 @@ def action(name, params, business_tools):
         return {'type': 'ask', 'key': params.get('key')}
     if name == 'v3_confirm':
         return {'type': 'confirm', 'key': params.get('key'), 'proposal': params.get('proposal')}
+    if name == 'v3_chat':
+        return {'type': 'chat', 'message': params.get('message'), 'proposal': params.get('proposal')}
     if name == 'v3_answer':
         return None
     raise KeyError(f'unknown tool {name}')

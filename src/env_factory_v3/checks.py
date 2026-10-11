@@ -4,6 +4,7 @@
     python -m env_factory_v3.checks env      # env.py loads, reference runs on all worlds, answer fits schema
     python -m env_factory_v3.checks oracle   # oracle.py loads and returns schema-valid results on all worlds
     python -m env_factory_v3.checks diff     # env.py and oracle.py agree everywhere (arbiter)
+    python -m env_factory_v3.checks request  # a generated request.json is valid and reads naturally
 
 Prints PASS/FAIL and exits 0 only on PASS. Results also go to check-<kind>.json.
 """
@@ -57,6 +58,7 @@ def check_env(folder):
     if not isinstance(tools, dict) or not tools:
         return ['make_tools() must return a non-empty dict'], notes
     problems += tool_spec_problems(tools)
+    problems += gates.approval_problems(env, request)
     start = request['time']['start']
     for name, data, facts in variants(request['tables'], request['user_facts'], perturbed=PERTURBED):
         try:
@@ -133,7 +135,13 @@ def check_diff(folder):
     return problems, notes
 
 
-KINDS = {'schema': check_schema, 'env': check_env, 'oracle': check_oracle, 'diff': check_diff}
+def check_request(folder):
+    from env_factory_v3.generate import check_request as generated
+    return generated(folder)
+
+
+KINDS = {'schema': check_schema, 'env': check_env, 'oracle': check_oracle, 'diff': check_diff,
+         'request': check_request}
 
 
 def run(kind, folder):

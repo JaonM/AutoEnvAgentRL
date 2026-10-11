@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -36,8 +37,9 @@ CMD ["python", "-m", "env_factory_v3", "serve", "/bundle", "--host", "0.0.0.0", 
 """
 
 
-def docker(*args, timeout=600):
-    result = subprocess.run(['docker', *args], capture_output=True, text=True, timeout=timeout)
+def docker(*args, timeout=600, env=None):
+    result = subprocess.run(['docker', *args], capture_output=True, text=True, timeout=timeout,
+                            env={**os.environ, **env} if env else None)
     if result.returncode:
         raise RuntimeError(f'docker {args[0]} failed: {(result.stderr or result.stdout)[-800:]}')
     return result.stdout.strip()
@@ -95,11 +97,23 @@ def image_for(folder):
     return metadata['image_id']
 
 
-def run(folder, *, timeout=30):
-    """Start a serving container; returns {'container', 'url'}."""
+def run(folder, *, user_mode='structured', token=None, timeout=30):
+    """Start a serving container; returns {'container', 'url'}. The natural user mode passes the
+    simulator's provider settings by name (values never appear in argv)."""
     image = image_for(folder)
-    container = docker('run', '-d', '--label', 'envfactory.v3=serve', *HARDENING,
-                       '--publish', f'127.0.0.1::{PORT}', image)
+    extra, command = [], []
+    if user_mode == 'natural':
+        for prefix in ('V3_USER', 'LLM'):
+            for name in ('API_KEY', 'BASE_URL', 'MODEL'):
+                if os.environ.get(f'{prefix}_{name}'):
+                    extra += ['--env', f'{prefix}_{name}']
+        command = ['python', '-m', 'env_factory_v3', 'serve', '/bundle', '--host', '0.0.0.0', '--port', str(PORT),
+                   '--user-mode', 'natural']
+    if token:
+        extra += ['--env', 'V3_SERVICE_TOKEN']  # value comes from the docker CLI's environment, not argv
+    container = docker('run', '-d', '--label', 'envfactory.v3=serve', *HARDENING, *extra,
+                       '--publish', f'127.0.0.1::{PORT}', image, *command,
+                       env={'V3_SERVICE_TOKEN': token} if token else None)
     try:
         port = docker('port', container, f'{PORT}/tcp').splitlines()[0].rsplit(':', 1)[1]
         url = f'http://127.0.0.1:{port}'

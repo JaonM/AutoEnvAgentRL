@@ -64,6 +64,13 @@ def renew_loan(db, now, loan_id: str, reader_id: str):
     return {'loan_id': loan_id, 'due_day': loan['due_day'], 'renewals': loan['renewals']}
 
 
+def approval_key(tool, args, facts):
+    """Approval topic for one exact write: renewing the n-th loan the user listed."""
+    if tool != 'renew_loan':
+        raise ValueError(f'{tool} needs no approval')
+    return ('approve_first', 'approve_second')[facts['loan_ids'].index(args['loan_id'])]
+
+
 def make_tools():
     return {'check_renewal': check_renewal, 'get_waitlist': get_waitlist, 'renew_loan': renew_loan}
 

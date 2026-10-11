@@ -3,16 +3,21 @@
   python -m env_factory_v3 import-v2 --frozen DIR --sample 4 --output request.json
   python -m env_factory_v3 build --request request.json --output DIR [--repairs 2]
   python -m env_factory_v3 batch --frozen DIR --samples 4,5,9 --output DIR [--parallel 1]
+  python -m env_factory_v3 batch --requests DIR --output DIR                 # generated requests
+  python -m env_factory_v3 generate --domains domains.json --count 30 --output DIR
   python -m env_factory_v3 serve BUNDLE --port 8090
   python -m env_factory_v3 verify BUNDLE [--resign]   # re-run gates; --resign re-signs for this platform
   python -m env_factory_v3 docker BUNDLE              # hardened image, verified offline in a container
   python -m env_factory_v3 policy BUNDLE [--k 4]      # policy gate with an independent model
+  python -m env_factory_v3 findings BUILD             # spec_findings as questions for the business owner
+  python -m env_factory_v3 clarify --request R --answer TEXT --output R2   # rebuild R2 with the answers
   python -m env_factory_v3 check {schema|env|oracle|diff}   # same as env_factory_v3.checks
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 import time
@@ -44,8 +49,9 @@ def main(argv=None):
         if name == 'build':
             p.add_argument('--request', required=True)
         else:
-            p.add_argument('--frozen', required=True)
-            p.add_argument('--samples', required=True)
+            p.add_argument('--requests', help='folder of request .json files (instead of --frozen/--samples)')
+            p.add_argument('--frozen')
+            p.add_argument('--samples', default='')
             p.add_argument('--parallel', type=int, default=1)
     p = sub.add_parser('verify')
     p.add_argument('bundle')
@@ -56,6 +62,19 @@ def main(argv=None):
     p.add_argument('bundle')
     p.add_argument('--k', type=int, default=4)
     p.add_argument('--prefix', default='LLM', help='<PREFIX>_API_KEY / _BASE_URL / _MODEL')
+    p.add_argument('--user-mode', choices=('structured', 'natural'), default='structured')
+    p = sub.add_parser('generate', help='new build requests for new business domains')
+    p.add_argument('--domains', required=True, help='JSON list of {"name", "detail"} domains')
+    p.add_argument('--count', type=int, required=True)
+    p.add_argument('--output', required=True)
+    p.add_argument('--parallel', type=int, default=2)
+    p.add_argument('--model', default='gpt-6.1-sol')
+    p = sub.add_parser('findings', help="open business-rule questions from a build's spec_findings")
+    p.add_argument('build')
+    p = sub.add_parser('clarify', help="add the business owner's answers to a request")
+    p.add_argument('--request', required=True)
+    p.add_argument('--answer', action='append', required=True, help='one clarification sentence (repeatable)')
+    p.add_argument('--output', required=True)
     p = sub.add_parser('docker', help='build the hardened image and verify it offline in a container')
     p.add_argument('bundle')
     p.add_argument('--base-image', default=None)
@@ -63,6 +82,8 @@ def main(argv=None):
     p.add_argument('bundle')
     p.add_argument('--host', default='127.0.0.1')
     p.add_argument('--port', type=int, default=8090)
+    p.add_argument('--user-mode', choices=('structured', 'natural'), default='structured',
+                   help='natural: free-dialogue user simulated with V3_USER_* (falls back to LLM_*)')
     p = sub.add_parser('check')
     p.add_argument('kind', choices=sorted(checks.KINDS))
     args = parser.parse_args(argv)
@@ -79,7 +100,10 @@ def main(argv=None):
                                                        'elapsed_seconds')}, ensure_ascii=False))
         return 0 if status['training_ready'] else 1
     if args.command == 'batch':
-        requests = [spec.from_v2_frozen(args.frozen, int(s)) for s in args.samples.split(',')]
+        if args.requests:
+            requests = [spec.load(path) for path in sorted(Path(args.requests).glob('*.json'))]
+        else:
+            requests = [spec.from_v2_frozen(args.frozen, int(s)) for s in args.samples.split(',') if s]
         summary = pipeline.batch(requests, args.output, runner=_runner(args), parallel=args.parallel,
                                  repairs=args.repairs, perturbed=args.perturbed)
         print(json.dumps(summary, ensure_ascii=False, indent=1))
@@ -106,10 +130,29 @@ def main(argv=None):
     if args.command == 'policy':
         from env_factory_v3 import policy
         policy.load_env_file()
-        report = policy.gate(args.bundle, policy.ChatClient(args.prefix), k=args.k)
-        print(json.dumps({k: report[k] for k in ('model', 'k', 'played', 'successes', 'success_rate',
+        user = policy.ChatClient('V3_USER') if args.user_mode == 'natural' else None
+        report = policy.gate(args.bundle, policy.ChatClient(args.prefix), k=args.k, user_mode=args.user_mode,
+                             user_client=user)
+        print(json.dumps({k: report[k] for k in ('model', 'user_mode', 'k', 'played', 'successes', 'success_rate',
                                                  'mean_reward', 'status')}))
         return 0 if report['status'] == 'passed' else 1
+    if args.command == 'generate':
+        from env_factory_v3 import generate
+        summary = generate.generate(json.loads(Path(args.domains).read_text()), args.count, args.output,
+                                    runner=_runner(args), parallel=args.parallel, python=sys.executable)
+        print(json.dumps({k: summary[k] for k in ('requested', 'kept', 'domains')}, ensure_ascii=False))
+        return 0
+    if args.command == 'findings':
+        status = json.loads((Path(args.build) / 'status.json').read_text())
+        report = spec.findings_report(status)
+        (Path(args.build) / 'findings.md').write_text(report)
+        print(report)
+        return 0
+    if args.command == 'clarify':
+        request = spec.clarify(spec.load(args.request), args.answer)
+        Path(args.output).write_text(json.dumps(request, ensure_ascii=False, indent=1))
+        print(args.output)
+        return 0
     if args.command == 'docker':
         from env_factory_v3 import docker
         options = {'base_image': args.base_image} if args.base_image else {}
@@ -117,9 +160,14 @@ def main(argv=None):
         return 0
     if args.command == 'serve':
         loaded = bundle.load_bundle(args.bundle)
+        user = None
+        if args.user_mode == 'natural':
+            from env_factory_v3.llm import ChatClient, load_env_file
+            load_env_file()
+            user = ChatClient('V3_USER')
         service = server.Service(loaded['env'], loaded['oracle'], loaded['schema'], loaded['request'],
-                                 valid_worlds=loaded['valid_worlds'])
-        httpd = server.start(service, args.host, args.port)
+                                 valid_worlds=loaded['valid_worlds'], user_mode=args.user_mode, user_client=user)
+        httpd = server.start(service, args.host, args.port, token=os.environ.get('V3_SERVICE_TOKEN') or None)
         print(f'serving {args.bundle} on http://{args.host}:{httpd.server_address[1]}')
         try:
             while True:

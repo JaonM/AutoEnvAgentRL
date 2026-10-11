@@ -124,17 +124,46 @@ gate on the current platform and re-signs the bundle only when they all pass.
 each environment from its verified container (`V3DockerEpisode`); `local` serves it in process
 (`V3Episode`).
 
+## Free-dialogue user
+
+`serve --user-mode natural` (or `ENVFACTORY_V3_USER_MODE=natural` for `rl`) replaces ask/confirm
+with `chat {message, proposal?}`. The agent sees no topic keys: only the user's opening, the rules
+and the answer schema. A simulated user (`user_sim.py`, model from `V3_USER_*`, falling back to
+`LLM_*`) knows the request and the private facts and answers in plain Chinese. It never decides
+consent. When a chat message carries an exact write proposal, the platform maps it to its
+approval topic with `env.approval_key(tool, args, facts)` and reads the user's approval fact.
+The simulator is only told the decision so it can phrase it. Reward therefore stays as
+deterministic as with the structured user. `gates.json` records natural readiness: `approval_key`
+must name the topic the reference confirms on every approval world. The structured user does not
+need it.
+
+## Business owner loop
+
+`findings BUILD` turns a build's `spec_findings` into questions for the business owner.
+`clarify --request R --answer TEXT --output R2` adds the answers to the request as
+`clarifications`. They become part of the business rules in brief.md and can be quoted by
+verdicts. Rebuild from R2.
+
+## Generating requests
+
+`generate --domains domains.json --count 30 --output DIR` gives each request its own model
+session. Each one must pass `checks request`: a valid request, an opening in a real user's voice
+(red flags: amounts in 分, transaction-semantics phrases), and boolean `approve_*` facts.
+Near-duplicates are dropped and the V2 category mix is kept. Then run `batch --requests DIR/requests`.
+
 ## HTTP protocol
 
 `POST /reset {world?|seed?}` → episode id and public instructions (request, rules, tool specs,
 askable user topics, answer schema). `POST /step {episode, action}` with action types `tool`,
-`ask`, `confirm`, `wait`, `answer`. `POST /reward {episode}` after the answer; `POST /release {episode}` frees it. Business
+`ask`, `confirm`, `wait`, `answer` (natural user mode: `chat`). With `V3_SERVICE_TOKEN` set, every
+POST needs `Authorization: Bearer <token>`; `rl` gives each environment its own random token. `POST /reward {episode}` after the answer; `POST /release {episode}` frees it. Business
 rejections are observations (`ok: false, kind: business`).
 
 ## M1 limits
 
 - The clock is frozen (`time.tick == 0`); scheduled events and time-advancing actions come later.
-- The user is structured (`ask` / `confirm`); natural-language user simulation is M2.
+- The free-dialogue user is LLM-simulated, and its replies are not graded. The final answer is
+  still the structured `answer` object, not a natural-language reply.
 - The serving container publishes its port on 127.0.0.1, so it keeps a bridge network. Only the
   container verification runs with `--network=none`; env.py itself is limited by the static
   sandbox rules (no I/O, no clock, no reflection).
