@@ -15,6 +15,12 @@ from env_factory_v2.contracts.expressions import canonical
 
 
 TOOLS = [
+    {'name': 'inspect_contract', 'description': 'Get section sizes, keys and current check status before selecting a narrow read path.',
+     'inputSchema': object_schema({})},
+    {'name': 'read_check', 'description': 'Read detailed current check evidence by JSON Pointer and character offset; use after the concise check summary.',
+     'inputSchema': object_schema({'path': {'type': 'string'}, 'offset': {'type': 'integer'}})},
+    {'name': 'submit_contract', 'description': 'Seal the current successfully checked draft and hand it to independent validation. No further edits are permitted. This is the authoritative completion signal.',
+     'inputSchema': object_schema({})},
     {'name': 'read_contract', 'description': 'Read the current draft at a JSON Pointer (empty path means root). Offset is a character offset into canonical JSON; start at 0. Responses contain at most 8192 characters; follow next_offset or select a narrower path. Partial fragments are not complete JSON. Reading does not validate or change the draft.',
      'inputSchema': object_schema({'path': {'type': 'string'}, 'offset': {'type': 'integer'}})},
     {'name': 'put_section', 'description': 'Replace one draft contract section with JSON. Invalid JSON leaves the draft unchanged.',
@@ -59,18 +65,29 @@ class AuthorMCP:
             source = self.workbench.snapshot()
             digest = hashlib.sha256(canonical(source).encode()).hexdigest()
             value['source_identity'] = digest
-            if params.get('name') != 'read_contract':
+            read_only = params.get('name') in {'read_contract', 'inspect_contract', 'read_check'}
+            if not read_only:
                 self._save('draft.json', source)
             if params.get('name') == 'check_contract' and self.workbench.last_check is not None:
                 self._save(f'check-{self.workbench.operations:04d}.json',
                            {'source_identity': digest, 'result': self.workbench.last_check})
             # This receipt always describes the current draft, never an older
             # successful check after the model has changed a section.
-            if params.get('name') != 'read_contract':
+            if not read_only:
                 self._save('latest_operation.json', {'tool': params.get('name'), 'result': value,
                                                     'operations': self.workbench.operations})
+            if params.get('name') == 'submit_contract' and value.get('submitted') is True:
+                self._save('submitted.json', {'tool': 'submit_contract', 'result': value,
+                                             'operations': self.workbench.operations})
             with (self.output / 'operations.jsonl').open('a') as stream:
                 stream.write(canonical({'tool': params.get('name'), 'result': value}) + '\n')
+            if params.get('name') == 'check_contract' and 'checks' in value:
+                # Full diagnostics remain available via read_check and on disk.
+                value = {key: value[key] for key in ('passed', 'phase', 'scope', 'source_identity',
+                         'check_count', 'failed_count', 'reused') if key in value} | {
+                    'checks': [{k: c[k] for k in ('id', 'passed', 'error') if k in c}
+                               for c in value['checks'] if not c['passed']],
+                    'details': 'read_check with a narrow JSON Pointer for diagnostics or failed checks'}
             result = {'content': [{'type': 'text', 'text': canonical(value)}],
                       'isError': not value['passed']}
         else:

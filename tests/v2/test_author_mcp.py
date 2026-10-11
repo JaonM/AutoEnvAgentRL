@@ -41,7 +41,7 @@ def test_stdio_handshake_tool_discovery_and_real_check(tmp_path):
                              text=True, capture_output=True, check=True, timeout=10)
     responses = [json.loads(line) for line in process.stdout.splitlines()]
     assert len(responses) == 3
-    assert {t['name'] for t in responses[1]['result']['tools']} == {'read_contract', 'put_section', 'edit_contract', 'check_contract'}
+    assert {t['name'] for t in responses[1]['result']['tools']} == {'read_contract', 'inspect_contract', 'read_check', 'put_section', 'edit_contract', 'check_contract', 'submit_contract'}
     assert json.loads(responses[2]['result']['content'][0]['text'])['passed']
 
 

@@ -105,11 +105,25 @@ def authored_cases(compiled):
         yield 'probe', scenario, probe['rule_ids']
 
 
-def preflight_recipes(compiled):
+def preflight_recipes(compiled, *, cache=None):
     """Cheap real trajectories and answer rendering; never fake semantic grades."""
     checks = []
+    # Only fixture-only edits permit selective execution reuse. Any change to
+    # world, tools, rules, targets, limits or user behavior invalidates all runs.
+    runtime_identity = hashlib.sha256(canonical({key: value for key, value in compiled['source'].items()
+                                               if key not in {'scenarios', 'probes'}}).encode()).hexdigest()
+    reused = 0
     for kind, scenario, _ in authored_cases(compiled):
-        run = run_scenario(compiled, scenario, recipes_only=True)
+        key = hashlib.sha256(canonical([runtime_identity, scenario]).encode()).hexdigest()
+        if cache is not None and key in cache:
+            run = copy.deepcopy(cache[key])
+            reused += 1
+        else:
+            run = run_scenario(compiled, scenario, recipes_only=True)
+            if cache is not None:
+                cache[key] = copy.deepcopy(run)
+                if len(cache) > 128:
+                    del cache[next(iter(cache))]
         expected_error = scenario.get('expect_error')
         passed = (run['error'] is not None and expected_error in run['error']) if expected_error else run['error'] is None
         passed = passed and run.get('failure_integrity', {}).get('passed', True)
@@ -135,6 +149,7 @@ def preflight_recipes(compiled):
                           if 'structured_components' in run['outcome'] else {}),
                        **({'deterministic_grade': deterministic} if deterministic is not None else {})})
     return {'scope': 'trajectory_and_recipe_validation_no_semantic_judgment',
+            'execution_reuse': {'reused': reused, 'executed': len(checks) - reused},
             'passed': all(check['passed'] for check in checks), 'checks': checks}
 
 

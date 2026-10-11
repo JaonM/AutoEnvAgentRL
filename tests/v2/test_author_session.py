@@ -40,7 +40,8 @@ def test_native_generator_selects_host_tools_without_changing_judge_transport(tm
     assert result == direct()
     assert run.call_args.kwargs['previous_source'] == direct()
     assert run.call_args.kwargs['feedback'] == {'error': 'actual failure'}
-    assert run.call_args.kwargs['timeout'] == 240
+    assert run.call_args.kwargs['timeout'] == 600
+    assert run.call_args.kwargs['idle_timeout'] == 240
     assert len(agent.provenance) == 1 and agent.base_url == 'http://localhost:9999/v1'
 
 

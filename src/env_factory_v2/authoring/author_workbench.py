@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import re
 
@@ -91,12 +92,34 @@ class AuthorWorkbench:
         self.last_check = None
         self.request = copy.deepcopy(request or {})
         self.last_index = None
+        self.checked_identity = None
+        self.submitted = False
+        self.check_cache = {}
+        self.recipe_cache = {}
 
     def call(self, tool, arguments):
         require(self.operations < self.max_operations, 'author operation budget exceeded')
         self.operations += 1
         try:
             require(isinstance(arguments, dict), 'author arguments must be an object')
+            require(not self.submitted, 'author draft already submitted')
+            identity = hashlib.sha256(canonical(self.source).encode()).hexdigest()
+            if tool == 'inspect_contract':
+                require(not arguments, 'inspect takes no arguments')
+                return {'passed': True, 'sections': {key: {'type': type(value).__name__,
+                    'characters': len(canonical(value)), 'keys': sorted(value) if isinstance(value, dict) else []}
+                    for key, value in self.source.items()},
+                    'checked': self.checked_identity == identity and bool(self.last_check and self.last_check['passed'])}
+            if tool == 'read_check':
+                require(self.last_check is not None, 'no current check')
+                return read_draft(self.last_check, arguments)
+            if tool == 'submit_contract':
+                require(not arguments, 'submit takes no arguments')
+                require(self.checked_identity == identity and self.last_check is not None
+                        and self.last_check['passed'] is True, 'submit requires a successful check of the current draft')
+                self.submitted = True
+                return {'passed': True, 'submitted': True,
+                        'scope': 'authored_recipe_validation_not_business_acceptance'}
             if tool == 'read_contract':
                 return read_draft(self.source, arguments)
             if tool == 'put_section':
@@ -112,6 +135,14 @@ class AuthorWorkbench:
                 return {'passed': True, 'sections': sorted(self.source)}
             require(tool == 'check_contract' and not arguments, 'unknown author tool')
             self.last_check = None
+            if identity in self.check_cache:
+                from env_factory_v2.requirements.obligation_index import reference_changes
+                report, index = self.check_cache[identity]
+                self.last_check = copy.deepcopy(report)
+                self.last_check['reference_changes'] = reference_changes(self.last_index, index)
+                self.last_index = copy.deepcopy(index)
+                self.checked_identity = identity
+                return {**author_feedback(self.last_check), 'reused': True}
             compiled, compilation = compile_source(copy.deepcopy(self.source))
             from env_factory_v2.authoring.author_constraints import check_author_inputs
             check_author_inputs(compiled, self.request)
@@ -119,9 +150,10 @@ class AuthorWorkbench:
             index = obligation_index(compiled)
             changes = reference_changes(self.last_index, index) if self.last_index is not None else None
             self.last_index = index
-            recipes = preflight_recipes(compiled)
+            recipes = preflight_recipes(compiled, cache=self.recipe_cache)
             self.last_check = {'passed': recipes['passed'], 'phase': 'recipe_preflight',
                                'checks': recipes['checks'],
+                               'execution_reuse': recipes['execution_reuse'],
                                'scope': 'authored_recipe_validation_not_business_acceptance'}
             if changes is not None:
                 self.last_check['reference_changes'] = changes
@@ -133,6 +165,10 @@ class AuthorWorkbench:
             self.last_check['temporal_diagnostics'] = temporal_diagnostics(compiled)
             if compilation is not None:
                 self.last_check['compilation'] = compilation
+            self.checked_identity = identity
+            self.check_cache[identity] = (copy.deepcopy(self.last_check), copy.deepcopy(index))
+            if len(self.check_cache) > 8:
+                del self.check_cache[next(iter(self.check_cache))]
             return author_feedback(self.last_check)
         except ContractError as exc:
             return {'passed': False, 'error': str(exc)}
@@ -147,6 +183,7 @@ class AuthorWorkbench:
                 'author contract size limit')
         self.source = copy.deepcopy(candidate)
         self.last_check = None
+        self.checked_identity = None
 
     def snapshot(self):
         return copy.deepcopy(self.source)

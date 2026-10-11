@@ -43,6 +43,8 @@ class NativeCodeAgent:
         self.timeout = timeout
         self.evidence_root = Path(evidence_root)
         self.provenance = []
+        self.author_timeout = 600
+        self.author_idle_timeout = 240
         self.start_scope()
 
     def start_scope(self):
@@ -58,8 +60,14 @@ class NativeCodeAgent:
         budget = connection.get('timeout_seconds', 180)
         require(type(budget) in {int, float} and math.isfinite(budget) and 0 < budget <= 600,
                 'native bridge budget must be finite and within 600 seconds')
-        return cls(base_url=connection['container_base_url' if container else 'base_url'],
+        agent = cls(base_url=connection['container_base_url' if container else 'base_url'],
                    token=token, timeout=budget + 15, evidence_root=evidence_root)
+        for key in ('author_timeout', 'author_idle_timeout'):
+            value = connection.get(key, getattr(agent, key))
+            require(type(value) in {int, float} and math.isfinite(value) and 0 < value <= 600,
+                    'invalid author session budget')
+            setattr(agent, key, value)
+        return agent
 
     def ask(self, role, payload, schema, *, source_object=False, source_tree=False):
         require(not (source_object and source_tree), 'generation response formats are exclusive')
@@ -211,7 +219,8 @@ class NativeCodeAgent:
         previous = feedback.get('previous_source') if feedback else None
         candidate = isinstance(previous, dict) and bool(previous) and set(previous) <= SECTIONS
         source, provenance = generate_in_session(request,
-            evidence_root=self.evidence_root / 'author-sessions', timeout=min(self.timeout - 15, 600),
+            evidence_root=self.evidence_root / 'author-sessions', timeout=self.author_timeout,
+            idle_timeout=self.author_idle_timeout,
             previous_source=previous if candidate else None,
             feedback={k:v for k,v in (feedback or {}).items() if k != 'previous_source'})
         self.provenance.append(provenance)
