@@ -1,3 +1,4 @@
+from review_fixtures import with_requirement_reviews
 import copy
 import json
 from unittest.mock import Mock, patch
@@ -96,11 +97,11 @@ def test_unrelated_natural_question_cannot_unlock_a_user_stage(tmp_path):
 
 def challenge_value(source):
     rules = [r['id'] for r in source['rules']]
-    return {'business_consistent': True, 'reason': 'Unit-test transport fixture, not native proof.', 'cases': [
+    return with_requirement_reviews(source, {'business_consistent': True, 'reason': 'Unit-test transport fixture, not native proof.', 'cases': [
         {'id': 'independent_positive', 'rule_ids': rules, 'scenario_id': 'correct', 'reason': 'correct answer',
          'mutations_json': '[]', 'answer_json': '{}', 'expect_success': True},
         {'id': 'independent_negative', 'rule_ids': rules, 'scenario_id': 'wrong', 'reason': 'wrong answer',
-         'mutations_json': '[]', 'answer_json': '{}', 'expect_success': False}]}
+         'mutations_json': '[]', 'answer_json': '{}', 'expect_success': False}]})
 
 
 def test_unexecuted_rejection_remains_unqualified_and_explicitly_unproven(tmp_path):
@@ -160,6 +161,7 @@ def test_audit_cannot_make_real_correct_behavior_penalty_pass(tmp_path):
     source = direct()
     source['answers'][0]['expected'] = {'literal': 99}
     value = challenge_value(source)
+    value = with_requirement_reviews(source, value, {'goal': 'Return the public temperature 18.'})
     audit = {'business_consistent': False, 'reason': 'Original temperature is 18, not 99.',
              'cases': [{'id': c['id'], 'expect_success': c['expect_success'],
                         'reason': 'Use original business value, not grader target.'} for c in value['cases']]}

@@ -184,3 +184,29 @@ def test_reverse_catalog_includes_nested_output_and_observation_columns():
     assert '/answers/0/schema/items/properties/unasked~1metadata' in paths
     assert '/success/0/required_observations/0/columns/1' in paths
     assert '/success/0/required_tools/0' in paths
+
+
+@pytest.mark.parametrize('original_input', [{'goal': 'Report the original value.'},
+                                    {'user_request': 'Report the original value.'},
+                                    {'raw_request': 'Report the original value.'},
+                                    'Report the original value.'])
+def test_plain_contract_reviews_original_request_not_generated_task(original_input):
+    compiled = compile_contract(direct())
+    requirements = obligations(compiled, original_input)
+    assert [r['text'] for r in requirements] == ['Report the original value.']
+    assert all(r['source'] == 'user_request' for r in requirements)
+    assert all('fixed_fact' not in r['text'] for r in requirements)
+
+
+def test_plain_contract_cannot_skip_bidirectional_review():
+    compiled = compile_contract(direct())
+    value = {'business_consistent': True, 'reason': 'Missing review must not pass', 'cases': [
+        {'id': 'yes', 'rule_ids': ['fixed_fact'], 'scenario_id': 'correct', 'reason': 'correct',
+         'expect_success': True, 'mutations_json': '[]', 'answer_json': '{}'},
+        {'id': 'no', 'rule_ids': ['fixed_fact'], 'scenario_id': 'wrong', 'reason': 'wrong',
+         'expect_success': False, 'mutations_json': '[]', 'answer_json': '{}'}]}
+    agent = Mock(); agent.ask.return_value = (value, {})
+    with pytest.raises(RuntimeError, match='every public clause'):
+        challenge(compiled, {'goal': direct()['task']}, agent)
+    payload = agent.ask.call_args.args[1]
+    assert payload['public_requirements'] and payload['mandatory_obligation_catalog']

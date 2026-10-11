@@ -4,9 +4,19 @@ from .contract import require
 from .demand import cited_requirements
 
 
-def obligations(compiled):
+def obligations(compiled, original_request=None):
     demand = compiled['source'].get('demand')
-    return cited_requirements(demand['agent_context']) if demand else []
+    if demand:
+        return cited_requirements(demand['agent_context'])
+    # Legacy/plain contracts still require original-demand review. Generated
+    # public rules cannot substitute for a missing original business dossier.
+    request = original_request or {}
+    text = request if isinstance(request, str) else next((request[key]
+        for key in ('user_request', 'raw_request', 'goal')
+        if isinstance(request, dict) and isinstance(request.get(key), str) and request[key].strip()), None)
+    if not isinstance(text, str) or not text.strip():
+        text = compiled['source']['task']
+    return cited_requirements({'user_request': text})
 
 
 def mandatory_obligations(source):

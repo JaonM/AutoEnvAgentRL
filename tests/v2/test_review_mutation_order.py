@@ -1,3 +1,4 @@
+from review_fixtures import with_requirement_reviews
 import json
 from unittest.mock import Mock
 
@@ -10,13 +11,13 @@ from env_factory_v2.examples import simple
 
 
 def review():
-    return {'business_consistent': True, 'reason': 'Identity independent of display.', 'cases': [
+    return with_requirement_reviews(simple(), {'business_consistent': True, 'reason': 'Identity independent of display.', 'cases': [
         {'id': 'renamed', 'scenario_id': 'correct', 'rule_ids': ['size_matches'], 'reason': 'Same actual size.',
          'expect_success': True, 'mutations_json': json.dumps([
              {'table': 'items', 'key': 'I1', 'column': 'id', 'value': 'changed'},
              {'table': 'items', 'key': 'I1', 'column': 'display', 'value': 'new display'}]), 'answer_json': '{}'},
         {'id': 'wrong', 'scenario_id': 'wrong', 'rule_ids': ['size_matches'], 'reason': 'Missing actual item.',
-         'expect_success': False, 'mutations_json': '[]', 'answer_json': '{}'}]}
+         'expect_success': False, 'mutations_json': '[]', 'answer_json': '{}'}]})
 
 
 def agent(tmp_path, order):

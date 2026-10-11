@@ -1,3 +1,4 @@
+from review_fixtures import with_requirement_reviews
 import copy
 from unittest.mock import Mock
 
@@ -18,6 +19,7 @@ def case(identifier, positive):
 def test_append_only_recovery_executes_missing_negative(tmp_path):
     native = NativeCodeAgent(base_url='http://localhost:9999/v1', token='a' * 24, evidence_root=tmp_path)
     review = {'business_consistent': True, 'reason': 'original', 'cases': [case('yes', True)]}
+    review = with_requirement_reviews(direct(), review)
     before = copy.deepcopy(review)
     native.ask = Mock(side_effect=[(review, {}), ({'cases': [case('no', False)]}, {})])
     result = challenge(compile_contract(direct()), {'goal': direct()['task']}, native)

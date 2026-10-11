@@ -91,7 +91,7 @@ def _challenge(compiled, original_request, agent):
     from .fixtures import review_contract
     review_source, fixture_evidence = review_contract(compiled['source'])
     from .requirement_review import obligations, review_schema, validate_review, implementation_paths, mandatory_obligations
-    requirements = obligations(compiled)
+    requirements = obligations(compiled, original_request)
     value, provenance = agent.ask(
         'Independently compare the ORIGINAL request with this proposed business contract. compiled_public '
         'is the actual agent-visible interface; authored tool descriptions are not independently published. Do not trust its '

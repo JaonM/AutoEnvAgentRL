@@ -1,3 +1,4 @@
+from review_fixtures import with_requirement_reviews
 import copy
 import json
 from unittest.mock import Mock
@@ -80,8 +81,8 @@ def test_full_review_executes_independent_steps_and_preserves_original_identity(
     negative = {**case, 'id': 'no_actions', 'steps_json': '[]', 'expect_success': False,
                 'answer_json': json.dumps({'ids': {'literal': ['I1']}})}
     agent = Mock()
-    agent.ask.return_value = ({'business_consistent': True, 'reason': 'Unit test, not model evidence',
-                              'cases': [case, negative]}, {'unit_test_only': True})
+    agent.ask.return_value = (with_requirement_reviews(compiled['source'], {'business_consistent': True, 'reason': 'Unit test, not model evidence',
+                              'cases': [case, negative]}), {'unit_test_only': True})
     report = challenge(compiled, {'goal': compiled['source']['task']}, agent)
     assert report['passed']
     assert report['contract_identity'] == compiled['identity']

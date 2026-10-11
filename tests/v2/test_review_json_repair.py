@@ -1,3 +1,4 @@
+from review_fixtures import with_requirement_reviews
 import copy
 from unittest.mock import Mock
 
@@ -10,11 +11,11 @@ from env_factory_v2.code_agent import NativeCodeAgent
 
 
 def review():
-    return {'business_consistent': True, 'reason': 'fixed fact', 'cases': [
+    return with_requirement_reviews(direct(), {'business_consistent': True, 'reason': 'fixed fact', 'cases': [
         {'id': 'yes', 'rule_ids': ['fixed_fact'], 'scenario_id': 'correct', 'reason': 'correct',
          'expect_success': True, 'mutations_json': '[]', 'answer_json': '{"temperature":{"literal":18}}}'},
         {'id': 'no', 'rule_ids': ['fixed_fact'], 'scenario_id': 'wrong', 'reason': 'wrong',
-         'expect_success': False, 'mutations_json': '[]', 'answer_json': '{}'}]}
+         'expect_success': False, 'mutations_json': '[]', 'answer_json': '{}'}]})
 
 
 def agent(tmp_path):

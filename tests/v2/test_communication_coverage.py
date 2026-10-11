@@ -1,3 +1,4 @@
+from review_fixtures import with_requirement_reviews
 import copy
 import json
 from unittest.mock import Mock
@@ -26,7 +27,7 @@ def reviewed():
              for identity, scenario, size, positive in [('active', 'correct', 'M', True),
                ('inactive', 'correct', 'L', True), ('wrong', 'wrong', 'M', False)]]
     agent = Mock()
-    agent.ask.return_value = ({'business_consistent': True, 'reason': 'Unit test only', 'cases': cases}, {})
+    agent.ask.return_value = (with_requirement_reviews(source, {'business_consistent': True, 'reason': 'Unit test only', 'cases': cases}), {})
     judgment = {'criteria': {'explain': True}, 'provenance': {'unit_test_only': True}}
     agent.judge.return_value = judgment
     agent.independent_judge.return_value = judgment
