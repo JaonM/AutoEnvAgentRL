@@ -14,7 +14,7 @@ import time
 import uuid
 
 from .code_agent import MODEL, object_schema
-from .contract import require
+from .contract import ContractError, require
 from .expressions import canonical
 from env_factory.generation.codex_transport import transport_args
 
@@ -49,6 +49,41 @@ def checked_source(folder):
             and receipt['result'].get('source_identity') == identity,
             'author must finish with a successful check of the current draft')
     return source, receipt
+
+
+class AuthorDraftError(ContractError):
+    """A completed, scope-audited author turn left a recoverable draft."""
+
+    def __init__(self, message, recovery):
+        super().__init__(message)
+        self.recovery = recovery
+
+
+def incomplete_draft(folder, message):
+    """Keep data-only partial work without treating any stale check as approval."""
+    from .author_workbench import AuthorWorkbench, decode_json
+    folder = Path(folder)
+    recovery = {'scope': 'unqualified_author_draft', 'error': message}
+    try:
+        path = folder / 'workbench/draft.json'
+        require(path.stat().st_size <= 4 * 1024 * 1024, 'author JSON size limit')
+        draft = decode_json(path.read_text())
+        bench = AuthorWorkbench(source=draft)
+        if bench.snapshot():
+            recovery['previous_source'] = bench.snapshot()
+            digest = hashlib.sha256(canonical(draft).encode()).hexdigest()
+            recovery['source_identity'] = digest
+            receipt_path = folder / 'workbench/latest_operation.json'
+            if receipt_path.exists() and receipt_path.stat().st_size <= 4 * 1024 * 1024:
+                receipt = decode_json(receipt_path.read_text())
+                if receipt.get('result', {}).get('source_identity') == digest:
+                    recovery['latest_operation'] = receipt
+    except (OSError, ValueError, TypeError, KeyError):
+        # An invalid recovery artifact cannot turn a failed generation into a
+        # successful one, or conceal its original reason.
+        pass
+    (folder / 'failure.json').write_text(canonical(recovery) + '\n')
+    return AuthorDraftError(message, recovery)
 
 
 def generate_in_session(request, *, evidence_root, timeout=240, previous_source=None, feedback=None):
@@ -97,11 +132,12 @@ def generate_in_session(request, *, evidence_root, timeout=240, previous_source=
                     os.killpg(process.pid, signal.SIGKILL)
                     process.wait()
                 raise RuntimeError('author session deadline exceeded')
-    require(process.returncode == 0, 'native author process failed')
+    if process.returncode != 0:
+        raise RuntimeError('native author process failed')
     events = [json.loads(line) for line in (folder/'events.jsonl').read_text().splitlines() if line.strip()]
     completed = [event for event in events if event.get('type') == 'turn.completed']
-    require(len(completed) == 1 and not any(event.get('type') == 'turn.failed' for event in events),
-            'native author turn did not complete')
+    if len(completed) != 1 or any(event.get('type') == 'turn.failed' for event in events):
+        raise RuntimeError('native author turn did not complete')
     for event in events:
         item = event.get('item', {})
         require(item.get('type') not in {'command_execution', 'file_change', 'web_search', 'collab_tool_call'},
@@ -109,9 +145,12 @@ def generate_in_session(request, *, evidence_root, timeout=240, previous_source=
         if item.get('type') == 'mcp_tool_call':
             require(item.get('server') == 'envfactory_author' and item.get('tool') in
                     {'put_section', 'edit_contract', 'check_contract'}, 'unexpected author MCP tool')
-    require(json.loads((folder/'completion.json').read_text()) == {'completed': True},
-            'native author did not report completion')
-    source, receipt = checked_source(folder)
+    if json.loads((folder/'completion.json').read_text()) != {'completed': True}:
+        raise incomplete_draft(folder, 'native author did not report completion')
+    try:
+        source, receipt = checked_source(folder)
+    except (ContractError, OSError, ValueError, KeyError) as exc:
+        raise incomplete_draft(folder, str(exc)) from exc
     provenance = {'model': MODEL, 'backend': 'codex_cli', 'response_id': identity,
                   'generation_format': 'author_workbench', 'input_identity': hashlib.sha256(prompt.encode()).hexdigest(),
                   'seconds': time.monotonic()-started, 'usage': completed[0].get('usage', {}),

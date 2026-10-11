@@ -70,6 +70,17 @@ time dependencies merely to use a plan. Independent acceptance must still verify
 that the intended operations and their definitions implement the original request;
 matching an incorrectly authored operation is not independent business proof.
 
+## Bounded author recovery
+
+If a host author turn completes within its allowed tool scope but reports
+incomplete work or lacks a current successful check, the pipeline retains its
+data-only draft for the next existing repair attempt. `author_draft.json` and
+`feedback.json` record that handoff. A check receipt is attached only when its
+source identity matches the retained draft. A retained draft is not qualified;
+the next attempt still requires compilation, independent review and execution.
+Recovery adds no attempts. Process failures, timeouts and failed transport turns
+remain infrastructure failures, not requests to weaken the business contract.
+
 ## Shared communication obligations
 
 Environment `communications` contains `{id, rule_id, obligation, when?}`. Each entry

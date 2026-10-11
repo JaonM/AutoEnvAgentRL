@@ -49,3 +49,87 @@ def test_container_cannot_start_a_host_author_session(tmp_path):
                             evidence_root=tmp_path)
     with pytest.raises(ContractError, match='only on the host'):
         agent.generate({'goal': 'anything'}, author_tools=True)
+
+
+def test_incomplete_author_preserves_current_draft_and_failure_check(tmp_path):
+    from env_factory_v2.author_session import incomplete_draft
+    draft = {'environment': {'version': '1.0', 'id': 'partial'}}
+    server = AuthorMCP(tmp_path / 'workbench', source=draft)
+    server.dispatch({'id': 1, 'method': 'tools/call',
+                     'params': {'name': 'check_contract', 'arguments': {}}})
+    error = incomplete_draft(tmp_path, 'not complete')
+    assert error.recovery['previous_source'] == draft
+    assert not error.recovery['latest_operation']['result']['passed']
+    assert json.loads((tmp_path / 'failure.json').read_text()) == error.recovery
+
+
+def test_stale_success_receipt_is_not_attached_to_new_draft(tmp_path):
+    from env_factory_v2.author_session import incomplete_draft
+    server = AuthorMCP(tmp_path / 'workbench', source=direct())
+    server.dispatch({'id': 1, 'method': 'tools/call',
+                     'params': {'name': 'check_contract', 'arguments': {}}})
+    changed = direct()
+    changed['task'] = 'Changed task without check'
+    (tmp_path / 'workbench/draft.json').write_text(json.dumps(changed))
+    recovery = incomplete_draft(tmp_path, 'stale check').recovery
+    assert recovery['previous_source'] == changed
+    assert 'latest_operation' not in recovery
+    assert recovery['scope'] == 'unqualified_author_draft'
+
+
+def test_invalid_draft_is_not_used_as_repair_source(tmp_path):
+    from env_factory_v2.author_session import incomplete_draft
+    (tmp_path / 'workbench').mkdir()
+    (tmp_path / 'workbench/draft.json').write_text('{"unexpected":true}')
+    assert 'previous_source' not in incomplete_draft(tmp_path, 'failed').recovery
+
+
+def test_environment_only_draft_is_forwarded_to_next_author_session(tmp_path):
+    agent = NativeCodeAgent(base_url='http://localhost:9999/v1', token='a'*24, evidence_root=tmp_path)
+    partial = {'environment': {'version': '1.0', 'id': 'draft'}}
+    with patch('env_factory_v2.author_session.generate_in_session',
+               return_value=(direct(), {'source_identity': 'test'})) as generate:
+        agent.generate({'goal': 'test'}, author_tools=True, feedback={'previous_source': partial})
+    assert generate.call_args.kwargs['previous_source'] == partial
+
+
+def test_pipeline_hands_off_partial_work_within_existing_budget(tmp_path):
+    from unittest.mock import Mock
+    from env_factory_v2.author_session import AuthorDraftError
+    from env_factory_v2.pipeline import build
+
+    partial = {'environment': {'version': '1.0', 'id': 'draft'}}
+    agent = Mock()
+    agent.generate.side_effect = [AuthorDraftError('not complete', {
+        'previous_source': partial, 'scope': 'unqualified_author_draft', 'error': 'missing task'}),
+        RuntimeError('capacity unavailable')]
+    output = tmp_path / 'build'
+    result = build({'goal': 'test'}, agent=agent, output=output, repairs=2, author_tools=True)
+    assert agent.generate.call_count == 2  # infrastructure failure does not start a third repair
+    feedback = agent.generate.call_args.kwargs['feedback']
+    assert feedback['previous_source'] == partial
+    assert feedback['author_recovery']['error'] == 'missing task'
+    assert result['status'] == 'infrastructure_failed'
+    assert not result['qualified']
+    assert json.loads((output / 'attempt-1/author_draft.json').read_text()) == partial
+
+
+def test_completed_but_unfinished_session_raises_recoverable_draft(tmp_path):
+    from pathlib import Path
+    from unittest.mock import Mock
+    from env_factory_v2.author_session import AuthorDraftError, generate_in_session
+
+    draft = {'version': '2.0', 'id': 'unfinished'}
+    def process(args, **kwargs):
+        folder = Path(args[args.index('--output-last-message') + 1]).parent
+        server = AuthorMCP(folder / 'workbench', source=draft)
+        server.dispatch({'id': 1, 'method': 'tools/call',
+                         'params': {'name': 'check_contract', 'arguments': {}}})
+        (folder / 'events.jsonl').write_text(json.dumps({'type': 'turn.completed'}) + '\n')
+        (folder / 'completion.json').write_text('{"completed":false}')
+        return Mock(returncode=0)
+    with patch('env_factory_v2.author_session.subprocess.Popen', side_effect=process):
+        with pytest.raises(AuthorDraftError) as error:
+            generate_in_session({'goal': 'test'}, evidence_root=tmp_path)
+    assert error.value.recovery['previous_source'] == draft
+    assert error.value.recovery['latest_operation']['result']['passed'] is False

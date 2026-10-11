@@ -175,6 +175,14 @@ def build(request, *, agent, output, source=None, repairs=1, docker=True, base_i
             save(output / 'progress.json', delivery)
             return delivery
         except ContractError as exc:
+            from .author_session import AuthorDraftError
+            if isinstance(exc, AuthorDraftError):
+                recovery = copy.deepcopy(exc.recovery)
+                draft = recovery.pop('previous_source', None)
+                if draft is not None:
+                    previous_source = draft
+                    save(folder / 'author_draft.json', draft)
+                feedback = {**(feedback or {}), 'author_recovery': recovery}
             if attempt.get('active_phase'):
                 attempt['phases'].setdefault(attempt['active_phase'], time.monotonic() - phase_start)
             attempt.update(status='failed', error=str(exc), failed_phase=attempt.pop('active_phase', None))

@@ -168,9 +168,9 @@ class NativeCodeAgent:
             require(not self.base_url.startswith('http://host.docker.internal:'),
                     'author sessions run only on the host')
             from .author_session import generate_in_session
+            from .author_workbench import SECTIONS
             previous = feedback.get('previous_source') if feedback else None
-            candidate = isinstance(previous, dict) and bool(
-                {'task', 'tables', 'tools', 'answers', 'scenarios', 'rules'} & previous.keys())
+            candidate = isinstance(previous, dict) and bool(previous) and set(previous) <= SECTIONS
             source, provenance = generate_in_session(request,
                 evidence_root=self.evidence_root / 'author-sessions', timeout=min(self.timeout - 15, 600),
                 previous_source=previous if candidate else None,
