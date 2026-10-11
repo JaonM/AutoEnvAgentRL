@@ -102,9 +102,27 @@ def authorized_call_context(world, call_id, authorization_index):
     if (tool['kind'] != 'transaction' or tool['authorization'] != decision['stage']
             or decision['proposal'] != {'tool': call['tool'], 'arguments': call['arguments']}):
         raise ValueError('Committed call differs from exact authorized proposal')
-    if any(event.get('kind') == 'revoke' and event.get('stage') == decision['stage']
-           for event in world.trace[authorization_index + 1:call_index]):
-        raise ValueError('Authorization was revoked before the call')
+    from env_factory_v2.expressions import canonical
+    disclosed = {}
+    for index, event in enumerate(world.trace[:call_index]):
+        after_approval = index > authorization_index
+        if after_approval and event.get('kind') == 'revoke' and event.get('stage') == decision['stage']:
+            raise ValueError('Authorization was revoked before the call')
+        if event.get('kind') == 'user':
+            stage = world.user.stages[event['stage']]
+            if after_approval and event['stage'] == decision['stage']:
+                raise ValueError('Authorization was superseded before the call')
+            if stage['kind'] in {'fact', 'correction', 'choice'}:
+                fact = stage.get('as_fact', stage['fact'])
+                value = event['result']['value']
+                if after_approval and fact in disclosed and canonical(disclosed[fact]) != canonical(value):
+                    raise ValueError('Authorization context changed before the call')
+                disclosed[fact] = copy.deepcopy(value)
+        if after_approval and event.get('kind') == 'tool':
+            earlier_tool = world.tools[event['tool']]
+            if earlier_tool.get('authorization') == decision['stage']:
+                if event.get('status') == 'ok':
+                    raise ValueError('Authorization was already consumed before the call')
     return {'call_time': event_time(call), 'authorization_time': decision['time'],
             'authorized_state': state_before_event(world, authorization_index),
             'precommit_state': state_before_event(world, call_index),

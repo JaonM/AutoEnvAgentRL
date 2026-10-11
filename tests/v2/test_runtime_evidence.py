@@ -84,6 +84,70 @@ def test_authorized_context_binds_exact_actual_proposal_and_historical_state():
         authorized_call_context(world, write['id'], decision['trace_index'])
 
 
+def approved_world():
+    from env_factory_v2.runtime import Sandbox
+    world = Sandbox(transaction())
+    world.call('accounts', {}, call_id='read')
+    arguments = {'from_id': {'$result': 'read', 'path': 'items.0.id'},
+                 'to_id': {'$result': 'read', 'path': 'items.1.id'}, 'amount': 20}
+    world.interact('approve', question='Approve?', proposal={'tool': 'transfer', 'arguments': arguments})
+    return world, arguments, authorization_decisions(world)[0]['trace_index']
+
+
+def test_consumed_approval_cannot_be_attached_to_later_attempt():
+    from env_factory_v2.expressions import ContractError
+    world, arguments, decision = approved_world()
+    world.call('transfer', arguments, call_id='first')
+    with pytest.raises(ContractError):
+        world.call('transfer', arguments, call_id='second')
+    assert authorized_call_context(world, 'first', decision)
+    with pytest.raises(ValueError, match='consumed'):
+        authorized_call_context(world, 'second', decision)
+
+
+def test_revised_proposal_supersedes_old_approval_even_when_old_arguments_return():
+    from env_factory_v2.expressions import ContractError
+    world, arguments, decision = approved_world()
+    world.interact('approve', question='Different direction?', proposal={
+        'tool': 'transfer', 'arguments': {**arguments, 'from_id': 'B', 'to_id': 'A'}})
+    with pytest.raises(ContractError):
+        world.call('transfer', arguments, call_id='old_proposal')
+    with pytest.raises(ValueError, match='superseded'):
+        authorized_call_context(world, 'old_proposal', decision)
+
+
+def test_schema_error_before_authorization_does_not_consume_valid_approval():
+    from env_factory_v2.expressions import ContractError
+    world, arguments, decision = approved_world()
+    with pytest.raises(ContractError):
+        world.call('transfer', {**arguments, 'amount': 'invalid'}, call_id='invalid_input')
+    world.call('transfer', arguments, call_id='valid_retry')
+    assert authorized_call_context(world, 'valid_retry', decision)['proposal']['arguments'] == world.resolve(arguments)
+
+
+def test_changed_disclosed_fact_invalidates_approval_context():
+    from env_factory_v2.runtime import Sandbox
+    from env_factory_v2.expressions import ContractError
+    source = transaction()
+    source['user']['facts'].update(original='first', corrected='second')
+    source['user']['stages'] += [
+        {'id': 'initial', 'kind': 'fact', 'fact': 'original', 'depends_on': []},
+        {'id': 'correction', 'kind': 'correction', 'fact': 'corrected', 'as_fact': 'original',
+         'depends_on': ['initial']}]
+    world = Sandbox(source)
+    world.call('accounts', {}, call_id='read')
+    world.interact('initial', question='Preference?')
+    arguments = {'from_id': {'$result': 'read', 'path': 'items.0.id'},
+                 'to_id': {'$result': 'read', 'path': 'items.1.id'}, 'amount': 20}
+    world.interact('approve', question='Approve?', proposal={'tool': 'transfer', 'arguments': arguments})
+    decision = authorization_decisions(world)[0]['trace_index']
+    world.interact('correction', question='Correction?')
+    with pytest.raises(ContractError):
+        world.call('transfer', arguments, call_id='stale_context')
+    with pytest.raises(ValueError, match='context changed'):
+        authorized_call_context(world, 'stale_context', decision)
+
+
 def test_real_query_clock_flows_to_independent_quote_truth_and_preserves_other_tables():
     from env_factory_v2.examples import obj, query
     from env_factory_v2.runtime import Sandbox
