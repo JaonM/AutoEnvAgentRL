@@ -1,0 +1,8 @@
+[
+ {"name": "clinic appointments", "detail": "门诊预约：医生排班时段、号源余量、科室与医生资格、预约改期与取消规则、挂号费与退费。"},
+ {"name": "car rental", "detail": "租车：门店与车型库存、取还车时间段、按天计费与超时费、押金冻结与释放、异地还车费。"},
+ {"name": "utility billing", "detail": "水电燃气账单：阶梯计价、抄表读数、账期、减免政策、欠费滞纳金、分期缴费。"},
+ {"name": "gym membership", "detail": "健身会籍：会籍等级、课程名额、预约与签到、冻结与续费、私教课时扣减。"},
+ {"name": "hotel booking", "detail": "酒店订房：房型与日期库存、连住价格、取消政策与罚金、积分抵扣、加床与早餐。"},
+ {"name": "auto insurance claims", "detail": "车险理赔：保单有效期与险种、免赔额、理赔额度上限、材料完整性、分项赔付与已赔累计。"}
+]
