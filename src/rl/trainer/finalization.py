@@ -185,7 +185,9 @@ def finalize(session: TrainingSession):
             + [r["peak_bytes"] for r in session.times.memory.values()]
         )
         / 1000000000.0,
-        "sandbox_transport": "http" if session.config.sandbox_services else "in_process",
+        "sandbox_transport": ("http" if session.config.sandbox_services
+                              else "docker" if session.config.environment_factory.endswith(":V3DockerEpisode")
+                              else "in_process"),
         "best_heldout_policy": session.state.eval_state.get("best"),
         "scope": "dataset traversal completed; inspect updated_jobs and evaluation for learning evidence",
     }

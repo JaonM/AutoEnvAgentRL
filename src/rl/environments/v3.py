@@ -1,4 +1,5 @@
-"""V3 policy runtime: the qualified V3 bundle served over its own loopback HTTP API.
+"""V3 policy runtime: the qualified V3 bundle served over its own loopback HTTP API, in process
+(V3Episode) or from its verified hardened container (V3DockerEpisode).
 
 The policy sees only the public instructions (request, rules, tool specs, askable user topics,
 answer schema). Private facts, the oracle and source tables stay inside the service. V3 bundles
@@ -40,14 +41,13 @@ def bundle_identity(root):
 
 
 class V3Episode:
+    transport = 'in_process'
+
     def __init__(self, root):
-        from env_factory_v3 import bundle, server
+        from env_factory_v3 import bundle
         self.root = Path(root).resolve()
         loaded = bundle.load_bundle(self.root)
-        self.service = server.Service(loaded['env'], loaded['oracle'], loaded['schema'], loaded['request'],
-                                      valid_worlds=loaded['valid_worlds'])
-        self.server = server.start(self.service)
-        self.base_url = f'http://127.0.0.1:{self.server.server_address[1]}'
+        self.base_url = self._start(loaded)
         self.opener = build_opener(ProxyHandler({}))
         self.category = loaded['request']['category']
         self.task = {'task': loaded['request']['user_request']}
@@ -57,6 +57,17 @@ class V3Episode:
         self._closed = False
 
     # -- transport --------------------------------------------------------------
+    def _start(self, loaded):
+        from env_factory_v3 import server
+        self.service = server.Service(loaded['env'], loaded['oracle'], loaded['schema'], loaded['request'],
+                                      valid_worlds=loaded['valid_worlds'])
+        self.server = server.start(self.service)
+        return f'http://127.0.0.1:{self.server.server_address[1]}'
+
+    def _stop(self):
+        self.server.shutdown()
+        self.server.server_close()
+
     def request(self, route, body):
         started = time.monotonic()
         request = Request(self.base_url + route, data=json.dumps(body, ensure_ascii=False).encode(),
@@ -223,15 +234,31 @@ class V3Episode:
         self.call_ids = set(snapshot['call_ids'])
 
     def _forget(self):
-        # The service keeps every episode it served; drop ours so long runs stay bounded.
+        # The service keeps every episode it served; release ours so long runs stay bounded.
         if self.episode is not None:
-            with self.service.lock:
-                self.service.episodes.pop(self.episode, None)
+            self.request('/release', {'episode': self.episode})
 
     def close(self):
         if self._closed:
             return
         self._closed = True
-        self._forget()
-        self.server.shutdown()
-        self.server.server_close()
+        try:
+            self._forget()
+        finally:
+            self._stop()
+
+
+class V3DockerEpisode(V3Episode):
+    """Same runtime against the bundle's verified, hardened container (see env_factory_v3.docker)."""
+
+    transport = 'docker'
+
+    def _start(self, loaded):
+        from env_factory_v3 import docker
+        started = docker.run(self.root)
+        self.container = started['container']
+        return started['url']
+
+    def _stop(self):
+        from env_factory_v3 import docker
+        docker.remove(self.container)

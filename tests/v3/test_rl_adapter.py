@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -11,10 +13,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from test_env_factory_v3 import FakeRunner, library_request  # noqa: E402
 
-from env_factory_v3 import pipeline  # noqa: E402
+from env_factory_v3 import bundle, pipeline  # noqa: E402
 from env_factory_v3.runtime import BusinessError  # noqa: E402
 from rl.data.tasks import load_tasks  # noqa: E402
-from rl.environments.v3 import V3Episode, is_v3_bundle  # noqa: E402
+from rl.environments.v3 import V3DockerEpisode, V3Episode, is_v3_bundle  # noqa: E402
 
 
 def call(name, args, identifier):
@@ -120,6 +122,59 @@ class V3AdapterTests(unittest.TestCase):
         tasks = load_tasks(manifest=str(manifest))
         self.assertEqual(tasks[0].sandbox, str(self.bundle.resolve()))
         self.assertTrue(tasks[0].identity)
+
+
+class RequalifyTests(unittest.TestCase):
+    def test_bundle_from_another_platform_is_refused_until_requalified(self):
+        root = Path(tempfile.mkdtemp())
+        status = pipeline.build(library_request(), root / 'build', runner=FakeRunner(), perturbed=20)
+        folder = Path(status['bundle'])
+        manifest = json.loads((folder / 'manifest.json').read_text())
+        manifest['platform_identity'] = 'an-older-platform'
+        (folder / 'manifest.json').write_text(json.dumps(manifest))
+        with self.assertRaises(ValueError):
+            bundle.load_bundle(folder)
+        self.assertTrue(bundle.requalify(folder)['passed'])
+        loaded = bundle.load_bundle(folder)
+        self.assertEqual(loaded['manifest']['requalified'], [bundle.platform_identity()])
+
+    def test_requalify_never_signs_a_failing_bundle(self):
+        root = Path(tempfile.mkdtemp())
+        status = pipeline.build(library_request(), root / 'build', runner=FakeRunner(), perturbed=20)
+        folder = Path(status['bundle'])
+        manifest = json.loads((folder / 'manifest.json').read_text())
+        manifest['platform_identity'] = 'an-older-platform'
+        (folder / 'manifest.json').write_text(json.dumps(manifest))
+        source = (folder / 'oracle.py').read_text().replace("renewed.append(loan_id)", "pass", 1)
+        (folder / 'oracle.py').write_text(source)
+        manifest['files']['oracle.py'] = bundle.sha256(folder / 'oracle.py')
+        (folder / 'manifest.json').write_text(json.dumps(manifest))
+        self.assertFalse(bundle.requalify(folder)['passed'])
+        with self.assertRaises(ValueError):
+            bundle.load_bundle(folder)
+
+
+@unittest.skipUnless(os.environ.get('V3_DOCKER_TESTS') == '1' and shutil.which('docker'),
+                     'set V3_DOCKER_TESTS=1 to build and run real containers')
+class DockerTests(unittest.TestCase):
+    def test_verified_container_serves_a_full_reward_episode(self):
+        from env_factory_v3 import docker
+        root = Path(tempfile.mkdtemp())
+        status = pipeline.build(library_request(), root / 'build', runner=FakeRunner(), perturbed=20)
+        folder = Path(status['bundle'])
+        metadata = docker.build(folder)
+        self.assertTrue(metadata['container_check']['passed'])
+        env = V3DockerEpisode(folder)
+        try:
+            env.reset(0)
+            answer = bundle.load_bundle(folder)['env'].reference(ScriptedPolicy(env))
+            env.step(call('v3_answer', answer, 'final'))
+            self.assertEqual(env.finish()['final_reward'], 1.0)
+            inspect = json.loads(docker.docker('inspect', env.container))[0]['HostConfig']
+            self.assertTrue(inspect['ReadonlyRootfs'])
+            self.assertEqual(inspect['CapDrop'], ['ALL'])
+        finally:
+            env.close()
 
 
 if __name__ == '__main__':
