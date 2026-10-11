@@ -54,7 +54,8 @@ class Service:
             'title': request['title'], 'user_request': request['user_request'],
             'business_rules': request['business_rules'], 'tools': tool_specs(tools),
             'user_topics': spec.fact_topics(request), 'answer_schema': schema,
-            'time': {'start': request['time']['start']},
+            'time': {'start': request['time']['start'],
+                     'advancing': 'scheduled_events' in request['tables']},
             'protocol': 'Use ask to learn user facts and confirm before every write; '
                         'pass the returned consent token to that exact write; finish with answer.',
             'user_mode': user_mode}
@@ -125,6 +126,9 @@ class Service:
             elif kind == 'confirm':
                 result = episode.confirm(action['key'], action['proposal'])
             elif kind == 'wait':
+                if not self.instructions['time']['advancing']:
+                    return {'ok': False, 'kind': 'invalid', 'error': 'the clock is fixed for this task',
+                            'now': episode.now}
                 result = episode.wait(action['seconds'])
             elif kind == 'answer':
                 result = episode.submit(action.get('answer'))
@@ -254,7 +258,10 @@ def replay_check(env, oracle, schema, request):
         session = HttpAPI(base, None)
         reset = session._post('/reset', {'world': 'original'})
         session.episode = reset['episode']
-        answer = env.reference(session)
+        try:
+            answer = env.reference(session)
+        except Exception as exc:  # the reference depends on something the service does not offer
+            return {'passed': False, 'reward': None, 'error': f'{type(exc).__name__}: {exc}'[:300]}
         session._step({'type': 'answer', 'answer': answer})
         grade = session._post('/reward', {'episode': session.episode})
         leaked = '"user_facts"' in json.dumps(reset['instructions'], ensure_ascii=False)

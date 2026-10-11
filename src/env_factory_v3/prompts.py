@@ -55,7 +55,9 @@ Write env.py:
    Before every write: token = api.confirm(approval_key, {{"tool": name, "args": exact_args}}),
    then api.call(name, consent=token, **exact_args). confirm returns None when the user
    declines; then that write must not happen. Catch BusinessError where the rules allow
-   partial success. Return the answer exactly in answer_schema.json's shape.
+   partial success. Return the answer exactly in answer_schema.json's shape. When data.json has
+   scheduled_events, time passes only through api.wait(seconds); the events change rows as the
+   clock passes them and tools never see that table.
 
 Keep table names and row columns exactly as in data.json; new rows follow the record format
 in brief.md and the columns of existing rows of that table. Standard library only (no I/O,
@@ -79,6 +81,8 @@ def expected(data, facts, now) -> {{"answer": ..., "final_state": ...}}
   happens only if the rules allow it at that point AND the user's matching approval fact is
   true. Committed operations stay committed unless the rules say otherwise.
 - answer: what the user must be told, exactly in answer_schema.json's shape.
+- scheduled_events (if present): apply them with env_factory_v3.runtime.apply_event in `at`
+  order for the waiting a correct handling does; keep that table unchanged in final_state.
 - It runs on perturbed worlds and flipped approvals: never depend on particular ids or
   values. Raise InvalidWorld only when the data itself breaks an invariant stated in
   brief.md (e.g. a dangling reference); never to avoid a hard case.
@@ -218,7 +222,9 @@ Task shape: {shape}
 - business_rules (Chinese): the complete and only authority. State every rule the outcome
   depends on precisely (eligibility, limits, rounding, ordering, ties, what happens on refusal or
   failure, partial success). Amounts are integer cents in data; times are virtual integers.
-  No rule may be open to two readings.
+  No rule may be open to two readings. For every row a write creates or changes, state the
+  value of every column of that table (including columns that stay null or unchanged): the
+  final state is compared exactly, so an unstated column is a guess.
 - tables: synthetic rows, each with a unique "id"; columns consistent within a table; enough
   rows that wrong rules give different results (decoys, boundary values, an ineligible row).
 - user_facts: what only the user knows and an agent must ask for (ids, quantities, choices),
@@ -227,6 +233,8 @@ Task shape: {shape}
   and what they want to be told. Never restate business rules or transaction semantics, never use
   field names, say amounts in 元, keep it to one to three short sentences. Do not include the
   user_facts values unless a real user would open with them.
+- Time does not pass in this task: queries, approvals and writes all happen at time.start. Do
+  not describe a clock that ticks per action; time-dependent rules compare against time.start.
 - Use a domain different from library loans, procurement, subscriptions, document access,
   parcels, parking, warehouse lots and file versions.
 

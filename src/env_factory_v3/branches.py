@@ -77,6 +77,40 @@ def cascades(env, request):
     return found
 
 
+def _counts(trace):
+    counts = {}
+    for entry in trace:
+        key = (f"confirm {entry['key']}" if entry.get('kind') == 'confirm'
+               else entry['tool'] if entry.get('kind') == 'tool' else None)
+        if key:
+            counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def unrepaired(env, request, found):
+    """Cascades still present after a repair. A repaired refusal world may call the skipped tools
+    with different arguments (state differs after a refusal), so the check is by count: it must
+    call each skipped tool and ask each skipped approval at least as often as the original world."""
+    start = request['time']['start']
+    worlds = {name: (data, facts) for name, data, facts in
+              variants(request['tables'], request['user_facts'], perturbed=0)}
+    trace = run_reference(env, *worlds['original'], start=start)['trace']
+    left = []
+    for cascade in found:
+        original = _counts(trace)
+        # The refused write itself is expected to vanish from the refusal world.
+        for entry in trace:
+            if entry.get('kind') == 'confirm' and entry['key'] == cascade['denied']:
+                tool = entry['proposal']['tool']
+                original[tool] = original.get(tool, 0) - 1
+        flipped = _counts(run_reference(env, *worlds[cascade['world']], start=start)['trace'])
+        needed = {step.split(' ', 1)[0] if not step.startswith('confirm ') else step
+                  for step in cascade['skipped_steps']}
+        if any(flipped.get(key, 0) < original.get(key, 0) for key in needed):
+            left.append(cascade['world'])
+    return left
+
+
 def verdict(folder, found, request):
     """Validate audit.json against the cascades it must cover."""
     try:

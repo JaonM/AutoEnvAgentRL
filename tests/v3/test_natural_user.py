@@ -94,6 +94,41 @@ class NaturalUserTests(unittest.TestCase):
         self.assertTrue(gates.approval_problems(swapped, self.request))
 
 
+class PlainSpeechTests(unittest.TestCase):
+    def test_plain_messages_are_speech_and_only_v3_answer_ends_the_episode(self):
+        import json as _json
+        from env_factory_v3 import policy
+        env, oracle, schema = library_modules()
+        service = server.Service(env, oracle, schema, library_request(), user_mode='natural', user_client=ScriptedUser())
+        httpd = server.start(service)
+
+        class Agent:
+            model = 'scripted-agent'
+
+            def __init__(self):
+                self.turn = 0
+
+            def chat(self, messages, tools=None, **parameters):
+                self.turn += 1
+                if self.turn == 1:
+                    return {'content': '请问您的读者号和要续借的书号是多少？'}
+                self.last_user = messages[-1]
+                return {'content': '', 'tool_calls': [{'id': 'a1', 'type': 'function', 'function': {
+                    'name': 'v3_answer', 'arguments': _json.dumps({'renewed_loan_ids': [], 'blocked': []})}}]}
+
+        agent = Agent()
+        try:
+            result = policy.play(f'http://127.0.0.1:{httpd.server_address[1]}', agent, 'original',
+                                 'multi_step_agentic')
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+        self.assertTrue(result['answered'])
+        self.assertEqual(result['turns'], 2)
+        self.assertEqual(agent.last_user['role'], 'user')
+        self.assertTrue(agent.last_user['content'].startswith('好的'))
+
+
 class ServiceAndClarificationTests(unittest.TestCase):
     def test_a_token_protected_service_refuses_strangers(self):
         import json as _json

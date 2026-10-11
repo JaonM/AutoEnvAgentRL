@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from http.client import HTTPException
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
@@ -50,7 +51,7 @@ class ChatClient:
                 if error.code not in (408, 429) and error.code < 500:
                     raise ProviderError(f'provider rejected the request: HTTP {error.code}') from error
                 failure = f'HTTP {error.code}'
-            except (URLError, TimeoutError, OSError, KeyError, ValueError) as error:
+            except (URLError, TimeoutError, OSError, HTTPException, KeyError, ValueError) as error:
                 failure = type(error).__name__
             if attempt < self.retries:
                 time.sleep(5 * (attempt + 1))

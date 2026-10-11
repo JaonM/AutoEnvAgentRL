@@ -183,9 +183,8 @@ class Build:
         self.call(arbiter, prompts.BRANCH_REPAIR, 'repair')
         if not all(checks.run(kind, arbiter)['passed'] for kind in ('env', 'oracle', 'diff')):
             return self.fail('branch_unsupported', 'env and oracle no longer pass their checks after the branch repair')
-        supported = {d['world'] for d in verdict['decisions'] if d['verdict'] == 'supported'}
-        left = [c['world'] for c in branches.cascades(load_module(arbiter / 'env.py', role='env'), self.request)
-                if c['world'] not in supported]
+        unsupported = [c for c, d in zip(found, verdict['decisions']) if d['verdict'] == 'unsupported']
+        left = branches.unrepaired(load_module(arbiter / 'env.py', role='env'), self.request, unsupported)
         self.stage('branch_audit', repaired=not left, still_cascading=left)
         if left:
             return self.fail('branch_unsupported', f'refusal cascades remain after the branch repair on {left}')

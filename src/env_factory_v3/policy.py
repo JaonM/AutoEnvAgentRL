@@ -47,6 +47,11 @@ def play(base_url, client, world, category, *, max_turns=30):
                 message['tool_calls'] = reply['tool_calls']
             messages.append(message)
             if not reply.get('tool_calls'):
+                if agent_view.speaks(instructions):
+                    said = step({'type': 'chat', 'message': message['content']})
+                    messages.append({'role': 'user', 'content': (said.get('result') or {}).get('reply')
+                                     or said.get('error', '')})
+                    continue
                 answer = agent_view.final_answer(reply.get('content'))
                 step({'type': 'answer', 'answer': answer if answer is not None else {}})
                 answered = True

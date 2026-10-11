@@ -44,10 +44,17 @@ def validate(request):
         problems.append('user_facts must be an object')
     time = request.get('time', {'start': 0, 'tick': 0})
     if not (isinstance(time, dict) and isinstance(time.get('start'), int) and time.get('tick') == 0):
-        problems.append('time must be {"start": int, "tick": 0} (non-frozen clocks are not supported in M1)')
+        problems.append('time must be {"start": int, "tick": 0}; the clock advances only by explicit waits')
     for text in ('user_request', 'business_rules', 'title'):
         if not isinstance(request.get(text), str) or not request[text].strip():
             problems.append(f'{text} must be nonempty text')
+    events = tables.get('scheduled_events', []) if isinstance(tables, dict) else []
+    for event in events:
+        if not (isinstance(event, dict) and isinstance(event.get('at'), int) and isinstance(event.get('set'), dict)
+                and event.get('table') in tables and event.get('table') != 'scheduled_events'
+                and any(r.get('id') == event.get('row_id') for r in tables[event['table']])):
+            problems.append(f'scheduled event {event.get("id") if isinstance(event, dict) else event} needs id, '
+                            'integer at, an existing table and row_id, and a set object')
     clarifications = request.get('clarifications', [])
     if not (isinstance(clarifications, list) and all(isinstance(c, str) and c.strip() for c in clarifications)):
         problems.append('clarifications must be a list of nonempty texts')
@@ -94,6 +101,13 @@ def brief(request, schema=None):
     tables = '\n'.join(f'- {name}: {len(rows)} rows; columns {sorted(rows[0]) if rows else "(empty)"}'
                        for name, rows in request['tables'].items())
     topics = '\n'.join(f'- {t["key"]} ({t["kind"]}): {t["description"]}' for t in fact_topics(request))
+    if 'scheduled_events' in request['tables']:
+        clock = (f"Starts at now = {request['time']['start']} and advances only when the agent waits. Rows of "
+                 "scheduled_events (platform data, hidden from tools) are applied with "
+                 "env_factory_v3.runtime.apply_event when the clock reaches their `at`; the oracle must apply "
+                 "them the same way for the waits a correct handling performs.")
+    else:
+        clock = f"Fixed at now = {request['time']['start']} for this task."
     clarified = ''.join(f'- {c}\n' for c in request.get('clarifications', []))
     if clarified:
         clarified = '\n## Business owner clarifications (part of the business rules)\n' + clarified
@@ -114,7 +128,7 @@ Category: {request['category']}
 {topics}
 
 ## Virtual time
-Fixed at now = {request['time']['start']} for this task.
+{clock}
 """
     if schema is not None:
         text += '\n## Answer schema (answer_schema.json)\n```json\n' + json.dumps(schema, ensure_ascii=False, indent=2) + '\n```\n'

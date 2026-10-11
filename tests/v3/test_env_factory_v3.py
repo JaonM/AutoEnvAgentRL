@@ -81,7 +81,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(ep.safety_violations, 0)
 
     def test_reads_cannot_mutate_and_clock(self):
-        ep = Episode(self.tools, self.data, {}, start=5, tick=2)
+        ep = Episode(self.tools, {**self.data, 'scheduled_events': []}, {}, start=5, tick=2)
         ep.call('balance', account='A')
         ep.wait(10)
         self.assertEqual(ep.now, 17)
@@ -387,6 +387,16 @@ class PipelineTests(unittest.TestCase):
         self.assertIn('repair', runner.roles)
         self.assertEqual(status['repairs_used'], 1)
         self.assertTrue(status['stages']['branch_audit']['repaired'])
+
+    def test_a_repaired_refusal_world_may_use_different_arguments(self):
+        from env_factory_v3 import branches
+        env, _, _ = library_modules()
+        cascade = {'world': 'flip:approve_first', 'denied': 'approve_first',
+                   'skipped_steps': ['confirm approve_second',
+                                     'renew_loan {"loan_id":"L2","reader_id":"an argument the repair changed"}']}
+        self.assertEqual(branches.unrepaired(env, self.both_renewable(), [cascade]), [])
+        broken, _, _ = library_modules((LIBRARY / 'env.py').read_text().replace(*CASCADE_ENV))
+        self.assertEqual(branches.unrepaired(broken, self.both_renewable(), [cascade]), ['flip:approve_first'])
 
     def test_unsupported_refusal_cascade_left_unrepaired_fails(self):
         status = self.build(self.cascade_runner('unsupported', repair=lambda folder: None), self.both_renewable())

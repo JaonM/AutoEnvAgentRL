@@ -169,6 +169,11 @@ class V3Episode:
                           else self._dispatch(name, params))
                 self.messages.append({'role': 'tool', 'tool_call_id': identifier, 'name': name,
                                       'content': json.dumps(result, ensure_ascii=False)})
+        elif self.user_mode == 'natural':
+            # Free dialogue: a plain message is speech to the user; their reply is the next user turn.
+            said = self._step({'type': 'chat', 'message': message.get('content') or ''})
+            self.messages.append({'role': 'user', 'content': (said.get('result') or {}).get('reply')
+                                  or said.get('error', '')})
         else:
             answer = agent_view.final_answer(message.get('content'))
             if answer is None:

@@ -37,9 +37,11 @@ original world after that approval (a later confirmation, or a tool call with ar
 in the refused world), a fresh auditor that sees only the brief and the two traces must justify
 each cascade with a verbatim quote: `supported` passes, `ambiguous` fails as `spec_ambiguous`
 (ordering words alone never decide it). On `unsupported`, a repair session (one unit of repair
-budget) fixes env.py and oracle.py together from the auditor's finding; the build fails as
-`branch_unsupported` when no budget is left, the checks fail afterwards, or a cascade the auditor did
-not support remains. Builds without a cascade run no audit; the audit itself spends no budget.
+budget) fixes env.py and oracle.py together from the auditor's finding. The build fails as
+`branch_unsupported` when no budget is left, when the checks fail afterwards, or when the refusal
+world still calls a skipped tool, or asks a skipped approval, fewer times than the original world
+(the refused write itself excepted). The comparison is by count because arguments may
+legitimately differ once a refusal has changed the state. Builds without a cascade run no audit; the audit itself spends no budget.
 
 Perturbation audit: agreement on a perturbed world also proves nothing when both sides ignore
 the same rule. Example: an inactive subscription that still gets refunded. The audit runs when a
@@ -127,7 +129,9 @@ each environment from its verified container (`V3DockerEpisode`); `local` serves
 ## Free-dialogue user
 
 `serve --user-mode natural` (or `ENVFACTORY_V3_USER_MODE=natural` for `rl`) replaces ask/confirm
-with `chat {message, proposal?}`. The agent sees no topic keys: only the user's opening, the rules
+with free dialogue. A plain assistant message is speech to the user, and the simulated user's
+reply comes back as the next user turn. `v3_chat {message, proposal}` asks for approval of one
+exact write. Only `v3_answer` ends the episode. The agent sees no topic keys: only the user's opening, the rules
 and the answer schema. A simulated user (`user_sim.py`, model from `V3_USER_*`, falling back to
 `LLM_*`) knows the request and the private facts and answers in plain Chinese. It never decides
 consent. When a chat message carries an exact write proposal, the platform maps it to its
@@ -161,7 +165,9 @@ rejections are observations (`ok: false, kind: business`).
 
 ## M1 limits
 
-- The clock is frozen (`time.tick == 0`); scheduled events and time-advancing actions come later.
+- The clock is fixed unless the data has a `scheduled_events` table. With one, time passes only
+  through `wait` (`v3_wait` for the agent), and the events (`{id, at, table, row_id, set}`) change
+  rows as the clock passes them. Tools never see that table.
 - The free-dialogue user is LLM-simulated, and its replies are not graded. The final answer is
   still the structured `answer` object, not a natural-language reply.
 - The serving container publishes its port on 127.0.0.1, so it keeps a bridge network. Only the

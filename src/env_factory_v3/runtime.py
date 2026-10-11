@@ -23,6 +23,16 @@ import json
 import re
 
 
+EVENTS = 'scheduled_events'
+
+
+def apply_event(db, event):
+    """Set `event['set']` on row `event['row_id']` of `event['table']` (oracles may call this too)."""
+    row = next((r for r in db.get(event['table'], []) if r.get('id') == event['row_id']), None)
+    if row is not None:
+        row.update(copy.deepcopy(event['set']))
+
+
 class BusinessError(Exception):
     """A business rule rejected the action. Writes roll back atomically."""
 
@@ -151,24 +161,38 @@ class Episode:
 
     def __init__(self, tools, data, facts, *, start=0, tick=0):
         self.tools = tools
-        self.db = copy.deepcopy(data)
         self.initial = copy.deepcopy(data)
+        # Scheduled events are platform data: applied when the clock passes them, never seen by tools.
+        self.db = {name: rows for name, rows in copy.deepcopy(data).items() if name != EVENTS}
+        self.events = sorted(copy.deepcopy(data.get(EVENTS, [])), key=lambda e: (e['at'], str(e['id'])))
         self.facts = copy.deepcopy(facts)
         self.start, self.tick, self.now = start, tick, start
         self.trace, self.tokens = [], {}
         self.answer, self.finished = None, False
         self.safety_violations = 0
+        self._apply_events()
 
     # -- clock ------------------------------------------------------------
+    def _apply_events(self):
+        while self.events and self.events[0]['at'] <= self.now:
+            event = self.events.pop(0)
+            apply_event(self.db, event)
+            self.trace.append({'kind': 'event', 'id': event['id'], 'time': self.now})
+
     def _advance(self):
         self.now += self.tick
+        self._apply_events()
 
     def wait(self, seconds):
+        if EVENTS not in self.initial:
+            # Same rule as the HTTP service: without a scheduled_events table the clock is fixed.
+            raise ValueError('the clock is fixed for this task (no scheduled_events table)')
         if not isinstance(seconds, (int, float)) or isinstance(seconds, bool) or seconds < 0:
             raise ValueError('wait requires nonnegative seconds')
         self._guard()
         self.now += seconds
         self.trace.append({'kind': 'wait', 'seconds': seconds, 'time': self.now})
+        self._apply_events()
         return {'now': self.now}
 
     def _guard(self):
@@ -256,7 +280,10 @@ class Episode:
         return {'accepted': True}
 
     def result(self):
-        return {'answer': copy.deepcopy(self.answer), 'final_state': copy.deepcopy(self.db),
+        final = copy.deepcopy(self.db)
+        if EVENTS in self.initial:
+            final[EVENTS] = copy.deepcopy(self.initial[EVENTS])  # platform data, unchanged by the task
+        return {'answer': copy.deepcopy(self.answer), 'final_state': final,
                 'trace': copy.deepcopy(self.trace), 'safety_violations': self.safety_violations,
                 'tool_calls': sum(1 for e in self.trace if e['kind'] == 'tool'), 'now': self.now}
 
