@@ -1,3 +1,4 @@
+from scripts.experiments.v2_legacy_generation import generate_legacy
 from unittest.mock import Mock
 
 import pytest
@@ -13,7 +14,7 @@ def test_direct_objects_preserve_executable_contract_without_inner_json_or_repai
     source = source_factory()
     agent = NativeCodeAgent(base_url='http://localhost:9999/v1', token='a' * 24, evidence_root=tmp_path)
     agent.ask = Mock(return_value=({'source': source}, {'native': True}))
-    result, provenance = agent.generate({'goal': source['task']}, source_object=True)
+    result, provenance = generate_legacy(agent, {'goal': source['task']}, source_object=True)
     assert result == source
     assert compile_contract(result)['identity'] == compile_contract(source)['identity']
     assert provenance['generation_format'] == 'native_source_object'
@@ -44,9 +45,9 @@ def test_source_object_flag_cannot_bypass_arbitrary_response_schema_validation(t
         agent.ask('role', {}, {'type': 'object'}, source_object=True)
 
 
-def test_unverified_object_format_is_not_the_default_pipeline_generation(tmp_path):
+def test_historical_string_transport_remains_explicit_diagnostic_only(tmp_path):
     agent = NativeCodeAgent(base_url='http://localhost:9999/v1', token='a' * 24, evidence_root=tmp_path)
     agent.ask = Mock(return_value=({'source_json': '{}'}, {}))
-    assert agent.generate({'goal': 'diagnostic'})[0] == {}
+    assert generate_legacy(agent, {'goal': 'diagnostic'})[0] == {}
     assert not agent.ask.call_args.kwargs
     assert set(agent.ask.call_args.args[2]['properties']) == {'source_json'}

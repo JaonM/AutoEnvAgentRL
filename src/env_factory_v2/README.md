@@ -211,6 +211,20 @@ and executable cases to distinguish valid waiting from erasing an unfulfilled
 obligation when its eligibility expires. Neither replacing all time bases with
 `initial` nor banning waits is a valid general repair.
 
+### Production generation entry
+
+`NativeCodeAgent.generate`, `build`, the CLI and the measurement runner all use
+the host author workbench by default and require it. `author_tools=False` is
+rejected; `--author-tools` remains a no-op compatibility flag for existing
+measurement commands. Workbench failure never falls back to a different generator.
+
+String/object/tree generation and their atomic response-repair route have moved
+out of the production module to `scripts/experiments/v2_legacy_generation.py`.
+That explicit historical diagnostic helper has no production entry or fallback.
+Existing artifact decoding and compilation remain supported. This migration
+unifies generation transport; it does not yet remove flat authored contracts or
+all legacy parsers, and it does not imply a measured quality or speed improvement.
+
 ### Combined contract and trajectory feedback
 
 After deterministic recipe checks and tool augmentation, the pipeline executes

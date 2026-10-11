@@ -1,3 +1,4 @@
+from scripts.experiments.v2_legacy_generation import generate_legacy
 from unittest.mock import Mock
 
 import pytest
@@ -38,7 +39,7 @@ def test_native_generation_returns_recovered_source_with_both_provenances(tmp_pa
     agent = NativeCodeAgent(base_url='http://localhost:9999/v1', token='a' * 24, evidence_root=tmp_path)
     agent.ask = Mock(side_effect=[({'source_json': '{"amount":18 "count":2}'}, {'generation': True}),
         ({'replacements': [{'old': '18 "count"', 'new': '18,"count"'}]}, {'syntax': True})])
-    source, provenance = agent.generate({'goal': 'Return the original amounts.'})
+    source, provenance = generate_legacy(agent, {'goal': 'Return the original amounts.'})
     assert source == {'amount': 18, 'count': 2}
     assert provenance['generation']
     assert provenance['format_repair']['provenance']['syntax']

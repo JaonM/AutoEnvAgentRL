@@ -1,3 +1,4 @@
+from scripts.experiments.v2_legacy_generation import generate_legacy
 import copy
 
 import pytest
@@ -178,12 +179,12 @@ def test_generation_requests_separate_definition_and_preserves_nested_edits(tmp_
     agent = NativeCodeAgent(base_url='http://127.0.0.1:9999/v1',
                             token='test-only-token-000000000000000000', evidence_root=tmp_path)
     agent.ask = Mock(return_value=({'source_json': json.dumps(definition)}, {'unit_test': True}))
-    generated, _ = agent.generate({'goal': task['request']})
+    generated, _ = generate_legacy(agent, {'goal': task['request']})
     assert generated == definition
     assert '"environment": ENVIRONMENT' in agent.ask.call_args.args[0]
     agent.ask.return_value = ({'edits': [{'op': 'replace', 'path': '/task/id',
                                         'value_json': '"repaired"'}]}, {'unit_test': True})
-    repaired, _ = agent.generate({'goal': task['request']}, feedback={'previous_source': generated})
+    repaired, _ = generate_legacy(agent, {'goal': task['request']}, feedback={'previous_source': generated})
     assert repaired['task']['id'] == 'repaired'
     assert repaired['environment'] == environment
     assert generated['task']['id'] == task['id']

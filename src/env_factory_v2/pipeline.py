@@ -39,8 +39,8 @@ def implementation_identity():
     return hashlib.sha256(canonical(files).encode()).hexdigest()
 
 
-def build(request, *, agent, output, source=None, repairs=1, docker=True, base_image='python:3.14-slim', tool_interference=2, candidate_validator=None, author_tools=False):
-    require(type(author_tools) is bool, 'author tools selector must be boolean')
+def build(request, *, agent, output, source=None, repairs=1, docker=True, base_image='python:3.14-slim', tool_interference=2, candidate_validator=None, author_tools=True):
+    require(author_tools is True, 'production pipeline requires the author workbench')
     require(type(tool_interference) is int and 0 <= tool_interference <= 4, 'tool interference count must be 0..4')
     require(type(repairs) is int and 0 <= repairs <= 2, 'repair budget must be 0..2')
     output = Path(output)
@@ -70,7 +70,7 @@ def build(request, *, agent, output, source=None, repairs=1, docker=True, base_i
                 repair_feedback = ({**feedback, 'previous_source': previous_source}
                                    if feedback is not None and previous_source is not None else feedback)
                 candidate, provenance = agent.generate(request, feedback=repair_feedback,
-                                                       **({'author_tools': True} if author_tools else {}))
+                                                       author_tools=True)
                 attempt['generation_provenance'] = provenance
             else:
                 candidate = copy.deepcopy(source)

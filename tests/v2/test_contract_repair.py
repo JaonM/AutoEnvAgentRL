@@ -1,3 +1,4 @@
+from scripts.experiments.v2_legacy_generation import generate_legacy
 import copy
 import json
 from unittest.mock import Mock
@@ -81,7 +82,7 @@ def test_native_repair_requests_edits_and_result_still_requires_compilation(tmp_
                             evidence_root=tmp_path)
     agent.ask = Mock(return_value=({'edits': [edit('replace', '/answers/0/expected', {'literal': 99})]},
                                   {'unit_test': True}))
-    result, _ = agent.generate({'goal': source['task']}, feedback={'previous_source': source, 'error': 'test'})
+    result, _ = generate_legacy(agent, {'goal': source['task']}, feedback={'previous_source': source, 'error': 'test'})
     assert result['answers'][0]['expected'] == {'literal': 99}
     assert source['answers'][0]['expected'] == {'literal': 18}
     payload = agent.ask.call_args.args[1]
@@ -112,7 +113,7 @@ def test_capability_refusal_retries_full_generation_with_original_evidence():
     before = copy.deepcopy(feedback)
     agent = Mock()
     agent.ask.return_value = ({'source_json': json.dumps(direct())}, {'test': True})
-    result, _ = NativeCodeAgent.generate(agent, request, feedback=feedback)
+    result, _ = generate_legacy(agent, request, feedback=feedback)
     assert result == direct()
     assert agent.ask.call_count == 1
     payload = agent.ask.call_args.args[1]
@@ -145,7 +146,7 @@ def test_repair_payload_deduplicates_only_identical_request(same_request):
     before = copy.deepcopy(feedback)
     agent = Mock()
     agent.ask.return_value = ({'edits': [edit('replace', '/task', request['goal'])]}, {'test': True})
-    NativeCodeAgent.generate(agent, request, feedback=feedback)
+    generate_legacy(agent, request, feedback=feedback)
     payload = agent.ask.call_args.args[1]
     assert payload['original_request'] == request
     assert ('original_request' not in payload['repair_feedback']) is same_request

@@ -191,3 +191,30 @@ def test_interrupted_draft_does_not_increase_pipeline_repair_budget(tmp_path):
     assert agent.generate.call_count == 2 and len(result['attempts']) == 2
     assert not result['qualified']
     assert all(a['failed_phase'] == 'generation' for a in result['attempts'])
+
+
+def test_production_generation_defaults_to_workbench_and_never_falls_back(tmp_path):
+    from unittest.mock import Mock
+    agent = NativeCodeAgent(base_url='http://localhost:9999/v1', token='a'*24,
+                            timeout=255, evidence_root=tmp_path)
+    agent.ask = Mock(side_effect=AssertionError('legacy transport reached'))
+    with patch('env_factory_v2.author_session.generate_in_session',
+               side_effect=RuntimeError('workbench unavailable')) as run:
+        with pytest.raises(RuntimeError, match='workbench unavailable'):
+            agent.generate({'goal':'test'})
+    assert run.call_count == 1
+    agent.ask.assert_not_called()
+    with pytest.raises(ContractError, match='workbench'):
+        agent.generate({'goal':'test'}, author_tools=False)
+
+
+def test_production_build_defaults_to_workbench(tmp_path):
+    from unittest.mock import Mock
+    from env_factory_v2.pipeline import build
+    agent = Mock()
+    agent.generate.side_effect = RuntimeError('stop after route selection')
+    build({'goal':'test'},agent=agent,output=tmp_path/'run',repairs=0)
+    assert agent.generate.call_args.kwargs['author_tools'] is True
+    with pytest.raises(ContractError, match='workbench'):
+        build({'goal':'test'},agent=agent,output=tmp_path/'legacy',author_tools=False)
+    assert not (tmp_path/'legacy').exists()

@@ -1,3 +1,4 @@
+from scripts.experiments.v2_legacy_generation import generate_legacy
 import json
 from unittest.mock import Mock
 
@@ -69,7 +70,7 @@ def test_generation_uses_exact_tree_schema_and_returns_decoded_contract(tmp_path
     original = complex_transaction()
     agent = NativeCodeAgent(base_url='http://localhost:9999/v1', token='a' * 24, evidence_root=tmp_path)
     agent.ask = Mock(return_value=(encode_response(original), {'native': True}))
-    source, provenance = agent.generate({'goal': original['task']}, source_tree=True)
+    source, provenance = generate_legacy(agent, {'goal': original['task']}, source_tree=True)
     assert source == original
     assert provenance['generation_format'] == 'closed_json_tree'
     assert agent.ask.call_args.args[2] == TREE_SCHEMA
@@ -85,4 +86,4 @@ def test_excessive_depth_and_conflicting_formats_fail_closed(tmp_path):
         decode_response({'source': {'o': [{'k': 'field', 'v': node}]}})
     agent = NativeCodeAgent(base_url='http://localhost:9999/v1', token='a' * 24, evidence_root=tmp_path)
     with pytest.raises(ContractError):
-        agent.generate({}, source_tree=True, source_object=True)
+        generate_legacy(agent, {}, source_tree=True, source_object=True)

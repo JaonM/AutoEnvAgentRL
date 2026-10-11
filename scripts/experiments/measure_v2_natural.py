@@ -418,7 +418,7 @@ def main():
     parser.add_argument('--connection', type=Path, required=True)
     parser.add_argument('--base-image', default='docker.m.daocloud.io/library/python:3.14-slim')
     parser.add_argument('--sample-timeout', type=int, default=1800)
-    parser.add_argument('--author-tools', action='store_true', help='Use host-only author MCP contract checks in the native generation turn.')
+    parser.add_argument('--author-tools', action='store_true', default=True, help='Compatibility flag: the author workbench is always enabled.')
     parser.add_argument('--worker', type=int, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.worker is not None:
