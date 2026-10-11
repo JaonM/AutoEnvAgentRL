@@ -7,7 +7,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts/experiments'))
 from env_factory_v2.expressions import ContractError
-from v2_answer_obligations import review_answer_obligations
+from v2_answer_obligations import review_answer_obligations, generation_output_scope
 from v2_business_acceptance import business_truth
 
 
@@ -77,3 +77,35 @@ def test_process_requirements_remain_visible_without_becoming_answer_fields():
     assert result['passed']
     assert result['review']['process_requirements'] == value['process_requirements']
     assert len(result['answer_obligations']) == 1
+
+
+def test_same_review_supplies_generation_scope_without_oracle_values():
+    agent = Mock(); agent.ask.return_value = (review(), {})
+    data = fixture()
+    result = review_answer_obligations(agent, **data)
+    spec = {key: result[key] for key in ('answer_obligations', 'generation_output_scope')}
+    scope = generation_output_scope(spec, user_request=data['user_request'], business=data['business'])
+    assert scope['roles'] == review()['roles']
+    assert 'hidden-id' not in str(scope) and 'private-reason' not in str(scope)
+    assert 'truth' not in scope and 'expected' not in str(scope)
+    scope['roles'].clear()
+    assert len(spec['generation_output_scope']['roles']) == 2
+
+
+@pytest.mark.parametrize('changed', ['request', 'policy', 'acceptance', 'extra_value', 'unresolved'])
+def test_generation_scope_cannot_drift_from_sources_or_acceptance(changed):
+    agent = Mock(); agent.ask.return_value = (review(), {})
+    data = fixture()
+    result = review_answer_obligations(agent, **data)
+    spec = {key: result[key] for key in ('answer_obligations', 'generation_output_scope')}
+    if changed == 'request': data['user_request'] += ' changed'
+    elif changed == 'policy': data['business']['policy'] += ' changed'
+    elif changed == 'acceptance': spec['answer_obligations'] = []
+    elif changed == 'extra_value': spec['generation_output_scope']['roles'][0]['expected'] = 42
+    else: spec['generation_output_scope']['roles'][0]['kind'] = 'unsupported'
+    with pytest.raises(ContractError):
+        generation_output_scope(spec, user_request=data['user_request'], business=data['business'])
+
+
+def test_historical_scope_is_not_fabricated_from_truth():
+    assert generation_output_scope({'expected': 42}, user_request='old', business={'policy': ''}) is None

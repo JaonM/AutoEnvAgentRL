@@ -58,7 +58,7 @@ def test_finalization_scales_without_sample_specific_scene_edits(tmp_path, monke
 
     def scope(agent, **kwargs):
         scopes.append(kwargs['user_request'])
-        return {'passed': True, 'answer_obligations': {'mock': True}}
+        return {'passed': True, 'answer_obligations': {'mock': True}, 'generation_output_scope': {'mock': True}}
 
     monkeypatch.setattr(finalizer.NativeCodeAgent, 'from_connection', lambda *a, **k: Agent())
     monkeypatch.setattr('audit_v2_natural.canonical_truth', lambda *a: {})

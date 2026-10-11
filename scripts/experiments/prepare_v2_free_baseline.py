@@ -102,6 +102,7 @@ def main():
         if not scope['passed']:
             raise RuntimeError('answer obligation interpretation unresolved; assets not frozen')
         case['acceptance']['answer_obligations'] = scope['answer_obligations']
+        case['acceptance']['generation_output_scope'] = scope['generation_output_scope']
         for name, value in [('business', case['business']), ('user', case['user']), ('acceptance', case['acceptance'])]:
             write(folder / (name + '.json'), value)
         write(folder / 'user_scene.json', payload)

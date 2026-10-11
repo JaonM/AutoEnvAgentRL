@@ -85,6 +85,7 @@ def main():
         if scope['passed'] is not True:
             raise ValueError('answer obligation scope unresolved; no freeze')
         acceptance['answer_obligations'] = scope['answer_obligations']
+        acceptance['generation_output_scope'] = scope['generation_output_scope']
         write(acceptance_path, acceptance)
     manifest['preparation_source_sha256'] = hashlib.sha256((args.draft/'frozen.json').read_bytes()).hexdigest()
     write(args.output / 'manifest.json', manifest)

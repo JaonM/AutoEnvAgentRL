@@ -113,6 +113,8 @@ def business_truth(spec, business, user, *, user_request, world=None, **kwargs):
 
 def apply_answer_obligations(truth, spec, *, user_request, policy):
     """Answer scope never removes state, timing or process truth."""
+    from v2_answer_obligations import generation_output_scope
+    generation_output_scope(spec, user_request=user_request, business={'policy': policy})
     if 'answer_obligations' not in spec:
         return truth
     obligations = spec['answer_obligations']

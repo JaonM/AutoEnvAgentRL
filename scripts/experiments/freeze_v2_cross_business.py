@@ -71,6 +71,7 @@ def main():
         if not scope['passed']:
             raise ValueError('Independent answer scope unresolved; assets not frozen')
         row['acceptance']['answer_obligations'] = scope['answer_obligations']
+        row['acceptance']['generation_output_scope'] = scope['generation_output_scope']
     documents = [dict(document_id=f"{r['id']:02d}/business.json", title=r['title'], business=r['business']) for r in rows]
     load_dotenv('.env')
     with GraphDatabase.driver(os.getenv('NEO4J_URI', 'bolt://localhost:7687'),

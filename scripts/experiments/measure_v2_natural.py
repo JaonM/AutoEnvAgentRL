@@ -313,6 +313,10 @@ def worker(args):
             'business_evidence': business, 'private_user_fixture': user,
             'demand_interpretation': interpretation,
             'requirements': '实现原始自然需求和给定业务规则。task必须逐字保留goal。业务表id、字段、记录和生成计划来自固定外部资料，不得增删或改值；这些记录只能通过工具观察，不能发布到初始提示。user.facts必须恰好等于private_user_fixture.facts，私有事实仅通过模拟用户披露，approve_STAGE对应授权stage的id。不能自造授权或偏好。其他用户阶段、工具、答案字段、评分与场景由生成器设计。公开规则须说明实际业务政策；时间基准2026-10-10T00:00:00+00:00，每动作0秒，等待显式推进。不得使用固定答案替代真实观察。'}
+        from v2_answer_obligations import generation_output_scope
+        output_scope = generation_output_scope(spec, user_request=row['raw_request'], business=business)
+        if output_scope is not None:
+            request['output_scope'] = output_scope
         if 'demand' in row:
             request['demand'] = copy.deepcopy(row['demand'])
             save(root / 'task_spec.json', row['demand']['task_spec'])

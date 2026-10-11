@@ -1,7 +1,47 @@
 """Review answer obligations before generation, independent of candidate layouts."""
+import copy
+import hashlib
+from env_factory_v2.expressions import canonical
 from env_factory_v2.code_agent import object_schema
 from env_factory_v2.contract import require
 from v2_natural_semantics import value_shape
+
+
+def public_scope_identity(user_request, business):
+    return hashlib.sha256(canonical({'user_request': user_request,
+                                    'business_policy': business['policy']}).encode()).hexdigest()
+
+
+def validate_public_scope(scope, *, user_request, business):
+    """Validate provenance and allowed data, not the semantic correctness of a model interpretation."""
+    require(set(scope) == {'source_identity', 'roles', 'process_requirements'}, 'invalid public output scope fields')
+    require(scope['source_identity'] == public_scope_identity(user_request, business),
+            'output scope belongs to different original sources')
+    public = {'user_request': user_request, 'business_policy': business['policy']}
+    ids = []
+    for role in scope['roles']:
+        require(set(role) == {'role', 'kind', 'reason', 'citations'}, 'invalid public output role fields')
+        require(isinstance(role['role'], str) and role['role'].strip()
+                and role['kind'] in {'answer', 'state_only', 'optional'}
+                and isinstance(role['reason'], str) and role['reason'].strip()
+                and role['citations'], 'unresolved public output scope')
+        ids.append(role['role'])
+    require(len(ids) == len(set(ids)), 'duplicate public output roles')
+    for c in [c for role in scope['roles'] for c in role['citations']] + scope['process_requirements']:
+        require(set(c) == {'source', 'text'} and c['source'] in public
+                and isinstance(c['text'], str) and c['text'].strip()
+                and c['text'] in public[c['source']], 'output scope citation must match original text')
+    return copy.deepcopy(scope)
+
+
+def generation_output_scope(spec, *, user_request, business):
+    """Historical assets remain readable; never derive public hints from oracle values."""
+    if 'generation_output_scope' not in spec:
+        return None
+    scope = validate_public_scope(spec['generation_output_scope'], user_request=user_request, business=business)
+    require({r['role'] for r in scope['roles'] if r['kind'] == 'answer'} ==
+            {r['role'] for r in spec['answer_obligations']}, 'generation and acceptance output scopes differ')
+    return scope
 
 
 def review_answer_obligations(agent, *, user_request, business, truth):
@@ -49,5 +89,11 @@ def review_answer_obligations(agent, *, user_request, business, truth):
     for c in value['uncovered_answers'] + value['process_requirements']:
         validate_citation(c)
     passed = not value['uncovered_answers'] and all(r['kind'] != 'unsupported' for r in value['roles'])
-    return {'passed': passed, 'answer_obligations': obligations, 'review': value, 'provenance': provenance,
+    scope = None
+    if passed:
+        scope = validate_public_scope({'source_identity': public_scope_identity(user_request, business),
+            'roles': value['roles'], 'process_requirements': value['process_requirements']},
+            user_request=user_request, business=business)
+    return {'passed': passed, 'answer_obligations': obligations, 'generation_output_scope': scope,
+            'review': value, 'provenance': provenance,
             'scope': 'pre_generation_original_requirement_interpretation_not_sandbox_qualification'}
