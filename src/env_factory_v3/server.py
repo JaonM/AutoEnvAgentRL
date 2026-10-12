@@ -20,6 +20,7 @@ import copy
 import hmac
 import json
 import threading
+import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.request import Request, urlopen
@@ -27,6 +28,13 @@ from urllib.request import Request, urlopen
 from env_factory_v3 import reward, spec
 from env_factory_v3.runtime import BusinessError, Episode, EpisodeFinished, ToolError, tool_specs
 from env_factory_v3.worlds import variants
+
+
+# Free dialogue ends when the user says goodbye or after this many agent messages in a row that
+# neither call a tool nor propose a write. The agent is then told once to submit; if it talks on,
+# the episode closes: a business task without its structured answer earns 0, a subjective task is
+# graded on what the agent last told the user.
+IDLE_LIMIT = 3
 
 
 class Service:
@@ -55,6 +63,7 @@ class Service:
         self.worlds = {name: worlds[name] for name in names if name in worlds}
         self.order = [name for name in names if name in self.worlds]
         self.episodes, self.lock = {}, threading.Lock()
+        self.last_request = time.monotonic()
         tools = env.make_tools()
         self.instructions = {
             'title': request['title'], 'user_request': request['user_request'],
@@ -110,10 +119,27 @@ class Service:
                 raise ValueError(f'approval_key returned {key!r}, not an approval topic')
             token = episode.confirm(key, proposal)
             decision = token is not None
-        reply = record['user'].reply(str(action.get('message') or ''), decision)
+        user = record['user']
+        reply = user.reply(str(action.get('message') or ''), decision)
         episode.trace.append({'kind': 'chat', 'message': action.get('message'), 'reply': reply,
                               'proposal': copy.deepcopy(proposal), 'time': episode.now})
-        return {'reply': reply, **({'consent': token} if proposal is not None else {})}
+        record['idle'] = 0 if proposal is not None else record.get('idle', 0) + 1
+        result = {'reply': reply, **({'consent': token} if proposal is not None else {})}
+        if getattr(user, 'ended', False) or record['idle'] >= IDLE_LIMIT:
+            result.update(self._end(record, str(action.get('message') or '')))
+        return result
+
+    def _end(self, record, last_message):
+        """The user has left: warn once, then close the episode."""
+        if not record.get('warned'):
+            record['warned'] = True
+            return {'ended': 'warning'}
+        record['closed'] = True
+        episode = record['episode']
+        if self.reward_type == 'rubric' and last_message.strip():
+            episode.submit({'reply': last_message})
+            return {'ended': 'closed', 'submitted': True}
+        return {'ended': 'closed', 'submitted': False}
 
     def step(self, identifier, action):
         record = self._get(identifier)
@@ -123,6 +149,10 @@ class Service:
             return {'ok': False, 'kind': 'invalid', 'error': 'use chat to talk with the user', 'now': episode.now}
         if self.user_mode == 'structured' and kind == 'chat':
             return {'ok': False, 'kind': 'invalid', 'error': 'chat needs the natural user mode', 'now': episode.now}
+        if record.get('closed'):
+            return {'ok': False, 'kind': 'finished', 'error': 'the user has left the conversation', 'now': episode.now}
+        if kind in ('tool', 'wait'):
+            record['idle'] = 0
         try:
             if kind == 'chat':
                 result = self.chat(record, action)
@@ -207,6 +237,7 @@ def make_handler(service, token=None):
             return self._send(404, {'error': 'not found'})
 
         def do_POST(self):
+            service.last_request = time.monotonic()  # the serving container exits when nobody calls it
             if not self._authorized():
                 return self._send(401, {'error': 'missing or wrong service token'})
             try:

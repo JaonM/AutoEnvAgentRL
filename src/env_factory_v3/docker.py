@@ -26,6 +26,7 @@ HARDENING = ['--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges'
              '--memory=512m', '--cpus=1', '--pids-limit=64',
              '--tmpfs', '/tmp:rw,noexec,nosuid,size=32m', '-e', 'PYTHONDONTWRITEBYTECODE=1']
 METADATA = 'docker_image.json'
+IDLE_EXIT = 900  # seconds without a request before a serving container stops (and --rm removes it)
 DOCKERFILE = f"""FROM {{base}}
 WORKDIR /app
 COPY env_factory_v3 /app/env_factory_v3
@@ -101,19 +102,19 @@ def run(folder, *, user_mode='structured', token=None, timeout=30):
     """Start a serving container; returns {'container', 'url'}. The natural user mode passes the
     simulator's provider settings by name (values never appear in argv)."""
     image = image_for(folder)
-    extra, command = [], []
+    extra = []
     rubric = (Path(folder) / 'rubric.json').exists()  # the judge grades rubric episodes inside the container
     if user_mode == 'natural' or rubric:
         for prefix in ('V3_USER', 'V3_JUDGE', 'LLM'):
             for name in ('API_KEY', 'BASE_URL', 'MODEL'):
                 if os.environ.get(f'{prefix}_{name}'):
                     extra += ['--env', f'{prefix}_{name}']
-    if user_mode == 'natural':
-        command = ['python', '-m', 'env_factory_v3', 'serve', '/bundle', '--host', '0.0.0.0', '--port', str(PORT),
-                   '--user-mode', 'natural']
+    # --rm with --idle-exit: a container whose trainer died without removing it exits by itself.
+    command = ['python', '-m', 'env_factory_v3', 'serve', '/bundle', '--host', '0.0.0.0', '--port', str(PORT),
+               '--user-mode', user_mode, '--idle-exit', str(IDLE_EXIT)]
     if token:
         extra += ['--env', 'V3_SERVICE_TOKEN']  # value comes from the docker CLI's environment, not argv
-    container = docker('run', '-d', '--label', 'envfactory.v3=serve', *HARDENING, *extra,
+    container = docker('run', '-d', '--rm', '--label', 'envfactory.v3=serve', *HARDENING, *extra,
                        '--publish', f'127.0.0.1::{PORT}', image, *command,
                        env={'V3_SERVICE_TOKEN': token} if token else None)
     try:

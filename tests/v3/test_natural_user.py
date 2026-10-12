@@ -129,6 +129,60 @@ class PlainSpeechTests(unittest.TestCase):
         self.assertTrue(agent.last_user['content'].startswith('好的'))
 
 
+class Leaver(ScriptedUser):
+    """Says goodbye (with the platform's end marker) once it has been told something."""
+
+    def chat(self, messages, tools=None, **parameters):
+        self.seen.append(messages[-1]['content'])
+        return {'content': '好的谢谢，我知道了，再见\n[结束]' if '续借' in messages[-1]['content'] else '嗯'}
+
+
+class ConversationEndTests(unittest.TestCase):
+    def service(self, user, request=None, **options):
+        env, oracle, schema = library_modules()
+        return server.Service(env, oracle, schema, request or library_request(), user_mode='natural',
+                              user_client=user, **options)
+
+    def test_idle_talk_is_warned_once_then_closed_without_an_answer(self):
+        service = self.service(ScriptedUser())
+        episode = service.reset(world='original')['episode']
+        replies = [service.step(episode, {'type': 'chat', 'message': f'第{i}句'}) for i in range(1, 5)]
+        self.assertEqual([r['result'].get('ended') for r in replies], [None, None, 'warning', 'closed'])
+        self.assertFalse(replies[-1]['result']['submitted'])
+        refused = service.step(episode, {'type': 'tool', 'name': 'list_loans', 'args': {'reader_id': 'R1'}})
+        self.assertEqual(refused['kind'], 'finished')
+
+    def test_a_tool_call_resets_the_idle_count(self):
+        service = self.service(ScriptedUser())
+        episode = service.reset(world='original')['episode']
+        for i in range(2):
+            service.step(episode, {'type': 'chat', 'message': f'第{i}句'})
+        service.step(episode, {'type': 'tool', 'name': 'list_loans', 'args': {'reader_id': 'R1'}})
+        later = [service.step(episode, {'type': 'chat', 'message': 'x'})['result'].get('ended') for _ in range(2)]
+        self.assertEqual(later, [None, None])
+
+    def test_the_user_saying_goodbye_ends_and_the_marker_is_never_shown(self):
+        service = self.service(Leaver())
+        episode = service.reset(world='original')['episode']
+        reply = service.step(episode, {'type': 'chat', 'message': '您的两本书都续借好了'})
+        self.assertEqual(reply['result']['ended'], 'warning')
+        self.assertNotIn('[结束]', reply['result']['reply'])
+
+    def test_a_subjective_task_is_graded_on_the_last_thing_said(self):
+        from test_rubric import RUBRIC, REPLY, judge
+        env, oracle, schema = library_modules((LIBRARY / 'env.py').read_text().replace(*REPLY))
+        from env_factory_v3 import rubric
+        request = {**library_request(), 'reward_type': 'rubric'}
+        service = server.Service(env, None, rubric.SCHEMA, request, user_mode='natural', user_client=Leaver(),
+                                 rubric=RUBRIC, judge=judge())
+        episode = service.reset(world='original')['episode']
+        service.step(episode, {'type': 'chat', 'message': '续借成功：L1、L2'})
+        closed = service.step(episode, {'type': 'chat', 'message': '续借成功：L1、L2，祝您阅读愉快'})
+        self.assertEqual((closed['result']['ended'], closed['result']['submitted']), ('closed', True))
+        self.assertEqual(service._get(episode)['episode'].answer, {'reply': '续借成功：L1、L2，祝您阅读愉快'})
+        self.assertIn('rubric_score', service.reward(episode))
+
+
 class ServiceAndClarificationTests(unittest.TestCase):
     def test_a_token_protected_service_refuses_strangers(self):
         import json as _json

@@ -130,6 +130,9 @@ def main(argv=None):
     p.add_argument('--port', type=int, default=8090)
     p.add_argument('--user-mode', choices=('structured', 'natural'), default='structured',
                    help='natural: free-dialogue user simulated with V3_USER_* (falls back to LLM_*)')
+    p.add_argument('--idle-exit', type=int, default=0,
+                   help='exit after this many seconds without a request (0 = never); serving containers use it '
+                        'so a trainer that dies without cleaning up does not leave them running')
     p = sub.add_parser('check')
     p.add_argument('kind', choices=sorted(checks.KINDS))
     args = parser.parse_args(argv)
@@ -258,10 +261,11 @@ def main(argv=None):
         httpd = server.start(service, args.host, args.port, token=os.environ.get('V3_SERVICE_TOKEN') or None)
         print(f'serving {args.bundle} on http://{args.host}:{httpd.server_address[1]}')
         try:
-            while True:
-                time.sleep(3600)
+            while not (args.idle_exit and time.monotonic() - service.last_request > args.idle_exit):
+                time.sleep(min(5, args.idle_exit) if args.idle_exit else 3600)
         except KeyboardInterrupt:
-            httpd.shutdown()
+            pass
+        httpd.shutdown()
         return 0
     if args.command == 'check':
         return checks.main([args.kind])

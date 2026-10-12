@@ -37,6 +37,16 @@ def _post(opener, url, body):
         raise ProviderError(f'service unreachable: {type(error).__name__}') from error
 
 
+LEFT = '（系统提示：用户已经结束了对话。请立即调用 v3_answer 提交最终结果；不提交，本次任务记为未完成。）'
+
+
+def left(reply):
+    """'warning' or 'closed' when the simulated user has left the conversation (see server.IDLE_LIMIT)."""
+    if reply.get('kind') == 'finished':
+        return 'closed'
+    return (reply.get('result') or {}).get('ended')
+
+
 def play(base_url, client, world, category, *, max_turns=30):
     """One episode on `world`; returns its grade and transcript."""
     opener = build_opener(ProxyHandler({}))
@@ -45,10 +55,10 @@ def play(base_url, client, world, category, *, max_turns=30):
     names = {tool['name'] for tool in instructions['tools']}
     tools = agent_view.tools(instructions, category)
     messages = agent_view.messages(instructions)
-    answered, calls, turns = False, 0, 0
+    answered, closed, calls, turns = False, False, 0, 0
     step = lambda action: _post(opener, base_url + '/step', {'episode': episode, 'action': action})
     try:
-        while not answered and turns < max_turns:
+        while not answered and not closed and turns < max_turns:
             turns += 1
             reply = client.chat(messages, tools)
             message = {'role': 'assistant', 'content': reply.get('content') or ''}
@@ -58,8 +68,12 @@ def play(base_url, client, world, category, *, max_turns=30):
             if not reply.get('tool_calls'):
                 if agent_view.speaks(instructions):
                     said = step({'type': 'chat', 'message': message['content']})
-                    messages.append({'role': 'user', 'content': (said.get('result') or {}).get('reply')
-                                     or said.get('error', '')})
+                    text = (said.get('result') or {}).get('reply') or said.get('error', '')
+                    ended = left(said)
+                    if ended == 'closed':
+                        answered = (said.get('result') or {}).get('submitted') is True
+                        break
+                    messages.append({'role': 'user', 'content': f'{text}\n\n{LEFT}' if ended else text})
                     continue
                 answer = agent_view.final_answer(reply.get('content'))
                 step({'type': 'answer', 'answer': answer if answer is not None else {}})
@@ -80,6 +94,12 @@ def play(base_url, client, world, category, *, max_turns=30):
                     else:
                         calls += action['type'] == 'tool'
                         result = step(action)
+                        ended = left(result) if action['type'] == 'chat' else None
+                        if ended == 'warning':
+                            result = {**result, 'notice': LEFT}
+                        elif ended == 'closed':
+                            answered = (result.get('result') or {}).get('submitted') is True
+                            closed = True
                 messages.append({'role': 'tool', 'tool_call_id': call.get('id', name), 'name': name,
                                  'content': json.dumps(result, ensure_ascii=False)})
         if not answered:

@@ -37,6 +37,13 @@ def bundle_identity(root):
     return hashlib.sha256(canonical(loaded['manifest']['files']).encode()).hexdigest()
 
 
+LEFT = '（系统提示：用户已经结束了对话。请立即调用 {answer} 提交最终结果；不提交，本次任务记为未完成。）'
+
+
+RESTORED = ('messages', 'tools', 'terminated', 'score', 'answer', 'unknown_tool_calls',
+            'platform_tool_hallucinations')
+
+
 class V3Episode:
     transport = 'in_process'
 
@@ -50,6 +57,9 @@ class V3Episode:
         self.user_mode = os.environ.get('ENVFACTORY_V3_USER_MODE', 'natural')
         self.token = secrets.token_hex(16)  # only this runtime may drive its service
         self.tool_error_limit = int(os.environ.get('ENVFACTORY_V3_TOOL_ERROR_LIMIT', '3'))
+        # random (default): platform tools and the consent argument are renamed per episode so the
+        # policy reads its tool list; fixed: canonical names; heldout: names never used in training.
+        self.tool_naming = os.environ.get('ENVFACTORY_V3_TOOL_NAMES', 'random')
         self.tool_errors = 0
         self.root = Path(root).resolve()
         loaded = bundle.load_bundle(self.root)
@@ -118,28 +128,56 @@ class V3Episode:
             raise InfrastructureError('V3 reset failed')
         self.episode, self.world, self.seed = response['episode'], response['world'], seed
         self.trace, self.actions, self.tool_errors = [], [], 0
+        self.unknown_tool_calls, self.platform_tool_hallucinations = 0, 0
         self.terminated, self.score, self.answer, self.call_ids = False, None, None, set()
         public = response['instructions']
         self.names = {tool['name'] for tool in public['tools']}
-        self.tools = agent_view.tools(public, self.category)
-        self.messages = agent_view.messages(public)
+        arguments = {arg for tool in public['tools'] for arg in tool['parameters']['properties']}
+        self.naming = agent_view.naming(int(seed), self.tool_naming, avoid=self.names | arguments)
+        self.tools = agent_view.tools(public, self.category, self.naming)
+        self.messages = agent_view.messages(public, self.naming)
         return self.messages
 
     def _dispatch(self, name, params):
         try:
-            step = agent_view.action(name, params, self.names)
+            step = agent_view.action(name, params, self.names, self.naming)
         except KeyError as error:
+            self.unknown_tool_calls += 1
+            self.platform_tool_hallucinations += name in agent_view.platform_names()
             return {'ok': False, 'kind': 'invalid', 'error': str(error)}
-        return self._submit(params) if step is None else self._step(step)
+        if step is None:
+            return self._submit(params)
+        reply = self._step(step)
+        if step['type'] == 'chat':
+            notice = self._after_chat(reply)
+            if notice:
+                reply = {**reply, 'notice': notice}
+        return reply
+
+    def _after_chat(self, reply):
+        """The user may leave: warned once (returns the notice for the agent), then the episode closes."""
+        result = reply.get('result') or {}
+        if reply.get('kind') == 'finished' or result.get('ended') == 'closed':
+            self.terminated = True
+            if result.get('submitted'):  # a subjective task is graded on what the agent last said
+                self._grade()
+            elif self.score is None:
+                self.score = {'reward': 0.0, 'success': False, 'reason': 'user_left_without_answer'}
+        elif result.get('ended') == 'warning':
+            return LEFT.format(answer=self.naming['v3_answer'])
+        return None
+
+    def _grade(self):
+        status, grade = self.request('/reward', {'episode': self.episode})
+        self.score = grade if status == 200 and 'reward' in grade else \
+            {'reward': 0.0, 'success': False, 'reason': 'grading_failed'}
 
     def _submit(self, answer):
         self.answer = copy.deepcopy(answer)
         reply = self._step({'type': 'answer', 'answer': answer})
         self.terminated = True
         if reply.get('ok'):
-            status, grade = self.request('/reward', {'episode': self.episode})
-            self.score = grade if status == 200 and 'reward' in grade else \
-                {'reward': 0.0, 'success': False, 'reason': 'grading_failed'}
+            self._grade()
         else:
             self.score = {'reward': 0.0, 'success': False, 'reason': 'invalid_final_answer'}
         return {'ok': True, 'result': {'submitted': True}} if reply.get('ok') else reply
@@ -184,8 +222,9 @@ class V3Episode:
         elif self.user_mode == 'natural':
             # Free dialogue: a plain message is speech to the user; their reply is the next user turn.
             said = self._step({'type': 'chat', 'message': message.get('content') or ''})
-            self.messages.append({'role': 'user', 'content': (said.get('result') or {}).get('reply')
-                                  or said.get('error', '')})
+            notice = self._after_chat(said)
+            text = (said.get('result') or {}).get('reply') or said.get('error', '')
+            self.messages.append({'role': 'user', 'content': f'{text}\n\n{notice}' if notice else text})
         else:
             answer = agent_view.final_answer(message.get('content'))
             if answer is None:
@@ -200,13 +239,15 @@ class V3Episode:
             self.score = {'reward': 0.0, 'success': False, 'reason': 'no_final_answer'}
         return {'final_reward': float(self.score['reward']), 'terminated': self.terminated,
                 'trace': copy.deepcopy(self.trace), 'score': copy.deepcopy(self.score),
-                'world': self.world, 'user_mode': self.user_mode, 'tool_errors': self.tool_errors, 'trainable': True}
+                'world': self.world, 'user_mode': self.user_mode, 'tool_errors': self.tool_errors,
+                'tool_naming': self.tool_naming, 'unknown_tool_calls': self.unknown_tool_calls,
+                'platform_tool_hallucinations': self.platform_tool_hallucinations, 'trainable': True}
 
     # -- continuation (trainer-side only) -----------------------------------------
     def snapshot(self):
         return {'bundle_identity': bundle_identity(self.root), 'world': self.world, 'seed': self.seed,
                 'actions': copy.deepcopy(self.actions),
-                **{k: copy.deepcopy(getattr(self, k)) for k in ('messages', 'tools', 'terminated', 'score', 'answer')},
+                **{k: copy.deepcopy(getattr(self, k)) for k in RESTORED},
                 'call_ids': sorted(self.call_ids)}
 
     def restore(self, snapshot):
@@ -215,7 +256,7 @@ class V3Episode:
         self.reset(snapshot['seed'], world=snapshot['world'])
         for action in snapshot['actions']:
             self._step(action)
-        for key in ('messages', 'tools', 'terminated', 'score', 'answer'):
+        for key in RESTORED:
             setattr(self, key, copy.deepcopy(snapshot[key]))
         self.call_ids = set(snapshot['call_ids'])
 
@@ -244,6 +285,20 @@ class V3DockerEpisode(V3Episode):
         started = docker.run(self.root, user_mode=self.user_mode, token=self.token)
         self.container = started['container']
         return started['url']
+
+    def reset(self, seed, world=None):
+        # An idle serving container stops itself (docker.IDLE_EXIT); start a fresh one if it has.
+        try:
+            with self.opener.open(self.base_url + '/health', timeout=5) as response:
+                alive = json.load(response).get('ok') is True
+        except (URLError, TimeoutError, OSError, ValueError):
+            alive = False
+        if not alive:
+            from env_factory_v3 import docker
+            docker.remove(self.container)
+            self.episode = None  # the old service and its episodes are gone
+            self.base_url = self._start(None)
+        return super().reset(seed, world=world)
 
     def _stop(self):
         from env_factory_v3 import docker

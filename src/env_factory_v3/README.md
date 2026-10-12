@@ -169,6 +169,20 @@ deterministic as with the structured user. `gates.json` records natural readines
 must name the topic the reference confirms on every approval world. The structured user does not
 need it.
 
+The conversation ends when the simulated user says goodbye, or when the agent sends
+`server.IDLE_LIMIT` (3) messages in a row without calling a tool or proposing a write. The agent
+is first told once to submit (the notice names the answer tool). If it keeps talking, the
+episode closes. A business task without its structured answer then earns 0. A subjective task
+is graded on the last thing the agent told the user.
+
+Platform tools are renamed for each episode. The answer, chat, ask, confirm and wait tools, and
+the `consent` argument of writes, are drawn from `agent_view.ALIASES` per seed
+(`ENVFACTORY_V3_TOOL_NAMES=random`, the default for `rl`), so a policy has to read its tool list
+instead of memorising this platform's names. `fixed` keeps the canonical names. `heldout` uses
+names never seen in training, and the episode result then counts `unknown_tool_calls` and
+`platform_tool_hallucinations` (calls to platform tools that were not offered).
+`experiments/v3/learner_pass_at_k.py --tool-names heldout` runs that probe.
+
 ## Business owner loop
 
 `findings BUILD` turns a build's `spec_findings` into questions for the business owner.

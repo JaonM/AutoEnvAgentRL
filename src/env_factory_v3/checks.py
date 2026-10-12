@@ -12,6 +12,7 @@ Prints PASS/FAIL and exits 0 only on PASS. Results also go to check-<kind>.json.
 from __future__ import annotations
 
 import json
+import re
 import sys
 import traceback
 from pathlib import Path
@@ -23,6 +24,23 @@ from env_factory_v3.spec import load
 from env_factory_v3.worlds import variants
 
 PERTURBED = 10
+TABLE_ARGUMENTS = {'table', 'table_name', 'tables', 'collection'}
+
+
+def api_problems(tools, request):
+    """Tools must look like a business API: no generic table reader (a tool that takes a table name,
+    or is named after reading a table) that lets an agent dump the database instead of asking
+    business questions."""
+    import inspect
+    problems = []
+    tables = set(request['tables'])
+    for name, fn in sorted(tools.items()):
+        arguments = set(inspect.signature(fn).parameters) - {'db', 'now'}
+        if arguments & TABLE_ARGUMENTS or re.search(r'(read|get|list|dump|query|fetch)_(table|rows|records)$', name) \
+                or name in {f'{verb}_{table}' for verb in ('read', 'dump') for table in tables}:
+            problems.append(f'tool {name}: a generic table reader; expose business lookups instead (by id, by '
+                            'owner, by filter) that return only the records and fields the question needs')
+    return problems
 
 
 def shape_problems(initial, final):
@@ -59,6 +77,7 @@ def check_env(folder):
     if not isinstance(tools, dict) or not tools:
         return ['make_tools() must return a non-empty dict'], notes
     problems += tool_spec_problems(tools)
+    problems += api_problems(tools, request)
     problems += gates.approval_problems(env, request)
     start = request['time']['start']
     for name, data, facts in variants(request['tables'], request['user_facts'], perturbed=PERTURBED):

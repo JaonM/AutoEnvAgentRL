@@ -51,11 +51,12 @@ class ScriptedPolicy:
         return self._send(name, args)
 
 
-_MODE = unittest.mock.patch.dict(os.environ, {'ENVFACTORY_V3_USER_MODE': 'structured'})
+_MODE = unittest.mock.patch.dict(os.environ, {'ENVFACTORY_V3_USER_MODE': 'structured',
+                                              'ENVFACTORY_V3_TOOL_NAMES': 'fixed'})
 
 
 def setUpModule():
-    _MODE.start()  # these tests drive the structured ask/confirm protocol; natural is the default
+    _MODE.start()  # these tests drive the structured protocol by canonical names; natural/random are the defaults
 
 
 def tearDownModule():
@@ -76,6 +77,107 @@ class DefaultModeTests(unittest.TestCase):
         names = {tool['function']['name'] for tool in env.tools}
         self.assertNotIn('v3_ask', names)
         self.assertNotIn('v3_confirm', names)
+
+
+class RenamedToolTests(unittest.TestCase):
+    """Platform tool names change per episode; the policy must use the names it is given."""
+
+    @classmethod
+    def setUpClass(cls):
+        root = Path(tempfile.mkdtemp())
+        status = pipeline.build(library_request(), root / 'build', runner=FakeRunner(), perturbed=20)
+        cls.bundle = Path(status['bundle'])
+
+    def episode(self, naming):
+        with unittest.mock.patch.dict(os.environ, {'ENVFACTORY_V3_TOOL_NAMES': naming}):
+            env = V3Episode(self.bundle)
+        self.addCleanup(env.close)
+        return env
+
+    def test_reference_under_random_names_earns_full_reward(self):
+        from env_factory_v3 import agent_view
+        env = self.episode('random')
+        seed = next(s for s in range(50) if agent_view.naming(s)['v3_ask'] != 'v3_ask'
+                    and agent_view.naming(s)['consent'] != 'consent')
+        env.reset(seed)
+        names = env.naming
+        offered = {t['function']['name'] for t in env.tools}
+        self.assertNotIn('v3_answer', offered)
+        self.assertIn(names['v3_answer'], offered)
+        self.assertIn(names['v3_ask'], env.messages[0]['content'])
+        write = next(t for t in env.tools if names['consent'] in t['function']['parameters']['properties'])
+        self.assertNotIn('consent', write['function']['parameters']['properties'])
+
+        class Renamed(ScriptedPolicy):
+            def _send(self, name, args):
+                if name in ('v3_ask', 'v3_confirm'):
+                    name = names[name]
+                elif 'consent' in args:
+                    args = dict(args)
+                    args[names['consent']] = args.pop('consent')
+                return super()._send(name, args)
+
+        loaded = bundle.load_bundle(self.bundle)
+        answer = loaded['env'].reference(Renamed(env))
+        env.step(call(names['v3_answer'], answer, 'final'))
+        self.assertEqual(env.finish()['final_reward'], 1.0)
+
+    def test_heldout_names_count_calls_to_tools_that_are_not_offered(self):
+        env = self.episode('heldout')
+        env.reset(0)
+        env.step(call('v3_answer', {}, 'x1'))     # a memorised platform name
+        env.step(call('made_up_tool', {}, 'x2'))  # an unknown name
+        result = env.finish()
+        self.assertEqual((result['unknown_tool_calls'], result['platform_tool_hallucinations']), (2, 1))
+        self.assertEqual(result['tool_naming'], 'heldout')
+
+
+class NaturalEndTests(unittest.TestCase):
+    def test_idle_speech_gets_a_notice_naming_the_answer_tool_then_closes(self):
+        root = Path(tempfile.mkdtemp())
+        status = pipeline.build(library_request(), root / 'build', runner=FakeRunner(), perturbed=20)
+
+        class Murmur:
+            model = 'scripted-user'
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def chat(self, messages, tools=None, **parameters):
+                return {'content': '嗯'}
+
+        with unittest.mock.patch.dict(os.environ, {'ENVFACTORY_V3_USER_MODE': 'natural',
+                                                   'ENVFACTORY_V3_TOOL_NAMES': 'random'}), \
+                unittest.mock.patch('env_factory_v3.llm.ChatClient', Murmur):
+            env = V3Episode(Path(status['bundle']))
+            self.addCleanup(env.close)
+            env.reset(3)
+            for turn in range(3):
+                env.step({'role': 'assistant', 'content': f'第{turn}句'})
+            self.assertIn(env.naming['v3_answer'], env.messages[-1]['content'])
+            self.assertFalse(env.terminated)
+            _, done = env.step({'role': 'assistant', 'content': '还在吗'})
+        self.assertTrue(done)
+        self.assertEqual(env.finish()['score']['reason'], 'user_left_without_answer')
+
+
+class ContainerLifetimeTests(unittest.TestCase):
+    def test_serving_containers_remove_themselves_when_idle(self):
+        from env_factory_v3 import docker
+        calls = []
+
+        def fake(*args, **kwargs):
+            calls.append(args)
+            return {'run': 'c0ffee', 'port': '127.0.0.1:1'}.get(args[0], '')
+
+        with unittest.mock.patch.object(docker, 'docker', fake), \
+                unittest.mock.patch.object(docker, 'image_for', lambda folder: 'sha256:x'), \
+                unittest.mock.patch.object(docker, 'remove', lambda container: None):
+            with self.assertRaises(RuntimeError):
+                docker.run('/nowhere', timeout=0.1)
+        run = next(c for c in calls if c[0] == 'run')
+        self.assertIn('--rm', run)
+        self.assertEqual(run[run.index('--idle-exit') + 1], str(docker.IDLE_EXIT))
 
 
 class V3AdapterTests(unittest.TestCase):

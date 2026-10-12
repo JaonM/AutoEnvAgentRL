@@ -27,8 +27,9 @@ MIX = (('direct_response', 'direct', 0.2), ('simple_agentic', 'simple', 0.2),
 SHAPES = {
     'direct': 'Every number the answer needs is in the opening (as the user would quote a price list or a '
               'receipt); no tables or tools are needed; one exact numeric or enum answer.',
-    'simple': 'One lookup through read tools answers it (for example an eligibility check); the user knows '
-              'the ids; no writes.',
+    'simple': 'One lookup through read tools returns the records the answer needs (for example the order and '
+              'its items); the agent applies the rules to decide (for example eligibility); the user knows the '
+              'ids; no writes.',
     'ordinary': 'Several reads whose results feed each other (search, filter, compute); no writes.',
     'complex': 'A real multi-step job, not a short one with many rules. The shortest correct solution needs '
                'at least 6 public tool calls (reads and writes; asking the user or asking for approval does not '

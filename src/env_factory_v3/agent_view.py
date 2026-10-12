@@ -1,11 +1,19 @@
 """What an agent sees of a V3 episode: function tools, opening messages and the mapping from a
 function call back to a service action. Training (rl) and the policy gate both use this, so
 the gate measures exactly the interface a trained policy gets.
+
+Platform tools (answer, chat, ask, confirm, wait) and the `consent` argument of writes are
+conventions of this platform, not of the businesses a trained agent will serve. So that a policy
+learns to read its tool list instead of memorising these names, training renames them per
+episode (naming(seed, 'random')); 'heldout' uses names never seen in training, to probe whether
+a policy calls tools that are not offered. Without a naming everything keeps its canonical name.
 """
 from __future__ import annotations
 
 import copy
 import json
+import random
+import re
 
 RESERVED = ('v3_ask', 'v3_confirm', 'v3_chat', 'v3_wait', 'v3_answer')
 SYSTEM = ('Handle the user request using only the public tools. Never guess private user facts: use '
@@ -17,6 +25,66 @@ SYSTEM_NATURAL = ('You are a business assistant chatting with a user. Talk to th
                   'guess private details. Before every write, propose that exact write with v3_chat (it carries '
                   'the proposal) and pass the returned consent token as `consent`. Finish by calling v3_answer.')
 PUBLIC = ('title', 'user_request', 'business_rules', 'user_topics', 'answer_schema', 'time')
+ALIASES = {
+    'v3_answer': ('v3_answer', 'submit_result', 'finish_task', 'deliver_answer', 'submit_final_answer',
+                  'complete_request'),
+    'v3_chat': ('v3_chat', 'request_approval', 'ask_user_approval', 'propose_action', 'seek_confirmation'),
+    'v3_ask': ('v3_ask', 'ask_user', 'request_user_info', 'query_customer'),
+    'v3_confirm': ('v3_confirm', 'confirm_with_user', 'get_approval', 'request_consent'),
+    'v3_wait': ('v3_wait', 'wait_for_time', 'advance_clock', 'pass_time'),
+    'consent': ('consent', 'approval_token', 'authorization', 'confirmation_token', 'user_consent'),
+}
+HELDOUT = {'v3_answer': 'return_outcome', 'v3_chat': 'obtain_user_ok', 'v3_ask': 'inquire_user',
+           'v3_confirm': 'check_user_ok', 'v3_wait': 'let_time_pass', 'consent': 'permit_code'}
+ANSWER_TEXTS = ('Submit the final answer and end the episode.',
+                'Deliver the final result of this request; this ends the conversation.',
+                'Record the final outcome for the user and finish.')
+
+
+def naming(seed, mode='random', avoid=()):
+    """Canonical platform name -> the name this episode uses. mode: fixed (canonical), random (drawn
+    per seed from ALIASES) or heldout (names never used in training). `avoid`: business tool and
+    argument names an alias must not collide with."""
+    if mode == 'fixed':
+        return {key: key for key in ALIASES} | {'_text': 0}
+    if mode == 'heldout':
+        return dict(HELDOUT) | {'_text': 0}
+    if mode != 'random':
+        raise ValueError(f'unknown tool naming {mode}')
+    rng, avoid = random.Random(seed), set(avoid)
+    chosen = {key: rng.choice([n for n in pool if n not in avoid] or [key]) for key, pool in ALIASES.items()}
+    return chosen | {'_text': rng.randrange(len(ANSWER_TEXTS))}
+
+
+def platform_names():
+    """Every name a platform tool ever had (to count calls to platform tools that were not offered)."""
+    return {name for key, pool in ALIASES.items() if key != 'consent' for name in pool} | \
+        {name for key, name in HELDOUT.items() if key != 'consent'}
+
+
+def _swap(text, names):
+    for key in ('v3_answer', 'v3_chat', 'v3_ask', 'v3_confirm', 'v3_wait'):
+        text = text.replace(key, names[key])
+    return re.sub(r'\bconsent\b', names['consent'], text)
+
+
+def _rename(tools_, names):
+    out = []
+    for tool in copy.deepcopy(tools_):
+        fn = tool['function']
+        if fn['name'] == 'v3_answer':
+            fn['description'] = ANSWER_TEXTS[names['_text']]
+        fn['name'] = names.get(fn['name'], fn['name']) if fn['name'] in ALIASES else fn['name']
+        fn['description'] = _swap(fn['description'], names)
+        params = fn['parameters']
+        if 'consent' in params['properties']:
+            params['properties'][names['consent']] = params['properties'].pop('consent')
+            params['required'] = [names['consent'] if r == 'consent' else r for r in params['required']]
+        for spec in params['properties'].values():
+            if isinstance(spec.get('description'), str):
+                spec['description'] = _swap(spec['description'], names)
+        out.append(tool)
+    return out
 
 
 def function(name, description, properties, required=()):
@@ -24,10 +92,11 @@ def function(name, description, properties, required=()):
             'parameters': {'type': 'object', 'properties': properties, 'required': list(required)}}}
 
 
-def tools(instructions, category):
-    """Function tools for one episode's public instructions."""
+def tools(instructions, category, names=None):
+    """Function tools for one episode's public instructions (renamed when `names` is given)."""
     out = _tools(instructions, category)
-    return out if category == 'direct_response' else with_clock(out, instructions)
+    out = out if category == 'direct_response' else with_clock(out, instructions)
+    return _rename(out, names) if names else out
 
 
 def _tools(instructions, category):
@@ -76,19 +145,30 @@ def with_clock(tools_, instructions):
     return [*tools_[:-1], wait, tools_[-1]]
 
 
-def messages(instructions):
+def messages(instructions, names=None):
+    swap = (lambda text: _swap(text, names)) if names else (lambda text: text)
     if instructions.get('user_mode') == 'natural':
         # The user's opening is a user turn; the rest is the assistant's working context.
         context = {key: instructions[key] for key in ('business_rules', 'answer_schema', 'time')}
-        return [{'role': 'system', 'content': SYSTEM_NATURAL + '\n\n' + json.dumps(context, ensure_ascii=False)},
+        return [{'role': 'system', 'content': swap(SYSTEM_NATURAL) + '\n\n' + json.dumps(context, ensure_ascii=False)},
                 {'role': 'user', 'content': instructions['user_request']}]
     public = {key: instructions[key] for key in PUBLIC}
-    return [{'role': 'system', 'content': SYSTEM},
+    return [{'role': 'system', 'content': swap(SYSTEM)},
             {'role': 'user', 'content': json.dumps(public, ensure_ascii=False)}]
 
 
-def action(name, params, business_tools):
-    """Service action for one function call; None for v3_answer (the caller submits)."""
+def action(name, params, business_tools, names=None):
+    """Service action for one function call; None for the answer tool (the caller submits)."""
+    if names:
+        canonical = {alias: key for key, alias in names.items() if key in ALIASES and key != 'consent'}
+        if name in business_tools:
+            params = dict(params)
+            if names['consent'] in params and 'consent' not in params:
+                params['consent'] = params.pop(names['consent'])
+            return {'type': 'tool', 'name': name, 'args': params}
+        if name not in canonical:
+            raise KeyError(f'unknown tool {name}')
+        name = canonical[name]
     if name in business_tools:
         return {'type': 'tool', 'name': name, 'args': params}
     if name == 'v3_ask':

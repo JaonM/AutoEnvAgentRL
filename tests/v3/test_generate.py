@@ -99,6 +99,23 @@ class GenerateTests(unittest.TestCase):
         (folder / 'request.json').write_text(json.dumps(request, ensure_ascii=False))
         self.assertTrue(any('user_scene' in p for p in generate.check_request(folder)[0]))
 
+    def test_generic_table_readers_are_rejected(self):
+        from env_factory_v3 import checks
+
+        def read_table(db, now, table: str):
+            """Read one table."""
+
+        def dump_holds(db, now):
+            """Every hold."""
+
+        def get_loan(db, now, loan_id: str):
+            """One loan."""
+
+        request = library_request()
+        problems = checks.api_problems({'read_table': read_table, 'dump_holds': dump_holds, 'get_loan': get_loan},
+                                       request)
+        self.assertEqual(sorted(p.split(':')[0] for p in problems), ['tool dump_holds', 'tool read_table'])
+
     def test_numbers_said_in_chinese_count_as_said(self):
         scene = {'known': {'身份': '芭蕾舞者', '所需次数': 2, '课时': 12, '单价': 18000, '押金': 350, '人数': 10}}
         self.assertEqual(generate.missing_numbers('要上两次，一共十二课时，每节一百八，押金三块五，十个人', scene), [])

@@ -23,6 +23,8 @@ def main():
     parser.add_argument('--model', default='models/Qwen3-4B-Instruct-2507-4bit')
     parser.add_argument('--k', type=int, default=8)
     parser.add_argument('--user-mode', choices=('natural', 'structured'), default='natural')
+    parser.add_argument('--tool-names', choices=('random', 'fixed', 'heldout'), default='random',
+                        help='platform tool naming; heldout is the probe for calls to tools that are not offered')
     parser.add_argument('--max-steps', type=int, default=24)
     parser.add_argument('--max-tokens', type=int, default=1024)
     parser.add_argument('--max-context', type=int, default=16384)
@@ -31,6 +33,7 @@ def main():
     parser.add_argument('--output', required=True, help='JSONL, one row per (task, user mode); resumes')
     args = parser.parse_args()
     os.environ['ENVFACTORY_V3_USER_MODE'] = args.user_mode
+    os.environ['ENVFACTORY_V3_TOOL_NAMES'] = args.tool_names
 
     import mlx.core as mx
     from rl.backends.mlx.model_options import policy_options
@@ -53,7 +56,8 @@ def main():
     out = Path(args.output)
     done = set()
     if out.exists():
-        done = {(r['id'], r['user_mode']) for r in map(json.loads, out.read_text().splitlines()) if r.get('k') == args.k}
+        done = {(r['id'], r['user_mode']) for r in map(json.loads, out.read_text().splitlines())
+                if r.get('k') == args.k and r.get('tool_names', 'random') == args.tool_names}
     for task in tasks:
         if (wanted and task['id'] not in wanted) or (task['id'], args.user_mode) in done:
             continue
@@ -69,6 +73,8 @@ def main():
                                      'reason': score.get('reason'), 'finish': result.get('finish_reason'),
                                      'steps': len(result.get('actions') or []), 'world': result.get('world'),
                                      'tool_calls': score.get('tool_calls'),
+                                     'unknown_tool_calls': result.get('unknown_tool_calls'),
+                                     'platform_tool_hallucinations': result.get('platform_tool_hallucinations'),
                                      'seconds': round(time.monotonic() - started, 1)})
                 except Exception as exc:  # one broken episode is recorded, not fatal
                     episodes.append({'error': f'{type(exc).__name__}: {exc}'[:300],
@@ -78,6 +84,7 @@ def main():
         rewards = [e.get('reward') or 0.0 for e in episodes]
         successes = sum(e.get('success', False) for e in episodes)
         row = {'id': task['id'], 'sandbox': task['sandbox'], 'user_mode': args.user_mode, 'model': args.model,
+               'tool_names': args.tool_names,
                'k': args.k, 'successes': successes, 'success_rate': round(successes / len(episodes), 3),
                'mean_reward': round(sum(rewards) / len(rewards), 3),
                'reward_variance': round(sum((r - sum(rewards) / len(rewards)) ** 2 for r in rewards) / len(rewards), 4),

@@ -41,7 +41,14 @@ Write env.py:
      with one `name: meaning` line per argument (units, id format, allowed values).
    - Write tool: decorate with @write; fn(db, now, **args) mutates db in place and returns a
      JSON receipt. Raise BusinessError to reject; the runtime rolls the write back.
-   - Tools enforce every rule in brief.md on whatever data they receive. They run on
+   - Tools look like a real business API. Each read answers one business question about
+     specific records (look up by id, list one customer's orders, search with filters) and
+     returns only the records and fields that question needs. Never write a generic table
+     reader (a tool taking a table name, read_table, list_rows) or return a whole table.
+   - Reads return facts (amounts, statuses, times, limits), not the decision the task asks
+     for: do not compute the final eligibility verdict, total, refund, quote or ranking inside
+     a read tool; applying business_rules to those facts is the agent's job. Write tools still
+     enforce every rule in brief.md and raise BusinessError on a violation. Tools run on
      perturbed worlds, so never depend on particular ids or values from data.json.
    - Expose what an agent needs to do the task through tools; never expose facts.json.
 2. approval_key(tool, args, facts) -> str (only when facts.json has approval topics): the
