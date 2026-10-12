@@ -38,7 +38,7 @@ def _post(opener, url, body):
         raise ProviderError(f'service unreachable: {type(error).__name__}') from error
 
 
-LEFT = '（系统提示：用户已经结束了对话。请立即调用 v3_answer 提交最终结果；不提交，本次任务记为未完成。）'
+LEFT = '（系统提示：请用 v3_answer 记录处理结果，并把结果告诉用户；继续空谈，对话将被结束。）'
 
 
 def left(reply):
@@ -56,10 +56,13 @@ def play(base_url, client, world, category, *, max_turns=30):
     names = {tool['name'] for tool in instructions['tools']}
     tools = agent_view.tools(instructions, category)
     messages = agent_view.messages(instructions)
+    natural = agent_view.speaks(instructions)
+    # Structured: the answer ends the episode. Free dialogue: the answer is only recorded; the
+    # episode ends when the user leaves (or at max_turns) and is graded then (server._close).
     answered, closed, calls, turns = False, False, 0, 0
     step = lambda action: _post(opener, base_url + '/step', {'episode': episode, 'action': action})
     try:
-        while not answered and not closed and turns < max_turns:
+        while not (answered and not natural) and not closed and turns < max_turns:
             turns += 1
             reply = client.chat(messages, tools)
             message = {'role': 'assistant', 'content': reply.get('content') or ''}
@@ -67,12 +70,12 @@ def play(base_url, client, world, category, *, max_turns=30):
                 message['tool_calls'] = reply['tool_calls']
             messages.append(message)
             if not reply.get('tool_calls'):
-                if agent_view.speaks(instructions):
+                if natural:
                     said = step({'type': 'chat', 'message': message['content']})
                     text = (said.get('result') or {}).get('reply') or said.get('error', '')
                     ended = left(said)
                     if ended == 'closed':
-                        answered = (said.get('result') or {}).get('submitted') is True
+                        closed = True
                         break
                     messages.append({'role': 'user', 'content': f'{text}\n\n{LEFT}' if ended else text})
                     continue
@@ -88,8 +91,8 @@ def play(base_url, client, world, category, *, max_turns=30):
                 except (ValueError, KeyError) as error:
                     result = {'ok': False, 'kind': 'invalid', 'error': str(error)}
                 else:
-                    if answered:
-                        result = {'ok': False, 'kind': 'finished', 'error': 'episode already answered'}
+                    if (answered and not natural) or closed:
+                        result = {'ok': False, 'kind': 'finished', 'error': 'episode already ended'}
                     elif action is None:
                         result, answered = step({'type': 'answer', 'answer': params}), True
                     else:
@@ -99,11 +102,10 @@ def play(base_url, client, world, category, *, max_turns=30):
                         if ended == 'warning':
                             result = {**result, 'notice': LEFT}
                         elif ended == 'closed':
-                            answered = (result.get('result') or {}).get('submitted') is True
                             closed = True
                 messages.append({'role': 'tool', 'tool_call_id': call.get('id', name), 'name': name,
                                  'content': json.dumps(result, ensure_ascii=False)})
-        if not answered:
+        if not answered and not natural:
             # Same rule as training (rl V3Episode.finish): no final answer earns 0, whatever the state.
             return {'world': world, 'reward': 0.0, 'success': False, 'fields': None, 'state_ok': None,
                     'safety': None, 'turns': turns, 'tool_calls': calls, 'answered': False,

@@ -23,10 +23,11 @@ SYSTEM_NATURAL = ('你是一名业务助理，正在和用户在线对话。直�
                   '只使用提供的工具，不要猜测用户的私人信息。')
 SYSTEM_WRITES = ('每次写操作之前，先用 `v3_chat` 向用户提出这次具体的写操作（附上 proposal）；用户同意后会返回授权凭证，'
                  '把它作为 `consent` 传给这次写操作。')
-SYSTEM_FINISH = '处理完成后，先把最终结果用平实的话告诉用户，再调用 `v3_answer` 提交。'
+SYSTEM_FINISH = ('确认结果后，调用 `v3_answer` 记录处理结果，并用平实的话把结果告诉用户；'
+                 '用户表示没有其他问题时，对话结束。')
 PUBLIC = ('title', 'user_request', 'business_rules', 'user_topics', 'answer_schema', 'time')
 ALIASES = {
-    'v3_answer': ('v3_answer', 'submit_result', 'finish_task', 'deliver_answer', 'submit_final_answer',
+    'v3_answer': ('v3_answer', 'submit_result', 'record_result', 'save_resolution', 'log_outcome',
                   'complete_request'),
     'v3_chat': ('v3_chat', 'request_approval', 'ask_user_approval', 'propose_action', 'seek_confirmation'),
     'v3_ask': ('v3_ask', 'ask_user', 'request_user_info', 'query_customer'),
@@ -39,6 +40,10 @@ HELDOUT = {'v3_answer': 'return_outcome', 'v3_chat': 'obtain_user_ok', 'v3_ask':
 ANSWER_TEXTS = ('提交最终答案，结束本次对话。',
                 '交付这次请求的最终结果；调用后对话结束。',
                 '记录处理结果并结束本次服务。')
+# Free dialogue: the answer tool records the result (it can be updated); the user ends the conversation.
+RECORD_TEXTS = ('记录这次请求的处理结果（结束前可以更新）；记录后把结果告诉用户。',
+                '登记处理结果；登记不会结束对话，仍需把结果告诉用户。',
+                '保存本次服务的处理结果，之后继续和用户沟通。')
 
 
 def naming(seed, mode='random', avoid=()):
@@ -73,7 +78,8 @@ def _rename(tools_, names):
     for tool in copy.deepcopy(tools_):
         fn = tool['function']
         if fn['name'] == 'v3_answer':
-            fn['description'] = ANSWER_TEXTS[names['_text']]
+            texts = RECORD_TEXTS if fn['description'] in RECORD_TEXTS else ANSWER_TEXTS
+            fn['description'] = texts[names['_text']]
         fn['name'] = names.get(fn['name'], fn['name']) if fn['name'] in ALIASES else fn['name']
         fn['description'] = _swap(fn['description'], names)
         params = fn['parameters']
@@ -116,7 +122,7 @@ def _tools(instructions, category):
                               'required': ['tool', 'args'], 'description': '要用户同意的这次写操作'}},
                 ['message', 'proposal']))
         fields = instructions['answer_schema']['fields']
-        out.append(function('v3_answer', ANSWER_TEXTS[0], copy.deepcopy(fields), list(fields)))
+        out.append(function('v3_answer', RECORD_TEXTS[0], copy.deepcopy(fields), list(fields)))
         return [out[-1]] if category == 'direct_response' else out
     facts = [t['key'] for t in instructions['user_topics'] if t['kind'] != 'approval']
     approvals = [t['key'] for t in instructions['user_topics'] if t['kind'] == 'approval']

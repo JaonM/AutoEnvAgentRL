@@ -167,15 +167,16 @@ class ToldUserTests(unittest.TestCase):
         env, oracle, schema = library_modules()
         service = server.Service(env, oracle, schema, library_request(), user_mode='natural', user_client=ScriptedUser())
         system = agent_view.messages(service.reset(world='original')['instructions'])[0]['content']
-        self.assertIn('先把最终结果用平实的话告诉用户', system)
+        self.assertIn('记录处理结果', system)
+        self.assertIn('把结果告诉用户', system)
 
 
 class PlainSpeechTests(unittest.TestCase):
-    def test_plain_messages_are_speech_and_only_v3_answer_ends_the_episode(self):
+    def test_plain_messages_are_speech_and_the_user_ends_the_episode(self):
         import json as _json
         from env_factory_v3.certify import policy_gate as policy
         env, oracle, schema = library_modules()
-        service = server.Service(env, oracle, schema, library_request(), user_mode='natural', user_client=ScriptedUser())
+        service = server.Service(env, oracle, schema, library_request(), user_mode='natural', user_client=Leaver())
         httpd = server.start(service)
 
         class Agent:
@@ -187,10 +188,12 @@ class PlainSpeechTests(unittest.TestCase):
             def chat(self, messages, tools=None, **parameters):
                 self.turn += 1
                 if self.turn == 1:
-                    return {'content': '请问您的读者号和要续借的书号是多少？'}
-                self.last_user = messages[-1]
-                return {'content': '', 'tool_calls': [{'id': 'a1', 'type': 'function', 'function': {
-                    'name': 'v3_answer', 'arguments': _json.dumps({'renewed_loan_ids': [], 'blocked': []})}}]}
+                    return {'content': '请问您的读者号和书号是多少？'}  # the Leaver stays until results are told
+                if self.turn == 2:
+                    self.after_question = messages[-1]
+                    return {'content': '', 'tool_calls': [{'id': 'a1', 'type': 'function', 'function': {
+                        'name': 'v3_answer', 'arguments': _json.dumps({'renewed_loan_ids': [], 'blocked': []})}}]}
+                return {'content': '已记录：这次没有可以续借的书。'}
 
         agent = Agent()
         try:
@@ -200,9 +203,9 @@ class PlainSpeechTests(unittest.TestCase):
             httpd.shutdown()
             httpd.server_close()
         self.assertTrue(result['answered'])
-        self.assertEqual(result['turns'], 2)
-        self.assertEqual(agent.last_user['role'], 'user')
-        self.assertTrue(agent.last_user['content'].startswith('好的'))
+        self.assertEqual(result['turns'], 3)  # speech, record, speech; then the user said goodbye
+        self.assertEqual(agent.after_question['role'], 'user')
+        self.assertIsNotNone(result['reward'])
 
 
 class Leaver(ScriptedUser):
@@ -224,7 +227,8 @@ class ConversationEndTests(unittest.TestCase):
         episode = service.reset(world='original')['episode']
         replies = [service.step(episode, {'type': 'chat', 'message': f'第{i}句'}) for i in range(1, 5)]
         self.assertEqual([r['result'].get('ended') for r in replies], [None, None, 'warning', 'closed'])
-        self.assertFalse(replies[-1]['result']['submitted'])
+        self.assertFalse(replies[-1]['result']['recorded'])
+        self.assertEqual(service.reward(episode)['fields'], {'renewed_loan_ids': False, 'blocked': False})
         refused = service.step(episode, {'type': 'tool', 'name': 'list_loans', 'args': {'reader_id': 'R1'}})
         self.assertEqual(refused['kind'], 'finished')
 
@@ -240,9 +244,13 @@ class ConversationEndTests(unittest.TestCase):
     def test_the_user_saying_goodbye_ends_and_the_marker_is_never_shown(self):
         service = self.service(Leaver())
         episode = service.reset(world='original')['episode']
+        answer = {'renewed_loan_ids': ['L1'], 'blocked': []}
+        recorded = service.step(episode, {'type': 'answer', 'answer': answer})
+        self.assertEqual(recorded['result'], {'recorded': True})  # recording does not end the conversation
         reply = service.step(episode, {'type': 'chat', 'message': '您的两本书都续借好了'})
-        self.assertEqual(reply['result']['ended'], 'warning')
+        self.assertEqual((reply['result']['ended'], reply['result']['recorded']), ('closed', True))
         self.assertNotIn('[结束]', reply['result']['reply'])
+        self.assertEqual(service._get(episode)['episode'].answer, answer)
 
     def test_a_subjective_task_is_graded_on_the_last_thing_said(self):
         from test_rubric import RUBRIC, REPLY, judge
@@ -252,9 +260,8 @@ class ConversationEndTests(unittest.TestCase):
         service = server.Service(env, None, rubric.SCHEMA, request, user_mode='natural', user_client=Leaver(),
                                  rubric=RUBRIC, judge=judge())
         episode = service.reset(world='original')['episode']
-        service.step(episode, {'type': 'chat', 'message': '续借成功：L1、L2'})
         closed = service.step(episode, {'type': 'chat', 'message': '续借成功：L1、L2，祝您阅读愉快'})
-        self.assertEqual((closed['result']['ended'], closed['result']['submitted']), ('closed', True))
+        self.assertEqual((closed['result']['ended'], closed['result']['recorded']), ('closed', True))
         self.assertEqual(service._get(episode)['episode'].answer, {'reply': '续借成功：L1、L2，祝您阅读愉快'})
         self.assertIn('rubric_score', service.reward(episode))
 

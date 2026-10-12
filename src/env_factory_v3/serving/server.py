@@ -30,10 +30,10 @@ from env_factory_v3.core.worlds import variants
 from env_factory_v3.runtime import BusinessError, Episode, EpisodeFinished, ToolError, tool_specs
 
 
-# Free dialogue ends when the user says goodbye or after this many agent messages in a row that
-# neither call a tool nor propose a write. The agent is then told once to submit; if it talks on,
-# the episode closes: a business task without its structured answer earns 0, a subjective task is
-# graded on what the agent last told the user.
+# Free dialogue ends when the user says goodbye (the simulator's stop signal), as in τ²-bench:
+# the episode closes and is graded on the final state, the latest recorded answer and what the
+# agent told the user. An agent that talks IDLE_LIMIT times in a row without calling a tool,
+# proposing a write or recording a result is warned once, then the episode closes the same way.
 IDLE_LIMIT = 3
 
 
@@ -126,21 +126,26 @@ class Service:
                               'proposal': copy.deepcopy(proposal), 'time': episode.now})
         record['idle'] = 0 if proposal is not None else record.get('idle', 0) + 1
         result = {'reply': reply, **({'consent': token} if proposal is not None else {})}
-        if getattr(user, 'ended', False) or record['idle'] >= IDLE_LIMIT:
-            result.update(self._end(record, str(action.get('message') or '')))
+        if getattr(user, 'ended', False):
+            result.update(self._close(record, str(action.get('message') or '')))
+        elif record['idle'] >= IDLE_LIMIT:
+            if record.get('warned'):
+                result.update(self._close(record, str(action.get('message') or '')))
+            else:
+                record['warned'] = True
+                result['ended'] = 'warning'
         return result
 
-    def _end(self, record, last_message):
-        """The user has left: warn once, then close the episode."""
-        if not record.get('warned'):
-            record['warned'] = True
-            return {'ended': 'warning'}
-        record['closed'] = True
+    def _close(self, record, last_message=''):
+        """End a free-dialogue episode; a subjective task without a recorded reply is graded on
+        what the agent last told the user."""
         episode = record['episode']
-        if self.reward_type == 'rubric' and last_message.strip():
-            episode.submit({'reply': last_message})
-            return {'ended': 'closed', 'submitted': True}
-        return {'ended': 'closed', 'submitted': False}
+        if not record.get('closed'):
+            record['closed'] = True
+            if self.reward_type == 'rubric' and episode.answer is None and last_message.strip():
+                episode.record({'reply': last_message})
+            episode.close()
+        return {'ended': 'closed', 'recorded': episode.answer is not None}
 
     def step(self, identifier, action):
         record = self._get(identifier)
@@ -168,6 +173,9 @@ class Service:
                     return {'ok': False, 'kind': 'invalid', 'error': 'the clock is fixed for this task',
                             'now': episode.now}
                 result = episode.wait(action['seconds'])
+            elif kind == 'answer' and self.user_mode == 'natural':
+                record['idle'] = 0  # recorded, not ended: the conversation goes on until the user leaves
+                result = episode.record(action.get('answer'))
             elif kind == 'answer':
                 result = episode.submit(action.get('answer'))
             else:
@@ -189,6 +197,8 @@ class Service:
     def reward(self, identifier):
         record = self._get(identifier)
         episode = record['episode']
+        if self.user_mode == 'natural':
+            self._close(record)  # grading ends a free-dialogue episode (e.g. the trainer's step limit)
         if not episode.finished:
             return {'error': 'episode has no answer yet'}
         reference_calls = record.get('reference_calls')

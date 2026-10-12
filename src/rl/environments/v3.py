@@ -37,7 +37,7 @@ def bundle_identity(root):
     return hashlib.sha256(canonical(loaded['manifest']['files']).encode()).hexdigest()
 
 
-LEFT = '（系统提示：用户已经结束了对话。请立即调用 {answer} 提交最终结果；不提交，本次任务记为未完成。）'
+LEFT = '（系统提示：请用 {answer} 记录处理结果，并把结果告诉用户；继续空谈，对话将被结束。）'
 
 
 RESTORED = ('messages', 'tools', 'terminated', 'score', 'answer', 'unknown_tool_calls',
@@ -145,8 +145,11 @@ class V3Episode:
             self.unknown_tool_calls += 1
             self.platform_tool_hallucinations += name in agent_view.platform_names()
             return {'ok': False, 'kind': 'invalid', 'error': str(error)}
-        if step is None:
+        if step is None and self.user_mode != 'natural':
             return self._submit(params)
+        if step is None:  # free dialogue: the answer is recorded; the user ends the conversation
+            self.answer = copy.deepcopy(params)
+            return self._step({'type': 'answer', 'answer': params})
         reply = self._step(step)
         if step['type'] == 'chat':
             notice = self._after_chat(reply)
@@ -158,11 +161,10 @@ class V3Episode:
         """The user may leave: warned once (returns the notice for the agent), then the episode closes."""
         result = reply.get('result') or {}
         if reply.get('kind') == 'finished' or result.get('ended') == 'closed':
+            # The user left: graded on the final state, the latest recorded answer and what was said.
             self.terminated = True
-            if result.get('submitted'):  # a subjective task is graded on what the agent last said
+            if self.score is None:
                 self._grade()
-            elif self.score is None:
-                self.score = {'reward': 0.0, 'success': False, 'reason': 'user_left_without_answer'}
         elif result.get('ended') == 'warning':
             return LEFT.format(answer=self.naming['v3_answer'])
         return None
@@ -235,6 +237,8 @@ class V3Episode:
         return 0.0, self.terminated
 
     def finish(self):
+        if self.score is None and self.user_mode == 'natural' and self.episode is not None:
+            self._grade()  # step limit reached: the service closes the conversation and grades it
         if self.score is None:
             self.score = {'reward': 0.0, 'success': False, 'reason': 'no_final_answer'}
         return {'final_reward': float(self.score['reward']), 'terminated': self.terminated,

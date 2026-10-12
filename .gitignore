@@ -27,3 +27,4 @@ models/
 
 # macOS metadata
 .DS_Store
+.bench/

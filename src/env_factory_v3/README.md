@@ -187,11 +187,14 @@ deterministic as with the structured user. `gates.json` records natural readines
 must name the topic the reference confirms on every approval world. The structured user does not
 need it.
 
-The conversation ends when the simulated user says goodbye, or when the agent sends
-`server.IDLE_LIMIT` (3) messages in a row without calling a tool or proposing a write. The agent
-is first told once to submit (the notice names the answer tool). If it keeps talking, the
-episode closes. A business task without its structured answer then earns 0. A subjective task
-is graded on the last thing the agent told the user.
+The conversation ends the way τ²-bench ends it: when the simulated user says goodbye (its stop
+signal). In free dialogue the answer tool only records the result (it can be updated) and does not
+end the episode. At the end the episode is graded on the final state, the latest recorded answer,
+and whether the agent told the user the results (`core/reward.told`, the fields marked "tell").
+An agent that sends `server.IDLE_LIMIT` (3) messages in a row without calling a tool, proposing a
+write or recording a result is warned once, then closed the same way. The trainer's step limit
+also closes and grades. A subjective task with no recorded reply is graded on the last thing the
+agent told the user.
 
 Platform tools are renamed for each episode. The answer, chat, ask, confirm and wait tools, and
 the `consent` argument of writes, are drawn from `agent_view.ALIASES` per seed

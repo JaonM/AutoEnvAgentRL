@@ -159,7 +159,9 @@ class NaturalEndTests(unittest.TestCase):
             self.assertFalse(env.terminated)
             _, done = env.step({'role': 'assistant', 'content': '还在吗'})
         self.assertTrue(done)
-        self.assertEqual(env.finish()['score']['reason'], 'user_left_without_answer')
+        score = env.finish()['score']
+        self.assertEqual((score['reward'], score['success']), (0.0, False))  # graded: nothing recorded
+        self.assertIn('fields', score)
 
 
 class ContainerLifetimeTests(unittest.TestCase):

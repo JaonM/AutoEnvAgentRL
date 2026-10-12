@@ -316,6 +316,18 @@ class Episode:
         self.trace.append({'kind': 'answer', 'time': self.now})
         return {'accepted': True}
 
+    def record(self, answer):
+        """Record (or update) the answer without ending the episode: in free dialogue the
+        conversation ends when the user does, and the latest recorded answer is graded then."""
+        self._guard()
+        self.answer = jsonable(copy.deepcopy(answer))
+        self.trace.append({'kind': 'record', 'time': self.now})
+        return {'recorded': True}
+
+    def close(self):
+        """End the episode as it stands (free dialogue: the user left)."""
+        self.finished = True
+
     def result(self):
         final = copy.deepcopy(self.db)
         if EVENTS in self.initial:
