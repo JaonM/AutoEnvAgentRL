@@ -191,11 +191,22 @@ def signature(request):
     return request['title'] + request['user_request'] + request['business_rules']
 
 
-def plan(domains, count, rubric_share=0.0):
-    """(domain, category, shape) assignments following MIX, domains round-robin per shape.
-    rubric_share turns that fraction of the multi-step slots (from the end) into subjective tasks."""
+def parse_mix(text):
+    """'direct=0.1,simple=0.1,ordinary=0.2,complex=0.6' -> {shape: share} (shares sum to 1)."""
+    mix = {name.strip(): float(share) for name, share in (part.split('=') for part in text.split(',') if part.strip())}
+    known = {shape for _, shape, _ in MIX}
+    if set(mix) - known or abs(sum(mix.values()) - 1) > 1e-6:
+        raise ValueError(f'mix needs shares of {sorted(known)} summing to 1, got {mix}')
+    return mix
+
+
+def plan(domains, count, rubric_share=0.0, mix=None):
+    """(domain, category, shape) assignments following MIX (or `mix`: {shape: share}), domains
+    round-robin per shape. rubric_share turns that fraction of the multi-step slots (from the end)
+    into subjective tasks."""
+    table = MIX if mix is None else [(category, shape, mix.get(shape, 0.0)) for category, shape, _ in MIX]
     slots = []
-    for category, shape, share in MIX:
+    for category, shape, share in table:
         slots += [(category, shape)] * round(count * share)
     slots = (slots + [MIX[-1][:2]] * count)[:count]
     subjective = round(count * rubric_share)
@@ -242,7 +253,7 @@ def respread(kept, client, output):
 
 
 def generate(domains, count, output, *, runner, parallel=2, timeout=600, python='python', rubric_share=0.0,
-             opening_client=None, english_share=0.0):
+             opening_client=None, english_share=0.0, mix=None):
     """Stage one: a codex session per task writes rules, tables, facts and a user scene. Stage two:
     opening_client (V3_OPENING_*, falling back to LLM_*) writes the opening from the scene alone."""
     if opening_client is None:
@@ -251,7 +262,7 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
         opening_client = ChatClient('V3_OPENING')
     output = Path(output)
     output.mkdir(parents=True)
-    assignments = plan(domains, count, rubric_share)
+    assignments = plan(domains, count, rubric_share, **({'mix': mix} if mix else {}))
     langs = languages(count, english_share)
 
     def one(index, assignment):

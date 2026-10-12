@@ -85,7 +85,7 @@ def stage_generate(out, domains_, options, log):
         summary = generate.generate(domains_, options['count'], folder, runner=options['runner'],
                                     parallel=options['parallel'], python=options['python'],
                                     rubric_share=options['rubric_share'], opening_client=options['opening_client'],
-                                    english_share=options.get('english_share', 0.0))
+                                    english_share=options.get('english_share', 0.0), mix=options.get('mix'))
         log('generate', 'done', f"{summary['kept']}/{summary['requested']} requests")
     else:
         log('generate', 'reused', f"{summary['kept']}/{summary['requested']} requests")

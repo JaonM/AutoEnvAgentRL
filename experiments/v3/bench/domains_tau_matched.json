@@ -1,0 +1,152 @@
+[
+ {
+  "name": "Airline flight reservations",
+  "detail": "Customer service for airline flight reservations. Book, change or cancel flight reservations; cabin class and fare rules; change fees and cancellation refunds. Policies cover: verifying the customer's identity (e.g. name plus a postcode, email or booking reference) before looking up or changing anything; eligibility windows and status rules; fees, penalties and compensation amounts; refunds back to the original payment method; the customer must approve each change before it is made; some requests must be refused because the policy does not allow them; requests outside the policy are handed to a human agent.",
+  "group": "matched"
+ },
+ {
+  "name": "Airline baggage and delay compensation",
+  "detail": "Customer service for airline baggage and delay compensation. Checked baggage allowances and fees, delayed or cancelled flight compensation vouchers or refunds. Policies cover: verifying the customer's identity (e.g. name plus a postcode, email or booking reference) before looking up or changing anything; eligibility windows and status rules; fees, penalties and compensation amounts; refunds back to the original payment method; the customer must approve each change before it is made; some requests must be refused because the policy does not allow them; requests outside the policy are handed to a human agent.",
+  "group": "matched"
+ },
+ {
+  "name": "Airline passenger and seat changes",
+  "detail": "Customer service for airline passenger and seat changes. Change passenger details, add or remove passengers, seat and cabin upgrades, travel insurance add-ons. Policies cover: verifying the customer's identity (e.g. name plus a postcode, email or booking reference) before looking up or changing anything; eligibility windows and status rules; fees, penalties and compensation amounts; refunds back to the original payment method; the customer must approve each change before it is made; some requests must be refused because the policy does not allow them; requests outside the policy are handed to a human agent.",
+  "group": "matched"
+ },
+ {
+  "name": "Airline loyalty programme",
+  "detail": "Customer service for airline loyalty programme. Frequent flyer tiers, benefits such as free bags or upgrades, points redemption and refunds of points. Policies cover: verifying the customer's identity (e.g. name plus a postcode, email or booking reference) before looking up or changing anything; eligibility windows and status rules; fees, penalties and compensation amounts; refunds back to the original payment method; the customer must approve each change before it is made; some requests must be refused because the policy does not allow them; requests outside the policy are handed to a human agent.",
+  "group": "matched"
+ },
+ {
+  "name": "Online retail order cancellation and returns",
+  "detail": "Customer service for online retail order cancellation and returns. Cancel pending orders, return delivered items within a return window, refund to the original payment. Policies cover: verifying the customer's identity (e.g. name plus a postcode, email or booking reference) before looking up or changing anything; eligibility windows and status rules; fees, penalties and compensation amounts; refunds back to the original payment method; the customer must approve each change before it is made; some requests must be refused because the policy does not allow them; requests outside the policy are handed to a human agent.",
+  "group": "matched"
+ },
+ {
+  "name": "Online retail item exchanges",
+  "detail": "Customer service for online retail item exchanges. Exchange delivered items for another variant (size, colour, model) of the same product; price differences. Policies cover: verifying the customer's identity (e.g. name plus a postcode, email or booking reference) before looking up or changing anything; eligibility windows and status rules; fees, penalties and compensation amounts; refunds back to the original payment method; the customer must approve each change before it is made; some requests must be refused because the policy does not allow them; requests outside the policy are handed to a human agent.",
+  "group": "matched"
+ },
+ {
+  "name": "Online retail order changes",
+  "detail": "Customer service for online retail order changes. Change the shipping address, items or payment method of pending orders; split shipments; order status questions. Policies cover: verifying the customer's identity (e.g. name plus a postcode, email or booking reference) before looking up or changing anything; eligibility windows and status rules; fees, penalties and compensation amounts; refunds back to the original payment method; the customer must approve each change before it is made; some requests must be refused because the policy does not allow them; requests outside the policy are handed to a human agent.",
+  "group": "matched"
+ },
+ {
+  "name": "Online store account and gift cards",
+  "detail": "Customer service for online store account and gift cards. Account details, gift card balances and payments, store credit, refund destination rules. Policies cover: verifying the customer's identity (e.g. name plus a postcode, email or booking reference) before looking up or changing anything; eligibility windows and status rules; fees, penalties and compensation amounts; refunds back to the original payment method; the customer must approve each change before it is made; some requests must be refused because the policy does not allow them; requests outside the policy are handed to a human agent.",
+  "group": "matched"
+ },
+ {
+  "name": "Mobile phone plans",
+  "detail": "Customer service for mobile phone plans. Change plans, add data packages, contract periods and early termination fees, plan eligibility. Policies cover: verifying the customer's identity (e.g. name plus a postcode, email or booking reference) before looking up or changing anything; eligibility windows and status rules; fees, penalties and compensation amounts; refunds back to the original payment method; the customer must approve each change before it is made; some requests must be refused because the policy does not allow them; requests outside the policy are handed to a human agent.",
+  "group": "matched"
+ },
+ {
+  "name": "Mobile billing and payments",
+  "detail": "Customer service for mobile billing and payments. Explain bills, disputed charges, overdue balances and payment arrangements, late fees, refunds. Policies cover: verifying the customer's identity (e.g. name plus a postcode, email or booking reference) before looking up or changing anything; eligibility windows and status rules; fees, penalties and compensation amounts; refunds back to the original payment method; the customer must approve each change before it is made; some requests must be refused because the policy does not allow them; requests outside the policy are handed to a human agent.",
+  "group": "matched"
+ },
+ {
+  "name": "Mobile roaming and data top-ups",
+  "detail": "Customer service for mobile roaming and data top-ups. Activate or cancel international roaming, buy data top-ups, roaming charges and limits. Policies cover: verifying the customer's identity (e.g. name plus a postcode, email or booking reference) before looking up or changing anything; eligibility windows and status rules; fees, penalties and compensation amounts; refunds back to the original payment method; the customer must approve each change before it is made; some requests must be refused because the policy does not allow them; requests outside the policy are handed to a human agent.",
+  "group": "matched"
+ },
+ {
+  "name": "Mobile line services",
+  "detail": "Customer service for mobile line services. Suspend or resume a line, replace a lost SIM, number porting, device instalment plans. Policies cover: verifying the customer's identity (e.g. name plus a postcode, email or booking reference) before looking up or changing anything; eligibility windows and status rules; fees, penalties and compensation amounts; refunds back to the original payment method; the customer must approve each change before it is made; some requests must be refused because the policy does not allow them; requests outside the policy are handed to a human agent.",
+  "group": "matched"
+ },
+ {
+  "name": "Hotel reservations",
+  "detail": "Customer service for hotel reservations. Book, modify or cancel hotel stays; room types; cancellation deadlines and penalties; loyalty nights. Policies cover: verifying the customer's identity (e.g. name plus a postcode, email or booking reference) before looking up or changing anything; eligibility windows and status rules; fees, penalties and compensation amounts; refunds back to the original payment method; the customer must approve each change before it is made; some requests must be refused because the policy does not allow them; requests outside the policy are handed to a human agent.",
+  "group": "similar"
+ },
+ {
+  "name": "Train tickets",
+  "detail": "Customer service for train tickets. Book, change and refund train tickets; seat classes; change fees by time before departure. Policies cover: verifying the customer's identity (e.g. name plus a postcode, email or booking reference) before looking up or changing anything; eligibility windows and status rules; fees, penalties and compensation amounts; refunds back to the original payment method; the customer must approve each change before it is made; some requests must be refused because the policy does not allow them; requests outside the policy are handed to a human agent.",
+  "group": "similar"
+ },
+ {
+  "name": "Car rental reservations",
+  "detail": "Customer service for car rental reservations. Reserve, extend or cancel car rentals; insurance options; late return and fuel charges. Policies cover: verifying the customer's identity (e.g. name plus a postcode, email or booking reference) before looking up or changing anything; eligibility windows and status rules; fees, penalties and compensation amounts; refunds back to the original payment method; the customer must approve each change before it is made; some requests must be refused because the policy does not allow them; requests outside the policy are handed to a human agent.",
+  "group": "similar"
+ },
+ {
+  "name": "Cruise bookings",
+  "detail": "Customer service for cruise bookings. Cabin bookings, passenger changes, deposits and final payments, cancellation refund schedules. Policies cover: verifying the customer's identity (e.g. name plus a postcode, email or booking reference) before looking up or changing anything; eligibility windows and status rules; fees, penalties and compensation amounts; refunds back to the original payment method; the customer must approve each change before it is made; some requests must be refused because the policy does not allow them; requests outside the policy are handed to a human agent.",
+  "group": "similar"
+ },
+ {
+  "name": "Tour package bookings",
+  "detail": "Customer service for tour package bookings. Package tour bookings, optional excursions, traveller changes, cancellation and refund tiers. Policies cover: verifying the customer's identity (e.g. name plus a postcode, email or booking reference) before looking up or changing anything; eligibility windows and status rules; fees, penalties and compensation amounts; refunds back to the original payment method; the customer must approve each change before it is made; some requests must be refused because the policy does not allow them; requests outside the policy are handed to a human agent.",
+  "group": "similar"
+ },
+ {
+  "name": "Food delivery orders",
+  "detail": "Customer service for food delivery orders. Order problems, missing or wrong items, refunds and credits, delivery fee rules, cancellations. Policies cover: verifying the customer's identity (e.g. name plus a postcode, email or booking reference) before looking up or changing anything; eligibility windows and status rules; fees, penalties and compensation amounts; refunds back to the original payment method; the customer must approve each change before it is made; some requests must be refused because the policy does not allow them; requests outside the policy are handed to a human agent.",
+  "group": "similar"
+ },
+ {
+  "name": "Ride-hailing trips",
+  "detail": "Customer service for ride-hailing trips. Fare disputes, cancellation fees, lost item reports, promotion credits, account issues. Policies cover: verifying the customer's identity (e.g. name plus a postcode, email or booking reference) before looking up or changing anything; eligibility windows and status rules; fees, penalties and compensation amounts; refunds back to the original payment method; the customer must approve each change before it is made; some requests must be refused because the policy does not allow them; requests outside the policy are handed to a human agent.",
+  "group": "similar"
+ },
+ {
+  "name": "Gym memberships",
+  "detail": "Customer service for gym memberships. Join, freeze, upgrade or cancel memberships; notice periods; joining and cancellation fees. Policies cover: verifying the customer's identity (e.g. name plus a postcode, email or booking reference) before looking up or changing anything; eligibility windows and status rules; fees, penalties and compensation amounts; refunds back to the original payment method; the customer must approve each change before it is made; some requests must be refused because the policy does not allow them; requests outside the policy are handed to a human agent.",
+  "group": "similar"
+ },
+ {
+  "name": "Concert and event tickets",
+  "detail": "Customer service for concert and event tickets. Ticket purchases, seat changes, transfers to another person, event cancellation refunds. Policies cover: verifying the customer's identity (e.g. name plus a postcode, email or booking reference) before looking up or changing anything; eligibility windows and status rules; fees, penalties and compensation amounts; refunds back to the original payment method; the customer must approve each change before it is made; some requests must be refused because the policy does not allow them; requests outside the policy are handed to a human agent.",
+  "group": "similar"
+ },
+ {
+  "name": "Cinema tickets and memberships",
+  "detail": "Customer service for cinema tickets and memberships. Book and refund cinema tickets, member discounts, snack vouchers, showtime changes. Policies cover: verifying the customer's identity (e.g. name plus a postcode, email or booking reference) before looking up or changing anything; eligibility windows and status rules; fees, penalties and compensation amounts; refunds back to the original payment method; the customer must approve each change before it is made; some requests must be refused because the policy does not allow them; requests outside the policy are handed to a human agent.",
+  "group": "similar"
+ },
+ {
+  "name": "Furniture orders and delivery",
+  "detail": "Customer service for furniture orders and delivery. Order changes before dispatch, delivery scheduling, damaged item returns and replacements. Policies cover: verifying the customer's identity (e.g. name plus a postcode, email or booking reference) before looking up or changing anything; eligibility windows and status rules; fees, penalties and compensation amounts; refunds back to the original payment method; the customer must approve each change before it is made; some requests must be refused because the policy does not allow them; requests outside the policy are handed to a human agent.",
+  "group": "similar"
+ },
+ {
+  "name": "Electronics repair service",
+  "detail": "Customer service for electronics repair service. Repair bookings, warranty eligibility, repair quotes and approvals, pickup and refunds. Policies cover: verifying the customer's identity (e.g. name plus a postcode, email or booking reference) before looking up or changing anything; eligibility windows and status rules; fees, penalties and compensation amounts; refunds back to the original payment method; the customer must approve each change before it is made; some requests must be refused because the policy does not allow them; requests outside the policy are handed to a human agent.",
+  "group": "similar"
+ },
+ {
+  "name": "Home internet service",
+  "detail": "Customer service for home internet service. Broadband plans, installation appointments, speed upgrades, outages credits, contract cancellation. Policies cover: verifying the customer's identity (e.g. name plus a postcode, email or booking reference) before looking up or changing anything; eligibility windows and status rules; fees, penalties and compensation amounts; refunds back to the original payment method; the customer must approve each change before it is made; some requests must be refused because the policy does not allow them; requests outside the policy are handed to a human agent.",
+  "group": "similar"
+ },
+ {
+  "name": "Electricity and gas utility accounts",
+  "detail": "Customer service for electricity and gas utility accounts. Tariff changes, meter readings, bills and payment plans, moving home, account closure. Policies cover: verifying the customer's identity (e.g. name plus a postcode, email or booking reference) before looking up or changing anything; eligibility windows and status rules; fees, penalties and compensation amounts; refunds back to the original payment method; the customer must approve each change before it is made; some requests must be refused because the policy does not allow them; requests outside the policy are handed to a human agent.",
+  "group": "similar"
+ },
+ {
+  "name": "Travel insurance claims",
+  "detail": "Customer service for travel insurance claims. Policy coverage, filing claims for cancellations or lost luggage, claim status, payouts. Policies cover: verifying the customer's identity (e.g. name plus a postcode, email or booking reference) before looking up or changing anything; eligibility windows and status rules; fees, penalties and compensation amounts; refunds back to the original payment method; the customer must approve each change before it is made; some requests must be refused because the policy does not allow them; requests outside the policy are handed to a human agent.",
+  "group": "similar"
+ },
+ {
+  "name": "Pharmacy prescription orders",
+  "detail": "Customer service for pharmacy prescription orders. Prescription refills, delivery, insurance co-payments, order changes and refunds. Policies cover: verifying the customer's identity (e.g. name plus a postcode, email or booking reference) before looking up or changing anything; eligibility windows and status rules; fees, penalties and compensation amounts; refunds back to the original payment method; the customer must approve each change before it is made; some requests must be refused because the policy does not allow them; requests outside the policy are handed to a human agent.",
+  "group": "similar"
+ },
+ {
+  "name": "Coworking space bookings",
+  "detail": "Customer service for coworking space bookings. Desk and meeting room bookings, membership plans, changes, cancellation fees. Policies cover: verifying the customer's identity (e.g. name plus a postcode, email or booking reference) before looking up or changing anything; eligibility windows and status rules; fees, penalties and compensation amounts; refunds back to the original payment method; the customer must approve each change before it is made; some requests must be refused because the policy does not allow them; requests outside the policy are handed to a human agent.",
+  "group": "similar"
+ },
+ {
+  "name": "Appliance installation appointments",
+  "detail": "Customer service for appliance installation appointments. Book, reschedule or cancel installations, technician fees, warranty registration. Policies cover: verifying the customer's identity (e.g. name plus a postcode, email or booking reference) before looking up or changing anything; eligibility windows and status rules; fees, penalties and compensation amounts; refunds back to the original payment method; the customer must approve each change before it is made; some requests must be refused because the policy does not allow them; requests outside the policy are handed to a human agent.",
+  "group": "similar"
+ }
+]
