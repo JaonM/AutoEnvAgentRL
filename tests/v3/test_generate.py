@@ -29,6 +29,18 @@ def natural(request, title):
     return request
 
 
+POLICY = '只能为借阅人本人续借；有其他读者排队的书不能续借，要告诉用户排队人数。'
+
+
+def policy_reply(prompt):
+    """The policy writer and checker share the opening writer's client; answer them plainly."""
+    if prompt.startswith('你要把一份写给开发者的业务实现规格'):
+        return {'content': POLICY}
+    if prompt.startswith('下面是一份业务实现规格'):
+        return {'content': '{"problems": []}'}
+    return None
+
+
 class Writer:
     """Stands in for the opening writer; records what it was shown."""
 
@@ -38,6 +50,9 @@ class Writer:
         self.prompts, self.replies = [], list(replies or [])
 
     def chat(self, messages, tools=None, **parameters):
+        policy = policy_reply(messages[-1]['content'])
+        if policy:
+            return policy
         self.prompts.append(messages[-1]['content'])
         return {'content': self.replies.pop(0) if self.replies else '两本书还有3天到期，能续的都续上吧，续不了的跟我说下原因。'}
 
@@ -98,6 +113,34 @@ class GenerateTests(unittest.TestCase):
         del request['user_scene']
         (folder / 'request.json').write_text(json.dumps(request, ensure_ascii=False))
         self.assertTrue(any('user_scene' in p for p in generate.check_request(folder)[0]))
+
+    def test_agent_policy_hides_internals_and_must_cover_the_spec(self):
+        from env_factory_v3 import policies, server
+        request = library_request()
+        self.assertTrue(policies.internals(request, '仅当 active_hold_count 为 0 时可续借，见 holds 表'))
+        self.assertTrue(policies.internals(request, '首先查询借阅，然后调用续借'))
+        self.assertEqual(policies.internals(request, POLICY), [])
+
+        class Checker:
+            """Finds a gap in the first draft only."""
+
+            def __init__(self):
+                self.drafts = 0
+
+            def chat(self, messages, tools=None, **parameters):
+                prompt = messages[-1]['content']
+                if prompt.startswith('你要把一份写给开发者的业务实现规格'):
+                    self.drafts += 1
+                    return {'content': POLICY if self.drafts > 1 else '可以续借。'}
+                gap = '可以续借。' in prompt.split('客服政策手册：', 1)[1]
+                return {'content': json.dumps({'problems': ['漏了排队的书不能续借'] if gap else []}, ensure_ascii=False)}
+
+        checker = Checker()
+        policy, problems = policies.write(checker, request)
+        self.assertEqual((policy, problems, checker.drafts), (POLICY, [], 2))
+        env, oracle, schema = __import__('test_env_factory_v3').library_modules()
+        service = server.Service(env, oracle, schema, {**request, 'agent_policy': POLICY})
+        self.assertEqual(service.reset(world='original')['instructions']['business_rules'], POLICY)
 
     def test_generic_table_readers_are_rejected(self):
         from env_factory_v3 import checks
@@ -160,6 +203,7 @@ class GenerateTests(unittest.TestCase):
         kept = sorted(p.name for p in (output / 'requests').glob('*.json'))
         self.assertIn('gen-000.json', kept)
         self.assertNotIn('gen-001.json', kept)
+        self.assertEqual(json.loads((output / 'requests' / 'gen-000.json').read_text())['agent_policy'], POLICY)
         self.assertTrue(any('near-duplicate' in ' '.join(r['problems']) for r in summary['rows']))
 
 

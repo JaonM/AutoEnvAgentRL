@@ -67,7 +67,8 @@ class Service:
         tools = env.make_tools()
         self.instructions = {
             'title': request['title'], 'user_request': request['user_request'],
-            'business_rules': request['business_rules'], 'tools': tool_specs(tools),
+            # The agent sees the business-language policy when the task has one, never the spec's internals.
+            'business_rules': request.get('agent_policy') or request['business_rules'], 'tools': tool_specs(tools),
             'user_topics': spec.fact_topics(request), 'answer_schema': schema,
             'time': {'start': request['time']['start'],
                      'advancing': 'scheduled_events' in request['tables']},

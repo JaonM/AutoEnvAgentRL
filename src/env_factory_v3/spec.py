@@ -3,7 +3,9 @@
 request.json
     id, family, category (direct_response | simple_agentic | multi_step_agentic), title,
     user_request   what the user says to the agent (public)
-    business_rules policy text (public; the only semantic authority)
+    business_rules implementation spec: the only semantic authority for env, oracle, arbiter and gates
+    agent_policy   optional; the same policies in business language (no tables, fields or clock
+                   internals, no solution steps). When present it is all the agent ever sees of the rules
     tables         {table: [row objects]} initial data
     user_facts     {key: value} private user facts and decisions (approve* keys are consent answers)
     fact_descriptions  optional {key: public description of what the fact is}
@@ -50,6 +52,8 @@ def validate(request):
     for text in ('user_request', 'business_rules', 'title'):
         if not isinstance(request.get(text), str) or not request[text].strip():
             problems.append(f'{text} must be nonempty text')
+    if 'agent_policy' in request and not (isinstance(request['agent_policy'], str) and request['agent_policy'].strip()):
+        problems.append('agent_policy must be nonempty text when present')
     events = tables.get('scheduled_events', []) if isinstance(tables, dict) else []
     for event in events:
         if not (isinstance(event, dict) and isinstance(event.get('at'), int) and isinstance(event.get('set'), dict)

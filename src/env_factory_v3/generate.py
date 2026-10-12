@@ -6,7 +6,8 @@ goal, what the user knows up front, what they want to be told), but no opening. 
 `checks request`: a valid request, a scene without rules, protocol or virtual time, and boolean
 approve_* facts. Stage two: another model (prompts.OPENING_WRITER) writes the user's first message
 from the scene and a persona only, so it cannot restate rules it never saw. The opening must have
-no red flag and must say every number in the scene's known information. Near-duplicates (character 3-gram Jaccard similarity
+no red flag and must say every number in the scene's known information. A third step rewrites
+the rules as the agent-facing policy manual (policies.write; request["agent_policy"]). Near-duplicates (character 3-gram Jaccard similarity
 of title, opening and rules) are dropped. The category mix follows V2's skeleton by default:
 direct 20%, simple 20%, ordinary multi-step 20%, complex multi-step 40%. With rubric_share > 0 that
 fraction of the multi-step slots become subjective tasks (reward_type "rubric").
@@ -20,7 +21,7 @@ import json
 import re
 from pathlib import Path
 
-from env_factory_v3 import checks, openings, prompts, spec
+from env_factory_v3 import checks, openings, policies, prompts, spec
 
 MIX = (('direct_response', 'direct', 0.2), ('simple_agentic', 'simple', 0.2),
        ('multi_step_agentic', 'ordinary', 0.2), ('multi_step_agentic', 'complex', 0.4))
@@ -300,6 +301,12 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
                 rows.append(row)
                 continue
             request['user_request'] = opening
+            policy, policy_problems = policies.write(opening_client, request)
+            if policy is None:
+                row.update(passed=False, problems=[f'agent policy: {p}' for p in policy_problems[:4]])
+                rows.append(row)
+                continue
+            request['agent_policy'] = policy
             twin = next((k for k in kept if similarity(signature(k), signature(request)) >= SIMILAR), None)
             if twin is not None:
                 row.update(passed=False, problems=[f'near-duplicate of {twin["id"]}'])

@@ -11,7 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from test_env_factory_v3 import FakeRunner, library_request  # noqa: E402
-from test_generate import SCENE, Writer  # noqa: E402
+from test_generate import SCENE, Writer, policy_reply  # noqa: E402
 
 from env_factory_v3 import run  # noqa: E402
 from rl.data.tasks import load_tasks  # noqa: E402
@@ -40,6 +40,9 @@ class VariedWriter(Writer):
     """Distinct openings per task, as real scenes give."""
 
     def chat(self, messages, tools=None, **parameters):
+        policy = policy_reply(messages[-1]['content'])
+        if policy:
+            return policy
         self.prompts.append(messages[-1]['content'])
         lines = ['两本书还有3天到期，能续的都续上吧。', '我在租车门店附近，想问下押金什么时候能退回来，订单早就结束了。']
         return {'content': lines[(len(self.prompts) - 1) % len(lines)]}

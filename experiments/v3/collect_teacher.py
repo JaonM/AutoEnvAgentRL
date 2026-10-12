@@ -16,20 +16,41 @@ import argparse
 import concurrent.futures
 import json
 import os
+import re
 import threading
 import time
 from pathlib import Path
 
 
-def play(task, seed, client, max_turns):
+# Teacher-only addendum to the system prompt: the saved conversation (what the student trains on)
+# keeps the platform's own system prompt, so the student learns the tone, not this instruction.
+STYLE = ('\n\n（示范要求，仅对你生效：对用户说话时像一位耐心的真人客服，用日常口语，金额换算成“元”来说，'
+         '不要提字段名、状态码、内部编号格式、以分为单位的金额或规则原文；先说结论，再用一两句话说明原因。'
+         '工具调用的参数和最终提交仍严格按工具定义填写。）')
+INTERNAL = re.compile(r'[A-Za-z]+_[A-Za-z_]+|\d+\s*分(?!钟)')
+
+
+def leaks(messages):
+    """Assistant speech to the user that still exposes field names or amounts in cents."""
+    return sum(bool(INTERNAL.search(m.get('content') or '')) for m in messages
+               if m['role'] == 'assistant' and (m.get('content') or '').strip())
+
+
+def teacher_view(messages, style):
+    if not style:
+        return messages
+    return [{**messages[0], 'content': messages[0]['content'] + STYLE}, *messages[1:]]
+
+
+def play(task, seed, client, max_turns, style=True):
     from rl.environments.v3 import V3Episode
     env = V3Episode(task['sandbox'])
     started = time.monotonic()
     try:
         env.reset(seed)
-        tools = env.tools
+        tools, reasoning = env.tools, {}
         for _ in range(max_turns):
-            reply = client.chat(env.messages, tools, temperature=0.7)
+            reply = client.chat(teacher_view(env.messages, style), tools, temperature=0.7)
             message = {'role': 'assistant', 'content': reply.get('content') or ''}
             if reply.get('tool_calls'):
                 message['tool_calls'] = [
@@ -37,6 +58,10 @@ def play(task, seed, client, max_turns):
                      'function': {'name': call['function']['name'],
                                   'arguments': call['function'].get('arguments') or '{}'}}
                     for index, call in enumerate(reply['tool_calls'])]
+            if reply.get('reasoning_content'):
+                # Kept beside the conversation (index of that assistant message), never sent back to the
+                # provider; think-mode SFT can attach it as the turn's reasoning.
+                reasoning[len(env.messages)] = reply['reasoning_content']
             _, done = env.step(message)
             if done:
                 break
@@ -44,7 +69,9 @@ def play(task, seed, client, max_turns):
         return {'id': task['id'], 'seed': seed, 'world': result['world'], 'naming': env.naming,
                 'reward': result['final_reward'], 'success': bool(result['score'].get('success')),
                 'reason': result['score'].get('reason'), 'reward_type': result['score'].get('reward_type'),
-                'tools': tools, 'messages': env.messages, 'seconds': round(time.monotonic() - started, 1)}
+                'tools': tools, 'messages': env.messages, 'reasoning': reasoning, 'style': style,
+                'speech_leaks': leaks(env.messages),
+                'seconds': round(time.monotonic() - started, 1)}
     finally:
         env.close()
 
@@ -56,6 +83,7 @@ def main():
     parser.add_argument('--parallel', type=int, default=16)
     parser.add_argument('--max-turns', type=int, default=24)
     parser.add_argument('--prefix', default='LLM', help='teacher model: <PREFIX>_API_KEY/_BASE_URL/_MODEL')
+    parser.add_argument('--no-style', action='store_true', help='do not ask the teacher for customer-service tone')
     parser.add_argument('--output', required=True)
     args = parser.parse_args()
     os.environ.setdefault('ENVFACTORY_V3_USER_MODE', 'natural')
@@ -76,7 +104,7 @@ def main():
     def one(job):
         task, seed = job
         try:
-            row = play(task, seed, client, args.max_turns)
+            row = play(task, seed, client, args.max_turns, style=not args.no_style)
         except Exception as exc:  # one failed episode is recorded and skipped
             row = {'id': task['id'], 'seed': seed, 'success': False, 'error': f'{type(exc).__name__}: {exc}'[:300]}
         with lock:
