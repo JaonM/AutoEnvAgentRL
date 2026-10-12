@@ -61,6 +61,16 @@ def _usage(events_path):
     return usage, errors
 
 
+def classify(status, returncode, usage, refused):
+    """A session the provider never served is infrastructure, not a business result: a refused or
+    silent non-zero exit, or a timeout before the model produced a single token (network down)."""
+    if status == 'exited' and returncode != 0 and (refused or usage['output_tokens'] == 0):
+        return 'infrastructure_error'
+    if status == 'timeout' and usage['output_tokens'] == 0:
+        return 'infrastructure_error'
+    return status
+
+
 class CodexRunner:
     """Runs one role session; the pipeline injects a fake runner in tests."""
 
@@ -101,7 +111,6 @@ class CodexRunner:
         usage, errors = _usage(events_path)
         stderr_tail = stderr_path.read_text()[-400:]
         refused = any(marker in text for text in errors + [stderr_tail] for marker in INFRA_MARKERS)
-        if status == 'exited' and process.returncode != 0 and (refused or usage['output_tokens'] == 0):
-            status = 'infrastructure_error'
+        status = classify(status, process.returncode, usage, refused)
         return {'status': status, 'returncode': process.returncode, 'seconds': seconds,
                 'usage': usage, 'errors': errors[-3:], 'stderr_tail': stderr_tail}

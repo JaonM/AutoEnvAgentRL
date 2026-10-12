@@ -57,8 +57,9 @@ User-facing prose must be marked `"graded": false`; the schema check rejects fie
 free text without an enum or that mark. Two correct implementations never agree on wording.
 
 One repair budget (default 2, so an arbitration and a branch repair can both happen) covers every
-corrective session. Infrastructure refusals (OpenAI 403/429/5xx) are retried once after a backoff
-and never count as business failures.
+corrective session. Infrastructure refusals (OpenAI 403/429/5xx) and sessions that time out before the model
+produces a single token (network down) are retried once after a backoff and never count as
+business failures.
 At most two codex sessions run at once.
 
 ## Artifacts

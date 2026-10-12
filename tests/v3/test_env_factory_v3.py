@@ -465,6 +465,13 @@ class PipelineTests(unittest.TestCase):
         status = self.build(self.ignore_active_runner('should_change', quote='not in the brief at all'))
         self.assertEqual(status['failure_class'], 'audit_invalid')
 
+    def test_silent_timeouts_are_infrastructure(self):
+        from env_factory_v3.codex import classify
+        self.assertEqual(classify('timeout', None, {'output_tokens': 0}, False), 'infrastructure_error')
+        self.assertEqual(classify('timeout', None, {'output_tokens': 900}, False), 'timeout')
+        self.assertEqual(classify('exited', 1, {'output_tokens': 0}, False), 'infrastructure_error')
+        self.assertEqual(classify('exited', 0, {'output_tokens': 50}, False), 'exited')
+
     def test_infrastructure_errors_are_classified(self):
         status = self.build(FakeRunner(fail_role='oracle'))
         self.assertEqual(status['failure_class'], 'infrastructure')
