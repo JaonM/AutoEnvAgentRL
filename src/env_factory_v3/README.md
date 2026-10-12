@@ -176,10 +176,17 @@ verdicts. Rebuild from R2.
 
 ## Generating requests
 
-`generate --domains domains.json --count 30 --output DIR` gives each request its own model
-session. Each one must pass `checks request`: a valid request, an opening in a real user's voice
-(red flags: amounts in 分, transaction-semantics phrases), and boolean `approve_*` facts.
-Near-duplicates are dropped and the V2 category mix is kept. Then run `batch --requests DIR/requests`.
+`generate --domains domains.json --count 30 --output DIR [--rubric-share F]` runs in two stages.
+In stage one, a codex session per task writes the rules, tables, user facts and a **user
+scene**: situation, goal, what the user knows up front, what they want to be told. It does not
+write an opening. It must pass `checks request`: a valid request, a scene without rules,
+protocol or virtual time, and boolean `approve_*` facts. In stage two, another model
+(`V3_OPENING_*`, falling back to `LLM_*`) writes the user's first message from the scene and a
+fixed persona only. It never sees the rules, tables or facts, so it cannot restate them. The
+opening must have no red flag (`openings.py`) and must say every number in the scene's known
+information (cents may be said in 元). Near-duplicates are dropped and the V2 category mix is
+kept. The scene stays in the request as provenance; it is not part of brief.md or the agent's
+view. Then run `batch --requests DIR/requests`.
 
 ## HTTP protocol
 

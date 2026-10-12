@@ -17,10 +17,29 @@ from env_factory_v3 import generate  # noqa: E402
 DOMAINS = [{'name': 'clinic appointments'}, {'name': 'car rental'}]
 
 
+SCENE = {'situation': '借的两本书快到期了', 'goal': '能续的都续上', 'known': {},
+         'wants_to_know': ['续上了哪些', '续不了的为什么']}
+
+
 def natural(request, title):
+    """Stage-one output: rules, tables, facts and a scene, no opening."""
     request = copy.deepcopy(request)
-    request.update(title=title, user_request='我想续借两本书，能续的帮我续一下，最后告诉我续上了哪些。')
+    request.pop('user_request')
+    request.update(title=title, user_scene=copy.deepcopy(SCENE))
     return request
+
+
+class Writer:
+    """Stands in for the opening writer; records what it was shown."""
+
+    model = 'scripted-writer'
+
+    def __init__(self, replies=None):
+        self.prompts, self.replies = [], list(replies or [])
+
+    def chat(self, messages, tools=None, **parameters):
+        self.prompts.append(messages[-1]['content'])
+        return {'content': self.replies.pop(0) if self.replies else '两本书还有3天到期，能续的都续上吧，续不了的跟我说下原因。'}
 
 
 class OpeningTests(unittest.TestCase):
@@ -41,19 +60,35 @@ class GenerateTests(unittest.TestCase):
         shapes = [shape for _, _, shape in generate.plan(DOMAINS, 30)]
         self.assertEqual([shapes.count(s) for s in ('direct', 'simple', 'ordinary', 'complex')], [6, 6, 6, 12])
 
-    def test_request_check_rejects_unnatural_openings_and_bad_approvals(self):
+    def test_request_check_rejects_bad_scenes_and_bad_approvals(self):
         folder = Path(tempfile.mkdtemp())
         request = natural(library_request(), 'x')
         (folder / 'assignment.json').write_text(json.dumps({'category': request['category'], 'shape': 'complex'}))
         (folder / 'request.json').write_text(json.dumps(request, ensure_ascii=False))
         self.assertEqual(generate.check_request(folder)[0], [])
-        request['user_request'] = '续借费是300分，办不成的别影响已经续好的。'
+        request['user_scene']['goal'] = '续借，办不成的别影响已经续好的，当前时间是10'
         request['user_facts']['approve_first'] = 'yes'
         (folder / 'request.json').write_text(json.dumps(request, ensure_ascii=False))
         problems = generate.check_request(folder)[0]
         self.assertTrue(any('别影响' in p for p in problems))
-        self.assertTrue(any('元' in p for p in problems))
+        self.assertTrue(any('虚拟时间' in p for p in problems))
         self.assertTrue(any('approve_first' in p for p in problems))
+        del request['user_scene']
+        (folder / 'request.json').write_text(json.dumps(request, ensure_ascii=False))
+        self.assertTrue(any('user_scene' in p for p in generate.check_request(folder)[0]))
+
+    def test_opening_writer_sees_only_the_scene_and_must_say_every_number(self):
+        request = natural(library_request(), 'x')
+        request['user_scene']['known'] = {'停车分钟': 181, '首小时': 300, '每半小时': 120}
+        writer = Writer(['停了181分钟，首小时3元，每半小时1.2元，多少钱？等我确认再交。',
+                         '停了181分钟，首小时3块，后面每半小时1块2，算下多少钱？'])
+        opening, _, problems = generate.write_opening(writer, request, 'gen-001')
+        self.assertEqual(problems, [])
+        self.assertIn('1块2', opening)
+        self.assertNotIn(request['business_rules'][:12], writer.prompts[0])
+        self.assertIn('交代确认流程', writer.prompts[1])  # the first try's red flag is fed back
+        stuck = Writer(['停了很久，多少钱？'] * 3)
+        self.assertIsNone(generate.write_opening(stuck, request, 'gen-001')[0])
 
     def test_generate_keeps_valid_requests_and_drops_near_duplicates(self):
         base = library_request()
@@ -65,6 +100,7 @@ class GenerateTests(unittest.TestCase):
             request['category'] = assignment['category']
             if assignment['shape'] == 'direct':
                 request['tables'] = {name: [] for name in request['tables']}
+                request['user_scene']['known'] = {'剩余天数': 3}
             if index >= 2:
                 request['title'] = f'不同的任务 {index}'
                 request['business_rules'] = f'完全不同的规则编号{index}：' + 'abcdefghij' * index
@@ -72,7 +108,7 @@ class GenerateTests(unittest.TestCase):
             return {'role': role, 'status': 'exited'}
 
         output = Path(tempfile.mkdtemp()) / 'gen'
-        summary = generate.generate(DOMAINS, 5, output, runner=runner, parallel=1)
+        summary = generate.generate(DOMAINS, 5, output, runner=runner, parallel=1, opening_client=Writer())
         kept = sorted(p.name for p in (output / 'requests').glob('*.json'))
         self.assertIn('gen-000.json', kept)
         self.assertNotIn('gen-001.json', kept)

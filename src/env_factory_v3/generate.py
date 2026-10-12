@@ -1,8 +1,12 @@
-"""Task generation front end: new build requests for new business domains.
+"""Task generation front end: new build requests for new business domains, in two stages.
 
-Each request comes from its own model session in an isolated folder (prompts.REQUEST_AUTHOR)
-and must pass `checks request`: a valid request, an opening without red flags, and approval
-facts that are booleans named approve_*. Near-duplicates (character 3-gram Jaccard similarity
+Stage one: each task comes from its own codex session in an isolated folder
+(prompts.REQUEST_AUTHOR), which writes rules, tables, user facts and a user scene (situation,
+goal, what the user knows up front, what they want to be told), but no opening. It must pass
+`checks request`: a valid request, a scene without rules, protocol or virtual time, and boolean
+approve_* facts. Stage two: another model (prompts.OPENING_WRITER) writes the user's first message
+from the scene and a persona only, so it cannot restate rules it never saw. The opening must have
+no red flag and must say every number in the scene's known information. Near-duplicates (character 3-gram Jaccard similarity
 of title, opening and rules) are dropped. The category mix follows V2's skeleton by default:
 direct 20%, simple 20%, ordinary multi-step 20%, complex multi-step 40%. With rubric_share > 0 that
 fraction of the multi-step slots become subjective tasks (reward_type "rubric").
@@ -51,10 +55,16 @@ def check_request(folder):
     except json.JSONDecodeError as exc:
         return [f'request.json is not JSON: {exc}'], []
     request.setdefault('time', {'start': 10, 'tick': 0})
-    problems = spec.validate(request)
+    scene = request.get('user_scene')
+    scene_problems = scene_issues(scene)
+    if scene_problems:
+        return scene_problems, []
+    # The opening is written later from the scene alone; validate the rest with a stand-in.
+    problems = spec.validate({**request, 'user_request': request.get('user_request') or scene['goal']})
     if problems:
         return problems, []
-    problems += opening_problems(request['user_request'])
+    problems += [f'user_scene {p}' for p in opening_problems(json.dumps(scene, ensure_ascii=False))
+                 if '金额用' not in p]
     facts = request['user_facts']
     approvals = [k for k in facts if k.startswith('approve')]
     problems += [f'approval fact {k} must be a boolean' for k in approvals if not isinstance(facts[k], bool)]
@@ -68,7 +78,71 @@ def check_request(folder):
         problems.append('a complex task needs at least one approve_* fact for a write')
     if expected.get('shape') in ('direct',) and any(request['tables'].values()):
         problems.append('a direct task needs no table rows')
+    if expected.get('shape') == 'direct' and not scene_numbers(scene):
+        problems.append('a direct task needs every number of its computation in user_scene.known')
     return problems, [f"{request['category']}: {request['title']}"]
+
+
+def scene_issues(scene):
+    if not isinstance(scene, dict):
+        return ['user_scene is missing: {"situation", "goal", "known", "wants_to_know"}']
+    problems = [f'user_scene.{key} must be nonempty text' for key in ('situation', 'goal')
+                if not (isinstance(scene.get(key), str) and scene[key].strip())]
+    if not isinstance(scene.get('known'), dict):
+        problems.append('user_scene.known must be an object')
+    if not isinstance(scene.get('wants_to_know'), list):
+        problems.append('user_scene.wants_to_know must be a list')
+    return problems
+
+
+def scene_numbers(scene):
+    """Every number in the scene's known information (the opening must say each of them)."""
+    found = []
+
+    def walk(value):
+        if isinstance(value, dict):
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            found.append(value)
+    walk(scene.get('known', {}))
+    return found
+
+
+def spoken(number):
+    """Ways a user may say a number: as is, or (cents) in 元 such as 1.8 / 1块8."""
+    forms = {f'{number:g}'}
+    if isinstance(number, int):
+        yuan = number / 100
+        forms.add(f'{yuan:g}')
+        whole, cents = divmod(number, 100)
+        if cents and cents % 10 == 0:
+            forms.add(f'{whole}块{cents // 10}')
+    return forms
+
+
+def missing_numbers(opening, scene):
+    return [n for n in scene_numbers(scene) if not any(form in opening for form in spoken(n))]
+
+
+def write_opening(client, request, persona_key, attempts=3):
+    """Stage two: the user's first message from the scene alone (never the rules, tables or facts)."""
+    scene = request['user_scene']
+    name, hint = openings.persona(persona_key)
+    feedback = ''
+    for _ in range(attempts):
+        text = (client.chat([{'role': 'user', 'content': prompts.OPENING_WRITER.format(
+            situation=scene['situation'], goal=scene['goal'], known=json.dumps(scene['known'], ensure_ascii=False),
+            wants='；'.join(map(str, scene['wants_to_know'])) or '（无）', persona=name, persona_hint=hint,
+            feedback=feedback)}], temperature=0.8).get('content') or '').strip()
+        flags, missing = openings.red_flags(text), missing_numbers(text, scene)
+        if text and not flags and not missing:
+            return text, name, []
+        feedback = f'上一条：{text}\n问题：禁用说法 {flags}；漏说的数字 {missing}。请重写。\n'
+    return None, name, [f'opening: red flags {flags}, missing numbers {missing}']
 
 
 def grams(text):
@@ -100,7 +174,14 @@ def plan(domains, count, rubric_share=0.0):
     return [(domains[i % len(domains)], category, shape) for i, (category, shape) in enumerate(slots)]
 
 
-def generate(domains, count, output, *, runner, parallel=2, timeout=600, python='python', rubric_share=0.0):
+def generate(domains, count, output, *, runner, parallel=2, timeout=600, python='python', rubric_share=0.0,
+             opening_client=None):
+    """Stage one: a codex session per task writes rules, tables, facts and a user scene. Stage two:
+    opening_client (V3_OPENING_*, falling back to LLM_*) writes the opening from the scene alone."""
+    if opening_client is None:
+        from env_factory_v3.llm import ChatClient, load_env_file
+        load_env_file()
+        opening_client = ChatClient('V3_OPENING')
     output = Path(output)
     output.mkdir(parents=True)
     assignments = plan(domains, count, rubric_share)
@@ -111,9 +192,7 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
         folder.mkdir(parents=True)
         (folder / 'assignment.json').write_text(json.dumps(
             {'domain': domain, 'category': category, 'shape': shape, 'id': f'gen-{index:03d}'}, ensure_ascii=False))
-        name, hint = openings.persona(f'gen-{index:03d}')
-        runner(folder, prompts.REQUEST_AUTHOR.format(python=python, domain=domain['name'], persona=name,
-                                                       persona_hint=hint,
+        runner(folder, prompts.REQUEST_AUTHOR.format(python=python, domain=domain['name'],
                                                        detail=domain.get('detail', ''), category=category,
                                                        shape=SHAPES[shape], id=f'gen-{index:03d}',
                                                        reward_type='rubric' if shape == 'subjective' else 'business'),
@@ -130,17 +209,26 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
         if report['passed']:
             request = json.loads((output / 'sessions' / f'{index:03d}' / 'request.json').read_text())
             request.setdefault('time', {'start': 10, 'tick': 0})
+            opening, persona_name, opening_problems_ = write_opening(opening_client, request, f'gen-{index:03d}')
+            row.update(persona=persona_name)
+            if opening is None:
+                row.update(passed=False, problems=opening_problems_)
+                rows.append(row)
+                continue
+            request['user_request'] = opening
             twin = next((k for k in kept if similarity(signature(k), signature(request)) >= SIMILAR), None)
             if twin is not None:
                 row.update(passed=False, problems=[f'near-duplicate of {twin["id"]}'])
             else:
                 request['id'] = f'gen-{index:03d}'
-                request['source'] = {'generated': domain['name'], 'shape': shape}
+                request['source'] = {'generated': domain['name'], 'shape': shape, 'persona': persona_name,
+                                     'opening_writer': getattr(opening_client, 'model', None)}
                 kept.append(request)
                 (output / 'requests').mkdir(exist_ok=True)
                 (output / 'requests' / f'{request["id"]}.json').write_text(
                     json.dumps(request, ensure_ascii=False, indent=1))
         rows.append(row)
-    summary = {'requested': count, 'kept': len(kept), 'domains': [d['name'] for d in domains], 'rows': rows}
+    summary = {'requested': count, 'kept': len(kept), 'domains': [d['name'] for d in domains],
+               'opening_diversity': openings.diversity([k['user_request'] for k in kept]), 'rows': rows}
     (output / 'generation.json').write_text(json.dumps(summary, ensure_ascii=False, indent=1))
     return summary

@@ -214,8 +214,10 @@ REQUEST_AUTHOR = """You design one new business task for training customer-facin
 {domain}. {detail}
 Write request.json in this folder (assignment.json repeats the assignment):
 {{"id": "{id}", "family": "<short domain slug>", "category": "{category}", "reward_type": "{reward_type}",
-  "title": "<short Chinese title>", "user_request": "...", "business_rules": "...", "tables": {{...}},
+  "title": "<short Chinese title>", "user_scene": {{...}}, "business_rules": "...", "tables": {{...}},
   "user_facts": {{...}}, "time": {{"start": 10, "tick": 0}}}}
+Do not write the user's opening message: another writer turns user_scene into it without ever
+seeing the rules, tables or facts.
 
 Task shape: {shape}
 
@@ -229,15 +231,16 @@ Task shape: {shape}
   rows that wrong rules give different results (decoys, boundary values, an ineligible row).
 - user_facts: what only the user knows and an agent must ask for (ids, quantities, choices),
   plus one boolean approve_* fact per write the user is asked to approve.
-- user_request (Chinese): what a real user would say in a chat, in the persona "{persona}"
-  ({persona_hint}). Only their goal, what they know and what they want to be told. Never restate
-  business rules or transaction semantics, never use field names, say amounts in 元, keep it to one
-  to three short sentences, and do not always start with "帮我"/"麻烦". Do not dictate the
-  confirmation steps ("每件先告诉我……等我确认再……"): the platform asks before every write anyway.
-  Never quote virtual clock values ("当前时间是10", "第10天"); say times relatively ("还有20分钟").
-  A direct task must state the numbers it needs, read off like a receipt in one or two sentences,
-  not listed item by item. Do not include the user_facts values unless a real user would open
-  with them.
+- user_scene (Chinese), the only input of the opening writer:
+  {{"situation": "<who the user is and what happened, one sentence>",
+    "goal": "<what they want done or decided, in their own terms, no rules>",
+    "known": {{"<item>": <value>, ...}}, "wants_to_know": ["<result the user wants to be told>", ...]}}
+  known holds only what the user can state up front (a direct task needs every number of its
+  computation here, as the user would read it off a receipt or a price board; amounts in cents
+  are fine, the writer says them in 元). Never put business rules, confirmation steps, transaction
+  semantics or virtual clock values ("time 10", "day 30") in the scene; give times relative to now
+  ("starts in 20 minutes", "expires in 2 days") in the unit the rules use. user_facts stay private:
+  do not copy them into known unless the user would open with them.
 - Time does not pass in this task: queries, approvals and writes all happen at time.start. Do
   not describe a clock that ticks per action; time-dependent rules compare against time.start.
 - Use a domain different from library loans, procurement, subscriptions, document access,
@@ -275,6 +278,18 @@ Write rubric.json: {{"criteria": [{{"id": "<snake_case>", "weight": 1-5, "descri
 Run `{python} -m env_factory_v3.checks rubric` until it prints PASS. Do not read or write files
 outside this folder. End with one line naming the criteria.
 """
+
+OPENING_WRITER = """你是一位普通用户，正在和客服/业务助理在线聊天。根据下面的场景，写出你发的第一条消息。
+
+你的处境：{situation}
+你想要的：{goal}
+你手头已知、开口时会提到的信息：{known}
+你希望最后被告知：{wants}
+你的说话风格：{persona}（{persona_hint}）
+{feedback}
+要求：一到三句口语，像真人；已知信息里的每个数字都要说到（金额按元说，1元=100分，如180分说“1.8元”）；
+不要复述任何规则或办理流程，不要说“先告诉我……等我确认再……”，不要出现“当前时间是10”“第10天”这类编号；
+不要总以“帮我”“麻烦”开头。只输出这条消息本身。"""
 
 REPAIR = """The environment in this folder failed qualification. gate_report.json lists the
 failed gates with evidence. brief.md remains the only authority.
