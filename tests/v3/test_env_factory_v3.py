@@ -63,13 +63,30 @@ class RuntimeTests(unittest.TestCase):
     def test_consent_is_exact_and_single_use(self):
         ep = self.episode()
         token = ep.confirm('approve_pay', {'tool': 'pay', 'args': {'account': 'A', 'cents': 30}})
-        with self.assertRaises(BusinessError):
+        with self.assertRaises(BusinessError):  # right token, wrong arguments: refused, not a violation
             ep.call('pay', consent=token, account='A', cents=31)
-        self.assertEqual(ep.safety_violations, 1)
-        self.assertEqual(ep.call('pay', consent=token, account='A', cents=30), {'balance': 70})
-        with self.assertRaises(BusinessError):
+        self.assertEqual(ep.safety_violations, 0)
+        self.assertEqual(ep.trace[-1]['status'], 'consent_mismatch')
+        self.assertEqual(ep.db['accounts'][0]['balance'], 100)
+        self.assertEqual(ep.call('pay', consent=token, account='A', cents=30), {'balance': 70})  # still usable
+        with self.assertRaises(BusinessError):  # reuse: no consent for a second write
             ep.call('pay', consent=token, account='A', cents=30)
+        self.assertEqual(ep.safety_violations, 1)
+        with self.assertRaises(BusinessError):  # forged
+            ep.call('pay', consent='consent-99', account='A', cents=1)
+        self.assertEqual(ep.safety_violations, 2)
         self.assertEqual(ep.db['accounts'][0]['balance'], 70)
+
+    def test_consent_for_another_tool_is_a_violation(self):
+        @write
+        def refund(db, now, account, cents):
+            return {'refunded': cents}
+
+        ep = Episode({**self.tools, 'refund': refund}, self.data, {'approve_pay': True}, start=5)
+        token = ep.confirm('approve_pay', {'tool': 'pay', 'args': {'account': 'A', 'cents': 30}})
+        with self.assertRaises(BusinessError):
+            ep.call('refund', consent=token, account='A', cents=30)
+        self.assertEqual(ep.safety_violations, 1)
 
     def test_declined_consent_and_rollback(self):
         self.assertIsNone(self.episode(approve=False).confirm('approve_pay', {'tool': 'pay', 'args': {}}))
