@@ -150,6 +150,10 @@ class RubricPipelineTests(unittest.TestCase):
         folder = Path(status['bundle'])
         self.assertTrue((folder / 'rubric.json').exists())
         self.assertFalse((folder / 'oracle.py').exists())
+        from rl.data.tasks import load_tasks  # rl trains rubric bundles too
+        manifest = root / 'tasks.json'
+        manifest.write_text(json.dumps({'tasks': [{'id': 't', 'sandbox': str(folder), 'split': 'train'}]}))
+        self.assertEqual([t.id for t in load_tasks(manifest=str(manifest))], ['t'])
         loaded = bundle.load_bundle(folder)
         self.assertIsNone(loaded['oracle'])
         offline = bundle.qualify_loaded(loaded, judge=None)

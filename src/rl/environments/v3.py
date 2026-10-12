@@ -23,7 +23,9 @@ from rl.errors import EnvironmentProtocolError, InfrastructureError
 
 def is_v3_bundle(root):
     root = Path(root)
-    return all((root / name).is_file() for name in ('manifest.json', 'gates.json', 'env.py', 'oracle.py'))
+    # Business bundles carry the oracle; subjective (rubric-graded) bundles carry rubric.json instead.
+    return all((root / name).is_file() for name in ('manifest.json', 'gates.json', 'env.py')) and \
+        any((root / name).is_file() for name in ('oracle.py', 'rubric.json'))
 
 
 def bundle_identity(root):
