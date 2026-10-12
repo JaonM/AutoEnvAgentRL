@@ -163,3 +163,15 @@ H1 和 H2 同时成立，才算"显著提升"。H3 用来说明提升来自哪�
   - ACTION（逐条匹配工具调用）只用在 banking_knowledge，airline、retail、telecom 不用。
 - 与 V3 的对应：V3 自由对话已改为"用户道别即结束"，答案只做记录，结束时按最终状态、记录的答案和是否告知用户统一判分，
   结构与 τ²-bench 一致。不同之处在于 V3 是加权求和并有部分分，τ²-bench 是各项乘积、全有或全无。
+
+## 方案修改记录
+
+- 2026-10-13：用户决定**只做领域匹配的 C 组**，实验**先只看 τ²-bench**（BFCL 暂缓；第 1 节的 H2、H4 暂不评估）。
+  - 训练池：`experiments/v3/bench/domains_tau_matched.json`，共 30 个领域，其中 12 个是航空、电商零售、电信客服（约占 40%），
+    18 个是业务形态相近的服务业。通过 `--domains-file` 指定，不使用知识图谱采样，也不启用领域屏蔽。
+    领域说明里写进身份核实、按政策拒绝、转人工等要求，代替第 4.2 节的新任务形态（生成流程本身不做改动）。
+  - 生成参数：200 个沙箱，`--english-share 0.7`，`--rubric-share 0.05`，
+    `--mix direct=0.1,simple=0.1,ordinary=0.2,complex=0.6`，自由对话的 policy gate，默认不提供提交工具。
+  - 结论表述相应改为：用领域匹配的合成数据训练（数据由本项目生成，不含任何 benchmark 数据）。
+- 推理服务：`experiments/v3/bench/serve_openai.py`，mlx-lm 生成，对话渲染（关闭思考）和工具调用解析与训练一致；
+  τ² 运行脚本是 `experiments/v3/bench/run_tau2.sh`，用户模拟器为 deepseek-flash，温度 0，种子 300。
