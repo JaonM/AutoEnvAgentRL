@@ -4,6 +4,7 @@
   python -m env_factory_v3 build --request request.json --output DIR [--repairs 2]
   python -m env_factory_v3 batch --frozen DIR --samples 4,5,9 --output DIR [--parallel 1]
   python -m env_factory_v3 batch --requests DIR --output DIR                 # generated requests
+  python -m env_factory_v3 run --output DIR --count 30 --split holdout-4 [--docker] [--policy-k 4]   # end to end
   python -m env_factory_v3 domains --count 12 --split holdout-4 --output domains.json   # graph x business grid
   python -m env_factory_v3 generate --domains domains.json --count 30 --output DIR
   python -m env_factory_v3 serve BUNDLE --port 8090
@@ -79,6 +80,36 @@ def main(argv=None):
     p.add_argument('--hops', type=int, default=2)
     p.add_argument('--seed', type=int, default=0)
     p.add_argument('--exclude', nargs='*', default=[], help='domains.json files whose names must not recur')
+    p = sub.add_parser(
+        'run', help='end to end: domains -> requests -> sandboxes -> images -> policy gate -> tasks.json',
+        description='Run (or resume) the whole V3 production line into one folder. Writes tasks.json '
+                    '("tasks": only trainable tasks in rl format; "excluded": the rest with reasons), '
+                    'report.json and report.md. Exit 0: at least one trainable task; 1: none; 2: configuration '
+                    'or infrastructure error.')
+    p.add_argument('--output', required=True, help='run folder; running again with the same folder resumes')
+    p.add_argument('--count', type=int, required=True, help='number of tasks to generate')
+    source = p.add_mutually_exclusive_group(required=True)
+    source.add_argument('--split', help='sample domains from the scene graph in this split: dev, holdout-1..5 '
+                                        '(needs Neo4j; splits never share scene nodes)')
+    source.add_argument('--domains-file', help='use this domains.json instead of sampling ([{"name", "detail"}])')
+    p.add_argument('--domains', type=int, default=12, help='domains to sample with --split (default 12)')
+    p.add_argument('--hops', type=int, default=2, help='max scene-graph hops per sampled domain (default 2)')
+    p.add_argument('--seed', type=int, default=0, help='sampling seed (default 0)')
+    p.add_argument('--rubric-share', type=float, default=0.0,
+                   help='fraction of tasks that are subjective, graded by rubric (default 0)')
+    p.add_argument('--parallel', type=int, default=2, help='concurrent generations / builds (default 2)')
+    p.add_argument('--repairs', type=int, default=2, help='repair budget per build (default 2)')
+    p.add_argument('--model', default='gpt-6.1-sol', help='codex model for generation and building')
+    p.add_argument('--docker', action='store_true',
+                   help='build and verify a hardened image per training-ready bundle; required to be trainable')
+    p.add_argument('--policy-k', type=int, default=0,
+                   help='policy gate episodes per bundle (0 = skip); when > 0 a task is trainable only if '
+                        'the gate model solves it at least once')
+    p.add_argument('--policy-user-mode', choices=('structured', 'natural'), default='structured',
+                   help='user mode for the policy gate (default structured)')
+    p.add_argument('--policy-prefix', default='LLM', help='policy gate model: <PREFIX>_API_KEY/_BASE_URL/_MODEL')
+    p.add_argument('--eval-share', type=float, default=0.0,
+                   help='fraction of trainable tasks marked split "eval" in tasks.json (default 0: all train)')
     p = sub.add_parser('findings', help="open business-rule questions from a build's spec_findings")
     p.add_argument('build')
     p = sub.add_parser('clarify', help="add the business owner's answers to a request")
@@ -164,6 +195,36 @@ def main(argv=None):
                           'rejected': len(report['rejected']), 'nodes_in_split': len(graph.nodes_in(args.split))},
                          ensure_ascii=False))
         return 0
+    if args.command == 'run':
+        from env_factory_v3 import run as run_mod
+        from env_factory_v3.llm import ChatClient, load_env_file
+        load_env_file()
+        try:
+            runner = _runner(args)
+        except SystemExit as exc:
+            print(f'configuration error: {exc}', file=sys.stderr)
+            return 2
+        options = dict(count=args.count, split=args.split, domains_file=args.domains_file, domains=args.domains,
+                       hops=args.hops, seed=args.seed, rubric_share=args.rubric_share, parallel=args.parallel,
+                       repairs=args.repairs, docker=args.docker, policy_k=args.policy_k,
+                       policy_user_mode=args.policy_user_mode, eval_share=args.eval_share,
+                       python=sys.executable, runner=runner, opening_client=ChatClient('V3_OPENING'))
+        if args.split:
+            from env_factory_v3 import domains
+            options.update(domain_client=ChatClient('V3_DOMAIN'), graph=lambda: domains.SceneGraph.from_neo4j(
+                os.environ.get('NEO4J_URI', 'bolt://localhost:7687'), os.environ.get('NEO4J_USER', 'neo4j'),
+                os.environ.get('NEO4J_PASSWORD', ''), os.environ.get('NEO4J_DATABASE', 'neo4j')))
+        if args.policy_k:
+            options['policy_client'] = ChatClient(args.policy_prefix)
+            if args.policy_user_mode == 'natural':
+                options['user_client'] = ChatClient('V3_USER')
+        try:
+            code, value = run_mod.run(args.output, **options)
+        except run_mod.RunError as exc:
+            print(f'run stopped: {exc}', file=sys.stderr)
+            return 2
+        print(json.dumps(value['summary'], ensure_ascii=False))
+        return code
     if args.command == 'findings':
         status = json.loads((Path(args.build) / 'status.json').read_text())
         report = spec.findings_report(status)

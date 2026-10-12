@@ -188,6 +188,31 @@ information (cents may be said in 元). Near-duplicates are dropped and the V2 c
 kept. The scene stays in the request as provenance; it is not part of brief.md or the agent's
 view. Then run `batch --requests DIR/requests`.
 
+## End-to-end run
+
+```sh
+.venv/bin/python -m env_factory_v3 run --output output/v3_run_01 --count 30 --split holdout-4 \
+    --rubric-share 0.2 --parallel 3 --docker --policy-k 4 --eval-share 0.2
+```
+
+The stages are domains (sampled with `--split`, or `--domains-file`), generate, build,
+`--docker` images and the `--policy-k` gate. Each stage reuses what is already in the folder,
+so the same command resumes; infrastructure failures are rebuilt, and earlier attempts are kept
+as `<id>.attempt-N`. Outputs:
+
+| file | content |
+| --- | --- |
+| `tasks.json` | `"tasks"`: **only trainable tasks**, in rl's format (`--tasks output/v3_run_01/tasks.json`); `"excluded"`: every task that must not be trained on, with the reason (generation rejected, build failure class, image not verified, policy gate unsolved); `"details"`: everything about every task (category, reward type, domain/family, opening, user modes, image, policy result, spec findings); `"summary"` |
+| `report.json` / `report.md` | counts, failure classes, by category / reward type / domain, opening diversity, timings |
+| `domains.json`, `generate/`, `build/` | stage outputs |
+
+A task is trainable when its build passed every gate. With `--docker`, its image must also be
+built and verified. With `--policy-k`, the gate model must solve it at least once.
+`--eval-share` marks whole domains as `eval`, never part of one. If rl's own near-duplicate
+check still rejects the split, every trainable task becomes `train` and `eval_split_dropped`
+says why. Exit codes: 0 means at least one trainable task, 1 none, 2 a configuration or
+infrastructure error.
+
 ## Sampling domains at scale
 
 `domains --count N --split holdout-K --output domains.json` combines the scene graph with a
