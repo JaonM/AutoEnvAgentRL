@@ -208,6 +208,8 @@ def classify(task, status, docker_result, policy_result, options, difficulty=Non
         state = (policy_result or {}).get('status')
         if state == 'unsolved':
             return False, f"policy gate: {policy_result.get('model')} solved 0/{policy_result.get('played')}"
+        if state == 'unextractable':
+            return False, 'policy gate: the answer cannot be read back from what an agent tells the user'
         if state != 'passed':
             detail = (policy_result or {}).get('error', '')
             return False, f'policy gate not passed: {state or "not run"} {detail}'.strip()

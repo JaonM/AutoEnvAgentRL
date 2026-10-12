@@ -188,14 +188,18 @@ must name the topic the reference confirms on every approval world. The structur
 need it.
 
 The conversation ends the way τ²-bench ends it: when the simulated user says goodbye (its stop
-signal). In free dialogue the answer tool only records the result (it can be updated) and does not
-end the episode. At the end a business task is graded on the final state and the latest recorded
-answer; what the agent says is not graded (the system prompt still asks it to tell the user the
-result, which τ²-bench checks). A subjective task is graded on its recorded reply.
-An agent that sends `server.IDLE_LIMIT` (3) messages in a row without calling a tool, proposing a
-write or recording a result is warned once, then closed the same way. The trainer's step limit
-also closes and grades. A subjective task with no recorded reply is graded on the last thing the
-agent told the user.
+signal). By default the agent has no answer tool and delivers by talking
+(`ENVFACTORY_V3_ANSWER_TOOL=never`; `random` offers the tool in half the episodes, `always` in
+all of them, where it only records the result and does not end the episode). At the end a
+business task is graded on the final state and the answer: the recorded one if any, else the
+answer extracted from what the agent told the user (`core/extract.py`: a model reads only the
+agent's speech and fills the schema; every extracted number or free string must appear in that
+speech, otherwise it is dropped). A subjective task is graded on its recorded reply or its last
+message. An agent that sends `server.IDLE_LIMIT` (3) messages in a row without calling a tool,
+proposing a write or recording a result is warned once, then closed the same way. The trainer's
+step limit also closes and grades. The policy gate adds an extraction probe: a model says the
+expected answer the way a good agent would, and the extractor must read every graded field back;
+a task that fails it (`unextractable`) is not trainable.
 
 Platform tools are renamed for each episode. The answer, chat, ask, confirm and wait tools, and
 the `consent` argument of writes, are drawn from `agent_view.ALIASES` per seed

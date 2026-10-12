@@ -48,14 +48,14 @@ def left(reply):
     return (reply.get('result') or {}).get('ended')
 
 
-def play(base_url, client, world, category, *, max_turns=30):
+def play(base_url, client, world, category, *, max_turns=30, answer_tool=True):
     """One episode on `world`; returns its grade and transcript."""
     opener = build_opener(ProxyHandler({}))
     reset = _post(opener, base_url + '/reset', {'world': world})
     episode, instructions = reset['episode'], reset['instructions']
     names = {tool['name'] for tool in instructions['tools']}
-    tools = agent_view.tools(instructions, category)
-    messages = agent_view.messages(instructions)
+    tools = agent_view.tools(instructions, category, answer_tool=answer_tool)
+    messages = agent_view.messages(instructions, answer_tool=answer_tool)
     natural = agent_view.speaks(instructions)
     # Structured: the answer ends the episode. Free dialogue: the answer is only recorded; the
     # episode ends when the user leaves (or at max_turns) and is graded then (server._close).
@@ -121,7 +121,32 @@ def play(base_url, client, world, category, *, max_turns=30):
             pass
 
 
-def gate(folder, client, *, k=4, parallel=4, max_turns=30, user_mode='structured', user_client=None):
+SAY = """你是一位客服。请把下面的处理结果用平实的中文完整地告诉用户：每个数字和编号都要说到，金额按字段说明换算成元来说，
+结论性的选项用日常说法表达。只输出你对用户说的话。
+
+答案格式：
+{schema}
+
+处理结果：
+{answer}"""
+
+
+def extraction_probe(loaded, service, client):
+    """Can this task's answer be delivered by talking? A model says the expected answer to the user
+    the way a good agent would; the service's extractor must read every graded field back exactly."""
+    from env_factory_v3.core import answers
+    request = loaded['request']
+    expected = loaded['oracle'].expected(request['tables'], request['user_facts'], request['time']['start'])['answer']
+    speech = (client.chat([{'role': 'user', 'content': SAY.format(
+        schema=json.dumps(loaded['schema']['fields'], ensure_ascii=False), answer=json.dumps(
+            expected, ensure_ascii=False))}], temperature=0).get('content') or '').strip()
+    extracted = service.extractor().extract(loaded['schema'], [speech])
+    fields = answers.compare(loaded['schema'], expected, extracted)
+    return {'passed': all(fields.values()), 'fields': fields, 'speech': speech[:600]}
+
+
+def gate(folder, client, *, k=4, parallel=4, max_turns=30, user_mode='structured', user_client=None,
+         answer_tool='never'):
     """k episodes on the bundle's served worlds; passes when at least one succeeds."""
     folder = Path(folder)
     loaded = bundle.load_bundle(folder)
@@ -129,26 +154,41 @@ def gate(folder, client, *, k=4, parallel=4, max_turns=30, user_mode='structured
     httpd = server.start(service)
     base_url = f'http://127.0.0.1:{httpd.server_address[1]}'
     worlds = [service.order[i % len(service.order)] for i in range(k)]
+    # Free dialogue offers no answer tool by default (delivery by talking, as in training);
+    # 'random' alternates episodes with and without it, 'always' offers it in every episode.
+    tool_plan = [user_mode != 'natural' or answer_tool == 'always' or (answer_tool == 'random' and i % 2 == 0)
+                 for i in range(k)]
 
-    def one(world):
+    def one(job):
+        world, answer_tool = job
         try:
-            return play(base_url, client, world, loaded['request']['category'], max_turns=max_turns)
+            return {**play(base_url, client, world, loaded['request']['category'], max_turns=max_turns,
+                           answer_tool=answer_tool), 'answer_tool': answer_tool}
         except ProviderError as error:
             return {'world': world, 'infrastructure': str(error)}
 
     try:
         with ThreadPoolExecutor(parallel) as pool:
-            episodes = list(pool.map(one, worlds))
+            episodes = list(pool.map(one, zip(worlds, tool_plan)))
     finally:
         httpd.shutdown()
         httpd.server_close()
     played = [e for e in episodes if 'infrastructure' not in e]
     successes = sum(e['success'] for e in played)
+    # Without an answer tool a business answer is read from speech: it must be readable at all.
+    probe = None
+    if user_mode == 'natural' and loaded['oracle'] is not None and not all(tool_plan):
+        try:
+            probe = extraction_probe(loaded, service, client)
+        except ProviderError as error:
+            probe = {'passed': False, 'infrastructure': str(error)}
     report = {'model': client.model, 'user_mode': user_mode,
               'user_model': getattr(user_client, 'model', None), 'k': k, 'played': len(played), 'successes': successes,
               'success_rate': round(successes / len(played), 3) if played else None,
               'mean_reward': round(sum(e['reward'] or 0 for e in played) / len(played), 3) if played else None,
-              'status': ('infrastructure' if not played else 'passed' if successes else 'unsolved'),
+              'status': ('infrastructure' if not played or (probe or {}).get('infrastructure') else
+                         'unextractable' if probe and not probe['passed'] else 'passed' if successes else 'unsolved'),
+              'extraction_probe': probe,
               'platform_identity': loaded['manifest']['platform_identity'], 'episodes': episodes}
     name = RESULT if user_mode == 'structured' else f'policy-{user_mode}.json'
     (folder / name).write_text(json.dumps(report, ensure_ascii=False, indent=1))

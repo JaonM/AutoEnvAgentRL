@@ -11,6 +11,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import random
 import re
 import secrets
 import time
@@ -60,6 +61,10 @@ class V3Episode:
         # random (default): platform tools and the consent argument are renamed per episode so the
         # policy reads its tool list; fixed: canonical names; heldout: names never used in training.
         self.tool_naming = os.environ.get('ENVFACTORY_V3_TOOL_NAMES', 'random')
+        # never (default): in free dialogue the agent delivers by talking and the service extracts the
+        # answer from its speech, as on τ²-bench; random: half the episodes (by seed) offer the answer
+        # tool; always: every episode does.
+        self.answer_tool_mode = os.environ.get('ENVFACTORY_V3_ANSWER_TOOL', 'never')
         self.tool_errors = 0
         self.root = Path(root).resolve()
         loaded = bundle.load_bundle(self.root)
@@ -134,8 +139,10 @@ class V3Episode:
         self.names = {tool['name'] for tool in public['tools']}
         arguments = {arg for tool in public['tools'] for arg in tool['parameters']['properties']}
         self.naming = agent_view.naming(int(seed), self.tool_naming, avoid=self.names | arguments)
-        self.tools = agent_view.tools(public, self.category, self.naming)
-        self.messages = agent_view.messages(public, self.naming)
+        self.answer_tool = (self.user_mode != 'natural' or self.answer_tool_mode == 'always' or
+                            (self.answer_tool_mode == 'random' and random.Random(int(seed) * 7919 + 1).random() < 0.5))
+        self.tools = agent_view.tools(public, self.category, self.naming, self.answer_tool)
+        self.messages = agent_view.messages(public, self.naming, self.answer_tool)
         return self.messages
 
     def _dispatch(self, name, params):
@@ -244,7 +251,8 @@ class V3Episode:
         return {'final_reward': float(self.score['reward']), 'terminated': self.terminated,
                 'trace': copy.deepcopy(self.trace), 'score': copy.deepcopy(self.score),
                 'world': self.world, 'user_mode': self.user_mode, 'tool_errors': self.tool_errors,
-                'tool_naming': self.tool_naming, 'unknown_tool_calls': self.unknown_tool_calls,
+                'tool_naming': self.tool_naming, 'answer_tool': self.answer_tool,
+                'unknown_tool_calls': self.unknown_tool_calls,
                 'platform_tool_hallucinations': self.platform_tool_hallucinations, 'trainable': True}
 
     # -- continuation (trainer-side only) -----------------------------------------

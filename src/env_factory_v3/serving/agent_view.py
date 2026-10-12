@@ -25,6 +25,8 @@ SYSTEM_WRITES = ('每次写操作之前，先用 `v3_chat` 向用户提出这次
                  '把它作为 `consent` 传给这次写操作。')
 SYSTEM_FINISH = ('确认结果后，调用 `v3_answer` 记录处理结果，并用平实的话把结果告诉用户；'
                  '用户表示没有其他问题时，对话结束。')
+# Without an answer tool the agent delivers by talking; the result is read from what it said.
+SYSTEM_TELL = '确认结果后，用平实的话把处理结果完整告诉用户；用户表示没有其他问题时，对话结束。'
 PUBLIC = ('title', 'user_request', 'business_rules', 'user_topics', 'answer_schema', 'time')
 ALIASES = {
     'v3_answer': ('v3_answer', 'submit_result', 'record_result', 'save_resolution', 'log_outcome',
@@ -98,9 +100,12 @@ def function(name, description, properties, required=()):
             'parameters': {'type': 'object', 'properties': properties, 'required': list(required)}}}
 
 
-def tools(instructions, category, names=None):
-    """Function tools for one episode's public instructions (renamed when `names` is given)."""
+def tools(instructions, category, names=None, answer_tool=True):
+    """Function tools for one episode's public instructions (renamed when `names` is given). In free
+    dialogue `answer_tool=False` drops the answer tool: the agent then delivers by talking."""
     out = _tools(instructions, category)
+    if not answer_tool and instructions.get('user_mode') == 'natural':
+        out = [t for t in out if t['function']['name'] != 'v3_answer']
     out = out if category == 'direct_response' else with_clock(out, instructions)
     return _rename(out, names) if names else out
 
@@ -150,7 +155,7 @@ def with_clock(tools_, instructions):
     return [*tools_[:-1], wait, tools_[-1]]
 
 
-def messages(instructions, names=None):
+def messages(instructions, names=None, answer_tool=True):
     swap = (lambda text: _swap(text, names)) if names else (lambda text: text)
     if instructions.get('user_mode') == 'natural':
         # The user's opening is a user turn; the rest is the assistant's working context. The answer
@@ -159,7 +164,7 @@ def messages(instructions, names=None):
         time = instructions['time']
         clock = (f"当前时间：{time['start']}（虚拟时间，单位与业务规则一致）"
                  + ('；时间会推进，需要时用 `v3_wait` 等待。' if time.get('advancing') else '；本次对话中时间不变。'))
-        text = SYSTEM_NATURAL + (SYSTEM_WRITES if writes else '') + SYSTEM_FINISH
+        text = SYSTEM_NATURAL + (SYSTEM_WRITES if writes else '') + (SYSTEM_FINISH if answer_tool else SYSTEM_TELL)
         return [{'role': 'system', 'content': swap(text) + '\n\n业务规则：\n' + instructions['business_rules']
                  + '\n\n' + swap(clock)},
                 {'role': 'user', 'content': instructions['user_request']}]

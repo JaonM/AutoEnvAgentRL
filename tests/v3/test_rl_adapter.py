@@ -145,6 +145,8 @@ class NaturalEndTests(unittest.TestCase):
                 pass
 
             def chat(self, messages, tools=None, **parameters):
+                if '答案格式' in messages[-1]['content']:  # the extractor: nothing was told
+                    return {'content': '{"renewed_loan_ids": null, "blocked": null}'}
                 return {'content': '嗯'}
 
         with unittest.mock.patch.dict(os.environ, {'ENVFACTORY_V3_USER_MODE': 'natural',
@@ -161,7 +163,62 @@ class NaturalEndTests(unittest.TestCase):
         self.assertTrue(done)
         score = env.finish()['score']
         self.assertEqual((score['reward'], score['success']), (0.0, False))  # graded: nothing recorded
-        self.assertIn('fields', score)
+        self.assertEqual(score['answer_source'], 'extracted')
+
+
+class AnswerToolTests(unittest.TestCase):
+    def offered(self, mode):
+        root = Path(tempfile.mkdtemp())
+        status = pipeline.build(library_request(), root / 'build', runner=FakeRunner(), perturbed=20)
+        environ = {'ENVFACTORY_V3_USER_MODE': 'natural', 'ENVFACTORY_V3_TOOL_NAMES': 'fixed'}
+        if mode:
+            environ['ENVFACTORY_V3_ANSWER_TOOL'] = mode
+        with unittest.mock.patch.dict(os.environ, environ), \
+                unittest.mock.patch('env_factory_v3.core.llm.ChatClient'):
+            env = V3Episode(Path(status['bundle']))
+            self.addCleanup(env.close)
+            offered = []
+            for seed in range(20):
+                env.reset(seed)
+                names = {t['function']['name'] for t in env.tools}
+                offered.append('v3_answer' in names)
+                self.assertEqual('记录处理结果' in env.messages[0]['content'], offered[-1])
+        return sum(offered)
+
+    def test_no_answer_tool_by_default_and_about_half_with_random(self):
+        os.environ.pop('ENVFACTORY_V3_ANSWER_TOOL', None)
+        self.assertEqual(self.offered(None), 0)
+        self.assertTrue(4 <= self.offered('random') <= 16)
+        self.assertEqual(self.offered('always'), 20)
+
+
+class ExtractionProbeTests(unittest.TestCase):
+    def test_a_task_whose_answer_reads_back_from_speech_passes_and_one_that_does_not_fails(self):
+        from env_factory_v3.certify import policy_gate
+        from env_factory_v3.core.extract import Extractor
+        root = Path(tempfile.mkdtemp())
+        loaded = bundle.load_bundle(Path(pipeline.build(library_request(), root / 'build', runner=FakeRunner(),
+                                                        perturbed=20)['bundle']))
+        request = loaded['request']
+        expected = loaded['oracle'].expected(request['tables'], request['user_facts'], request['time']['start'])['answer']
+
+        class Speaker:
+            model = 'scripted-speaker'
+
+            def chat(self, messages, tools=None, **parameters):
+                return {'content': '已为您续借 L1、L2，没有续不了的书。'}
+
+        class Reader:
+            def __init__(self, answer):
+                self.answer = answer
+
+            def chat(self, messages, tools=None, **parameters):
+                return {'content': json.dumps(self.answer)}
+
+        good = bundle.service(loaded, extractor=Extractor(Reader(expected)))
+        self.assertTrue(policy_gate.extraction_probe(loaded, good, Speaker())['passed'])
+        bad = bundle.service(loaded, extractor=Extractor(Reader({k: None for k in expected})))
+        self.assertFalse(policy_gate.extraction_probe(loaded, bad, Speaker())['passed'])
 
 
 class ContainerLifetimeTests(unittest.TestCase):

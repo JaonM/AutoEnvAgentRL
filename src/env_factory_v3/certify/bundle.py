@@ -29,8 +29,8 @@ def sha256(path):
 # it runs in. Build-time orchestration (generation, codex sessions, repair audits, the run command,
 # the policy gate) is not part of it, so editing those never invalidates certified bundles.
 RUNTIME_MODULES = ('__init__.py', 'runtime.py',
-                   'core/__init__.py', 'core/answers.py', 'core/llm.py', 'core/numerals.py', 'core/reward.py',
-                   'core/rubric.py', 'core/sandbox.py', 'core/spec.py', 'core/worlds.py',
+                   'core/__init__.py', 'core/answers.py', 'core/extract.py', 'core/llm.py', 'core/numerals.py',
+                   'core/reward.py', 'core/rubric.py', 'core/sandbox.py', 'core/spec.py', 'core/worlds.py',
                    'serving/__init__.py', 'serving/agent_view.py', 'serving/server.py', 'serving/user_sim.py',
                    'certify/__init__.py', 'certify/bundle.py', 'certify/docker.py', 'certify/gates.py')
 

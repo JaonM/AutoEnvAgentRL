@@ -1,6 +1,7 @@
 """Free-dialogue user mode. No model calls: the simulator's client is scripted."""
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -184,9 +185,24 @@ class Leaver(ScriptedUser):
         return {'content': '好的谢谢，我知道了，再见\n[结束]' if '续借' in messages[-1]['content'] else '嗯'}
 
 
+class Reader:
+    """Stands in for the extractor's model: reads nothing it was not told."""
+
+    model = 'scripted-reader'
+
+    def __init__(self, answer=None):
+        self.answer, self.prompts = answer, []
+
+    def chat(self, messages, tools=None, **parameters):
+        self.prompts.append(messages[-1]['content'])
+        return {'content': json.dumps(self.answer or {'renewed_loan_ids': None, 'blocked': None})}
+
+
 class ConversationEndTests(unittest.TestCase):
     def service(self, user, request=None, **options):
+        from env_factory_v3.core.extract import Extractor
         env, oracle, schema = library_modules()
+        options.setdefault('extractor', Extractor(Reader()))
         return server.Service(env, oracle, schema, request or library_request(), user_mode='natural',
                               user_client=user, **options)
 
@@ -196,9 +212,30 @@ class ConversationEndTests(unittest.TestCase):
         replies = [service.step(episode, {'type': 'chat', 'message': f'第{i}句'}) for i in range(1, 5)]
         self.assertEqual([r['result'].get('ended') for r in replies], [None, None, 'warning', 'closed'])
         self.assertFalse(replies[-1]['result']['recorded'])
-        self.assertEqual(service.reward(episode)['fields'], {'renewed_loan_ids': False, 'blocked': False})
+        graded = service.reward(episode)  # nothing recorded and nothing said: the extracted answer is empty
+        self.assertEqual((graded['answer_source'], graded['success']), ('extracted', False))
         refused = service.step(episode, {'type': 'tool', 'name': 'list_loans', 'args': {'reader_id': 'R1'}})
         self.assertEqual(refused['kind'], 'finished')
+
+    def test_an_answer_told_but_not_recorded_is_extracted_from_speech_and_verified(self):
+        from env_factory_v3.core.extract import Extractor
+        told = {'renewed_loan_ids': ['L1'], 'blocked': [{'loan_id': 'L2', 'active_hold_count': 1}]}
+        reader = Reader(told)
+        service = self.service(Leaver(), extractor=Extractor(reader))
+        episode = service.reset(world='original')['episode']
+        service.step(episode, {'type': 'tool', 'name': 'renew_loan', 'args': {'loan_id': 'L1', 'reader_id': 'R1'}})
+        closed = service.step(episode, {'type': 'chat', 'message': '续借好了 L1；L2 有 1 人排队，续不了。'})
+        self.assertEqual((closed['result']['ended'], closed['result']['recorded']), ('closed', False))
+        graded = service.reward(episode)
+        self.assertEqual(graded['answer_source'], 'extracted')
+        self.assertEqual(graded['answer'], told)                      # every value was actually said
+        self.assertNotIn('renew_loan', reader.prompts[0])             # the reader never sees tool calls
+
+    def test_an_extracted_value_that_was_never_said_is_dropped(self):
+        from env_factory_v3.core.extract import verify
+        spec = {'type': 'object', 'properties': {'loan_id': {'type': 'string'}, 'active_hold_count': {'type': 'integer'}}}
+        self.assertEqual(verify({'loan_id': 'L2', 'active_hold_count': 3}, spec, 'L2 有 1 人排队'),
+                         {'loan_id': 'L2', 'active_hold_count': None})
 
     def test_a_tool_call_resets_the_idle_count(self):
         service = self.service(ScriptedUser())

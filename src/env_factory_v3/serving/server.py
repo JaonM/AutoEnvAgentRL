@@ -31,15 +31,15 @@ from env_factory_v3.runtime import BusinessError, Episode, EpisodeFinished, Tool
 
 
 # Free dialogue ends when the user says goodbye (the simulator's stop signal), as in τ²-bench:
-# the episode closes and is graded on the final state and the latest recorded answer (a subjective
-# task on its reply). An agent that talks IDLE_LIMIT times in a row without calling a tool,
+# the episode closes and is graded on the final state and the latest recorded answer, or, when the
+# agent recorded none, the answer extracted from what it told the user (a subjective task on its reply). An agent that talks IDLE_LIMIT times in a row without calling a tool,
 # proposing a write or recording a result is warned once, then the episode closes the same way.
 IDLE_LIMIT = 3
 
 
 class Service:
     def __init__(self, env, oracle, schema, request, *, valid_worlds=None, perturbed=20, user_mode='structured',
-                 user_client=None, rubric=None, judge=None):
+                 user_client=None, rubric=None, judge=None, extractor=None):
         if user_mode not in ('structured', 'natural'):
             raise ValueError(f'unknown user mode {user_mode}')
         if user_mode == 'natural' and user_client is None:
@@ -50,7 +50,7 @@ class Service:
         self.reward_type = request.get('reward_type', 'business')
         if self.reward_type == 'rubric' and rubric is None:
             raise ValueError('a rubric task needs its rubric')
-        self.rubric, self._judge = rubric, judge
+        self.rubric, self._judge, self._extractor = rubric, judge, extractor
         if user_mode == 'natural':
             from env_factory_v3.certify.gates import approval_problems
             problems = approval_problems(env, request)
@@ -212,10 +212,25 @@ class Service:
             grade = rubric.grade(episode.result(), self.rubric, self.request, record['facts'], self.judge(),
                                  reference_calls=reference_calls)
         else:
-            grade = reward.grade(episode.result(), record['expected'], self.schema,
+            result, source = episode.result(), 'recorded'
+            if self.user_mode == 'natural' and result['answer'] is None:
+                # Delivered by talking: the answer is what the agent told the user (extract.py).
+                from env_factory_v3.core.extract import speech_of
+                result, source = {**result, 'answer': self.extractor().extract(self.schema, speech_of(
+                    result['trace']))}, 'extracted'
+            grade = reward.grade(result, record['expected'], self.schema,
                                  initial=record['data'], reference_calls=reference_calls)
+            grade.update(answer_source=source, answer=result['answer'])
             grade.pop('state_diff', None)
         return {**grade, 'world': record['world'], 'reward_type': self.reward_type}
+
+    def extractor(self):
+        """The speech-to-answer extractor, created on first use from V3_JUDGE_* (falling back to LLM_*)."""
+        if self._extractor is None:
+            from env_factory_v3.core.extract import Extractor
+            from env_factory_v3.core.llm import ChatClient
+            self._extractor = Extractor(ChatClient('V3_JUDGE'))
+        return self._extractor
 
     def judge(self):
         """The rubric judge, created on first use from V3_JUDGE_* (falling back to LLM_*)."""
