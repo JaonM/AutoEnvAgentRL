@@ -8,8 +8,10 @@ Supported types: string, integer, number, boolean, array, object. Arrays declare
 objects may declare "properties" (all listed properties are then required, no extras).
 "order": "any" on an array compares it as a multiset. Strings may declare "enum".
 A top-level field or object property with "graded": false (user-facing prose such as an
-explanation) is shape-checked but excluded from the reward and the differential: two correct implementations never agree on
-wording. Outcomes must be expressed by graded fields (ids, numbers, booleans, enums).
+explanation) is shape-checked but excluded from the reward and the differential: two correct
+implementations never agree on wording. Outcomes must be expressed by graded fields (ids, numbers,
+booleans, enums). A top-level field may set "tell": true: in free dialogue the agent must also say
+its value to the user (reward.told).
 """
 from __future__ import annotations
 
@@ -37,7 +39,8 @@ def check_schema(schema):
         out = []
         if top and not (isinstance(spec.get('description'), str) and spec['description'].strip()):
             out.append(f'{path}: description required')
-        allowed = {'type', 'description', 'nullable', 'items', 'properties', 'order', 'enum'} | ({'graded'} if named else set())
+        allowed = {'type', 'description', 'nullable', 'items', 'properties', 'order', 'enum'} | \
+            ({'graded'} if named else set()) | ({'tell'} if top else set())
         extra = set(spec) - allowed
         if extra:
             out.append(f'{path}: unknown keys {sorted(extra)}')
@@ -46,6 +49,10 @@ def check_schema(schema):
             out.append(f'{path}: enum must be a nonempty list of strings on a string field')
         if named and 'graded' in spec and spec['graded'] is not False:
             out.append(f'{path}: graded may only be set to false')
+        if 'tell' in spec and not (spec['tell'] is True and spec['type'] in ('integer', 'number', 'string')
+                                   and 'enum' not in spec and spec.get('graded', True)):
+            out.append(f'{path}: tell may only be true, on a graded number, integer or non-enum string field '
+                       '(a value the agent says to the user)')
         name = path.rsplit('.', 1)[-1].lower()
         if (named and spec['type'] == 'string' and 'enum' not in spec and spec.get('graded', True)
                 and any(word in name for word in PROSE_WORDS)):
@@ -162,6 +169,15 @@ def normalize(spec, value):
 
 def field_equal(spec, expected, actual):
     return normalize(spec, expected) == normalize(spec, actual)
+
+
+def told_fields(schema):
+    """Fields whose expected value the agent must say to the user: those marked "tell", else every
+    graded top-level number (the headline results)."""
+    fields = schema['fields']
+    marked = [name for name, spec in fields.items() if spec.get('tell')]
+    return marked or [name for name, spec in fields.items()
+                      if spec.get('type') in ('integer', 'number') and spec.get('graded', True)]
 
 
 def graded_fields(schema):

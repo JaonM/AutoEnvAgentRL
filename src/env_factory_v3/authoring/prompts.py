@@ -20,6 +20,9 @@ Format: {{"fields": {{"<name>": {{"type": ..., "description": ..., ...}}}}}}
   and how an absent value is written; they must not prescribe control flow (what happens after a
   refusal or failure, whether later steps still run, which rule wins) beyond what brief.md says.
   An enum may list possible outcomes; it must not imply which branch the business takes.
+- Mark with "tell": true the one to three top-level fields whose values the agent must say to
+  the user in its final message (the headline result: a total, a refund, a remaining balance,
+  an id). Only graded integer, number or non-enum string fields can be marked.
 
 Run `{python} -m env_factory_v3.checks schema` until it prints PASS. Do not read or write
 files outside this folder. End with one line naming the fields.

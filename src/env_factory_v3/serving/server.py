@@ -202,8 +202,12 @@ class Service:
             grade = rubric.grade(episode.result(), self.rubric, self.request, record['facts'], self.judge(),
                                  reference_calls=reference_calls)
         else:
-            grade = reward.grade(episode.result(), record['expected'], self.schema,
-                                 initial=record['data'], reference_calls=reference_calls)
+            result = episode.result()
+            # In free dialogue the agent must also have told the user its results (reward.told).
+            speech = ([e.get('message') for e in result['trace'] if e.get('kind') == 'chat']
+                      if self.user_mode == 'natural' else None)
+            grade = reward.grade(result, record['expected'], self.schema, initial=record['data'],
+                                 reference_calls=reference_calls, speech=speech)
             grade.pop('state_diff', None)
         return {**grade, 'world': record['world'], 'reward_type': self.reward_type}
 

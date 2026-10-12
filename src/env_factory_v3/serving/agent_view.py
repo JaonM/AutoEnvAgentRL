@@ -23,7 +23,7 @@ SYSTEM_NATURAL = ('你是一名业务助理，正在和用户在线对话。直�
                   '只使用提供的工具，不要猜测用户的私人信息。')
 SYSTEM_WRITES = ('每次写操作之前，先用 `v3_chat` 向用户提出这次具体的写操作（附上 proposal）；用户同意后会返回授权凭证，'
                  '把它作为 `consent` 传给这次写操作。')
-SYSTEM_FINISH = '处理完成后调用 `v3_answer` 提交最终结果。'
+SYSTEM_FINISH = '处理完成后，先把最终结果用平实的话告诉用户，再调用 `v3_answer` 提交。'
 PUBLIC = ('title', 'user_request', 'business_rules', 'user_topics', 'answer_schema', 'time')
 ALIASES = {
     'v3_answer': ('v3_answer', 'submit_result', 'finish_task', 'deliver_answer', 'submit_final_answer',
