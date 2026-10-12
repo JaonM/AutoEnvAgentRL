@@ -73,6 +73,11 @@ class GenerateTests(unittest.TestCase):
         self.assertTrue(any('别影响' in p for p in problems))
         self.assertTrue(any('虚拟时间' in p for p in problems))
         self.assertTrue(any('approve_first' in p for p in problems))
+        request['user_scene']['goal'] = '能续的都续上'
+        request['user_facts']['approve_first'] = True
+        request['user_scene']['wants_to_know'] = ['a', 'b', 'c', 'd']
+        (folder / 'request.json').write_text(json.dumps(request, ensure_ascii=False))
+        self.assertTrue(any('wants_to_know' in p for p in generate.check_request(folder)[0]))
         del request['user_scene']
         (folder / 'request.json').write_text(json.dumps(request, ensure_ascii=False))
         self.assertTrue(any('user_scene' in p for p in generate.check_request(folder)[0]))

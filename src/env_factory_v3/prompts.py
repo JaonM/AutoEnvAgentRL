@@ -237,7 +237,10 @@ Task shape: {shape}
     "known": {{"<item>": <value>, ...}}, "wants_to_know": ["<result the user wants to be told>", ...]}}
   known holds only what the user can state up front (a direct task needs every number of its
   computation here, as the user would read it off a receipt or a price board; amounts in cents
-  are fine, the writer says them in 元). Never put business rules, confirmation steps, transaction
+  are fine, the writer says them in 元). Keep it short enough to say in one breath: a direct task
+  has at most 3 records and 8 numbers in known (design the computation to fit). wants_to_know has
+  at most 3 short items in the user's own words; everything the final answer must report goes
+  into business_rules ("最终必须告知……"), not into the scene. Never put business rules, confirmation steps, transaction
   semantics or virtual clock values ("time 10", "day 30") in the scene; give times relative to now
   ("starts in 20 minutes", "expires in 2 days") in the unit the rules use. user_facts stay private:
   do not copy them into known unless the user would open with them.
@@ -288,6 +291,7 @@ OPENING_WRITER = """你是一位普通用户，正在和客服/业务助理在�
 你的说话风格：{persona}（{persona_hint}）
 {feedback}
 要求：一到三句口语，像真人；已知信息里的每个数字都要说到（金额按元说，1元=100分，如180分说“1.8元”）；
+想被告知的内容简单带过即可（如“弄完跟我说下结果”），不必逐项列出；
 不要复述任何规则或办理流程，不要说“先告诉我……等我确认再……”，不要出现“当前时间是10”“第10天”这类编号；
 不要总以“帮我”“麻烦”开头。只输出这条消息本身。"""
 

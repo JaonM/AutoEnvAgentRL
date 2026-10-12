@@ -39,6 +39,7 @@ SHAPES = {
                   'user asks for one). Graded by a rubric, so set "reward_type": "rubric".',
 }
 SIMILAR = 0.6
+MAX_DIRECT_NUMBERS, MAX_WANTS = 8, 3  # what a user says in one opening message
 
 
 def opening_problems(text):
@@ -80,6 +81,12 @@ def check_request(folder):
         problems.append('a direct task needs no table rows')
     if expected.get('shape') == 'direct' and not scene_numbers(scene):
         problems.append('a direct task needs every number of its computation in user_scene.known')
+    if expected.get('shape') == 'direct' and len(scene_numbers(scene)) > MAX_DIRECT_NUMBERS:
+        problems.append(f'user_scene.known has {len(scene_numbers(scene))} numbers; a user says at most '
+                        f'{MAX_DIRECT_NUMBERS} in one breath: simplify the computation')
+    if len(scene.get('wants_to_know', [])) > MAX_WANTS:
+        problems.append(f'user_scene.wants_to_know has more than {MAX_WANTS} items; put reporting duties in '
+                        'business_rules')
     return problems, [f"{request['category']}: {request['title']}"]
 
 
