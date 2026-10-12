@@ -231,6 +231,16 @@ class ConversationEndTests(unittest.TestCase):
         self.assertEqual(graded['answer'], told)                      # every value was actually said
         self.assertNotIn('renew_loan', reader.prompts[0])             # the reader never sees tool calls
 
+    def test_the_reader_is_told_the_last_statement_counts_and_sees_the_whole_conversation(self):
+        from env_factory_v3.core.extract import Extractor
+        reader = Reader()
+        Extractor(reader).extract({'fields': {'renewed_loan_ids': {'type': 'array', 'items': {'type': 'string'},
+                                                                   'description': 'x'}}},
+                                  ['先说一下：L1 可以续借。', '更正：L1 续不了，L2 续好了。'])
+        prompt = reader.prompts[0]
+        self.assertIn('以最后一次为准', prompt)
+        self.assertLess(prompt.index('先说一下'), prompt.index('更正'))  # every message, in order
+
     def test_an_extracted_value_that_was_never_said_is_dropped(self):
         from env_factory_v3.core.extract import verify
         spec = {'type': 'object', 'properties': {'loan_id': {'type': 'string'}, 'active_hold_count': {'type': 'integer'}}}

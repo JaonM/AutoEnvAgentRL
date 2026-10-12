@@ -2,7 +2,9 @@
 
 In free dialogue the agent need not call the answer tool. When the conversation ends without a
 recorded answer, a model (V3_JUDGE_*, falling back to LLM_*; temperature 0; cached by content)
-reads only what the agent said to the user and fills the answer schema; it never sees tool
+reads everything the agent said to the user (the whole conversation, in order; when it states a
+result more than once the last statement counts, and restated inputs or rules are not results)
+and fills the answer schema; it never sees tool
 results, so nothing the agent did not say can be credited. Every extracted number, id or other
 free string must then appear in that speech (numerals.said for numbers, so 36000 fen said as
 "360 元" counts); a value that does not is replaced by null. Enums and booleans are taken as the
@@ -24,7 +26,7 @@ PROMPT = """下面是客服在一次服务中对用户说过的全部话。请�
 客服说过的话：
 {speech}
 
-要求：只依据客服说过的话；没说到的字段填 null，不要推测、补全或自己计算。数值按字段说明的单位换算（例如字段要求“分”，客服说“360元”就填 36000）。枚举字段只能从给定选项中选，选不出就填 null。数组和对象按格式逐项填写，客服没说到的元素不要编造。
+要求：只依据客服说过的话，只提取客服给用户的处理结果；复述用户提供的信息、规则、价目或中间计算过程都不算结果。同一项前后说法不一致时，以最后一次为准。没说到的字段填 null，不要推测、补全或自己计算。数值按字段说明的单位换算（例如字段要求“分”，客服说“360元”就填 36000）。枚举字段只能从给定选项中选，选不出就填 null。数组和对象按格式逐项填写，客服没说到的元素不要编造。
 只输出一个 JSON 对象，键与答案格式的字段完全一致。"""
 
 
