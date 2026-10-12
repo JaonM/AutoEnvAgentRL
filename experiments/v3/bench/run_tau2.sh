@@ -12,4 +12,4 @@ agent_args=$(printf '{"api_base": "http://127.0.0.1:%s/v1", "api_key": "local", 
 user_args=$(printf '{"api_base": "%s", "api_key": "%s", "temperature": 0.0}' "$LLM_BASE_URL" "$LLM_API_KEY")
 exec .bench/tau2/bin/tau2 run --domain "$domain" --agent-llm "openai/qwen3-0.6b-$arm" --agent-llm-args "$agent_args" \
   --user-llm "openai/$LLM_MODEL" --user-llm-args "$user_args" \
-  --save-to "output/tau2/$arm-$domain" "$@"
+  --save-to "v3bench/$arm-$domain" "$@"   # results: $TAU2_DATA_DIR/simulations/v3bench/ARM-DOMAIN
