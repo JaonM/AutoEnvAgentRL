@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
 from env_factory_v3 import agent_view, bundle, server
@@ -22,10 +23,18 @@ RESULT = 'policy.json'
 
 
 def _post(opener, url, body):
+    # /reward of a rubric task waits for the judge model (with its retries), hence the long timeout.
     request = Request(url, data=json.dumps(body, ensure_ascii=False).encode(), method='POST',
                       headers={'Content-Type': 'application/json'})
-    with opener.open(request, timeout=60) as response:
-        return json.load(response)
+    try:
+        with opener.open(request, timeout=300) as response:
+            return json.load(response)
+    except HTTPError as error:
+        if error.code >= 500:  # judge or simulator provider failure inside the service
+            raise ProviderError(f'service failed: HTTP {error.code}') from error
+        return json.load(error)
+    except (URLError, TimeoutError, OSError) as error:
+        raise ProviderError(f'service unreachable: {type(error).__name__}') from error
 
 
 def play(base_url, client, world, category, *, max_turns=30):
@@ -83,7 +92,10 @@ def play(base_url, client, world, category, *, max_turns=30):
                 'fields': grade.get('fields'), 'state_ok': grade.get('state_ok'), 'safety': grade.get('safety'),
                 'turns': turns, 'tool_calls': calls, 'answered': answered, 'messages': messages}
     finally:
-        _post(opener, base_url + '/release', {'episode': episode})
+        try:
+            _post(opener, base_url + '/release', {'episode': episode})
+        except ProviderError:
+            pass
 
 
 def gate(folder, client, *, k=4, parallel=4, max_turns=30, user_mode='structured', user_client=None):

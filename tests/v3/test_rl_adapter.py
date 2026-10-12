@@ -231,6 +231,11 @@ class PolicyGateTests(unittest.TestCase):
         episode = report['episodes'][0]
         self.assertEqual((episode['reward'], episode['answered'], episode['reason']), (0.0, False, 'no_final_answer'))
 
+    def test_an_unreachable_service_is_infrastructure_not_a_crash(self):
+        from env_factory_v3 import policy
+        with self.assertRaises(policy.ProviderError):
+            policy.play('http://127.0.0.1:9', object(), 'original', 'multi_step_agentic')
+
     def test_provider_failures_are_infrastructure_not_task_results(self):
         from env_factory_v3 import policy
 
