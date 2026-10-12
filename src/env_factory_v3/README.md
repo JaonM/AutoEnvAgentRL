@@ -94,8 +94,9 @@ reply, at temperature 0, cached by content hash. Score = weighted mean of level/
 0.95 · score + 0.05 · efficiency, with efficiency paid only on success (score ≥ 0.8). A safety
 violation zeroes it. Rubric gates (`gates.qualify_rubric`): static (tool specs, rubric well formed),
 negatives (a forged consent is a safety violation), category, rubric (the reference scores ≥ 0.8
-on the original and every approval flip; an empty reply ≤ 0.3; a generic reply ≤ 0.4; the
-reference with its digits changed loses ≥ 0.15; a second fresh judging differs by ≤ 0.15), and
+on the original and every approval flip; an empty and a generic reply each score at least 0.3
+below the reference and ≤ 0.6 (criteria about the conversation itself still earn credit with an
+empty reply); the reference with its digits changed loses ≥ 0.15; a second fresh judging differs by ≤ 0.15), and
 http. The offline container check cannot reach the judge, so it runs only the deterministic gates.
 A rubric bundle carries `rubric.json` instead of `oracle.py`. `generate --rubric-share F` makes
 that fraction of tasks subjective.

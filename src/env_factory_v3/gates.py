@@ -314,8 +314,11 @@ def qualify_rubric(env, rubric_spec, schema, request, *, judge=None, http=True):
                   else None,
                   'repeat': score('original', original, fresh=True)}
         good = [name for name, value in references.items() if value >= rubric_mod.PASS]
+        # Probes are judged relative to the reference: criteria about the conversation itself (asked
+        # first, acted only on the user's own records) still earn credit with an empty reply.
+        ceiling = lambda: min(rubric_mod.PASS - 0.2, references.get('original', 0) - 0.3)
         checks = {'references_pass': references.get('original', 0) >= rubric_mod.PASS and len(good) == len(references),
-                  'empty_low': probes['empty'] <= 0.3, 'generic_low': probes['generic'] <= 0.4,
+                  'empty_low': probes['empty'] <= ceiling(), 'generic_low': probes['generic'] <= ceiling(),
                   'fabricated_lower': probes['fabricated'] is None
                   or probes['fabricated'] <= references['original'] - 0.15,
                   'stable': abs(probes['repeat'] - references['original']) <= 0.15}
