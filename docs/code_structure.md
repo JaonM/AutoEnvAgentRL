@@ -22,7 +22,7 @@
 旧的 `env_factory.<模块名>` 导入路径由包入口映射到新位置，已有集成可继续使用；
 新代码直接从对应子包导入。
 
-主要调用链：`scripts/run_pipeline.sh` → `src/env_factory/task_pipeline.py` →
+主要调用链：`scripts/run_pipeline_legacy.sh` → `src/env_factory/task_pipeline.py` →
 `src/env_factory/generate_task.py` / `generation/task_generator.py` / `generation/code_agent.py` →
 `scripts/sandbox/assess_task_buildability.py` → `scripts/develop_sandbox_with_agent.sh` →
 离线评分、Docker、live rollout 与奖励校准。素材认证和导出仍由各自脚本处理。

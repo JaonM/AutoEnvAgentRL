@@ -8,7 +8,9 @@ AutoEnvAgentRL helps agents learn within environments with concrete business con
 
 **Everything is done on your macbook/studio**
 
-Entry point: `scripts/run_pipeline.sh` → `python -m env_factory.task_pipeline`. Task generation and sandbox construction use Code Agent only (Codex, Claude, OpenCode), with `gpt-6.1-sol` as the default author and builder model. Legacy staged generation, fixed prototypes, and the experiment loop have been removed.
+Entry point: `scripts/run_pipeline.sh` → `python -m env_factory_v3 run` (V3 end to end: domain sampling → task generation → sandbox build → Docker → policy gate → tasks.json). The V1/V2 pipeline described below is now `scripts/run_pipeline_legacy.sh` → `python -m env_factory.task_pipeline`.
+
+V1/V2: Task generation and sandbox construction use Code Agent only (Codex, Claude, OpenCode), with `gpt-6.1-sol` as the default author and builder model. Legacy staged generation, fixed prototypes, and the experiment loop have been removed.
 
 Realism is unified: mechanisms are declared and verified in business contracts. Eligible multistep slots receive normal/change/recovery requirements in a 50/30/20 mix; singleton runs sample those probabilities. Per-mechanism results are written to `realism_summary.json`.
 
@@ -80,19 +82,19 @@ For a local Wikipedia index, see `scripts/download_wikipedia_dump.sh` and `scrip
 
 ```bash
 # Show options; preview the command without calling models, Neo4j, or Docker
-./scripts/run_pipeline.sh --help
-./scripts/run_pipeline.sh --dry-run
+./scripts/run_pipeline_legacy.sh --help
+./scripts/run_pipeline_legacy.sh --dry-run
 
 # Generate and build one task by default
-./scripts/run_pipeline.sh
+./scripts/run_pipeline_legacy.sh
 
 # Generate and build five tasks in a specified output directory
-./scripts/run_pipeline.sh --count 5 --output output/my_tasks
+./scripts/run_pipeline_legacy.sh --count 5 --output output/my_tasks
 
 # Recovery tasks: stateful multistep generation with exercised events and faults
 
 # Set the content language and Code Agent model
-./scripts/run_pipeline.sh --code-agent-model gpt-6.1-sol --language en
+./scripts/run_pipeline_legacy.sh --code-agent-model gpt-6.1-sol --language en
 ```
 
 ### Common options
@@ -114,8 +116,8 @@ The default target mix is 20% direct response, 30% single-step agentic, and 50% 
 To switch CLIs, install and authenticate the chosen tool, then provide a model identifier available to your account:
 
 ```bash
-./scripts/run_pipeline.sh --code-agent claude --code-agent-model YOUR_MODEL
-./scripts/run_pipeline.sh --code-agent opencode --code-agent-model PROVIDER/MODEL
+./scripts/run_pipeline_legacy.sh --code-agent claude --code-agent-model YOUR_MODEL
+./scripts/run_pipeline_legacy.sh --code-agent opencode --code-agent-model PROVIDER/MODEL
 
 ```
 

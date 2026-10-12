@@ -6,7 +6,7 @@ import subprocess
 from env_factory.generation.task_generator import TaskGenerator
 
 ROOT = Path(__file__).resolve().parents[2]
-ENTRY = ROOT / 'scripts/run_pipeline.sh'
+ENTRY = ROOT / 'scripts/run_pipeline_legacy.sh'
 
 
 def command(*arguments):
@@ -202,7 +202,7 @@ def test_pipeline_transcript_preserves_failure_and_dry_run_has_no_logs(tmp_path)
     import shutil
     project = tmp_path / 'project'
     (project / 'scripts').mkdir(parents=True)
-    entry = project / 'scripts/run_pipeline.sh'
+    entry = project / 'scripts/run_pipeline_legacy.sh'
     shutil.copyfile(ENTRY, entry)
     runner = project / '.venv/bin/python'
     runner.parent.mkdir(parents=True)

@@ -8,7 +8,9 @@
 
 项目目标是让 Agent 在有真实业务约束的环境中学习：向用户澄清需求、调用工具、使用前一步的结果完成后续操作，最终交付可验证的业务结果。项目将任务、业务数据、用户剧本、工具和奖励组织为统一契约，通过共享运行时和多层验收减少生成与构建的不一致。
 
-主入口：`scripts/run_pipeline.sh` → `python -m env_factory.task_pipeline`。任务生成和沙箱构建仅支持 Code Agent（Codex、Claude、OpenCode）；默认作者及构建模型为 `gpt-6.1-sol`。不再提供旧模型阶段、规格原型或循环实验入口。
+主入口：`scripts/run_pipeline.sh` → `python -m env_factory_v3 run`（V3 端到端：领域采样 → 任务生成 → 沙箱构建 → Docker → policy gate → tasks.json）。下文描述的 V1/V2 流水线入口已改名为 `scripts/run_pipeline_legacy.sh` → `python -m env_factory.task_pipeline`。
+
+V1/V2：任务生成和沙箱构建仅支持 Code Agent（Codex、Claude、OpenCode）；默认作者及构建模型为 `gpt-6.1-sol`。不再提供旧模型阶段、规格原型或循环实验入口。
 
 拟真机制统一按业务契约生成和验收，不再区分 standard/recovery。适合有状态场景的多步任务按正常／外部变化／故障恢复 50%／30%／20% 分配要求；单样本按该概率抽样。运行结果按机制汇总到 `realism_summary.json`。
 
@@ -80,19 +82,19 @@ cp .env.example .env
 
 ```bash
 # 查看参数；预览命令，不调用模型、图谱或 Docker
-./scripts/run_pipeline.sh --help
-./scripts/run_pipeline.sh --dry-run
+./scripts/run_pipeline_legacy.sh --help
+./scripts/run_pipeline_legacy.sh --dry-run
 
 # 默认生成并构建 1 个任务
-./scripts/run_pipeline.sh
+./scripts/run_pipeline_legacy.sh
 
 # 生成并构建 5 个任务，指定输出目录
-./scripts/run_pipeline.sh --count 5 --output output/my_tasks
+./scripts/run_pipeline_legacy.sh --count 5 --output output/my_tasks
 
 # 恢复型复杂任务：强制有状态多步生成，验证外部事件与故障恢复
 
 # 指定生成语种与 Code Agent 模型
-./scripts/run_pipeline.sh --code-agent-model gpt-6.1-sol --language en
+./scripts/run_pipeline_legacy.sh --code-agent-model gpt-6.1-sol --language en
 ```
 
 ### 常用参数
@@ -114,8 +116,8 @@ cp .env.example .env
 切换 CLI 时，先完成对应工具安装与认证，再传入账号可用的模型标识：
 
 ```bash
-./scripts/run_pipeline.sh --code-agent claude --code-agent-model YOUR_MODEL
-./scripts/run_pipeline.sh --code-agent opencode --code-agent-model PROVIDER/MODEL
+./scripts/run_pipeline_legacy.sh --code-agent claude --code-agent-model YOUR_MODEL
+./scripts/run_pipeline_legacy.sh --code-agent opencode --code-agent-model PROVIDER/MODEL
 
 ```
 

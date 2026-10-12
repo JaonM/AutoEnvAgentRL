@@ -3,10 +3,10 @@
 ## 主入口
 
 ```bash
-./scripts/run_pipeline.sh --count 1 --generation-hops 3
-./scripts/run_pipeline.sh --count 5 --output output/my_tasks
-./scripts/run_pipeline.sh --code-agent-model gpt-6.1-sol --sandbox-model gpt-6.1-sol --language en
-./scripts/run_pipeline.sh --help
+./scripts/run_pipeline_legacy.sh --count 1 --generation-hops 3
+./scripts/run_pipeline_legacy.sh --count 5 --output output/my_tasks
+./scripts/run_pipeline_legacy.sh --code-agent-model gpt-6.1-sol --sandbox-model gpt-6.1-sol --language en
+./scripts/run_pipeline_legacy.sh --help
 ```
 
 脚本调用 `python -m env_factory.task_pipeline`，Python 主入口位于
@@ -83,7 +83,7 @@
 
 ### 环境模式
 
-使用 `./scripts/run_pipeline.sh --environment-mode stateful` 限定新任务的业务环境形态，不改变 Docker 启动方式。生成结果不符合指定模式时会被前置验收拒绝。
+使用 `./scripts/run_pipeline_legacy.sh --environment-mode stateful` 限定新任务的业务环境形态，不改变 Docker 启动方式。生成结果不符合指定模式时会被前置验收拒绝。
 
 | 枚举值 | 含义 | 示例 |
 | --- | --- | --- |
