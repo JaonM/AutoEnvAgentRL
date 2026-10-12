@@ -27,7 +27,11 @@ from pathlib import Path
 STYLE = ('\n\n（示范要求，仅对你生效：对用户说话时像一位耐心的真人客服，用日常口语，金额换算成“元”来说，'
          '不要提字段名、状态码、内部编号格式、以分为单位的金额或规则原文；先说结论，再用一两句话说明原因。'
          '工具调用的参数和最终提交仍严格按工具定义填写。）')
-INTERNAL = re.compile(r'[A-Za-z]+_[A-Za-z_]+|\d+\s*分(?!钟)')
+STYLE_EN = ('\n\n(Demonstration requirement, for you only: talk to the user like a patient human customer service '
+            'agent, in everyday English; say amounts in dollars, never in cents; never mention field names, status codes, '
+            'internal id formats or rule text; give the conclusion first, then one or two sentences of reasons. Tool '
+            'arguments still follow the tool definitions exactly.)')
+INTERNAL = re.compile(r'[A-Za-z]+_[A-Za-z_]+|\d+\s*分(?!钟)|\b\d+\s*cents?\b')
 
 
 def leaks(messages):
@@ -36,10 +40,10 @@ def leaks(messages):
                if m['role'] == 'assistant' and (m.get('content') or '').strip())
 
 
-def teacher_view(messages, style):
+def teacher_view(messages, style, english=False):
     if not style:
         return messages
-    return [{**messages[0], 'content': messages[0]['content'] + STYLE}, *messages[1:]]
+    return [{**messages[0], 'content': messages[0]['content'] + (STYLE_EN if english else STYLE)}, *messages[1:]]
 
 
 def play(task, seed, client, max_turns, style=True):
@@ -50,7 +54,7 @@ def play(task, seed, client, max_turns, style=True):
         env.reset(seed)
         tools, reasoning = env.tools, {}
         for _ in range(max_turns):
-            reply = client.chat(teacher_view(env.messages, style), tools, temperature=0.7)
+            reply = client.chat(teacher_view(env.messages, style, env.language == 'en'), tools, temperature=0.7)
             message = {'role': 'assistant', 'content': reply.get('content') or ''}
             if reply.get('tool_calls'):
                 message['tool_calls'] = [

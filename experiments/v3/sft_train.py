@@ -54,6 +54,9 @@ def main():
     parser.add_argument('--grad-accumulation', type=int, default=4)
     parser.add_argument('--max-tokens', type=int, default=12288, help='longer episodes are skipped')
     parser.add_argument('--valid-share', type=float, default=0.1)
+    parser.add_argument('--valid-ids', default=None,
+                        help='JSON list of task ids whose episodes form the validation set (held-out domains); '
+                             'otherwise --valid-share of the episodes at random')
     parser.add_argument('--evals-per-epoch', type=int, default=4)
     parser.add_argument('--seed', type=int, default=0)
     args = parser.parse_args()
@@ -78,8 +81,12 @@ def main():
     random.Random(args.seed).shuffle(episodes)
     samples = [render(tokenizer, e) for e in episodes]
     kept = [(e, s) for e, s in zip(episodes, samples) if len(s[0]) <= args.max_tokens and sum(s[1])]
-    cut = max(1, round(len(kept) * args.valid_share))
-    valid, train = [s for _, s in kept[:cut]], [s for _, s in kept[cut:]]
+    if args.valid_ids:
+        held = set(json.loads(Path(args.valid_ids).read_text()))
+        valid, train = [s for e, s in kept if e['id'] in held], [s for e, s in kept if e['id'] not in held]
+    else:
+        cut = max(1, round(len(kept) * args.valid_share))
+        valid, train = [s for _, s in kept[:cut]], [s for _, s in kept[cut:]]
     print(f'{len(episodes)} successful episodes, {len(kept)} within {args.max_tokens} tokens: '
           f'{len(train)} train / {len(valid)} valid; '
           f'{sum(sum(m) for _, m in train)} assistant tokens of {sum(len(i) for i, _ in train)}', flush=True)
