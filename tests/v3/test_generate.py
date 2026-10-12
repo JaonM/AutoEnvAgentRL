@@ -95,6 +95,15 @@ class GenerateTests(unittest.TestCase):
         (folder / 'request.json').write_text(json.dumps(request, ensure_ascii=False))
         self.assertTrue(any('user_scene' in p for p in generate.check_request(folder)[0]))
 
+    def test_numbers_said_in_chinese_count_as_said(self):
+        scene = {'known': {'身份': '芭蕾舞者', '所需次数': 2, '课时': 12, '单价': 18000, '押金': 350, '人数': 10}}
+        self.assertEqual(generate.missing_numbers('要上两次，一共十二课时，每节一百八，押金三块五，十个人', scene), [])
+        self.assertEqual(generate.missing_numbers('要上2次，12课时，180元，3块5，10人', scene), [])
+        self.assertEqual(generate.missing_numbers('每节一百八，押金三块五，十个人', scene), [2, 12])
+        self.assertTrue({'一百零五', '一千零五', '两万零三百'} <= generate.chinese(105) | generate.chinese(1005)
+                        | generate.chinese(20300))
+        self.assertNotIn('两十', generate.chinese(20))
+
     def test_opening_writer_sees_only_the_scene_and_must_say_every_number(self):
         request = natural(library_request(), 'x')
         request['user_scene']['known'] = {'停车分钟': 181, '首小时': 300, '每半小时': 120}

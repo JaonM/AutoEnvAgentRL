@@ -179,6 +179,20 @@ class RequalifyTests(unittest.TestCase):
         loaded = bundle.load_bundle(folder)
         self.assertEqual(loaded['manifest']['requalified'], [bundle.platform_identity()])
 
+    def test_platform_identity_covers_exactly_the_runtime_import_closure(self):
+        import ast
+        root = bundle.PACKAGE_ROOT
+        imported = set()
+        for name in bundle.RUNTIME_MODULES:
+            for node in ast.walk(ast.parse((root / name).read_text())):
+                if isinstance(node, ast.ImportFrom) and node.module == 'env_factory_v3':
+                    imported |= {f'{alias.name}.py' for alias in node.names}
+                elif isinstance(node, ast.ImportFrom) and (node.module or '').startswith('env_factory_v3.'):
+                    imported.add(node.module.split('.', 1)[1] + '.py')
+        self.assertLessEqual(imported, set(bundle.RUNTIME_MODULES))  # runtime never reaches orchestration
+        for orchestration in ('pipeline.py', 'run.py', 'generate.py', 'prompts.py', 'policy.py', 'codex.py'):
+            self.assertNotIn(orchestration, bundle.RUNTIME_MODULES)
+
     def test_requalify_never_signs_a_failing_bundle(self):
         root = Path(tempfile.mkdtemp())
         status = pipeline.build(library_request(), root / 'build', runner=FakeRunner(), perturbed=20)

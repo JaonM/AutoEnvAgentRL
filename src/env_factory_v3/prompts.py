@@ -227,6 +227,12 @@ Task shape: {shape}
   No rule may be open to two readings. For every row a write creates or changes, state the
   value of every column of that table (including columns that stay null or unchanged): the
   final state is compared exactly, so an unstated column is a guess.
+- Refusals and failures: for every step the user may refuse or that may fail, the rules say
+  (a) whether the remaining steps still run, (b) the exact row values and result label left for
+  that item, or that nothing is written, (c) whether it uses up or frees any budget, quota,
+  capacity, sequence number or position that later steps depend on, and (d) how the final answer
+  reports it. If a later step's outcome depends on an earlier refusal, say exactly how; one
+  refused or failed step must leave exactly one possible final state.
 - tables: synthetic rows, each with a unique "id"; columns consistent within a table; enough
   rows that wrong rules give different results (decoys, boundary values, an ineligible row).
 - user_facts: what only the user knows and an agent must ask for (ids, quantities, choices),

@@ -24,12 +24,19 @@ def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+# What decides a sandbox's behaviour and reward at training time: loading, the episode service, the
+# agent's view, the user simulator, grading, the gates a bundle is certified with and the container
+# it runs in. Build-time orchestration (generation, codex sessions, repair audits, the run command,
+# the policy gate) is not part of it, so editing those never invalidates certified bundles.
+RUNTIME_MODULES = ('__init__.py', 'agent_view.py', 'answers.py', 'bundle.py', 'docker.py', 'gates.py', 'llm.py',
+                   'reward.py', 'rubric.py', 'runtime.py', 'sandbox.py', 'server.py', 'spec.py', 'user_sim.py',
+                   'worlds.py')
+
+
 def platform_identity():
     digest = hashlib.sha256()
-    for path in sorted(PACKAGE_ROOT.rglob('*.py')):
-        if '__pycache__' in path.parts:
-            continue
-        digest.update(path.relative_to(PACKAGE_ROOT).as_posix().encode() + b'\0' + path.read_bytes())
+    for name in sorted(RUNTIME_MODULES):
+        digest.update(name.encode() + b'\0' + (PACKAGE_ROOT / name).read_bytes())
     return digest.hexdigest()
 
 
@@ -97,8 +104,8 @@ def service(loaded, **options):
 def requalify(folder):
     """Re-run every gate on the current platform; on success re-sign the bundle for it.
 
-    Changing any V3 platform file invalidates every bundle (load_bundle refuses a different
-    platform identity); this is the only way back, and it never skips a gate.
+    Changing any V3 runtime module (RUNTIME_MODULES) invalidates every bundle (load_bundle refuses a
+    different platform identity); this is the only way back, and it never skips a gate.
     """
     folder = Path(folder)
     loaded = load_bundle(folder, require_current_platform=False)
