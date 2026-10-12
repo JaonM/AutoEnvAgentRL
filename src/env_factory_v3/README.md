@@ -188,6 +188,20 @@ information (cents may be said in 元). Near-duplicates are dropped and the V2 c
 kept. The scene stays in the request as provenance; it is not part of brief.md or the agent's
 view. Then run `batch --requests DIR/requests`.
 
+## Sampling domains at scale
+
+`domains --count N --split holdout-K --output domains.json` combines the scene graph with a
+business grid. The graph is V1's Neo4j Scene graph, grown toward business scenes by
+`experiments/v3/expand_business_graph.py`, and supplies concrete scene material: a random walk
+of up to `--hops` SAME_EVENT_ELEMENT edges. The grid supplies structure: a business process and
+one or two mechanisms (budget, capacity, independent approvals, partial success, tiered
+pricing...). A proposer model (`V3_DOMAIN_*`, falling back to `LLM_*`) turns path, process and
+mechanisms into one concrete customer-facing domain, or rejects the combination. Connected
+components of the graph are assigned to splits (dev, holdout-1..5) by a stable hash, so splits
+never share a scene node. Domains are deduplicated against the development families,
+`--exclude` files and each other. The output feeds `generate --domains` directly; each domain
+records its family and provenance.
+
 ## HTTP protocol
 
 `POST /reset {world?|seed?}` → episode id and public instructions (request, rules, tool specs,

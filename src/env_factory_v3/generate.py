@@ -199,8 +199,11 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
         folder.mkdir(parents=True)
         (folder / 'assignment.json').write_text(json.dumps(
             {'domain': domain, 'category': category, 'shape': shape, 'id': f'gen-{index:03d}'}, ensure_ascii=False))
+        detail = domain.get('detail', '')
+        if domain.get('process') or domain.get('mechanisms'):
+            detail += f" 业务环节：{domain.get('process', '')}；需要体现的机制：{'、'.join(domain.get('mechanisms', []))}。"
         runner(folder, prompts.REQUEST_AUTHOR.format(python=python, domain=domain['name'],
-                                                       detail=domain.get('detail', ''), category=category,
+                                                       detail=detail, category=category,
                                                        shape=SHAPES[shape], id=f'gen-{index:03d}',
                                                        reward_type='rubric' if shape == 'subjective' else 'business'),
                timeout=timeout, role='request_author')
@@ -228,7 +231,8 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
                 row.update(passed=False, problems=[f'near-duplicate of {twin["id"]}'])
             else:
                 request['id'] = f'gen-{index:03d}'
-                request['source'] = {'generated': domain['name'], 'shape': shape, 'persona': persona_name,
+                request['source'] = {'generated': domain['name'], 'family': domain.get('family'),
+                                     'shape': shape, 'persona': persona_name,
                                      'opening_writer': getattr(opening_client, 'model', None)}
                 kept.append(request)
                 (output / 'requests').mkdir(exist_ok=True)

@@ -4,6 +4,7 @@
   python -m env_factory_v3 build --request request.json --output DIR [--repairs 2]
   python -m env_factory_v3 batch --frozen DIR --samples 4,5,9 --output DIR [--parallel 1]
   python -m env_factory_v3 batch --requests DIR --output DIR                 # generated requests
+  python -m env_factory_v3 domains --count 12 --split holdout-4 --output domains.json   # graph x business grid
   python -m env_factory_v3 generate --domains domains.json --count 30 --output DIR
   python -m env_factory_v3 serve BUNDLE --port 8090
   python -m env_factory_v3 verify BUNDLE [--resign]   # re-run gates; --resign re-signs for this platform
@@ -71,6 +72,13 @@ def main(argv=None):
     p.add_argument('--rubric-share', type=float, default=0.0,
                    help='fraction of tasks that are subjective (rubric reward); taken from multi-step slots')
     p.add_argument('--model', default='gpt-6.1-sol')
+    p = sub.add_parser('domains', help='sample domains from the scene graph x business grid')
+    p.add_argument('--count', type=int, required=True)
+    p.add_argument('--split', required=True, help='dev, holdout-1 ... holdout-5 (components never shared)')
+    p.add_argument('--output', required=True)
+    p.add_argument('--hops', type=int, default=2)
+    p.add_argument('--seed', type=int, default=0)
+    p.add_argument('--exclude', nargs='*', default=[], help='domains.json files whose names must not recur')
     p = sub.add_parser('findings', help="open business-rule questions from a build's spec_findings")
     p.add_argument('build')
     p = sub.add_parser('clarify', help="add the business owner's answers to a request")
@@ -139,6 +147,22 @@ def main(argv=None):
                                     runner=_runner(args), parallel=args.parallel, python=sys.executable,
                                     rubric_share=args.rubric_share)
         print(json.dumps({k: summary[k] for k in ('requested', 'kept', 'domains')}, ensure_ascii=False))
+        return 0
+    if args.command == 'domains':
+        from env_factory_v3 import domains
+        from env_factory_v3.llm import ChatClient, load_env_file
+        load_env_file()
+        graph = domains.SceneGraph.from_neo4j(os.environ.get('NEO4J_URI', 'bolt://localhost:7687'),
+                                              os.environ.get('NEO4J_USER', 'neo4j'), os.environ['NEO4J_PASSWORD'],
+                                              os.environ.get('NEO4J_DATABASE', 'neo4j'))
+        exclude = [d['name'] for path in args.exclude for d in json.loads(Path(path).read_text())]
+        report = domains.propose(graph, ChatClient('V3_DOMAIN'), args.count, split=args.split, seed=args.seed,
+                                 hops=args.hops, exclude=exclude)
+        Path(args.output).write_text(json.dumps(report['accepted'], ensure_ascii=False, indent=1))
+        Path(args.output).with_suffix('.report.json').write_text(json.dumps(report, ensure_ascii=False, indent=1))
+        print(json.dumps({'split': args.split, 'accepted': len(report['accepted']),
+                          'rejected': len(report['rejected']), 'nodes_in_split': len(graph.nodes_in(args.split))},
+                         ensure_ascii=False))
         return 0
     if args.command == 'findings':
         status = json.loads((Path(args.build) / 'status.json').read_text())
