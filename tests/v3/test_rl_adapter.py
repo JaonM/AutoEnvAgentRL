@@ -176,6 +176,20 @@ class PolicyGateTests(unittest.TestCase):
         self.assertIn('v3_ask', client.tools)
         self.assertTrue((self.bundle / policy.RESULT).exists())
 
+    def test_an_unanswered_episode_earns_zero_like_in_training(self):
+        from env_factory_v3 import policy
+
+        class Busy:
+            model = 'busy'
+
+            def chat(self, messages, tools=None, **parameters):
+                return {'content': '', 'tool_calls': [{'id': f'c{len(messages)}', 'type': 'function', 'function': {
+                    'name': 'v3_ask', 'arguments': json.dumps({'key': 'reader_id'})}}]}
+
+        report = policy.gate(self.bundle, Busy(), k=1, parallel=1, max_turns=3)
+        episode = report['episodes'][0]
+        self.assertEqual((episode['reward'], episode['answered'], episode['reason']), (0.0, False, 'no_final_answer'))
+
     def test_provider_failures_are_infrastructure_not_task_results(self):
         from env_factory_v3 import policy
 

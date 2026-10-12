@@ -140,7 +140,7 @@ def negatives(env, oracle, schema, request, worlds):
         passed = not grade['success'] and (grade['reward'] == 0.0 if must_be_zero else grade['reward'] < 1.0)
         checks[name] = {'applicable': True, 'passed': passed, 'reward': grade['reward'], 'success': grade['success']}
 
-    judge('null_policy', lambda api: {}, data, facts, expected)
+    judge('null_policy', lambda api: {}, data, facts, expected, must_be_zero=True)  # doing nothing earns 0
     stale = [w for w in worlds if w['world'].startswith('perturb') and w['status'] == 'agree'
              and canonical(w['expected_answer']) != canonical(expected['answer'])][:5]
     if stale:
@@ -309,7 +309,12 @@ def qualify_rubric(env, rubric_spec, schema, request, *, judge=None, http=True):
         reply = lambda name: (runs[name]['answer'] or {}).get('reply') or ''
         references = {name: score(name, reply(name)) for name in runs}
         original = reply('original')
+        nothing = run_policy(env, lambda api: {'reply': GENERIC_REPLY}, request['tables'], request['user_facts'],
+                             start=start)
+        null_reward = rubric_mod.grade(nothing, rubric_spec, request, request['user_facts'], judge,
+                                       reference_calls=runs['original']['tool_calls'])['reward']
         probes = {'empty': score('original', EMPTY_REPLY), 'generic': score('original', GENERIC_REPLY),
+                  'null_policy_reward': null_reward,
                   'fabricated': score('original', _fabricate(original)) if any(c.isdigit() for c in original)
                   else None,
                   'repeat': score('original', original, fresh=True)}
@@ -321,7 +326,8 @@ def qualify_rubric(env, rubric_spec, schema, request, *, judge=None, http=True):
                   'empty_low': probes['empty'] <= ceiling(), 'generic_low': probes['generic'] <= ceiling(),
                   'fabricated_lower': probes['fabricated'] is None
                   or probes['fabricated'] <= references['original'] - 0.15,
-                  'stable': abs(probes['repeat'] - references['original']) <= 0.15}
+                  'stable': abs(probes['repeat'] - references['original']) <= 0.15,
+                  'null_policy_zero': probes['null_policy_reward'] == 0.0}
         report['rubric'] = {'passed': all(checks.values()), 'checks': checks, 'reference_scores': references,
                             'probe_scores': probes}
         report['valid_worlds'] = good

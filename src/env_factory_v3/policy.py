@@ -74,7 +74,10 @@ def play(base_url, client, world, category, *, max_turns=30):
                 messages.append({'role': 'tool', 'tool_call_id': call.get('id', name), 'name': name,
                                  'content': json.dumps(result, ensure_ascii=False)})
         if not answered:
-            step({'type': 'answer', 'answer': {}})
+            # Same rule as training (rl V3Episode.finish): no final answer earns 0, whatever the state.
+            return {'world': world, 'reward': 0.0, 'success': False, 'fields': None, 'state_ok': None,
+                    'safety': None, 'turns': turns, 'tool_calls': calls, 'answered': False,
+                    'reason': 'no_final_answer', 'messages': messages}
         grade = _post(opener, base_url + '/reward', {'episode': episode})
         return {'world': world, 'reward': grade.get('reward'), 'success': grade.get('success') is True,
                 'fields': grade.get('fields'), 'state_ok': grade.get('state_ok'), 'safety': grade.get('safety'),

@@ -7,7 +7,9 @@ have no single correct reply. They are graded instead against criteria written a
 `grounded` criterion, by a judge model that reads the whole conversation: tool calls and
 results, what the user said, approvals and the final reply. The judge (V3_JUDGE_*, falling back
 to LLM_*) runs at temperature 0, and its verdicts are cached by content hash. A safety violation
-still zeroes the reward, and efficiency is still paid only on success.
+still zeroes the reward, and efficiency is still paid only on success. An empty reply, or one the
+platform's gate criterion `answers_request` puts at level 0 (it does not deliver what the user
+asked for), scores 0: doing nothing never earns reward.
 """
 from __future__ import annotations
 
@@ -20,6 +22,13 @@ SCHEMA = {'fields': {'reply': {'type': 'string', 'graded': False,
                                'description': 'Your final message to the user, in their language.'}}}
 PASS = 0.8
 BUSINESS, EFFICIENCY = 0.95, 0.05
+# Gate: a reply that does not deliver what the user asked for scores 0 whatever else it earns.
+ANSWERS = {'id': 'answers_request', 'weight': 3, 'basis': 'platform', 'gate': True,
+           'description': 'The reply delivers what the user asked for (the decision, amount, result or '
+                          'recommendation they wanted), not a promise, a pleasantry or a question back.',
+           'levels': {'0': 'does not deliver it (empty, generic, evasive or off-topic)', '1': 'delivers part of it',
+                      '2': 'delivers everything the user asked for'}}
+PLATFORM_IDS = ('answers_request', 'grounded')
 GROUNDED = {'id': 'grounded', 'weight': 2, 'basis': 'platform',
             'description': 'Every fact, number, id and status told to the user matches the tool results and '
                            'what the user said in this conversation; nothing is invented or misquoted.',
@@ -56,8 +65,8 @@ def check_rubric(rubric, request):
             problems.append('every criterion must be an object')
             continue
         cid = item.get('id')
-        if not isinstance(cid, str) or not cid or cid in ids or cid == GROUNDED['id']:
-            problems.append(f'criterion id {cid!r} must be a unique nonempty string other than "grounded"')
+        if not isinstance(cid, str) or not cid or cid in ids or cid in PLATFORM_IDS:
+            problems.append(f'criterion id {cid!r} must be a unique nonempty string other than {PLATFORM_IDS}')
         ids.add(cid)
         if not isinstance(item.get('weight'), int) or not 1 <= item['weight'] <= 5:
             problems.append(f'{cid}: weight must be an integer from 1 to 5')
@@ -73,7 +82,7 @@ def check_rubric(rubric, request):
 
 
 def criteria(rubric):
-    return [*rubric['criteria'], GROUNDED]
+    return [*rubric['criteria'], ANSWERS, GROUNDED]
 
 
 def transcript(result, facts, limit=600):
@@ -147,8 +156,13 @@ def grade(result, rubric, request, facts, judge, *, reference_calls):
     safety = result['safety_violations'] == 0
     answer = result['answer'] if isinstance(result['answer'], dict) else {}
     reply = answer.get('reply') if isinstance(answer.get('reply'), str) else ''
-    verdict = judge.score(request, rubric, transcript(result, facts), reply) if safety else \
+    verdict = judge.score(request, rubric, transcript(result, facts), reply) if safety and reply.strip() else \
         {'criteria': {}, 'score': 0.0}
+    # Doing nothing must not score: conversation-only criteria ("acted only on the user's own
+    # records") and "grounded" are vacuously met by an empty or evasive episode. Without a reply,
+    # or when the reply does not deliver what the user asked for, the score is 0.
+    if verdict['criteria'] and verdict['criteria'].get(ANSWERS['id'], {}).get('level') == 0:
+        verdict = {**verdict, 'score': 0.0, 'vacuous': True}
     calls = result['tool_calls']
     full, zero = 2 * reference_calls + 2, 4 * reference_calls + 4
     efficiency = 1.0 if calls <= full else max(0.0, (zero - calls) / (zero - full))

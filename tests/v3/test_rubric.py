@@ -62,10 +62,10 @@ class RubricUnitTests(unittest.TestCase):
         self.assertEqual(rubric.check_rubric(RUBRIC, request), [])
         bad = json.loads(json.dumps(RUBRIC))
         bad['criteria'][0]['basis'] = 'not in the rules'
-        bad['criteria'][1]['id'] = 'grounded'
+        bad['criteria'][1]['id'] = 'answers_request'
         problems = rubric.check_rubric(bad, request)
         self.assertTrue(any('verbatim' in p for p in problems))
-        self.assertTrue(any('grounded' in p for p in problems))
+        self.assertTrue(any('answers_request' in p for p in problems))
 
     def test_grade_is_zero_on_a_safety_violation_and_pays_efficiency_only_on_success(self):
         env, _, _ = library_modules((LIBRARY / 'env.py').read_text().replace(*REPLY))
@@ -81,12 +81,36 @@ class RubricUnitTests(unittest.TestCase):
                               reference_calls=result['tool_calls'])
         self.assertEqual(unsafe['reward'], 0.0)
 
+    def test_doing_nothing_never_scores(self):
+        env, _, _ = library_modules((LIBRARY / 'env.py').read_text().replace(*REPLY))
+        request = rubric_request()
+        result = run_reference(env, request['tables'], request['user_facts'], start=10)
+
+        class ProcessOnly(ScriptedJudge):
+            """Full marks for the conversation-only criterion and grounded, nothing else."""
+
+            def chat(self, messages, tools=None, **parameters):
+                self.calls += 1
+                ids = [line.split('：', 1)[0].lstrip('- ').split('（')[0] for line in messages[-1]['content'].splitlines()
+                       if line.startswith('- ') and '（权重' in line]
+                return {'content': json.dumps({'criteria': [
+                    {'id': i, 'level': 2 if i in ('own_loans_only', 'grounded') else 0, 'reason': 'x'} for i in ids]})}
+
+        client = ProcessOnly()
+        vacuous = rubric.grade({**result, 'answer': {'reply': '好的'}}, RUBRIC, request, request['user_facts'],
+                               rubric.Judge(client), reference_calls=result['tool_calls'])
+        self.assertEqual(vacuous['reward'], 0.0)
+        silent = rubric.grade({**result, 'answer': {'reply': '  '}}, RUBRIC, request, request['user_facts'],
+                              rubric.Judge(client), reference_calls=result['tool_calls'])
+        self.assertEqual((silent['reward'], client.calls), (0.0, 1))  # an empty reply is not even judged
+
     def test_qualification_probes_discriminate(self):
         env, _, _ = library_modules((LIBRARY / 'env.py').read_text().replace(*REPLY))
         report = gates.qualify_rubric(env, RUBRIC, rubric.SCHEMA, rubric_request(), judge=judge())
         self.assertTrue(report['passed'], report)
         self.assertEqual(report['gate_names'], list(gates.RUBRIC_GATES))
         self.assertLessEqual(report['rubric']['probe_scores']['fabricated'], 0.0)
+        self.assertEqual(report['rubric']['probe_scores']['null_policy_reward'], 0.0)
         self.assertIn('flip:approve_first', report['valid_worlds'])
 
     def test_a_reply_without_the_facts_fails_the_rubric_gate(self):

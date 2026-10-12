@@ -275,7 +275,9 @@ Write rubric.json: {{"criteria": [{{"id": "<snake_case>", "weight": 1-5, "descri
   "good explanation"). Weight what matters most to the user higher.
 - basis: copied verbatim from the "User request" or "Business rules" section of brief.md, the
   text that makes the criterion matter.
-- Do not add a criterion about factual accuracy: the platform always adds a "grounded" criterion.
+- Do not add a criterion about factual accuracy or about answering the request at all: the
+  platform always adds "grounded" and "answers_request" (a gate: a reply that does not deliver
+  what the user asked for scores 0).
   Do not grade wording style unless the request asks for it.
 
 Run `{python} -m env_factory_v3.checks rubric` until it prints PASS. Do not read or write files
