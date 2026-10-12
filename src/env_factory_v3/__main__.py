@@ -80,6 +80,8 @@ def main(argv=None):
     p.add_argument('--hops', type=int, default=2)
     p.add_argument('--seed', type=int, default=0)
     p.add_argument('--exclude', nargs='*', default=[], help='domains.json files whose names must not recur')
+    p.add_argument('--splits', default='experiments/v3/graph_splits.json',
+                   help='persisted node -> split map (created and extended on use)')
     p = sub.add_parser(
         'run', help='end to end: domains -> requests -> sandboxes -> images -> policy gate -> tasks.json',
         description='Run (or resume) the whole V3 production line into one folder. Writes tasks.json '
@@ -95,6 +97,8 @@ def main(argv=None):
     p.add_argument('--domains', type=int, default=12, help='domains to sample with --split (default 12)')
     p.add_argument('--hops', type=int, default=2, help='max scene-graph hops per sampled domain (default 2)')
     p.add_argument('--seed', type=int, default=0, help='sampling seed (default 0)')
+    p.add_argument('--splits', default='experiments/v3/graph_splits.json',
+                   help='persisted node -> split map, so splits stay disjoint across runs')
     p.add_argument('--rubric-share', type=float, default=0.0,
                    help='fraction of tasks that are subjective, graded by rubric (default 0)')
     p.add_argument('--parallel', type=int, default=2, help='concurrent generations / builds (default 2)')
@@ -185,7 +189,7 @@ def main(argv=None):
         load_env_file()
         graph = domains.SceneGraph.from_neo4j(os.environ.get('NEO4J_URI', 'bolt://localhost:7687'),
                                               os.environ.get('NEO4J_USER', 'neo4j'), os.environ['NEO4J_PASSWORD'],
-                                              os.environ.get('NEO4J_DATABASE', 'neo4j'))
+                                              os.environ.get('NEO4J_DATABASE', 'neo4j'), splits_path=args.splits)
         exclude = [d['name'] for path in args.exclude for d in json.loads(Path(path).read_text())]
         report = domains.propose(graph, ChatClient('V3_DOMAIN'), args.count, split=args.split, seed=args.seed,
                                  hops=args.hops, exclude=exclude)
@@ -213,7 +217,8 @@ def main(argv=None):
             from env_factory_v3 import domains
             options.update(domain_client=ChatClient('V3_DOMAIN'), graph=lambda: domains.SceneGraph.from_neo4j(
                 os.environ.get('NEO4J_URI', 'bolt://localhost:7687'), os.environ.get('NEO4J_USER', 'neo4j'),
-                os.environ.get('NEO4J_PASSWORD', ''), os.environ.get('NEO4J_DATABASE', 'neo4j')))
+                os.environ.get('NEO4J_PASSWORD', ''), os.environ.get('NEO4J_DATABASE', 'neo4j'),
+                splits_path=args.splits))
         if args.policy_k:
             options['policy_client'] = ChatClient(args.policy_prefix)
             if args.policy_user_mode == 'natural':

@@ -44,6 +44,17 @@ class DomainTests(unittest.TestCase):
             self.assertEqual(len(walk), len(set(walk)))
             self.assertLessEqual(len(walk), 3)
 
+    def test_splits_are_balanced_and_persist_as_the_graph_grows(self):
+        nodes = [(f'n{i}', f'名{i}') for i in range(60)]
+        edges = [(f'n{i}', f'n{i + 1}') for i in range(0, 60, 2)]  # 30 components of 2
+        graph = domains.SceneGraph(nodes, edges)
+        sizes = [len(graph.nodes_in(s)) for s in domains.SPLITS]
+        self.assertLessEqual(max(sizes) - min(sizes), 2)
+        known = dict(graph.split)
+        grown = domains.SceneGraph(nodes + [('new', '新')], edges + [('n0', 'new')], splits=known)
+        self.assertTrue(all(grown.split[n] == s for n, s in known.items()))  # nobody moves
+        self.assertEqual(grown.split['new'], known['n0'])                     # newcomers follow their component
+
     def test_propose_accepts_rejects_and_deduplicates_with_provenance(self):
         split = self.graph.split_of('服装')
         report = domains.propose(self.graph, Proposer(), 3, split=split, seed=3, max_attempts=12)

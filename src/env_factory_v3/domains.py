@@ -8,16 +8,16 @@ independent approvals...). A proposer model (V3_DOMAIN_*, falling back to LLM_*)
 sampled scene path, a process and mechanisms into one concrete customer-facing domain, or
 rejects the combination when no plausible business fits it.
 
-Family isolation uses the graph's structure: connected components are assigned to splits
-(dev, holdout-1, holdout-2, ...) by a stable hash. A split only samples from its own
-components, so two splits never share a scene node. Proposed domains are also deduplicated by
+Family isolation uses the graph's structure: same-event components are balanced across splits
+(dev, holdout-1, holdout-2, ...) and the node -> split map is persisted (experiments/v3/
+graph_splits.json), so assignments survive graph growth. A walk never leaves its split, so two
+splits never share a scene node. Proposed domains are also deduplicated by
 3-gram similarity against the development families, any excluded names and each other.
 
     python -m env_factory_v3 domains --count 12 --split holdout-4 --output domains.json
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import random
 import re
@@ -56,36 +56,55 @@ def similarity(a, b):
 
 
 class SceneGraph:
-    """Scene nodes and undirected edges, with components assigned to splits."""
+    """Scene nodes, same-event edges (the edges walks follow) and a persisted node -> split map.
 
-    def __init__(self, nodes, event_edges, hierarchy_edges):
+    Components are taken over same-event edges, so no single component dominates. Splits are
+    balanced greedily by node count, largest components first. The assignment is persisted per
+    node, so a node never changes split when the graph grows: new nodes follow the majority of
+    their component's assigned nodes, or go to the smallest split. Walks only step to neighbours
+    in the same split, so two splits never share a scene node.
+    """
+
+    def __init__(self, nodes, event_edges, hierarchy_edges=(), splits=None):
         self.names = dict(nodes)  # id -> name
         self.event = {node: set() for node in self.names}
         for a, b in event_edges:
-            if a in self.event and b in self.event:
+            if a in self.event and b in self.event and a != b:
                 self.event[a].add(b)
                 self.event[b].add(a)
-        linked = {node: set(near) for node, near in self.event.items()}
-        for a, b in hierarchy_edges:
-            if a in linked and b in linked:
-                linked[a].add(b)
-                linked[b].add(a)
         self.component = {}
         for start in sorted(self.names):
             if start in self.component:
                 continue
-            stack, members = [start], []
+            stack = [start]
             self.component[start] = start
             while stack:
                 node = stack.pop()
-                members.append(node)
-                for near in linked[node]:
+                for near in self.event[node]:
                     if near not in self.component:
                         self.component[near] = start
                         stack.append(near)
+        self.split = {}
+        self.assign(splits)
+
+    def assign(self, known=None):
+        """Keep `known` ({node: split}); place the rest by component, balancing split sizes."""
+        self.split = {node: split for node, split in (known or {}).items() if node in self.names and split in SPLITS}
+        members = {}
+        for node, root in self.component.items():
+            members.setdefault(root, []).append(node)
+        size = {split: sum(1 for s in self.split.values() if s == split) for split in SPLITS}
+        for root, group in sorted(members.items(), key=lambda item: (-len(item[1]), item[0])):
+            placed = [self.split[n] for n in group if n in self.split]
+            target = max(set(placed), key=placed.count) if placed else min(SPLITS, key=lambda s: (size[s], s))
+            for node in group:
+                if node not in self.split:
+                    self.split[node] = target
+                    size[target] += 1
+        return self.split
 
     @classmethod
-    def from_neo4j(cls, uri, user, password, database='neo4j'):
+    def from_neo4j(cls, uri, user, password, database='neo4j', splits_path=None):
         from neo4j import GraphDatabase
         driver = GraphDatabase.driver(uri, auth=(user, password))
         try:
@@ -94,33 +113,38 @@ class SceneGraph:
                     'MATCH (n:Scene) RETURN n.id AS id, n.name AS name')]
                 event = [(r['a'], r['b']) for r in session.run(
                     'MATCH (a:Scene)-[:SAME_EVENT_ELEMENT]-(b:Scene) RETURN a.id AS a, b.id AS b')]
-                hierarchy = [(r['a'], r['b']) for r in session.run(
-                    'MATCH (a:Scene)-[:HIERARCHY]-(b:Scene) RETURN a.id AS a, b.id AS b')]
         finally:
             driver.close()
-        return cls(nodes, event, hierarchy)
+        known = json.loads(open(splits_path, encoding='utf-8').read()) if splits_path and _exists(splits_path) else None
+        graph = cls(nodes, event, splits=known)
+        if splits_path:
+            with open(splits_path, 'w', encoding='utf-8') as handle:
+                json.dump(dict(sorted(graph.split.items())), handle, ensure_ascii=False, indent=0)
+        return graph
 
     def split_of(self, node):
-        """Stable split of a node's component."""
-        root = self.component[node]
-        return SPLITS[int(hashlib.sha256(str(root).encode()).hexdigest(), 16) % len(SPLITS)]
+        return self.split[node]
 
     def nodes_in(self, split):
-        return sorted(node for node in self.names if self.split_of(node) == split)
+        return sorted(node for node in self.names if self.split[node] == split)
 
     def path(self, rng, split, hops):
-        """A random walk of up to `hops` event edges without revisits, inside one split."""
+        """A random walk of up to `hops` same-event edges without revisits, inside one split."""
         pool = self.nodes_in(split)
         if not pool:
             raise ValueError(f'no scene nodes in split {split}')
-        node = rng.choice(pool)
-        walk = [node]
+        walk = [rng.choice(pool)]
         for _ in range(hops):
-            options = sorted(self.event[walk[-1]] - set(walk))
+            options = sorted(n for n in self.event[walk[-1]] - set(walk) if self.split[n] == split)
             if not options:
                 break
             walk.append(rng.choice(options))
         return walk
+
+
+def _exists(path):
+    import os
+    return os.path.exists(path)
 
 
 def propose(graph, client, count, *, split, seed=0, hops=2, exclude=(), max_attempts=None):
