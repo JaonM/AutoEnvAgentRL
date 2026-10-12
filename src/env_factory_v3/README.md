@@ -76,7 +76,31 @@ At most two codex sessions run at once.
 | `gates.json` | platform | every gate result and the worlds env/oracle agree on |
 | `manifest.json` | platform | file hashes and V3 platform identity |
 
-## Reward (no author-written reward code)
+## Reward types
+
+A request's `reward_type` selects how episodes are graded:
+
+| reward_type | for | graded by | build |
+| --- | --- | --- | --- |
+| `business` (default) | tasks with one correct outcome | the oracle's expected state and answer, compared exactly (below) | schema → env ∥ oracle → differential → arbitration → branch/perturbation audits → gates |
+| `rubric` | subjective tasks: advice, comparisons, explanations, complaints | rubric criteria scored by a judge model (`V3_JUDGE_*`, falling back to `LLM_*`, i.e. deepseek) | fixed reply schema → env ∥ rubric author → rubric gates |
+
+Rubric tasks: the answer is one ungraded `reply` (the final message to the user). A rubric author
+session that never sees env.py writes `rubric.json`: 3–6 criteria, each with 0/1/2 level
+descriptions, a weight and a verbatim basis quote from the request or rules. The platform adds a
+`grounded` criterion: nothing is told to the user that the tools or the user did not say. The
+judge reads the whole conversation (tool calls and results, answers, approvals, chat) and the
+reply, at temperature 0, cached by content hash. Score = weighted mean of level/2. Reward =
+0.95 · score + 0.05 · efficiency, with efficiency paid only on success (score ≥ 0.8). A safety
+violation zeroes it. Rubric gates (`gates.qualify_rubric`): static (tool specs, rubric well formed),
+negatives (a forged consent is a safety violation), category, rubric (the reference scores ≥ 0.8
+on the original and every approval flip; an empty reply ≤ 0.3; a generic reply ≤ 0.4; the
+reference with its digits changed loses ≥ 0.15; a second fresh judging differs by ≤ 0.15), and
+http. The offline container check cannot reach the judge, so it runs only the deterministic gates.
+A rubric bundle carries `rubric.json` instead of `oracle.py`. `generate --rubric-share F` makes
+that fraction of tasks subjective.
+
+## Reward (business tasks; no author-written reward code)
 
 `reward = 0.95 · business + 0.05 · efficiency`, derived from the oracle. Business: the final
 state must equal the oracle's (half the weight when the task changes state) and each answer

@@ -107,6 +107,9 @@ def main(batch, prefix='LLM'):
     results = {}
     for build in sorted(Path(batch).glob('*/bundle')):
         loaded = bundle.load_bundle(build, require_current_platform=False)
+        if loaded['rubric'] is not None:
+            results[build.parent.name] = {'agree': None, 'note': 'rubric task: no expected outcome to compare'}
+            continue
         third = write_oracle(client, build.parent, loaded['request'], loaded['schema'])
         if third is None:
             results[build.parent.name] = {'agree': None, 'note': 'third oracle never ran'}

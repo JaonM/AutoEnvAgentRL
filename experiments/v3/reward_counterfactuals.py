@@ -71,6 +71,8 @@ def evaluate(folder):
     # Measures the current reward function on the bundle's logic; the platform signature is
     # irrelevant here (qualification is checked elsewhere).
     loaded = bundle.load_bundle(folder, require_current_platform=False)
+    if loaded['rubric'] is not None:
+        return {'skipped': 'rubric task: the judge is measured by the rubric gate probes, not by exact counterfactuals'}
     request, schema = loaded['request'], loaded['schema']
     served = set(loaded['valid_worlds'])
     start = request['time']['start']

@@ -16,6 +16,8 @@ import json
 from pathlib import Path
 
 CATEGORIES = ('direct_response', 'simple_agentic', 'multi_step_agentic')
+# business: one correct outcome, graded exactly against the oracle; rubric: subjective, graded by criteria.
+REWARD_TYPES = ('business', 'rubric')
 REQUIRED = ('id', 'family', 'category', 'title', 'user_request', 'business_rules', 'tables', 'user_facts')
 
 
@@ -55,6 +57,8 @@ def validate(request):
                 and any(r.get('id') == event.get('row_id') for r in tables[event['table']])):
             problems.append(f'scheduled event {event.get("id") if isinstance(event, dict) else event} needs id, '
                             'integer at, an existing table and row_id, and a set object')
+    if request.get('reward_type', 'business') not in REWARD_TYPES:
+        problems.append(f'reward_type must be one of {REWARD_TYPES}')
     clarifications = request.get('clarifications', [])
     if not (isinstance(clarifications, list) and all(isinstance(c, str) and c.strip() for c in clarifications)):
         problems.append('clarifications must be a list of nonempty texts')
@@ -130,6 +134,10 @@ Category: {request['category']}
 ## Virtual time
 {clock}
 """
+    if request.get('reward_type') == 'rubric':
+        text += ('\n## Grading\nSubjective task: there is no single correct reply. The conversation and the final '
+                 'reply are graded against rubric criteria (each grounded in the request or the rules) and against '
+                 'being grounded in what the tools and the user actually said.\n')
     if schema is not None:
         text += '\n## Answer schema (answer_schema.json)\n```json\n' + json.dumps(schema, ensure_ascii=False, indent=2) + '\n```\n'
     return text

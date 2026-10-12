@@ -68,8 +68,9 @@ def check_schema(schema):
 
     for name, spec in schema['fields'].items():
         problems += spec_problems(name, spec, True)
-    if schema['fields'] and not any(spec.get('graded', True) for spec in schema['fields'].values()
-                                    if isinstance(spec, dict)):
+    # The rubric reply schema ({"reply": ungraded}) is the one schema with nothing graded exactly.
+    if (schema['fields'] and set(schema['fields']) != {'reply'}
+            and not any(spec.get('graded', True) for spec in schema['fields'].values() if isinstance(spec, dict))):
         problems.append('at least one field must be graded')
     return problems
 

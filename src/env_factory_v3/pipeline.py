@@ -16,15 +16,16 @@ import time
 import traceback
 from pathlib import Path
 
-from env_factory_v3 import answers, branches, bundle, checks, gates, perturbations, prompts, spec
+from env_factory_v3 import answers, branches, bundle, checks, gates, perturbations, prompts, rubric, spec
 from env_factory_v3.codex import InfrastructureError
 from env_factory_v3.sandbox import load_module
 
-DEFAULT_TIMEOUTS = {'schema': 240, 'author': 720, 'oracle': 600, 'arbiter': 600, 'audit': 300, 'perturbation_audit': 300, 'repair': 600}
+DEFAULT_TIMEOUTS = {'schema': 240, 'author': 720, 'oracle': 600, 'rubric_author': 400, 'arbiter': 600, 'audit': 300,
+                    'perturbation_audit': 300, 'repair': 600}
 
 
 class Build:
-    def __init__(self, request, output, *, runner, repairs=2, perturbed=20, timeouts=None, python=None):
+    def __init__(self, request, output, *, runner, repairs=2, perturbed=20, timeouts=None, python=None, judge=None):
         self.request, self.output = request, Path(output).resolve()
         self.runner, self.budget, self.perturbed = runner, repairs, perturbed
         self.timeouts = {**DEFAULT_TIMEOUTS, **(timeouts or {})}
@@ -33,6 +34,7 @@ class Build:
                        'stages': {}, 'calls': [], 'repairs_used': 0, 'training_ready': False}
         self.started = time.monotonic()
         self.excluded = []
+        self._judge = judge  # rubric tasks only; created from V3_JUDGE_* / LLM_* when needed
 
     # -- helpers ------------------------------------------------------------------
     def save(self):
@@ -85,6 +87,8 @@ class Build:
         return result
 
     def _run(self):
+        if self.request.get('reward_type') == 'rubric':
+            return self._run_rubric()
         folder = self.workdir('schema')
         self.call(folder, prompts.SCHEMA, 'schema')
         report = checks.run('schema', folder)
@@ -146,7 +150,7 @@ class Build:
             if checks.run('env', arbiter)['passed'] and checks.run('diff', arbiter)['passed']:
                 report = self.qualify(arbiter, schema)
         if not report['passed']:
-            failed = [g for g in ('static', 'differential', 'negatives', 'category', 'http') if not report[g]['passed']]
+            failed = [g for g in gates.gate_names(report) if not report[g]['passed']]
             return self.fail('gates', f'failed gates: {failed}')
         manifest = bundle.export(arbiter, self.output / 'request.json', report, self.output / 'bundle',
                                  status={'training_ready': True, 'policy_gate': 'not_run'})
@@ -233,13 +237,66 @@ class Build:
             self.stage('perturbation_audit', excluded_worlds=sorted(drop))
         return None
 
+    def _run_rubric(self):
+        """Subjective task: env.py and an independently written rubric, qualified by the judge."""
+        schema = rubric.SCHEMA
+        author, critic = self.workdir('author', schema), self.workdir('rubric', schema)
+        with concurrent.futures.ThreadPoolExecutor(2) as pool:
+            futures = [pool.submit(self.call, author, prompts.AUTHOR + prompts.AUTHOR_RUBRIC, 'author'),
+                       pool.submit(self.call, critic, prompts.RUBRIC_AUTHOR, 'rubric_author')]
+            for future in futures:
+                future.result()
+        for role, folder_, template, kind in (('env', author, prompts.AUTHOR + prompts.AUTHOR_RUBRIC, 'author'),
+                                               ('rubric', critic, prompts.RUBRIC_AUTHOR, 'rubric_author')):
+            report = checks.run(role, folder_)
+            if not report['passed'] and self.spend():
+                retry = template + f'\nA previous attempt in this folder failed its check; read check-{role}.json first.\n'
+                self.call(folder_, retry, kind)
+                report = checks.run(role, folder_)
+            self.stage(role, passed=report['passed'], problems=report['problems'][:5])
+            if not report['passed']:
+                return self.fail('generation', f'{role} failed its self-check')
+        final = self.workdir('final', schema, copy_from=(author / 'env.py', critic / 'rubric.json'))
+        report = self.qualify_rubric(final)
+        if not report['passed'] and self.spend():
+            (final / 'gate_report.json').write_text(json.dumps(
+                {g: report[g] for g in gates.gate_names(report) if not report[g]['passed']},
+                ensure_ascii=False, indent=1, default=str))
+            self.call(final, prompts.REPAIR, 'repair')  # env.py only: the rubric stays independent
+            if checks.run('env', final)['passed']:
+                report = self.qualify_rubric(final)
+        if not report['passed']:
+            failed = [g for g in gates.gate_names(report) if not report[g]['passed']]
+            return self.fail('gates', f'failed gates: {failed}')
+        manifest = bundle.export(final, self.output / 'request.json', report, self.output / 'bundle',
+                                 status={'training_ready': True, 'policy_gate': 'not_run', 'reward_type': 'rubric'})
+        self.status.update(training_ready=True, bundle=str(self.output / 'bundle'),
+                           bundle_files=manifest['files'], failure_class=None)
+        self.save()
+        return self.status
+
+    def qualify_rubric(self, folder):
+        env = load_module(folder / 'env.py', role='env')
+        spec_ = json.loads((folder / 'rubric.json').read_text())
+        started = time.monotonic()
+        report = gates.qualify_rubric(env, spec_, rubric.SCHEMA, self.request, judge=self.judge())
+        self.stage('gates', seconds=round(time.monotonic() - started, 1),
+                   **{g: report[g]['passed'] for g in gates.gate_names(report)},
+                   rubric_detail={k: report['rubric'].get(k) for k in ('checks', 'reference_scores', 'probe_scores')})
+        return report
+
+    def judge(self):
+        if self._judge is None:
+            self._judge = bundle.default_judge()
+        return self._judge
+
     def qualify(self, folder, schema):
         env = load_module(folder / 'env.py', role='env')
         oracle = load_module(folder / 'oracle.py', role='oracle')
         started = time.monotonic()
         report = gates.qualify(env, oracle, schema, self.request, perturbed=self.perturbed, excluded=self.excluded)
         self.stage('gates', seconds=round(time.monotonic() - started, 1),
-                   **{g: report[g]['passed'] for g in ('static', 'differential', 'negatives', 'category', 'http')},
+                   **{g: report[g]['passed'] for g in gates.gate_names(report)},
                    negatives_detail=report['negatives'].get('checks'), category_detail=report['category'])
         return report
 

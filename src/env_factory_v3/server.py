@@ -30,13 +30,18 @@ from env_factory_v3.worlds import variants
 
 class Service:
     def __init__(self, env, oracle, schema, request, *, valid_worlds=None, perturbed=20, user_mode='structured',
-                 user_client=None):
+                 user_client=None, rubric=None, judge=None):
         if user_mode not in ('structured', 'natural'):
             raise ValueError(f'unknown user mode {user_mode}')
         if user_mode == 'natural' and user_client is None:
             raise ValueError('natural user mode needs a user simulator client')
         self.env, self.oracle, self.schema, self.request = env, oracle, schema, request
         self.user_mode, self.user_client = user_mode, user_client
+        # business: graded exactly against the oracle; rubric: graded by criteria and a judge model.
+        self.reward_type = request.get('reward_type', 'business')
+        if self.reward_type == 'rubric' and rubric is None:
+            raise ValueError('a rubric task needs its rubric')
+        self.rubric, self._judge = rubric, judge
         if user_mode == 'natural':
             from env_factory_v3.gates import approval_problems
             problems = approval_problems(env, request)
@@ -72,7 +77,8 @@ class Service:
             raise KeyError(f'unknown world {name}')
         data, facts = self.worlds[name]
         start = self.request['time']['start']
-        expected = self.oracle.expected(copy.deepcopy(data), copy.deepcopy(facts), start)
+        expected = (self.oracle.expected(copy.deepcopy(data), copy.deepcopy(facts), start)
+                    if self.reward_type == 'business' else None)
         episode = Episode(self.env.make_tools(), data, facts, start=start)
         identifier = uuid.uuid4().hex
         record = {'episode': episode, 'expected': expected, 'world': name, 'data': data, 'facts': facts}
@@ -157,10 +163,23 @@ class Service:
             data, facts = self.worlds[record['world']]
             reference_calls = run_reference(self.env, data, facts, start=self.request['time']['start'])['tool_calls']
             record['reference_calls'] = reference_calls
-        grade = reward.grade(episode.result(), record['expected'], self.schema,
-                             initial=record['data'], reference_calls=reference_calls)
-        grade.pop('state_diff', None)
-        return {**grade, 'world': record['world']}
+        if self.reward_type == 'rubric':
+            from env_factory_v3 import rubric
+            grade = rubric.grade(episode.result(), self.rubric, self.request, record['facts'], self.judge(),
+                                 reference_calls=reference_calls)
+        else:
+            grade = reward.grade(episode.result(), record['expected'], self.schema,
+                                 initial=record['data'], reference_calls=reference_calls)
+            grade.pop('state_diff', None)
+        return {**grade, 'world': record['world'], 'reward_type': self.reward_type}
+
+    def judge(self):
+        """The rubric judge, created on first use from V3_JUDGE_* (falling back to LLM_*)."""
+        if self._judge is None:
+            from env_factory_v3.llm import ChatClient
+            from env_factory_v3.rubric import Judge
+            self._judge = Judge(ChatClient('V3_JUDGE'))
+        return self._judge
 
 
 def make_handler(service, token=None):
@@ -249,9 +268,10 @@ class HttpAPI:
         return self._step({'type': 'wait', 'seconds': seconds})
 
 
-def replay_check(env, oracle, schema, request):
-    """G5: the reference through the real HTTP API earns the same full reward."""
-    service = Service(env, oracle, schema, request)
+def replay_check(env, oracle, schema, request, *, rubric=None, judge=None):
+    """G5: the reference through the real HTTP API earns the same full reward (a passing rubric
+    score for rubric tasks)."""
+    service = Service(env, oracle, schema, request, rubric=rubric, judge=judge)
     server = start(service)
     try:
         base = f'http://127.0.0.1:{server.server_address[1]}'
@@ -265,8 +285,8 @@ def replay_check(env, oracle, schema, request):
         session._step({'type': 'answer', 'answer': answer})
         grade = session._post('/reward', {'episode': session.episode})
         leaked = '"user_facts"' in json.dumps(reset['instructions'], ensure_ascii=False)
-        return {'passed': grade.get('success') is True and grade.get('reward') == 1.0 and not leaked,
-                'reward': grade.get('reward'), 'instructions_leak_private': leaked}
+        full = grade.get('success') is True and (grade.get('reward') == 1.0 or rubric is not None)
+        return {'passed': full and not leaked, 'reward': grade.get('reward'), 'instructions_leak_private': leaked}
     finally:
         server.shutdown()
         server.server_close()

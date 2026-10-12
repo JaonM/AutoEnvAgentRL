@@ -213,9 +213,9 @@ Do not read or write files outside this folder. End with a two-line summary of t
 REQUEST_AUTHOR = """You design one new business task for training customer-facing agents. Business domain:
 {domain}. {detail}
 Write request.json in this folder (assignment.json repeats the assignment):
-{{"id": "{id}", "family": "<short domain slug>", "category": "{category}", "title": "<short Chinese title>",
-  "user_request": "...", "business_rules": "...", "tables": {{...}}, "user_facts": {{...}},
-  "time": {{"start": 10, "tick": 0}}}}
+{{"id": "{id}", "family": "<short domain slug>", "category": "{category}", "reward_type": "{reward_type}",
+  "title": "<short Chinese title>", "user_request": "...", "business_rules": "...", "tables": {{...}},
+  "user_facts": {{...}}, "time": {{"start": 10, "tick": 0}}}}
 
 Task shape: {shape}
 
@@ -240,6 +240,35 @@ Task shape: {shape}
 
 Run `{python} -m env_factory_v3.checks request` until it prints PASS. Do not read or write
 files outside this folder. End with one line: the title.
+"""
+
+AUTHOR_RUBRIC = """
+This is a subjective task graded by a rubric, not by a fixed expected answer: answer_schema.json
+has a single "reply" field, the final message to the user. reference(api) must gather what the
+request needs through the tools (and the user), then return {{"reply": "<the message a skilled
+assistant would send>"}}: built from the tool results and the user's facts (so it changes with
+the data), in the user's language, addressing everything the user asked for, and stating only
+what the tools and the user actually said.
+"""
+
+RUBRIC_AUTHOR = """You define how a subjective business task is graded. Read brief.md (data.json and facts.json
+hold the initial tables and the user's private facts). You never see the implementation.
+
+Write rubric.json: {{"criteria": [{{"id": "<snake_case>", "weight": 1-5, "description": "...",
+  "levels": {{"0": "...", "1": "...", "2": "..."}}, "basis": "<exact text from brief.md>"}}]}}
+- 3 to 6 criteria covering what makes the reply and the conversation good for THIS request:
+  what the user asked to learn or decide, the business rules the reply must respect or explain,
+  asking for missing information instead of assuming, explaining refusals or trade-offs.
+- Each criterion is observable in the conversation (tool calls, what was asked, what was told);
+  levels describe concrete behaviour, not adjectives ("states the refund amount and why", not
+  "good explanation"). Weight what matters most to the user higher.
+- basis: copied verbatim from the "User request" or "Business rules" section of brief.md, the
+  text that makes the criterion matter.
+- Do not add a criterion about factual accuracy: the platform always adds a "grounded" criterion.
+  Do not grade wording style unless the request asks for it.
+
+Run `{python} -m env_factory_v3.checks rubric` until it prints PASS. Do not read or write files
+outside this folder. End with one line naming the criteria.
 """
 
 REPAIR = """The environment in this folder failed qualification. gate_report.json lists the

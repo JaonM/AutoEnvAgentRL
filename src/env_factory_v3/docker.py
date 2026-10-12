@@ -65,7 +65,7 @@ def build(folder, *, base_image=BASE_IMAGE):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(path, target)
         (context / 'bundle').mkdir()
-        for name in (*bundle.FILES, 'manifest.json'):
+        for name in (*bundle.load_bundle(folder)['manifest']['files'], 'manifest.json'):
             shutil.copyfile(folder / name, context / 'bundle' / name)
         (context / 'Dockerfile').write_text(DOCKERFILE.format(base=base_image))
         docker('build', '--tag', tag, str(context))
@@ -102,11 +102,13 @@ def run(folder, *, user_mode='structured', token=None, timeout=30):
     simulator's provider settings by name (values never appear in argv)."""
     image = image_for(folder)
     extra, command = [], []
-    if user_mode == 'natural':
-        for prefix in ('V3_USER', 'LLM'):
+    rubric = (Path(folder) / 'rubric.json').exists()  # the judge grades rubric episodes inside the container
+    if user_mode == 'natural' or rubric:
+        for prefix in ('V3_USER', 'V3_JUDGE', 'LLM'):
             for name in ('API_KEY', 'BASE_URL', 'MODEL'):
                 if os.environ.get(f'{prefix}_{name}'):
                     extra += ['--env', f'{prefix}_{name}']
+    if user_mode == 'natural':
         command = ['python', '-m', 'env_factory_v3', 'serve', '/bundle', '--host', '0.0.0.0', '--port', str(PORT),
                    '--user-mode', 'natural']
     if token:

@@ -64,8 +64,8 @@ class V3Episode:
         if self.user_mode == 'natural':
             from env_factory_v3.llm import ChatClient
             user = ChatClient('V3_USER')
-        self.service = server.Service(loaded['env'], loaded['oracle'], loaded['schema'], loaded['request'],
-                                      valid_worlds=loaded['valid_worlds'], user_mode=self.user_mode, user_client=user)
+        from env_factory_v3 import bundle
+        self.service = bundle.service(loaded, user_mode=self.user_mode, user_client=user)
         self.server = server.start(self.service, token=self.token)
         return f'http://127.0.0.1:{self.server.server_address[1]}'
 

@@ -12,6 +12,12 @@ from env_factory_v3.spec import load
 
 PACKAGE_ROOT = Path(__file__).parent
 FILES = ('request.json', 'answer_schema.json', 'env.py', 'oracle.py', 'gates.json')
+RUBRIC_FILES = ('request.json', 'answer_schema.json', 'env.py', 'rubric.json', 'gates.json')
+
+
+def files_for(request):
+    """Business bundles carry the oracle; rubric bundles carry the rubric instead."""
+    return RUBRIC_FILES if request.get('reward_type') == 'rubric' else FILES
 
 
 def sha256(path):
@@ -31,13 +37,15 @@ def export(source_folder, request_path, report, destination, *, status):
     destination = Path(destination)
     destination.mkdir(parents=True)
     shutil.copy(request_path, destination / 'request.json')
-    for name in ('answer_schema.json', 'env.py', 'oracle.py'):
-        shutil.copy(Path(source_folder) / name, destination / name)
+    names = files_for(json.loads(Path(request_path).read_text()))
+    for name in names:
+        if name not in ('request.json', 'gates.json'):
+            shutil.copy(Path(source_folder) / name, destination / name)
     slim = {key: value for key, value in report.items() if key != 'worlds'}
     slim['worlds'] = [{k: w.get(k) for k in ('world', 'status', 'reward')} for w in report.get('worlds', [])]
     (destination / 'gates.json').write_text(json.dumps(slim, ensure_ascii=False, indent=1, default=str))
     manifest = {'version': 'v3-m1', 'platform_identity': platform_identity(),
-                'files': {name: sha256(destination / name) for name in FILES}, 'status': status}
+                'files': {name: sha256(destination / name) for name in names}, 'status': status}
     (destination / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=1))
     return manifest
 
@@ -51,12 +59,39 @@ def load_bundle(folder, *, require_current_platform=True):
     if require_current_platform and manifest['platform_identity'] != platform_identity():
         raise ValueError('bundle was qualified on a different V3 platform; requalify it with `verify`')
     gates_report = json.loads((folder / 'gates.json').read_text())
+    rubric = 'rubric.json' in manifest['files']
     return {'request': load(folder / 'request.json'),
             'schema': answers.load_schema(folder / 'answer_schema.json'),
             'env': load_module(folder / 'env.py', role='env'),
-            'oracle': load_module(folder / 'oracle.py', role='oracle'),
+            'oracle': None if rubric else load_module(folder / 'oracle.py', role='oracle'),
+            'rubric': json.loads((folder / 'rubric.json').read_text()) if rubric else None,
             'valid_worlds': gates_report.get('valid_worlds') or ['original'],
             'manifest': manifest, 'gates': gates_report}
+
+
+def default_judge():
+    from env_factory_v3.llm import ChatClient, load_env_file
+    from env_factory_v3.rubric import Judge
+    load_env_file()
+    return Judge(ChatClient('V3_JUDGE'))
+
+
+def qualify_loaded(loaded, *, judge='auto'):
+    """Every gate for a loaded bundle of either reward type. judge=None skips the judge-based
+    rubric gates (offline container check)."""
+    from env_factory_v3 import gates
+    if loaded['rubric'] is not None:
+        return gates.qualify_rubric(loaded['env'], loaded['rubric'], loaded['schema'], loaded['request'],
+                                    judge=default_judge() if judge == 'auto' else judge)
+    return gates.qualify(loaded['env'], loaded['oracle'], loaded['schema'], loaded['request'],
+                         excluded=loaded['gates'].get('excluded_worlds') or [])
+
+
+def service(loaded, **options):
+    """The episode service for a loaded bundle (rubric bundles grade with the judge)."""
+    from env_factory_v3 import server
+    return server.Service(loaded['env'], loaded['oracle'], loaded['schema'], loaded['request'],
+                          valid_worlds=loaded['valid_worlds'], rubric=loaded['rubric'], **options)
 
 
 def requalify(folder):
@@ -65,18 +100,16 @@ def requalify(folder):
     Changing any V3 platform file invalidates every bundle (load_bundle refuses a different
     platform identity); this is the only way back, and it never skips a gate.
     """
-    from env_factory_v3 import gates
     folder = Path(folder)
     loaded = load_bundle(folder, require_current_platform=False)
-    excluded = loaded['gates'].get('excluded_worlds') or []
-    report = gates.qualify(loaded['env'], loaded['oracle'], loaded['schema'], loaded['request'], excluded=excluded)
+    report = qualify_loaded(loaded)
     if report['passed']:
         slim = {key: value for key, value in report.items() if key != 'worlds'}
         slim['worlds'] = [{k: w.get(k) for k in ('world', 'status', 'reward')} for w in report.get('worlds', [])]
         (folder / 'gates.json').write_text(json.dumps(slim, ensure_ascii=False, indent=1, default=str))
         manifest = loaded['manifest']
         manifest.update(platform_identity=platform_identity(),
-                        files={name: sha256(folder / name) for name in FILES})
+                        files={name: sha256(folder / name) for name in files_for(loaded['request'])})
         manifest.setdefault('requalified', []).append(manifest['platform_identity'])
         (folder / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=1))
     return report

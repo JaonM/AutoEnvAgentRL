@@ -87,8 +87,7 @@ def gate(folder, client, *, k=4, parallel=4, max_turns=30, user_mode='structured
     """k episodes on the bundle's served worlds; passes when at least one succeeds."""
     folder = Path(folder)
     loaded = bundle.load_bundle(folder)
-    service = server.Service(loaded['env'], loaded['oracle'], loaded['schema'], loaded['request'],
-                             valid_worlds=loaded['valid_worlds'], user_mode=user_mode, user_client=user_client)
+    service = bundle.service(loaded, user_mode=user_mode, user_client=user_client)
     httpd = server.start(service)
     base_url = f'http://127.0.0.1:{httpd.server_address[1]}'
     worlds = [service.order[i % len(service.order)] for i in range(k)]

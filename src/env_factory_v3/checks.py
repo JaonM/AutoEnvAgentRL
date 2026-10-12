@@ -5,6 +5,7 @@
     python -m env_factory_v3.checks oracle   # oracle.py loads and returns schema-valid results on all worlds
     python -m env_factory_v3.checks diff     # env.py and oracle.py agree everywhere (arbiter)
     python -m env_factory_v3.checks request  # a generated request.json is valid and reads naturally
+    python -m env_factory_v3.checks rubric   # rubric.json criteria are well formed and grounded
 
 Prints PASS/FAIL and exits 0 only on PASS. Results also go to check-<kind>.json.
 """
@@ -135,13 +136,26 @@ def check_diff(folder):
     return problems, notes
 
 
+def check_rubric(folder):
+    from env_factory_v3 import rubric
+    path = folder / 'rubric.json'
+    if not path.exists():
+        return ['rubric.json is missing'], []
+    try:
+        spec_ = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        return [f'rubric.json is not JSON: {exc}'], []
+    problems = rubric.check_rubric(spec_, load(folder / 'request.json'))
+    return problems, [f"criteria: {[c.get('id') for c in spec_.get('criteria', []) if isinstance(c, dict)]}"]
+
+
 def check_request(folder):
     from env_factory_v3.generate import check_request as generated
     return generated(folder)
 
 
 KINDS = {'schema': check_schema, 'env': check_env, 'oracle': check_oracle, 'diff': check_diff,
-         'request': check_request}
+         'request': check_request, 'rubric': check_rubric}
 
 
 def run(kind, folder):

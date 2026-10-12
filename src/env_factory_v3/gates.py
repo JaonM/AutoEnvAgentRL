@@ -19,8 +19,8 @@ import copy
 import traceback
 
 from env_factory_v3 import answers, reward
-from env_factory_v3.runtime import (BusinessError, InvalidWorld, canonical, is_write, run_policy, run_reference,
-                                    tool_spec_problems)
+from env_factory_v3.runtime import (BusinessError, Episode, InvalidWorld, canonical, is_write, run_policy,
+                                    run_reference, tool_spec_problems)
 from env_factory_v3.worlds import state_diff, variants
 
 
@@ -254,7 +254,80 @@ def qualify(env, oracle, schema, request, *, perturbed=20, http=True, excluded=(
         report['http'] = replay_check(env, oracle, schema, request)
     else:
         report['http'] = {'passed': False, 'note': 'not run'}
-    report['policy'] = {'status': 'not_run', 'note': 'frontier pass@k and adversarial agent arrive in M2'}
-    report['passed'] = all(report[g]['passed'] for g in ('static', 'differential', 'negatives', 'category', 'http'))
+    report['policy'] = {'status': 'not_run', 'note': 'run `policy BUNDLE` (independent model, k episodes)'}
+    report['gate_names'] = list(BUSINESS_GATES)
+    report['passed'] = all(report[g]['passed'] for g in BUSINESS_GATES)
     report['worlds'] = worlds
+    return report
+
+
+BUSINESS_GATES = ('static', 'differential', 'negatives', 'category', 'http')
+RUBRIC_GATES = ('static', 'rubric', 'negatives', 'category', 'http')
+EMPTY_REPLY, GENERIC_REPLY = '', '好的，已经帮您处理好了，还有其他需要吗？'
+
+
+def gate_names(report):
+    return report.get('gate_names') or list(BUSINESS_GATES)
+
+
+def _fabricate(reply):
+    """The reference reply with every digit changed: a reply that misquotes the facts."""
+    return ''.join(str((int(c) + 3) % 10) if c.isdigit() else c for c in reply)
+
+
+def qualify_rubric(env, rubric_spec, schema, request, *, judge=None, http=True):
+    """Gates for a rubric task. Without a judge (offline container check) only the deterministic
+    gates run; the judge-based ones were passed at build time."""
+    from env_factory_v3 import rubric as rubric_mod
+    start = request['time']['start']
+    tool_problems = tool_spec_problems(env.make_tools())
+    rubric_problems = rubric_mod.check_rubric(rubric_spec, request)
+    approval = approval_problems(env, request)
+    report = {'static': {'passed': not tool_problems and not rubric_problems, 'tool_problems': tool_problems[:10],
+                         'rubric_problems': rubric_problems[:10]},
+              'natural': {'passed': not approval, 'approval_problems': approval}, 'excluded_worlds': []}
+    worlds = variants(request['tables'], request['user_facts'], perturbed=0)
+    runs = {name: run_reference(env, data, facts, start=start) for name, data, facts in worlds}
+    facts_of = {name: facts for name, _, facts in worlds}
+    forged = Episode(env.make_tools(), request['tables'], request['user_facts'], start=start)
+    try:
+        env.reference(_Wrapped(forged, 'forged'))
+    except Exception:  # the forged write is rejected; the violation is what matters
+        pass
+    writes = any(e.get('write') for e in runs['original']['trace'])
+    report['negatives'] = {'passed': not writes or forged.safety_violations > 0,
+                           'checks': {'forged_consent': {'applicable': writes,
+                                                         'safety_violations': forged.safety_violations}}}
+    report['category'] = category(request, env)
+    if judge is None:
+        report['rubric'] = {'passed': True, 'note': 'not run offline: needs the judge model (passed at build time)'}
+        report['http'] = {'passed': True, 'note': 'not run offline: grading needs the judge model'}
+        report['valid_worlds'] = [name for name, _, _ in worlds]
+    else:
+        score = lambda name, reply, **kw: judge.score(request, rubric_spec, rubric_mod.transcript(
+            runs[name], facts_of[name]), reply, **kw)['score']
+        reply = lambda name: (runs[name]['answer'] or {}).get('reply') or ''
+        references = {name: score(name, reply(name)) for name in runs}
+        original = reply('original')
+        probes = {'empty': score('original', EMPTY_REPLY), 'generic': score('original', GENERIC_REPLY),
+                  'fabricated': score('original', _fabricate(original)) if any(c.isdigit() for c in original)
+                  else None,
+                  'repeat': score('original', original, fresh=True)}
+        good = [name for name, value in references.items() if value >= rubric_mod.PASS]
+        checks = {'references_pass': references.get('original', 0) >= rubric_mod.PASS and len(good) == len(references),
+                  'empty_low': probes['empty'] <= 0.3, 'generic_low': probes['generic'] <= 0.4,
+                  'fabricated_lower': probes['fabricated'] is None
+                  or probes['fabricated'] <= references['original'] - 0.15,
+                  'stable': abs(probes['repeat'] - references['original']) <= 0.15}
+        report['rubric'] = {'passed': all(checks.values()), 'checks': checks, 'reference_scores': references,
+                            'probe_scores': probes}
+        report['valid_worlds'] = good
+        if http and report['rubric']['passed']:
+            from env_factory_v3.server import replay_check
+            report['http'] = replay_check(env, None, schema, request, rubric=rubric_spec, judge=judge)
+        else:
+            report['http'] = {'passed': False, 'note': 'not run'}
+    report['policy'] = {'status': 'not_run', 'note': 'run `policy BUNDLE` (independent model, k episodes)'}
+    report['gate_names'] = list(RUBRIC_GATES)
+    report['passed'] = all(report[g]['passed'] for g in RUBRIC_GATES)
     return report

@@ -68,6 +68,8 @@ def main(argv=None):
     p.add_argument('--count', type=int, required=True)
     p.add_argument('--output', required=True)
     p.add_argument('--parallel', type=int, default=2)
+    p.add_argument('--rubric-share', type=float, default=0.0,
+                   help='fraction of tasks that are subjective (rubric reward); taken from multi-step slots')
     p.add_argument('--model', default='gpt-6.1-sol')
     p = sub.add_parser('findings', help="open business-rule questions from a build's spec_findings")
     p.add_argument('build')
@@ -112,20 +114,15 @@ def main(argv=None):
         if args.resign:
             report = bundle.requalify(args.bundle)
         else:
-            loaded = bundle.load_bundle(args.bundle, require_current_platform=False)
-            report = gates.qualify(loaded['env'], loaded['oracle'], loaded['schema'], loaded['request'],
-                                   excluded=loaded['gates'].get('excluded_worlds') or [])
-        print(json.dumps({g: report[g]['passed'] for g in ('static', 'differential', 'negatives', 'category', 'http')}
-                         | {'passed': report['passed']}))
+            report = bundle.qualify_loaded(bundle.load_bundle(args.bundle, require_current_platform=False))
+        print(json.dumps({g: report[g]['passed'] for g in gates.gate_names(report)} | {'passed': report['passed']}))
         return 0 if report['passed'] else 1
     if args.command == 'container-check':
         loaded = bundle.load_bundle(args.bundle)
-        report = gates.qualify(loaded['env'], loaded['oracle'], loaded['schema'], loaded['request'],
-                               excluded=loaded['gates'].get('excluded_worlds') or [])
+        report = bundle.qualify_loaded(loaded, judge=None)  # offline: no judge model in the container
         print(json.dumps({'passed': report['passed'], 'platform_identity': bundle.platform_identity(),
                           'files': loaded['manifest']['files'],
-                          'gates': {g: report[g]['passed'] for g in ('static', 'differential', 'negatives',
-                                                                       'category', 'http')}}))
+                          'gates': {g: report[g]['passed'] for g in gates.gate_names(report)}}))
         return 0 if report['passed'] else 1
     if args.command == 'policy':
         from env_factory_v3 import policy
@@ -139,7 +136,8 @@ def main(argv=None):
     if args.command == 'generate':
         from env_factory_v3 import generate
         summary = generate.generate(json.loads(Path(args.domains).read_text()), args.count, args.output,
-                                    runner=_runner(args), parallel=args.parallel, python=sys.executable)
+                                    runner=_runner(args), parallel=args.parallel, python=sys.executable,
+                                    rubric_share=args.rubric_share)
         print(json.dumps({k: summary[k] for k in ('requested', 'kept', 'domains')}, ensure_ascii=False))
         return 0
     if args.command == 'findings':
@@ -165,8 +163,7 @@ def main(argv=None):
             from env_factory_v3.llm import ChatClient, load_env_file
             load_env_file()
             user = ChatClient('V3_USER')
-        service = server.Service(loaded['env'], loaded['oracle'], loaded['schema'], loaded['request'],
-                                 valid_worlds=loaded['valid_worlds'], user_mode=args.user_mode, user_client=user)
+        service = bundle.service(loaded, user_mode=args.user_mode, user_client=user)
         httpd = server.start(service, args.host, args.port, token=os.environ.get('V3_SERVICE_TOKEN') or None)
         print(f'serving {args.bundle} on http://{args.host}:{httpd.server_address[1]}')
         try:
