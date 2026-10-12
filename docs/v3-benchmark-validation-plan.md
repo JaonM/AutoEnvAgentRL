@@ -60,3 +60,19 @@
 3. SFT 得到 B 组，在两个 benchmark 上评测。
 4. RL 得到 C 组，在两个 benchmark 上评测。
 5. 汇总：分领域、分类别的成绩，置信区间，失败案例分析；结论和数据追加到本文末尾。
+
+## 环境与已核实的机制（2026-10-13）
+
+- 安装：两个 benchmark 依赖冲突（tenacity 9.2.1 与 8.5.0），各自装在独立虚拟环境 `.bench/tau2`、`.bench/bfcl`（不提交）。
+  τ²-bench 的数据目录来自官方仓库，克隆在 `.bench/tau2-repo/data`，运行时设 `TAU2_DATA_DIR`。
+  另外补装了缺失依赖：τ² 的 `websockets`、BFCL（qwen_agent）的 `soundfile`。
+- τ²-bench 结束对话（源码 `user/user_simulator_base.py`、`data_model/simulation.py`、`run.py`）：
+  - 用户模拟器输出 `###STOP###`（另有 `###TRANSFER###`、`###OUT-OF-SCOPE###`）结束对话；agent 调用 `transfer_to_human_agents` 转人工也会结束；
+  - 结束原因包括 user_stop、agent_stop、max_steps（默认 100）、too_many_errors（默认 10）等。
+- τ²-bench 判分（源码 `data_model/tasks.py`）：
+  - 最终奖励是 `reward_basis` 中各项的乘积，默认是 `[DB, COMMUNICATE]`；
+  - DB：最终数据库与"在全新环境中重放标准动作"后的状态一致，路径不限；
+  - COMMUNICATE：每条 `communicate_info` 都以子串形式出现在 agent 的消息里；
+  - ACTION（逐条匹配工具调用）只用在 banking_knowledge，airline、retail、telecom 不用。
+- 与 V3 的对应：V3 自由对话已改为"用户道别即结束"，答案只做记录，结束时按最终状态、记录的答案和是否告知用户统一判分，
+  结构与 τ²-bench 一致。不同之处在于 V3 是加权求和并有部分分，τ²-bench 是各项乘积、全有或全无。
