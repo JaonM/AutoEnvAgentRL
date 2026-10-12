@@ -156,9 +156,12 @@ def stage_policy(out, statuses, options, log):
                 'platform_identity') == bundle.platform_identity():
             results[task] = saved
             continue
-        results[task] = policy.gate(folder, options['policy_client'], k=k, user_mode=mode,
-                                    user_client=options.get('user_client'))
-    log('policy', 'done', f"{sum(r['status'] == 'passed' for r in results.values())}/{len(results)} solved")
+        try:
+            results[task] = policy.gate(folder, options['policy_client'], k=k, user_mode=mode,
+                                        user_client=options.get('user_client'))
+        except Exception as exc:  # one bad bundle must not stop the batch; it is simply not trainable
+            results[task] = {'status': 'error', 'error': f'{type(exc).__name__}: {exc}'[:300]}
+    log('policy', 'done', f"{sum(r.get('status') == 'passed' for r in results.values())}/{len(results)} solved")
     return results
 
 
@@ -175,7 +178,8 @@ def classify(task, status, docker_result, policy_result, options):
         if state == 'unsolved':
             return False, f"policy gate: {policy_result.get('model')} solved 0/{policy_result.get('played')}"
         if state != 'passed':
-            return False, f'policy gate not passed: {state or "not run"}'
+            detail = (policy_result or {}).get('error', '')
+            return False, f'policy gate not passed: {state or "not run"} {detail}'.strip()
     return True, None
 
 
