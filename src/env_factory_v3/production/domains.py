@@ -33,6 +33,10 @@ SIMILAR = 0.5
 # Deterministic backstop for the proposer: not mainstream, legitimate customer services.
 BLOCKED = ('通灵', '灵媒', '占卜', '算命', '风水', '法事', '招魂', '驱魔', '巫术', '神秘主义', '玄学', '赌', '博彩',
            '色情', '成人用品', '邪教', '传销')
+# Domains of the external benchmarks we evaluate on (τ²-bench airline and telecom) are never
+# generated, so a gain there is transfer, not practice on the same business.
+RESERVED_FOR_EVAL = ('航空', '机票', '航班', '登机', '值机', '托运', '电信', '话费', '手机套餐', '流量', '运营商',
+                     '宽带', '携号转网', 'SIM')
 
 PROPOSER = """你在为训练客服/业务助理 agent 设计业务领域。请把下面的素材组合成一个具体、真实存在的面向用户的业务领域。
 
@@ -179,6 +183,10 @@ def propose(graph, client, count, *, split, seed=0, hops=2, exclude=(), max_atte
         blocked = [term for term in BLOCKED if term in verdict['name'] + verdict['detail']]
         if blocked:
             rejected.append({**provenance, 'reason': f'not a mainstream legitimate service: {blocked}'})
+            continue
+        reserved = [term for term in RESERVED_FOR_EVAL if term in verdict['name'] + verdict['detail']]
+        if reserved:
+            rejected.append({**provenance, 'reason': f'reserved for evaluation: {reserved}'})
             continue
         twin = next((name for name in taken if similarity(verdict['name'], name) >= SIMILAR), None) or next(
             (d['name'] for d in accepted if similarity(verdict['detail'], d['detail']) >= SIMILAR), None)

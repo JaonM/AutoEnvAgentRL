@@ -76,6 +76,14 @@ class DomainTests(unittest.TestCase):
         self.assertEqual(report['accepted'], [])
         self.assertTrue(all('mainstream' in r['reason'] for r in report['rejected']))
 
+    def test_benchmark_domains_are_reserved_for_evaluation(self):
+        class Airline(Proposer):
+            def chat(self, messages, tools=None, **parameters):
+                return {'content': json.dumps({'accept': True, 'name': '航空公司机票改签', 'detail': '改签与退票'})}
+        report = domains.propose(self.graph, Airline(), 1, split=self.graph.split_of('服装'), max_attempts=2)
+        self.assertEqual(report['accepted'], [])
+        self.assertTrue(all('reserved for evaluation' in r['reason'] for r in report['rejected']))
+
     def test_development_families_are_never_proposed_again(self):
         class Copycat(Proposer):
             def chat(self, messages, tools=None, **parameters):
