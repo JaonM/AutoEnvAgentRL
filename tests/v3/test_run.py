@@ -48,7 +48,7 @@ class VariedWriter(Writer):
 def options(**extra):
     base = dict(count=2, domains_file=None, split=None, rubric_share=0.0, parallel=1, repairs=2, docker=False,
                 policy_k=0, policy_user_mode='structured', eval_share=0.0, runner=LineRunner(),
-                opening_client=Writer())
+                opening_client=Writer(), min_reference_calls={})  # the 4-call fixture is below the real floor
     base.update(extra)
     return base
 
@@ -110,6 +110,25 @@ class RunTests(unittest.TestCase):
         self.assertEqual(value['tasks'], [])
         self.assertEqual(len(value['excluded']), 2)
         self.assertTrue(all('policy gate' in row['reason'] for row in value['excluded']))
+
+    def test_tasks_below_the_difficulty_floor_get_no_image_or_policy_gate(self):
+        self.plan_complex_only()
+        played = []
+
+        class Recorder:
+            model = 'recorder'
+
+            def chat(self, messages, tools=None, **parameters):
+                played.append(1)
+                return {'content': '{}'}
+
+        opts = options(domains_file=str(self.domains), min_reference_calls={'complex': 6}, policy_k=2,
+                       policy_client=Recorder())
+        code, value = run.run(self.root / 'run', **opts)
+        self.assertEqual((code, value['tasks'], played), (1, [], []))
+        self.assertTrue(all(row['failure_class'] == 'too_easy' and 'below the floor of 6' in row['reason']
+                            for row in value['excluded']))
+        self.assertEqual({d['reference_calls'] for d in value['details'].values()}, {4})
 
     def test_generation_rejections_are_listed_as_excluded(self):
         code, value = run.run(self.root / 'run', **options(domains_file=str(self.domains)))

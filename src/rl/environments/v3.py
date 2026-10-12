@@ -43,8 +43,9 @@ class V3Episode:
         from env_factory_v3.llm import load_env_file
         from rl.paths import PROJECT_ROOT
         load_env_file(PROJECT_ROOT / '.env')
-        # structured: ask/confirm by topic key; natural: free dialogue with a simulated user.
-        self.user_mode = os.environ.get('ENVFACTORY_V3_USER_MODE', 'structured')
+        # natural (default): free dialogue with a simulated user, so the agent must find out what to ask
+        # and what to confirm; structured: ask/confirm by topic keys listed in the tool schema.
+        self.user_mode = os.environ.get('ENVFACTORY_V3_USER_MODE', 'natural')
         self.token = secrets.token_hex(16)  # only this runtime may drive its service
         self.tool_error_limit = int(os.environ.get('ENVFACTORY_V3_TOOL_ERROR_LIMIT', '3'))
         self.tool_errors = 0

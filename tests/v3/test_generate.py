@@ -91,6 +91,10 @@ class GenerateTests(unittest.TestCase):
         request['user_scene']['wants_to_know'] = ['a', 'b', 'c', 'd']
         (folder / 'request.json').write_text(json.dumps(request, ensure_ascii=False))
         self.assertTrue(any('wants_to_know' in p for p in generate.check_request(folder)[0]))
+        request['user_scene']['wants_to_know'] = ['a']
+        del request['user_facts']['approve_second']
+        (folder / 'request.json').write_text(json.dumps(request, ensure_ascii=False))
+        self.assertTrue(any('at least two writes' in p for p in generate.check_request(folder)[0]))
         del request['user_scene']
         (folder / 'request.json').write_text(json.dumps(request, ensure_ascii=False))
         self.assertTrue(any('user_scene' in p for p in generate.check_request(folder)[0]))

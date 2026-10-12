@@ -36,7 +36,7 @@ V3 端到端生产线：知识图谱采样业务领域 → codex 写任务（规
   --no-docker            跳过加固镜像构建与离线复验（不推荐：没有镜像的任务不进入 "tasks"）
   --policy-k N           policy gate 每个沙箱的 episode 数（默认 4；0 = 跳过）
                          N > 0 时，模型至少解出 1 次的沙箱才算可训练
-  --policy-user-mode M   policy gate 的用户模式：structured（默认）或 natural（自由对话）
+  --policy-user-mode M   policy gate 的用户模式：natural（默认，自由对话，与训练一致）或 structured
   --policy-prefix P      policy gate 模型的环境变量前缀 <P>_API_KEY/_BASE_URL/_MODEL（默认 LLM）
   --eval-share X         可训练任务中按整领域划为评测集的比例，0..1（默认 0：全部训练）
 

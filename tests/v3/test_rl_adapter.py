@@ -7,6 +7,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -48,6 +49,33 @@ class ScriptedPolicy:
 
     def call(self, name, **args):
         return self._send(name, args)
+
+
+_MODE = unittest.mock.patch.dict(os.environ, {'ENVFACTORY_V3_USER_MODE': 'structured'})
+
+
+def setUpModule():
+    _MODE.start()  # these tests drive the structured ask/confirm protocol; natural is the default
+
+
+def tearDownModule():
+    _MODE.stop()
+
+
+class DefaultModeTests(unittest.TestCase):
+    def test_training_defaults_to_free_dialogue(self):
+        root = Path(tempfile.mkdtemp())
+        status = pipeline.build(library_request(), root / 'build', runner=FakeRunner(), perturbed=20)
+        environ = {k: v for k, v in os.environ.items() if k != 'ENVFACTORY_V3_USER_MODE'}
+        with unittest.mock.patch.dict(os.environ, environ, clear=True), \
+                unittest.mock.patch('env_factory_v3.llm.ChatClient'):  # no simulator calls in this test
+            env = V3Episode(Path(status['bundle']))
+            self.addCleanup(env.close)
+            env.reset(0)
+        self.assertEqual(env.user_mode, 'natural')
+        names = {tool['function']['name'] for tool in env.tools}
+        self.assertNotIn('v3_ask', names)
+        self.assertNotIn('v3_confirm', names)
 
 
 class V3AdapterTests(unittest.TestCase):

@@ -30,9 +30,13 @@ SHAPES = {
     'simple': 'One lookup through read tools answers it (for example an eligibility check); the user knows '
               'the ids; no writes.',
     'ordinary': 'Several reads whose results feed each other (search, filter, compute); no writes.',
-    'complex': 'Two or more steps with at least one write that needs the user\'s approval (facts '
-               'approve_first / approve_second ...); independent approvals, partial success, budgets or '
-               'capacities, so refusing or failing one step matters.',
+    'complex': 'A real multi-step job, not a short one with many rules. The shortest correct solution needs '
+               'at least 6 public tool calls (reads and writes; asking the user or asking for approval does not '
+               'count) and at least two writes, each needing the user\'s approval (facts approve_first / '
+               'approve_second ...). Build in: decoy rows a careless agent would pick; one step whose obvious '
+               'first choice is refused or ineligible (a read reveals it, or a write is rejected with a business '
+               'error), so the agent must find another route; and a dependency between writes (a shared budget, '
+               'capacity or ordering), so the user refusing one approval changes what a later step must do.',
     'subjective': 'A subjective request with no single correct reply: the user wants advice, a comparison '
                   'with a recommendation, an explanation of a refusal or a charge, or help with a complaint. '
                   'The assistant still needs the tools for the facts (two or more reads; a write only if the '
@@ -42,6 +46,8 @@ SHAPES = {
 }
 SIMILAR = 0.6
 MAX_DIRECT_NUMBERS, MAX_WANTS = 8, 3  # what a user says in one opening message
+# Difficulty floor: public tool calls of the built reference solution, checked after the build (run.py).
+MIN_REFERENCE_CALLS = {'complex': 6}
 
 
 def opening_problems(text):
@@ -77,8 +83,8 @@ def check_request(folder):
     wanted = 'rubric' if expected.get('shape') == 'subjective' else 'business'
     if expected and request.get('reward_type', 'business') != wanted:
         problems.append(f'reward_type must be "{wanted}" for this task')
-    if expected.get('shape') == 'complex' and not approvals:
-        problems.append('a complex task needs at least one approve_* fact for a write')
+    if expected.get('shape') == 'complex' and len(approvals) < 2:
+        problems.append('a complex task needs at least two writes, each with its own approve_* fact')
     if expected.get('shape') in ('direct',) and any(request['tables'].values()):
         problems.append('a direct task needs no table rows')
     if expected.get('shape') == 'direct' and not scene_numbers(scene):

@@ -109,8 +109,9 @@ def main(argv=None):
     p.add_argument('--policy-k', type=int, default=0,
                    help='policy gate episodes per bundle (0 = skip); when > 0 a task is trainable only if '
                         'the gate model solves it at least once')
-    p.add_argument('--policy-user-mode', choices=('structured', 'natural'), default='structured',
-                   help='user mode for the policy gate (default structured)')
+    p.add_argument('--policy-user-mode', choices=('structured', 'natural'), default='natural',
+                   help='user mode for the policy gate (default natural: free dialogue with the simulated user, '
+                        'the mode training uses; structured hands the agent ask/confirm keys)')
     p.add_argument('--policy-prefix', default='LLM', help='policy gate model: <PREFIX>_API_KEY/_BASE_URL/_MODEL')
     p.add_argument('--eval-share', type=float, default=0.0,
                    help='fraction of trainable tasks marked split "eval" in tasks.json (default 0: all train)')

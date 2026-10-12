@@ -156,7 +156,7 @@ each environment from its verified container (`V3DockerEpisode`); `local` serves
 
 ## Free-dialogue user
 
-`serve --user-mode natural` (or `ENVFACTORY_V3_USER_MODE=natural` for `rl`) replaces ask/confirm
+`serve --user-mode natural` (the default for `rl`; `ENVFACTORY_V3_USER_MODE=structured` restores ask/confirm) replaces ask/confirm
 with free dialogue. A plain assistant message is speech to the user, and the simulated user's
 reply comes back as the next user turn. `v3_chat {message, proposal}` asks for approval of one
 exact write. Only `v3_answer` ends the episode. The agent sees no topic keys: only the user's opening, the rules

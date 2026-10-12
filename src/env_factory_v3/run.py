@@ -123,6 +123,31 @@ def stage_build(out, options, log):
     return statuses
 
 
+def stage_difficulty(out, statuses, options, log):
+    """Difficulty floor (generate.MIN_REFERENCE_CALLS): a training-ready bundle whose reference solution
+    needs fewer public tool calls than its shape's floor is too easy to teach anything; it gets no image
+    and no policy gate."""
+    from env_factory_v3 import generate
+    from env_factory_v3.runtime import run_reference
+    floors = options.get('min_reference_calls', generate.MIN_REFERENCE_CALLS)
+    results = {}
+    for task, status in statuses.items():
+        if not (status or {}).get('training_ready'):
+            continue
+        try:
+            loaded = bundle.load_bundle(Path(status['bundle']))
+            request = loaded['request']
+            floor = floors.get((request.get('source') or {}).get('shape'), 0)
+            calls = run_reference(loaded['env'], request['tables'], request['user_facts'],
+                                  start=request['time']['start'])['tool_calls']
+        except Exception as exc:  # later stages report the broken bundle
+            results[task] = {'passed': True, 'error': f'{type(exc).__name__}: {exc}'[:300]}
+            continue
+        results[task] = {'passed': calls >= floor, 'reference_calls': calls, 'floor': floor}
+    log('difficulty', 'done', f"{sum(r['passed'] for r in results.values())}/{len(results)} above the floor")
+    return results
+
+
 def stage_docker(out, statuses, options, log):
     from env_factory_v3 import docker
     results = {}
@@ -165,12 +190,15 @@ def stage_policy(out, statuses, options, log):
     return results
 
 
-def classify(task, status, docker_result, policy_result, options):
+def classify(task, status, docker_result, policy_result, options, difficulty=None):
     """(trainable, reason) for one task."""
     if status is None:
         return False, 'not built'
     if not status.get('training_ready'):
         return False, f"build failed: {status.get('failure_class')} - {(status.get('reason') or '')[:160]}"
+    if difficulty and not difficulty['passed']:
+        return False, (f"too easy: the reference solution needs {difficulty['reference_calls']} tool calls, "
+                       f"below the floor of {difficulty['floor']}")
     if options['docker'] and 'image' not in (docker_result or {}):
         return False, f"image not verified: {(docker_result or {}).get('error', 'not built')}"
     if options['policy_k']:
@@ -203,12 +231,14 @@ def assign_eval(trainable, details, share):
             task['split'] = 'eval'
 
 
-def manifest(out, statuses, docker_results, policy_results, generation, options):
+def manifest(out, statuses, docker_results, policy_results, generation, options, difficulty=None):
+    difficulty = difficulty or {}
     trainable, excluded, details = [], [], {}
     requests = {path.stem: json.loads(path.read_text()) for path in (out / 'generate' / 'requests').glob('*.json')}
     for index, task in enumerate(sorted(statuses)):
         status, request = statuses[task], requests.get(task, {})
-        ok, reason = classify(task, status, docker_results.get(task), policy_results.get(task), options)
+        ok, reason = classify(task, status, docker_results.get(task), policy_results.get(task), options,
+                              difficulty.get(task))
         gates = _read(Path(status['bundle']) / 'gates.json', {}) if ok else {}
         modes = ['structured'] + (['natural'] if gates.get('natural', {}).get('passed') else [])
         details[task] = {
@@ -217,6 +247,7 @@ def manifest(out, statuses, docker_results, policy_results, generation, options)
             'opening': request.get('user_request'), 'domain': (request.get('source') or {}).get('generated'),
             'family': (request.get('source') or {}).get('family'),
             'bundle': (status or {}).get('bundle'), 'failure_class': (status or {}).get('failure_class'),
+            'reference_calls': (difficulty.get(task) or {}).get('reference_calls'),
             'build_seconds': (status or {}).get('elapsed_seconds'), 'repairs_used': (status or {}).get('repairs_used'),
             'user_modes': modes if ok else [], 'docker': docker_results.get(task),
             'policy': {k: (policy_results.get(task) or {}).get(k) for k in ('model', 'user_mode', 'k', 'successes',
@@ -227,7 +258,9 @@ def manifest(out, statuses, docker_results, policy_results, generation, options)
             trainable.append({'id': task, 'sandbox': str(Path(status['bundle']).resolve()), 'split': 'train',
                               'weight': 1.0})
         else:
-            excluded.append({'id': task, 'reason': reason, 'failure_class': (status or {}).get('failure_class')})
+            easy = not (difficulty.get(task) or {'passed': True})['passed']
+            excluded.append({'id': task, 'reason': reason,
+                             'failure_class': 'too_easy' if easy else (status or {}).get('failure_class')})
     for row in generation.get('rows', []):  # requests that never became a build
         if not row['passed']:
             task = f"gen-{row['index']:03d}"
@@ -312,9 +345,12 @@ def run(out, **options):
     domains_ = timed('domains', stage_domains, out, options, log)
     generation = timed('generate', stage_generate, out, domains_, options, log)
     statuses = timed('build', stage_build, out, options, log)
-    docker_results = timed('docker', stage_docker, out, statuses, options, log) if options['docker'] else {}
-    policy_results = timed('policy', stage_policy, out, statuses, options, log) if options['policy_k'] else {}
-    value = manifest(out, statuses, docker_results, policy_results, generation, options)
+    difficulty = timed('difficulty', stage_difficulty, out, statuses, options, log)
+    hard_enough = {task: status for task, status in statuses.items()
+                   if (difficulty.get(task) or {'passed': True})['passed']}
+    docker_results = timed('docker', stage_docker, out, hard_enough, options, log) if options['docker'] else {}
+    policy_results = timed('policy', stage_policy, out, hard_enough, options, log) if options['policy_k'] else {}
+    value = manifest(out, statuses, docker_results, policy_results, generation, options, difficulty)
     report(out, value, timings, options)
     log('manifest', 'done', f"{value['summary']['trainable']} trainable -> {out / 'tasks.json'}")
     return (0 if value['tasks'] else 1), value
