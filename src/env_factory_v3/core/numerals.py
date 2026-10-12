@@ -1,6 +1,5 @@
 """How a number may be said in Chinese conversation: digits, Chinese numerals, and amounts in cents
-said in 元. Used to check that an opening states the scene's numbers and that an agent told the
-user its results.
+said in 元. Used to check that a generated opening states every number of its scene.
 """
 from __future__ import annotations
 
@@ -53,13 +52,3 @@ def spoken(number):
             forms |= {f'{w}块{DIGITS[cents // 10]}' for w in chinese(whole)} | {f'{whole}块{cents // 10}'}
     return forms
 
-
-def said(text, number):
-    """True when `text` states `number` in one of its spoken forms, not as part of a longer number."""
-    for form in spoken(number):
-        digits = form[0].isdigit()
-        before, after = (r'(?<![\d.])', r'(?![\d])') if digits else (r'(?<![零一二两三四五六七八九十百千万])',
-                                                                          r'(?![零一二两三四五六七八九十百千万])')
-        if re.search(before + re.escape(form) + after, text):
-            return True
-    return False

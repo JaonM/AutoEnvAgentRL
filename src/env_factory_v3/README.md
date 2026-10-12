@@ -189,8 +189,9 @@ need it.
 
 The conversation ends the way τ²-bench ends it: when the simulated user says goodbye (its stop
 signal). In free dialogue the answer tool only records the result (it can be updated) and does not
-end the episode. At the end the episode is graded on the final state, the latest recorded answer,
-and whether the agent told the user the results (`core/reward.told`, the fields marked "tell").
+end the episode. At the end a business task is graded on the final state and the latest recorded
+answer; what the agent says is not graded (the system prompt still asks it to tell the user the
+result, which τ²-bench checks). A subjective task is graded on its recorded reply.
 An agent that sends `server.IDLE_LIMIT` (3) messages in a row without calling a tool, proposing a
 write or recording a result is warned once, then closed the same way. The trainer's step limit
 also closes and grades. A subjective task with no recorded reply is graded on the last thing the

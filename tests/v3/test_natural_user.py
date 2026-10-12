@@ -130,40 +130,8 @@ class AgentViewFormatTests(unittest.TestCase):
         self.assertNotIn('v3_answer', system)
 
 
-class ToldUserTests(unittest.TestCase):
-    SCHEMA = {'fields': {'total_price_fen': {'type': 'integer', 'description': 'total in fen', 'tell': True},
-                         'tier': {'type': 'string', 'enum': ['early', 'late'], 'description': 'price tier'}}}
-
-    def grade(self, speech, answer=None):
-        from env_factory_v3.core import reward
-        expected = {'answer': {'total_price_fen': 36000, 'tier': 'early'}, 'final_state': {}}
-        result = {'answer': answer or expected['answer'], 'final_state': {}, 'tool_calls': 0, 'safety_violations': 0}
-        return reward.grade(result, expected, self.SCHEMA, initial={}, reference_calls=0, speech=speech)
-
-    def test_numbers_must_be_said_in_some_spoken_form(self):
-        from env_factory_v3.core.numerals import said
-        self.assertTrue(said('一共 360 元', 36000))
-        self.assertTrue(said('一共三百六十元', 36000))
-        self.assertFalse(said('一共 3600 元', 360))       # part of a longer number does not count
-        self.assertFalse(said('一共十二元', 2))
-
-    def test_a_correct_answer_not_told_to_the_user_is_not_a_success(self):
-        told = self.grade(['您好，两位一共 360 元，现在订最划算。'])
-        silent = self.grade(['您好，已经帮您算好了。'])
-        self.assertEqual((told['success'], told['fields']['told_user']), (True, True))
-        self.assertEqual((silent['success'], silent['fields']['told_user']), (False, False))
-        self.assertLess(silent['reward'], told['reward'])
-        structured = self.grade(None)                      # structured mode: no speech, no check
-        self.assertNotIn('told_user', structured['fields'])
-
-    def test_tell_is_only_for_values_a_user_can_hear(self):
-        from env_factory_v3.core import answers
-        bad = {'fields': {'tier': {'type': 'string', 'enum': ['a', 'b'], 'description': 'x', 'tell': True}}}
-        self.assertTrue(any('tell' in p for p in answers.check_schema(bad)))
-        self.assertEqual(answers.check_schema(self.SCHEMA), [])
-        self.assertEqual(answers.told_fields(self.SCHEMA), ['total_price_fen'])
-
-    def test_the_agent_is_told_to_say_the_result_before_submitting(self):
+class SystemPromptTests(unittest.TestCase):
+    def test_the_agent_records_the_result_and_tells_the_user(self):
         env, oracle, schema = library_modules()
         service = server.Service(env, oracle, schema, library_request(), user_mode='natural', user_client=ScriptedUser())
         system = agent_view.messages(service.reset(world='original')['instructions'])[0]['content']

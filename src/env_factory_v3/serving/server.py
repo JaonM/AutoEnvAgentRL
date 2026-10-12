@@ -31,8 +31,8 @@ from env_factory_v3.runtime import BusinessError, Episode, EpisodeFinished, Tool
 
 
 # Free dialogue ends when the user says goodbye (the simulator's stop signal), as in τ²-bench:
-# the episode closes and is graded on the final state, the latest recorded answer and what the
-# agent told the user. An agent that talks IDLE_LIMIT times in a row without calling a tool,
+# the episode closes and is graded on the final state and the latest recorded answer (a subjective
+# task on its reply). An agent that talks IDLE_LIMIT times in a row without calling a tool,
 # proposing a write or recording a result is warned once, then the episode closes the same way.
 IDLE_LIMIT = 3
 
@@ -212,12 +212,8 @@ class Service:
             grade = rubric.grade(episode.result(), self.rubric, self.request, record['facts'], self.judge(),
                                  reference_calls=reference_calls)
         else:
-            result = episode.result()
-            # In free dialogue the agent must also have told the user its results (reward.told).
-            speech = ([e.get('message') for e in result['trace'] if e.get('kind') == 'chat']
-                      if self.user_mode == 'natural' else None)
-            grade = reward.grade(result, record['expected'], self.schema, initial=record['data'],
-                                 reference_calls=reference_calls, speech=speech)
+            grade = reward.grade(episode.result(), record['expected'], self.schema,
+                                 initial=record['data'], reference_calls=reference_calls)
             grade.pop('state_diff', None)
         return {**grade, 'world': record['world'], 'reward_type': self.reward_type}
 
