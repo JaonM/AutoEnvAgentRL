@@ -16,8 +16,9 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
-from env_factory_v3 import agent_view, bundle, server
-from env_factory_v3.llm import ChatClient, ProviderError, load_env_file  # noqa: F401  (re-exported)
+from env_factory_v3.certify import bundle
+from env_factory_v3.core.llm import ChatClient, ProviderError, load_env_file  # noqa: F401  (re-exported)
+from env_factory_v3.serving import agent_view, server
 
 RESULT = 'policy.json'
 

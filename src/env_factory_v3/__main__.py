@@ -25,11 +25,15 @@ import sys
 import time
 from pathlib import Path
 
-from env_factory_v3 import bundle, checks, gates, pipeline, server, spec
+from env_factory_v3 import checks
+from env_factory_v3.authoring import pipeline
+from env_factory_v3.certify import bundle, gates
+from env_factory_v3.core import spec
+from env_factory_v3.serving import server
 
 
 def _runner(args):
-    from env_factory_v3.codex import CodexRunner
+    from env_factory_v3.authoring.codex import CodexRunner
     if shutil.which('codex') is None:
         raise SystemExit('codex CLI not found on PATH')
     return CodexRunner(model=args.model)
@@ -172,7 +176,7 @@ def main(argv=None):
                           'gates': {g: report[g]['passed'] for g in gates.gate_names(report)}}))
         return 0 if report['passed'] else 1
     if args.command == 'policy':
-        from env_factory_v3 import policy
+        from env_factory_v3.certify import policy_gate as policy
         policy.load_env_file()
         user = policy.ChatClient('V3_USER') if args.user_mode == 'natural' else None
         report = policy.gate(args.bundle, policy.ChatClient(args.prefix), k=args.k, user_mode=args.user_mode,
@@ -181,15 +185,15 @@ def main(argv=None):
                                                  'mean_reward', 'status')}))
         return 0 if report['status'] == 'passed' else 1
     if args.command == 'generate':
-        from env_factory_v3 import generate
+        from env_factory_v3.production import generate
         summary = generate.generate(json.loads(Path(args.domains).read_text()), args.count, args.output,
                                     runner=_runner(args), parallel=args.parallel, python=sys.executable,
                                     rubric_share=args.rubric_share)
         print(json.dumps({k: summary[k] for k in ('requested', 'kept', 'domains')}, ensure_ascii=False))
         return 0
     if args.command == 'domains':
-        from env_factory_v3 import domains
-        from env_factory_v3.llm import ChatClient, load_env_file
+        from env_factory_v3.core.llm import ChatClient, load_env_file
+        from env_factory_v3.production import domains
         load_env_file()
         graph = domains.SceneGraph.from_neo4j(os.environ.get('NEO4J_URI', 'bolt://localhost:7687'),
                                               os.environ.get('NEO4J_USER', 'neo4j'), os.environ['NEO4J_PASSWORD'],
@@ -204,8 +208,8 @@ def main(argv=None):
                          ensure_ascii=False))
         return 0
     if args.command == 'run':
-        from env_factory_v3 import run as run_mod
-        from env_factory_v3.llm import ChatClient, load_env_file
+        from env_factory_v3.core.llm import ChatClient, load_env_file
+        from env_factory_v3.production import run as run_mod
         load_env_file()
         try:
             runner = _runner(args)
@@ -218,7 +222,7 @@ def main(argv=None):
                        policy_user_mode=args.policy_user_mode, eval_share=args.eval_share,
                        python=sys.executable, runner=runner, opening_client=ChatClient('V3_OPENING'))
         if args.split:
-            from env_factory_v3 import domains
+            from env_factory_v3.production import domains
             options.update(domain_client=ChatClient('V3_DOMAIN'), graph=lambda: domains.SceneGraph.from_neo4j(
                 os.environ.get('NEO4J_URI', 'bolt://localhost:7687'), os.environ.get('NEO4J_USER', 'neo4j'),
                 os.environ.get('NEO4J_PASSWORD', ''), os.environ.get('NEO4J_DATABASE', 'neo4j'),
@@ -246,7 +250,7 @@ def main(argv=None):
         print(args.output)
         return 0
     if args.command == 'docker':
-        from env_factory_v3 import docker
+        from env_factory_v3.certify import docker
         options = {'base_image': args.base_image} if args.base_image else {}
         print(json.dumps(docker.build(args.bundle, **options), indent=1))
         return 0
@@ -254,7 +258,7 @@ def main(argv=None):
         loaded = bundle.load_bundle(args.bundle)
         user = None
         if args.user_mode == 'natural':
-            from env_factory_v3.llm import ChatClient, load_env_file
+            from env_factory_v3.core.llm import ChatClient, load_env_file
             load_env_file()
             user = ChatClient('V3_USER')
         service = bundle.service(loaded, user_mode=args.user_mode, user_client=user)

@@ -19,7 +19,7 @@ from pathlib import Path
 
 def amend(folder, policy):
     """Store the policy in the bundle's request.json; requalify then re-certifies the changed bundle."""
-    from env_factory_v3 import bundle
+    from env_factory_v3.certify import bundle
     path = folder / 'request.json'
     request = json.loads(path.read_text())
     request['agent_policy'] = policy
@@ -30,7 +30,8 @@ def amend(folder, policy):
 
 
 def one(task, clients, k, attempts=3):
-    from env_factory_v3 import bundle, docker, policies, policy
+    from env_factory_v3.certify import bundle, docker, policy_gate as policy
+    from env_factory_v3.production import agent_policy as policies
     folder = Path(task['sandbox'])
     row, started = {'id': task['id'], 'sandbox': str(folder)}, time.monotonic()
     try:
@@ -67,7 +68,7 @@ def main():
     parser.add_argument('--retry', action='store_true', help='redo bundles whose earlier row did not finish')
     parser.add_argument('--output', required=True)
     args = parser.parse_args()
-    from env_factory_v3.llm import ChatClient, load_env_file
+    from env_factory_v3.core.llm import ChatClient, load_env_file
     load_env_file()
     clients = {'writer': ChatClient('V3_OPENING'), 'agent': ChatClient('LLM'), 'user': ChatClient('V3_USER')}
     tasks = json.loads(Path(args.tasks).read_text())['tasks']

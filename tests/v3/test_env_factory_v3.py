@@ -8,10 +8,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from env_factory_v3 import answers, bundle, checks, gates, pipeline, reward, server, spec
-from env_factory_v3.codex import InfrastructureError
+from env_factory_v3 import checks
+from env_factory_v3.authoring import pipeline
+from env_factory_v3.authoring.codex import InfrastructureError
+from env_factory_v3.certify import bundle, gates
+from env_factory_v3.core import answers, reward, spec
+from env_factory_v3.core.sandbox import SandboxError, check_source, load_module
 from env_factory_v3.runtime import BusinessError, Episode, run_reference, write
-from env_factory_v3.sandbox import SandboxError, check_source, load_module
+from env_factory_v3.serving import server
 
 FIXTURES = Path(__file__).resolve().parents[1] / 'fixtures' / 'v3'
 LIBRARY = FIXTURES / 'library'
@@ -406,7 +410,7 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue(status['stages']['branch_audit']['repaired'])
 
     def test_a_repaired_refusal_world_may_use_different_arguments(self):
-        from env_factory_v3 import branches
+        from env_factory_v3.authoring import branches
         env, _, _ = library_modules()
         cascade = {'world': 'flip:approve_first', 'denied': 'approve_first',
                    'skipped_steps': ['confirm approve_second',
@@ -483,7 +487,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(status['failure_class'], 'audit_invalid')
 
     def test_silent_timeouts_are_infrastructure(self):
-        from env_factory_v3.codex import classify
+        from env_factory_v3.authoring.codex import classify
         self.assertEqual(classify('timeout', None, {'output_tokens': 0}, False), 'infrastructure_error')
         self.assertEqual(classify('timeout', None, {'output_tokens': 900}, False), 'timeout')
         self.assertEqual(classify('exited', 1, {'output_tokens': 0}, False), 'infrastructure_error')

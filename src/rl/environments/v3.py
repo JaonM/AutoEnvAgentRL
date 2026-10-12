@@ -18,7 +18,7 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
-from env_factory_v3 import agent_view
+from env_factory_v3.serving import agent_view
 from rl.errors import EnvironmentProtocolError, InfrastructureError
 
 def is_v3_bundle(root):
@@ -30,7 +30,7 @@ def is_v3_bundle(root):
 
 def bundle_identity(root):
     """Content identity of a V3 bundle: the hashes its manifest certifies (verified on load)."""
-    from env_factory_v3.bundle import load_bundle
+    from env_factory_v3.certify.bundle import load_bundle
     from env_factory_v3.runtime import canonical
     import hashlib
     loaded = load_bundle(root)
@@ -48,8 +48,8 @@ class V3Episode:
     transport = 'in_process'
 
     def __init__(self, root):
-        from env_factory_v3 import bundle
-        from env_factory_v3.llm import load_env_file
+        from env_factory_v3.certify import bundle
+        from env_factory_v3.core.llm import load_env_file
         from rl.paths import PROJECT_ROOT
         load_env_file(PROJECT_ROOT / '.env')
         # natural (default): free dialogue with a simulated user, so the agent must find out what to ask
@@ -74,12 +74,12 @@ class V3Episode:
 
     # -- transport --------------------------------------------------------------
     def _start(self, loaded):
-        from env_factory_v3 import server
+        from env_factory_v3.serving import server
         user = None
         if self.user_mode == 'natural':
-            from env_factory_v3.llm import ChatClient
+            from env_factory_v3.core.llm import ChatClient
             user = ChatClient('V3_USER')
-        from env_factory_v3 import bundle
+        from env_factory_v3.certify import bundle
         self.service = bundle.service(loaded, user_mode=self.user_mode, user_client=user)
         self.server = server.start(self.service, token=self.token)
         return f'http://127.0.0.1:{self.server.server_address[1]}'
@@ -276,12 +276,12 @@ class V3Episode:
 
 
 class V3DockerEpisode(V3Episode):
-    """Same runtime against the bundle's verified, hardened container (see env_factory_v3.docker)."""
+    """Same runtime against the bundle's verified, hardened container (see env_factory_v3.certify.docker)."""
 
     transport = 'docker'
 
     def _start(self, loaded):
-        from env_factory_v3 import docker
+        from env_factory_v3.certify import docker
         started = docker.run(self.root, user_mode=self.user_mode, token=self.token)
         self.container = started['container']
         return started['url']
@@ -294,12 +294,12 @@ class V3DockerEpisode(V3Episode):
         except (URLError, TimeoutError, OSError, ValueError):
             alive = False
         if not alive:
-            from env_factory_v3 import docker
+            from env_factory_v3.certify import docker
             docker.remove(self.container)
             self.episode = None  # the old service and its episodes are gone
             self.base_url = self._start(None)
         return super().reset(seed, world=world)
 
     def _stop(self):
-        from env_factory_v3 import docker
+        from env_factory_v3.certify import docker
         docker.remove(self.container)

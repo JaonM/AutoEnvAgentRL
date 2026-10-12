@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from test_env_factory_v3 import library_request  # noqa: E402
 
-from env_factory_v3 import generate  # noqa: E402
+from env_factory_v3.production import generate  # noqa: E402
 
 DOMAINS = [{'name': 'clinic appointments'}, {'name': 'car rental'}]
 
@@ -59,7 +59,7 @@ class Writer:
 
 class OpeningTests(unittest.TestCase):
     def test_red_flags_catch_protocol_and_virtual_time_but_not_plain_speech(self):
-        from env_factory_v3.openings import persona, red_flags
+        from env_factory_v3.production.openings import persona, red_flags
         self.assertIn('交代确认流程', red_flags('每件寄之前先告诉我走哪家、多少钱，等我确认再寄'))
         self.assertIn('交代确认流程', red_flags('先把分配发我，我确认后你再留'))
         self.assertIn('虚拟时间', red_flags('当前时间是10，预约甲开诊时间30'))
@@ -115,7 +115,8 @@ class GenerateTests(unittest.TestCase):
         self.assertTrue(any('user_scene' in p for p in generate.check_request(folder)[0]))
 
     def test_agent_policy_hides_internals_and_must_cover_the_spec(self):
-        from env_factory_v3 import policies, server
+        from env_factory_v3.production import agent_policy as policies
+        from env_factory_v3.serving import server
         request = library_request()
         self.assertTrue(policies.internals(request, '仅当 active_hold_count 为 0 时可续借，见 holds 表'))
         self.assertTrue(policies.internals(request, '首先查询借阅，然后调用续借'))

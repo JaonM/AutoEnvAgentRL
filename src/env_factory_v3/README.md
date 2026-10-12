@@ -6,6 +6,24 @@ the "EnvFactory V3 设计文档" and the 2026-10-12 spike (`experiments/v3_spike
 representation got 7/8 frozen complex cross-business samples correct against V2's
 handwritten oracles (V2: 0/24).
 
+## Code layout
+
+```
+env_factory_v3/
+  __main__.py   CLI (python -m env_factory_v3 ...)
+  runtime.py    the authored-code contract: write, BusinessError, Episode (env.py imports it)
+  checks.py     self-checks codex sessions run (python -m env_factory_v3.checks ...)
+  core/         task model and grading: spec, sandbox, worlds, answers, reward, rubric, llm
+  serving/      episodes over HTTP and what the agent sees: server, agent_view, user_sim
+  certify/      qualification and delivery: gates, bundle, docker, policy_gate
+  authoring/    building one sandbox with codex: pipeline, prompts, codex, branches, perturbations
+  production/   the end-to-end line: run, generate, openings, domains, agent_policy
+```
+
+`runtime`, `core`, `serving` and `certify` (except `policy_gate`) decide how a sandbox runs and
+is graded; they are the platform identity a bundle is signed for (`certify.bundle.RUNTIME_MODULES`).
+`authoring` and `production` only build sandboxes, so editing them never invalidates a bundle.
+
 ## Flow
 
 ```

@@ -20,9 +20,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'src'))
 
-from env_factory_v3 import bundle, reward  # noqa: E402
+from env_factory_v3.certify import bundle
+from env_factory_v3.core import reward  # noqa: E402
+from env_factory_v3.core.worlds import variants  # noqa: E402
 from env_factory_v3.runtime import run_reference  # noqa: E402
-from env_factory_v3.worlds import variants  # noqa: E402
 
 
 def mutations(value, schema, path=()):

@@ -21,7 +21,10 @@ import json
 import re
 from pathlib import Path
 
-from env_factory_v3 import checks, openings, policies, prompts, spec
+from env_factory_v3 import checks
+from env_factory_v3.authoring import prompts
+from env_factory_v3.core import spec
+from env_factory_v3.production import openings, agent_policy as policies
 
 MIX = (('direct_response', 'direct', 0.2), ('simple_agentic', 'simple', 0.2),
        ('multi_step_agentic', 'ordinary', 0.2), ('multi_step_agentic', 'complex', 0.4))
@@ -48,7 +51,7 @@ SHAPES = {
 }
 SIMILAR = 0.6
 MAX_DIRECT_NUMBERS, MAX_WANTS = 8, 3  # what a user says in one opening message
-# Difficulty floor: public tool calls of the built reference solution, checked after the build (run.py).
+# Difficulty floor: public tool calls of the built reference solution, checked after the build (production/run.py).
 MIN_REFERENCE_CALLS = {'complex': 6}
 
 
@@ -261,7 +264,7 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
     """Stage one: a codex session per task writes rules, tables, facts and a user scene. Stage two:
     opening_client (V3_OPENING_*, falling back to LLM_*) writes the opening from the scene alone."""
     if opening_client is None:
-        from env_factory_v3.llm import ChatClient, load_env_file
+        from env_factory_v3.core.llm import ChatClient, load_env_file
         load_env_file()
         opening_client = ChatClient('V3_OPENING')
     output = Path(output)

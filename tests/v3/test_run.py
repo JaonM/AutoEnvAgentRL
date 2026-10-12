@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_env_factory_v3 import FakeRunner, library_request  # noqa: E402
 from test_generate import SCENE, Writer, policy_reply  # noqa: E402
 
-from env_factory_v3 import run  # noqa: E402
+from env_factory_v3.production import run  # noqa: E402
 from rl.data.tasks import load_tasks  # noqa: E402
 
 DOMAINS = [{'name': 'clinic appointments', 'detail': '门诊预约'}, {'name': 'car rental', 'detail': '租车'}]
@@ -64,7 +64,7 @@ class RunTests(unittest.TestCase):
 
     def plan_complex_only(self):
         # Two slots of a 2-task plan are direct/simple; make every slot complex so the fixture fits.
-        from env_factory_v3 import generate
+        from env_factory_v3.production import generate
         original = generate.plan
         generate.plan = lambda domains, count, rubric_share=0.0: [
             (domains[i % len(domains)], 'multi_step_agentic', 'complex') for i in range(count)]

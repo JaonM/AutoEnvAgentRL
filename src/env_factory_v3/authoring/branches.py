@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import json
 
-from env_factory_v3 import spec
+from env_factory_v3.core import spec
+from env_factory_v3.core.worlds import variants
 from env_factory_v3.runtime import canonical, run_reference
-from env_factory_v3.worlds import variants
 
 VERDICTS = ('supported', 'unsupported', 'ambiguous')
 

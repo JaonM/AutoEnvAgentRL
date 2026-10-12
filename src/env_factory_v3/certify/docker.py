@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from urllib.request import ProxyHandler, build_opener
 
-from env_factory_v3 import bundle
+from env_factory_v3.certify import bundle
 
 BASE_IMAGE = 'python:3.14-slim'
 PORT = 8000

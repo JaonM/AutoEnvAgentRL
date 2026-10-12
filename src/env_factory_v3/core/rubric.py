@@ -1,7 +1,7 @@
 """Rubric reward for subjective tasks.
 
 Business tasks have one correct outcome, so the oracle's expected state and answer are compared
-exactly (reward.py). Subjective tasks (advice, explanation, comparison, handling a complaint)
+exactly (core/reward.py). Subjective tasks (advice, explanation, comparison, handling a complaint)
 have no single correct reply. They are graded instead against criteria written at build time
 (rubric.json, each grounded in a verbatim quote of the request or rules) plus the platform's
 `grounded` criterion, by a judge model that reads the whole conversation: tool calls and
@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 
-from env_factory_v3 import spec
+from env_factory_v3.core import spec
 
 SCHEMA = {'fields': {'reply': {'type': 'string', 'graded': False,
                                'description': 'Your final message to the user, in their language.'}}}
@@ -128,7 +128,7 @@ class Judge:
         key = hashlib.sha256(prompt.encode()).hexdigest()
         if key in self.cache and not fresh:
             return self.cache[key]
-        from env_factory_v3.llm import ProviderError
+        from env_factory_v3.core.llm import ProviderError
         for _ in range(2):
             content = self.client.chat([{'role': 'user', 'content': prompt}], temperature=0).get('content') or ''
             try:

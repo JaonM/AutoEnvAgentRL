@@ -12,9 +12,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'src'))
 
-from env_factory_v3 import perturbations, prompts, spec  # noqa: E402
-from env_factory_v3.codex import CodexRunner  # noqa: E402
-from env_factory_v3.sandbox import load_module  # noqa: E402
+from env_factory_v3.authoring import perturbations, prompts
+from env_factory_v3.authoring.codex import CodexRunner  # noqa: E402
+from env_factory_v3.core import spec  # noqa: E402
+from env_factory_v3.core.sandbox import load_module  # noqa: E402
 
 
 def replay(build, runner):

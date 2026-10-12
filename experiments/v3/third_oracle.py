@@ -22,11 +22,12 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'src'))
 sys.path.insert(0, str(ROOT / 'experiments' / 'v3'))
 
-from env_factory_v3 import bundle, spec  # noqa: E402
-from env_factory_v3.llm import ChatClient, load_env_file  # noqa: E402
+from env_factory_v3.certify import bundle
+from env_factory_v3.core import spec  # noqa: E402
+from env_factory_v3.core.llm import ChatClient, load_env_file  # noqa: E402
+from env_factory_v3.core.sandbox import load_module  # noqa: E402
+from env_factory_v3.core.worlds import state_diff, variants  # noqa: E402
 from env_factory_v3.runtime import InvalidWorld, run_reference  # noqa: E402
-from env_factory_v3.sandbox import load_module  # noqa: E402
-from env_factory_v3.worlds import state_diff, variants  # noqa: E402
 from evaluate_truth import missing_leaves  # noqa: E402
 
 PROMPT = """You are an independent auditor. From the business task below, write a Python module

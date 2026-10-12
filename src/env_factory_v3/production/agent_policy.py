@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import re
 
-from env_factory_v3 import prompts
+from env_factory_v3.authoring import prompts
 
 STEPS = re.compile(r'首先|第一步|第二步|然后调用|随后调用|先调用')
 

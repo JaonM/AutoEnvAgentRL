@@ -14,8 +14,8 @@ Success requires safety, the expected state and every answer field.
 """
 from __future__ import annotations
 
-from env_factory_v3 import answers
-from env_factory_v3.worlds import state_diff
+from env_factory_v3.core import answers
+from env_factory_v3.core.worlds import state_diff
 
 BUSINESS, EFFICIENCY = 0.95, 0.05
 

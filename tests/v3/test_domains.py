@@ -5,7 +5,7 @@ import json
 import random
 import unittest
 
-from env_factory_v3 import domains
+from env_factory_v3.production import domains
 
 NODES = [('涤纶', '涤纶'), ('服装', '服装'), ('尺寸', '尺寸'), ('退换货', '退换货'),
          ('粤菜', '粤菜'), ('闽菜', '闽菜'), ('外卖', '外卖'), ('赤狐', '赤狐')]

@@ -25,9 +25,9 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.request import Request, urlopen
 
-from env_factory_v3 import reward, spec
+from env_factory_v3.core import reward, spec
+from env_factory_v3.core.worlds import variants
 from env_factory_v3.runtime import BusinessError, Episode, EpisodeFinished, ToolError, tool_specs
-from env_factory_v3.worlds import variants
 
 
 # Free dialogue ends when the user says goodbye or after this many agent messages in a row that
@@ -52,7 +52,7 @@ class Service:
             raise ValueError('a rubric task needs its rubric')
         self.rubric, self._judge = rubric, judge
         if user_mode == 'natural':
-            from env_factory_v3.gates import approval_problems
+            from env_factory_v3.certify.gates import approval_problems
             problems = approval_problems(env, request)
             if problems:
                 raise ValueError(f'bundle is not ready for the natural user: {problems[:3]}')
@@ -94,7 +94,7 @@ class Service:
         identifier = uuid.uuid4().hex
         record = {'episode': episode, 'expected': expected, 'world': name, 'data': data, 'facts': facts}
         if self.user_mode == 'natural':
-            from env_factory_v3.user_sim import UserSimulator
+            from env_factory_v3.serving.user_sim import UserSimulator
             record['user'] = UserSimulator(self.user_client, self.request, facts, self.approvals)
         with self.lock:
             self.episodes[identifier] = record
@@ -198,7 +198,7 @@ class Service:
             reference_calls = run_reference(self.env, data, facts, start=self.request['time']['start'])['tool_calls']
             record['reference_calls'] = reference_calls
         if self.reward_type == 'rubric':
-            from env_factory_v3 import rubric
+            from env_factory_v3.core import rubric
             grade = rubric.grade(episode.result(), self.rubric, self.request, record['facts'], self.judge(),
                                  reference_calls=reference_calls)
         else:
@@ -210,8 +210,8 @@ class Service:
     def judge(self):
         """The rubric judge, created on first use from V3_JUDGE_* (falling back to LLM_*)."""
         if self._judge is None:
-            from env_factory_v3.llm import ChatClient
-            from env_factory_v3.rubric import Judge
+            from env_factory_v3.core.llm import ChatClient
+            from env_factory_v3.core.rubric import Judge
             self._judge = Judge(ChatClient('V3_JUDGE'))
         return self._judge
 

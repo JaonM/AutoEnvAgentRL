@@ -17,11 +17,12 @@ import sys
 import traceback
 from pathlib import Path
 
-from env_factory_v3 import answers, gates
+from env_factory_v3.certify import gates
+from env_factory_v3.core import answers
+from env_factory_v3.core.sandbox import SandboxError, load_module
+from env_factory_v3.core.spec import load
+from env_factory_v3.core.worlds import variants
 from env_factory_v3.runtime import InvalidWorld, canonical, run_reference, tool_spec_problems
-from env_factory_v3.sandbox import SandboxError, load_module
-from env_factory_v3.spec import load
-from env_factory_v3.worlds import variants
 
 PERTURBED = 10
 TABLE_ARGUMENTS = {'table', 'table_name', 'tables', 'collection'}
@@ -156,7 +157,7 @@ def check_diff(folder):
 
 
 def check_rubric(folder):
-    from env_factory_v3 import rubric
+    from env_factory_v3.core import rubric
     path = folder / 'rubric.json'
     if not path.exists():
         return ['rubric.json is missing'], []
@@ -169,7 +170,7 @@ def check_rubric(folder):
 
 
 def check_request(folder):
-    from env_factory_v3.generate import check_request as generated
+    from env_factory_v3.production.generate import check_request as generated
     return generated(folder)
 
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Main entry (V3): domains -> requests -> sandboxes -> images -> policy gate -> tasks.json.
-# Orchestration and validation live in src/env_factory_v3/run.py (`python -m env_factory_v3 run`).
+# Orchestration and validation live in src/env_factory_v3/production/run.py (`python -m env_factory_v3 run`).
 # Arguments are arrays, so paths containing spaces remain single arguments.
 # Do not source .env here: Python loads it as data, without executing shell code.
 # The V1/V2 entry is scripts/run_pipeline_legacy.sh.

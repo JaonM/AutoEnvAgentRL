@@ -18,10 +18,10 @@ from __future__ import annotations
 import copy
 import traceback
 
-from env_factory_v3 import answers, reward
+from env_factory_v3.core import answers, reward
 from env_factory_v3.runtime import (BusinessError, Episode, InvalidWorld, canonical, is_write, run_policy,
                                     run_reference, tool_spec_problems)
-from env_factory_v3.worlds import state_diff, variants
+from env_factory_v3.core.worlds import state_diff, variants
 
 
 def _expected(oracle, data, facts, now):
@@ -211,7 +211,7 @@ def approval_problems(env, request):
     """Free dialogue needs env.approval_key(tool, args, facts): the approval topic that governs an
     exact write (platform side; the agent never sees it). It must name the topic the reference
     itself confirms, on every approval world."""
-    from env_factory_v3 import spec
+    from env_factory_v3.core import spec
     approvals = {t['key'] for t in spec.fact_topics(request) if t['kind'] == 'approval'}
     if not approvals:
         return []
@@ -250,7 +250,7 @@ def qualify(env, oracle, schema, request, *, perturbed=20, http=True, excluded=(
                            else {'passed': False, 'note': 'not run: differential failed'})
     report['category'] = category(request, env) if report['differential']['passed'] else {'passed': False}
     if http and report['differential']['passed']:
-        from env_factory_v3.server import replay_check
+        from env_factory_v3.serving.server import replay_check
         report['http'] = replay_check(env, oracle, schema, request)
     else:
         report['http'] = {'passed': False, 'note': 'not run'}
@@ -278,7 +278,7 @@ def _fabricate(reply):
 def qualify_rubric(env, rubric_spec, schema, request, *, judge=None, http=True):
     """Gates for a rubric task. Without a judge (offline container check) only the deterministic
     gates run; the judge-based ones were passed at build time."""
-    from env_factory_v3 import rubric as rubric_mod
+    from env_factory_v3.core import rubric as rubric_mod
     start = request['time']['start']
     tool_problems = tool_spec_problems(env.make_tools())
     rubric_problems = rubric_mod.check_rubric(rubric_spec, request)
@@ -332,7 +332,7 @@ def qualify_rubric(env, rubric_spec, schema, request, *, judge=None, http=True):
                             'probe_scores': probes}
         report['valid_worlds'] = good
         if http and report['rubric']['passed']:
-            from env_factory_v3.server import replay_check
+            from env_factory_v3.serving.server import replay_check
             report['http'] = replay_check(env, None, schema, request, rubric=rubric_spec, judge=judge)
         else:
             report['http'] = {'passed': False, 'note': 'not run'}

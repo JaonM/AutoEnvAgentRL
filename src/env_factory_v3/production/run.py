@@ -31,7 +31,10 @@ import shutil
 import time
 from pathlib import Path
 
-from env_factory_v3 import bundle, openings, pipeline, spec
+from env_factory_v3.authoring import pipeline
+from env_factory_v3.certify import bundle
+from env_factory_v3.core import spec
+from env_factory_v3.production import openings
 
 STAGES = ('domains', 'generate', 'build', 'docker', 'policy', 'manifest')
 
@@ -56,7 +59,7 @@ def stage_domains(out, options, log):
     if options.get('domains_file'):
         chosen = json.loads(Path(options['domains_file']).read_text())
     else:
-        from env_factory_v3 import domains
+        from env_factory_v3.production import domains
         try:
             graph = options['graph']() if callable(options.get('graph')) else options['graph']
         except Exception as exc:
@@ -73,7 +76,7 @@ def stage_domains(out, options, log):
 
 
 def stage_generate(out, domains_, options, log):
-    from env_factory_v3 import generate
+    from env_factory_v3.production import generate
     folder = out / 'generate'
     summary = _read(folder / 'generation.json')
     if summary is None:
@@ -127,7 +130,7 @@ def stage_difficulty(out, statuses, options, log):
     """Difficulty floor (generate.MIN_REFERENCE_CALLS): a training-ready bundle whose reference solution
     needs fewer public tool calls than its shape's floor is too easy to teach anything; it gets no image
     and no policy gate."""
-    from env_factory_v3 import generate
+    from env_factory_v3.production import generate
     from env_factory_v3.runtime import run_reference
     floors = options.get('min_reference_calls', generate.MIN_REFERENCE_CALLS)
     results = {}
@@ -149,7 +152,7 @@ def stage_difficulty(out, statuses, options, log):
 
 
 def stage_docker(out, statuses, options, log):
-    from env_factory_v3 import docker
+    from env_factory_v3.certify import docker
     results = {}
     for task, status in statuses.items():
         if not (status or {}).get('training_ready'):
@@ -168,7 +171,7 @@ def stage_docker(out, statuses, options, log):
 
 
 def stage_policy(out, statuses, options, log):
-    from env_factory_v3 import policy
+    from env_factory_v3.certify import policy_gate as policy
     k, mode = options['policy_k'], options['policy_user_mode']
     name = policy.RESULT if mode == 'structured' else f'policy-{mode}.json'
     results = {}

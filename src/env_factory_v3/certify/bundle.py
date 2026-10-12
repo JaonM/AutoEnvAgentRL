@@ -6,11 +6,11 @@ import json
 import shutil
 from pathlib import Path
 
-from env_factory_v3 import answers
-from env_factory_v3.sandbox import load_module
-from env_factory_v3.spec import load
+from env_factory_v3.core import answers
+from env_factory_v3.core.sandbox import load_module
+from env_factory_v3.core.spec import load
 
-PACKAGE_ROOT = Path(__file__).parent
+PACKAGE_ROOT = Path(__file__).resolve().parent.parent  # src/env_factory_v3
 FILES = ('request.json', 'answer_schema.json', 'env.py', 'oracle.py', 'gates.json')
 RUBRIC_FILES = ('request.json', 'answer_schema.json', 'env.py', 'rubric.json', 'gates.json')
 
@@ -28,9 +28,11 @@ def sha256(path):
 # agent's view, the user simulator, grading, the gates a bundle is certified with and the container
 # it runs in. Build-time orchestration (generation, codex sessions, repair audits, the run command,
 # the policy gate) is not part of it, so editing those never invalidates certified bundles.
-RUNTIME_MODULES = ('__init__.py', 'agent_view.py', 'answers.py', 'bundle.py', 'docker.py', 'gates.py', 'llm.py',
-                   'reward.py', 'rubric.py', 'runtime.py', 'sandbox.py', 'server.py', 'spec.py', 'user_sim.py',
-                   'worlds.py')
+RUNTIME_MODULES = ('__init__.py', 'runtime.py',
+                   'core/__init__.py', 'core/answers.py', 'core/llm.py', 'core/reward.py', 'core/rubric.py',
+                   'core/sandbox.py', 'core/spec.py', 'core/worlds.py',
+                   'serving/__init__.py', 'serving/agent_view.py', 'serving/server.py', 'serving/user_sim.py',
+                   'certify/__init__.py', 'certify/bundle.py', 'certify/docker.py', 'certify/gates.py')
 
 
 def platform_identity():
@@ -77,8 +79,8 @@ def load_bundle(folder, *, require_current_platform=True):
 
 
 def default_judge():
-    from env_factory_v3.llm import ChatClient, load_env_file
-    from env_factory_v3.rubric import Judge
+    from env_factory_v3.core.llm import ChatClient, load_env_file
+    from env_factory_v3.core.rubric import Judge
     load_env_file()
     return Judge(ChatClient('V3_JUDGE'))
 
@@ -86,7 +88,7 @@ def default_judge():
 def qualify_loaded(loaded, *, judge='auto'):
     """Every gate for a loaded bundle of either reward type. judge=None skips the judge-based
     rubric gates (offline container check)."""
-    from env_factory_v3 import gates
+    from env_factory_v3.certify import gates
     if loaded['rubric'] is not None:
         return gates.qualify_rubric(loaded['env'], loaded['rubric'], loaded['schema'], loaded['request'],
                                     judge=default_judge() if judge == 'auto' else judge)
@@ -96,7 +98,7 @@ def qualify_loaded(loaded, *, judge='auto'):
 
 def service(loaded, **options):
     """The episode service for a loaded bundle (rubric bundles grade with the judge)."""
-    from env_factory_v3 import server
+    from env_factory_v3.serving import server
     return server.Service(loaded['env'], loaded['oracle'], loaded['schema'], loaded['request'],
                           valid_worlds=loaded['valid_worlds'], rubric=loaded['rubric'], **options)
 

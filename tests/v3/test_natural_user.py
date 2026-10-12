@@ -9,7 +9,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from test_env_factory_v3 import LIBRARY, library_modules, library_request  # noqa: E402
 
-from env_factory_v3 import agent_view, gates, server  # noqa: E402
+from env_factory_v3.certify import gates  # noqa: E402
+from env_factory_v3.serving import agent_view, server
 
 
 class ScriptedUser:
@@ -132,7 +133,7 @@ class AgentViewFormatTests(unittest.TestCase):
 class PlainSpeechTests(unittest.TestCase):
     def test_plain_messages_are_speech_and_only_v3_answer_ends_the_episode(self):
         import json as _json
-        from env_factory_v3 import policy
+        from env_factory_v3.certify import policy_gate as policy
         env, oracle, schema = library_modules()
         service = server.Service(env, oracle, schema, library_request(), user_mode='natural', user_client=ScriptedUser())
         httpd = server.start(service)
@@ -206,7 +207,7 @@ class ConversationEndTests(unittest.TestCase):
     def test_a_subjective_task_is_graded_on_the_last_thing_said(self):
         from test_rubric import RUBRIC, REPLY, judge
         env, oracle, schema = library_modules((LIBRARY / 'env.py').read_text().replace(*REPLY))
-        from env_factory_v3 import rubric
+        from env_factory_v3.core import rubric
         request = {**library_request(), 'reward_type': 'rubric'}
         service = server.Service(env, None, rubric.SCHEMA, request, user_mode='natural', user_client=Leaver(),
                                  rubric=RUBRIC, judge=judge())
@@ -238,7 +239,7 @@ class ServiceAndClarificationTests(unittest.TestCase):
             httpd.server_close()
 
     def test_owner_clarifications_become_quotable_rules(self):
-        from env_factory_v3 import spec
+        from env_factory_v3.core import spec
         request = spec.clarify(library_request(), ['已注销的借阅不能续借。'])
         self.assertIn('已注销的借阅不能续借。', spec.brief(request))
         self.assertTrue(spec.quoted(request, '已注销的借阅不能续借'))

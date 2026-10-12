@@ -88,7 +88,7 @@ def main():
     args = parser.parse_args()
     os.environ.setdefault('ENVFACTORY_V3_USER_MODE', 'natural')
     os.environ.setdefault('ENVFACTORY_V3_TOOL_NAMES', 'random')
-    from env_factory_v3.llm import ChatClient, load_env_file
+    from env_factory_v3.core.llm import ChatClient, load_env_file
     load_env_file()
     client = ChatClient(args.prefix)
 

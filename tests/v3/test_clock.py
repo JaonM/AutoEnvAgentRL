@@ -10,8 +10,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from test_env_factory_v3 import library_modules, library_request  # noqa: E402
 
-from env_factory_v3 import agent_view, server, spec  # noqa: E402
+from env_factory_v3.core import spec  # noqa: E402
 from env_factory_v3.runtime import Episode  # noqa: E402
+from env_factory_v3.serving import agent_view, server
 
 
 def with_event(request):

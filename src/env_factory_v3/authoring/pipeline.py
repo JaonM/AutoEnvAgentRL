@@ -16,9 +16,12 @@ import time
 import traceback
 from pathlib import Path
 
-from env_factory_v3 import answers, branches, bundle, checks, gates, perturbations, prompts, rubric, spec
-from env_factory_v3.codex import InfrastructureError
-from env_factory_v3.sandbox import load_module
+from env_factory_v3 import checks
+from env_factory_v3.authoring import branches, perturbations, prompts
+from env_factory_v3.authoring.codex import InfrastructureError
+from env_factory_v3.certify import bundle, gates
+from env_factory_v3.core import answers, rubric, spec
+from env_factory_v3.core.sandbox import load_module
 
 DEFAULT_TIMEOUTS = {'schema': 240, 'author': 720, 'oracle': 600, 'rubric_author': 400, 'arbiter': 600, 'audit': 300,
                     'perturbation_audit': 300, 'repair': 600}

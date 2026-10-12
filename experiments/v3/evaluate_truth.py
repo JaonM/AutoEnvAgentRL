@@ -29,10 +29,10 @@ sys.path.insert(0, str(ROOT / 'src'))
 sys.path.insert(0, str(ROOT / 'experiments' / 'v3_spike'))
 
 from truth import truth  # noqa: E402  (V2 handwritten oracle adapter)
-from env_factory_v3.runtime import run_reference  # noqa: E402
-from env_factory_v3.sandbox import load_module  # noqa: E402
+from env_factory_v3.core.sandbox import load_module  # noqa: E402
+from env_factory_v3.core.worlds import state_diff, variants  # noqa: E402
 from env_factory_v3.runtime import InvalidWorld  # noqa: E402
-from env_factory_v3.worlds import state_diff, variants  # noqa: E402
+from env_factory_v3.runtime import run_reference  # noqa: E402
 
 PERTURBED = 10
 

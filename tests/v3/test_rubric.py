@@ -12,7 +12,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from test_env_factory_v3 import LIBRARY, library_modules, library_request  # noqa: E402
 
-from env_factory_v3 import bundle, gates, generate, pipeline, rubric  # noqa: E402
+from env_factory_v3.authoring import pipeline
+from env_factory_v3.certify import bundle, gates
+from env_factory_v3.core import rubric  # noqa: E402
+from env_factory_v3.production import generate
 from env_factory_v3.runtime import run_policy, run_reference  # noqa: E402
 
 REPLY = ("    return {'renewed_loan_ids': renewed, 'blocked': blocked}",

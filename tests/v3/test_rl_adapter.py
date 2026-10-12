@@ -14,7 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from test_env_factory_v3 import LIBRARY, FakeRunner, library_request  # noqa: E402
 
-from env_factory_v3 import bundle, pipeline  # noqa: E402
+from env_factory_v3.authoring import pipeline  # noqa: E402
+from env_factory_v3.certify import bundle
 from env_factory_v3.runtime import BusinessError  # noqa: E402
 from rl.data.tasks import load_tasks  # noqa: E402
 from rl.environments.v3 import V3DockerEpisode, V3Episode, is_v3_bundle  # noqa: E402
@@ -69,7 +70,7 @@ class DefaultModeTests(unittest.TestCase):
         status = pipeline.build(library_request(), root / 'build', runner=FakeRunner(), perturbed=20)
         environ = {k: v for k, v in os.environ.items() if k != 'ENVFACTORY_V3_USER_MODE'}
         with unittest.mock.patch.dict(os.environ, environ, clear=True), \
-                unittest.mock.patch('env_factory_v3.llm.ChatClient'):  # no simulator calls in this test
+                unittest.mock.patch('env_factory_v3.core.llm.ChatClient'):  # no simulator calls in this test
             env = V3Episode(Path(status['bundle']))
             self.addCleanup(env.close)
             env.reset(0)
@@ -95,7 +96,7 @@ class RenamedToolTests(unittest.TestCase):
         return env
 
     def test_reference_under_random_names_earns_full_reward(self):
-        from env_factory_v3 import agent_view
+        from env_factory_v3.serving import agent_view
         env = self.episode('random')
         seed = next(s for s in range(50) if agent_view.naming(s)['v3_ask'] != 'v3_ask'
                     and agent_view.naming(s)['consent'] != 'consent')
@@ -148,7 +149,7 @@ class NaturalEndTests(unittest.TestCase):
 
         with unittest.mock.patch.dict(os.environ, {'ENVFACTORY_V3_USER_MODE': 'natural',
                                                    'ENVFACTORY_V3_TOOL_NAMES': 'random'}), \
-                unittest.mock.patch('env_factory_v3.llm.ChatClient', Murmur):
+                unittest.mock.patch('env_factory_v3.core.llm.ChatClient', Murmur):
             env = V3Episode(Path(status['bundle']))
             self.addCleanup(env.close)
             env.reset(3)
@@ -163,7 +164,7 @@ class NaturalEndTests(unittest.TestCase):
 
 class ContainerLifetimeTests(unittest.TestCase):
     def test_serving_containers_remove_themselves_when_idle(self):
-        from env_factory_v3 import docker
+        from env_factory_v3.certify import docker
         calls = []
 
         def fake(*args, **kwargs):
@@ -193,7 +194,7 @@ class V3AdapterTests(unittest.TestCase):
         self.addCleanup(self.env.close)
 
     def play(self, policy):
-        from env_factory_v3.bundle import load_bundle
+        from env_factory_v3.certify.bundle import load_bundle
         answer = load_bundle(self.bundle)['env'].reference(policy)
         self.env.step(call('v3_answer', answer, 'final'))
         return self.env.finish()
@@ -235,7 +236,7 @@ class V3AdapterTests(unittest.TestCase):
         self.assertEqual(restored.messages, self.env.messages)
         policy = ScriptedPolicy(restored)
         policy.count = 10
-        answer = __import__('env_factory_v3.bundle', fromlist=['load_bundle']).load_bundle(self.bundle)['env'].reference(policy)
+        answer = __import__('env_factory_v3.certify.bundle', fromlist=['load_bundle']).load_bundle(self.bundle)['env'].reference(policy)
         restored.step(call('v3_answer', answer, 'final'))
         self.assertEqual(restored.finish()['final_reward'], 1.0)
 
@@ -315,12 +316,15 @@ class RequalifyTests(unittest.TestCase):
         imported = set()
         for name in bundle.RUNTIME_MODULES:
             for node in ast.walk(ast.parse((root / name).read_text())):
-                if isinstance(node, ast.ImportFrom) and node.module == 'env_factory_v3':
-                    imported |= {f'{alias.name}.py' for alias in node.names}
-                elif isinstance(node, ast.ImportFrom) and (node.module or '').startswith('env_factory_v3.'):
-                    imported.add(node.module.split('.', 1)[1] + '.py')
+                if isinstance(node, ast.ImportFrom) and (node.module or '').split('.')[0] == 'env_factory_v3':
+                    parts = node.module.split('.')[1:]
+                    for alias in node.names:  # `from pkg import module` or `from pkg.module import name`
+                        module = root.joinpath(*parts, alias.name + '.py')
+                        target = module if module.exists() else root.joinpath(*parts).with_suffix('.py')
+                        imported.add(target.relative_to(root).as_posix())
         self.assertLessEqual(imported, set(bundle.RUNTIME_MODULES))  # runtime never reaches orchestration
-        for orchestration in ('pipeline.py', 'run.py', 'generate.py', 'prompts.py', 'policy.py', 'codex.py'):
+        for orchestration in ('authoring/pipeline.py', 'production/run.py', 'production/generate.py',
+                              'authoring/prompts.py', 'certify/policy_gate.py', 'authoring/codex.py'):
             self.assertNotIn(orchestration, bundle.RUNTIME_MODULES)
 
     def test_requalify_never_signs_a_failing_bundle(self):
@@ -346,7 +350,7 @@ class PolicyGateTests(unittest.TestCase):
         cls.bundle = Path(pipeline.build(library_request(), root / 'build', runner=FakeRunner(), perturbed=20)['bundle'])
 
     def test_a_policy_that_answers_nothing_leaves_the_task_unsolved(self):
-        from env_factory_v3 import policy
+        from env_factory_v3.certify import policy_gate as policy
 
         class Silent:
             model = 'silent'
@@ -362,7 +366,7 @@ class PolicyGateTests(unittest.TestCase):
         self.assertTrue((self.bundle / policy.RESULT).exists())
 
     def test_an_unanswered_episode_earns_zero_like_in_training(self):
-        from env_factory_v3 import policy
+        from env_factory_v3.certify import policy_gate as policy
 
         class Busy:
             model = 'busy'
@@ -376,12 +380,12 @@ class PolicyGateTests(unittest.TestCase):
         self.assertEqual((episode['reward'], episode['answered'], episode['reason']), (0.0, False, 'no_final_answer'))
 
     def test_an_unreachable_service_is_infrastructure_not_a_crash(self):
-        from env_factory_v3 import policy
+        from env_factory_v3.certify import policy_gate as policy
         with self.assertRaises(policy.ProviderError):
             policy.play('http://127.0.0.1:9', object(), 'original', 'multi_step_agentic')
 
     def test_provider_failures_are_infrastructure_not_task_results(self):
-        from env_factory_v3 import policy
+        from env_factory_v3.certify import policy_gate as policy
 
         class Broken:
             model = 'broken'
@@ -397,7 +401,7 @@ class PolicyGateTests(unittest.TestCase):
                      'set V3_DOCKER_TESTS=1 to build and run real containers')
 class DockerTests(unittest.TestCase):
     def test_verified_container_serves_a_full_reward_episode(self):
-        from env_factory_v3 import docker
+        from env_factory_v3.certify import docker
         root = Path(tempfile.mkdtemp())
         status = pipeline.build(library_request(), root / 'build', runner=FakeRunner(), perturbed=20)
         folder = Path(status['bundle'])

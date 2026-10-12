@@ -25,7 +25,7 @@ from env_factory.graph.graph_builder import Neo4jGraphStore  # noqa: E402
 from env_factory.graph.graph_expander import GraphExpansionConfig, SeedGraphExpander  # noqa: E402
 from env_factory.graph.wikipedia_dump import LocalWikipediaClient  # noqa: E402
 from env_factory.llm import LLMClient  # noqa: E402
-from env_factory_v3.llm import load_env_file  # noqa: E402
+from env_factory_v3.core.llm import load_env_file  # noqa: E402
 
 
 def backup(store, path):

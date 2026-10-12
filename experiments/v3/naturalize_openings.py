@@ -12,12 +12,12 @@ What a real user does not say, and goes:
    every write anyway; caring about money is fine ("别乱扣钱"), dictating steps is not;
 2. virtual clock values ("当前时间是10", "第10天"): said relatively instead ("还有20分钟开诊");
 3. math-problem listings in direct tasks: the numbers stay, said as one would read a receipt;
-4. stock sameness: each task gets a fixed persona (env_factory_v3.openings.PERSONAS), and not
+4. stock sameness: each task gets a fixed persona (env_factory_v3.production.openings.PERSONAS), and not
    every opening starts with "帮我"/"麻烦".
 Plus the earlier rules: amounts in 元, no transaction semantics or rule restatements, no field names.
 
 A rewrite is accepted when the reviewer scores it natural >= 4, equivalent, nothing lost or added,
-no rule restatement, and no deterministic red flag (env_factory_v3.openings.red_flags); up to 3
+no rule restatement, and no deterministic red flag (env_factory_v3.production.openings.red_flags); up to 3
 attempts with the reviewer's issues fed back. naturalization.json records every attempt, the
 before/after reviews and diversity metrics.
 """
@@ -31,8 +31,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'src'))
 
-from env_factory_v3.llm import ChatClient, load_env_file  # noqa: E402
-from env_factory_v3.openings import diversity, persona, red_flags  # noqa: E402
+from env_factory_v3.core.llm import ChatClient, load_env_file  # noqa: E402
+from env_factory_v3.production.openings import diversity, persona, red_flags  # noqa: E402
 
 REWRITE = """把下面这条“用户开场请求”改写成真实用户在客服/助手对话里会说的话。
 
