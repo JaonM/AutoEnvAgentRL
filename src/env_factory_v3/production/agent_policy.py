@@ -15,7 +15,13 @@ import re
 
 from env_factory_v3.authoring import prompts
 
-STEPS = re.compile(r'首先|第一步|第二步|然后调用|随后调用|先调用')
+STEPS = re.compile(r'首先|第一步|第二步|然后调用|随后调用|先调用|\bstep \d\b|\bfirst,? (call|query|look up|check)\b'
+                   r'|\bthen call\b', re.I)
+LANGUAGE_RULES = {
+    'zh': '手册用中文写，金额用“元”表述，精确到分（规格里的“分”除以 100 换算成元）。',
+    'en': '手册用英文写（write the manual in English），金额用美元（$）表述，精确到分（规格里以“分”/cents 计的金额除以 100'
+          '换算成美元）。',
+}
 
 
 def internals(request, policy, tool_names=()):
@@ -24,12 +30,16 @@ def internals(request, policy, tool_names=()):
     identifiers = sorted(set(re.findall(r'[A-Za-z]+_[A-Za-z0-9_]+', policy)))
     if identifiers:
         problems.append(f'mentions identifiers {identifiers[:6]}: say them in business language')
-    tables = [t for t in request['tables'] if re.search(rf'(?<![A-Za-z]){re.escape(t)}(?![A-Za-z])', policy)]
+    english = request.get('language', 'zh') == 'en'
+    # In English a table named "orders" is also an ordinary word; only identifier-like names count there.
+    tables = [t for t in request['tables'] if re.search(rf'(?<![A-Za-z]){re.escape(t)}(?![A-Za-z])', policy)
+              and ('_' in t or not english)]
     if tables:
         problems.append(f'mentions tables {tables}')
-    if 'time.start' in policy or '虚拟' in policy:
+    if 'time.start' in policy or '虚拟' in policy or re.search(r'\bvirtual\b', policy, re.I):
         problems.append('mentions the virtual clock: use relative times such as “现在”')
-    named = [t for t in tool_names if t in policy]
+    # Likewise a one-word tool name ("refund") is an ordinary English word.
+    named = [t for t in tool_names if t in policy and ('_' in t or not english)]
     if named:
         problems.append(f'names tools {named}')
     if STEPS.search(policy):
@@ -59,7 +69,8 @@ def write(client, request, tool_names=(), attempts=3):
     feedback, problems = '', []
     for _ in range(attempts):
         policy = (client.chat([{'role': 'user', 'content': prompts.POLICY_WRITER.format(
-            rules=request['business_rules'], feedback=feedback)}], temperature=0.3).get('content') or '').strip()
+            rules=request['business_rules'], feedback=feedback,
+            language_rule=LANGUAGE_RULES[request.get('language', 'zh')])}], temperature=0.3).get('content') or '').strip()
         problems = internals(request, policy, tool_names) or coverage(client, request['business_rules'], policy)
         if policy and not problems:
             return policy, []

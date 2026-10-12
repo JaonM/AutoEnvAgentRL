@@ -45,7 +45,7 @@ def spoken(number):
     if isinstance(number, int) and not isinstance(number, bool):
         forms |= chinese(number)
         yuan = number / 100
-        forms.add(f'{yuan:g}')
+        forms |= {f'{yuan:g}', f'{yuan:.2f}', f'{yuan:,.2f}', f'{number:,}'}  # 3.5, 3.50, 1,234.50, 12,345
         whole, cents = divmod(number, 100)
         if not cents:
             forms |= chinese(whole)

@@ -29,7 +29,7 @@ ANSWERS = {'id': 'answers_request', 'weight': 3, 'basis': 'platform', 'gate': Tr
            'levels': {'0': 'does not deliver it (empty, generic, evasive or off-topic)', '1': 'delivers part of it',
                       '2': 'delivers everything the user asked for'}}
 PLAIN = {'id': 'plain_language', 'weight': 2, 'basis': 'platform',
-         'description': 'The reply is easy for this user to understand: everyday words, amounts in 元, no internal '
+         'description': 'The reply is easy for this user to understand: everyday words, amounts in the user\'s currency (元 or $), no internal '
                         'field names, table ids, status codes, raw cents, virtual clock values or rule text the user '
                         'never used; concise enough to read in one go.',
          'levels': {'0': 'reads like a system report or leaks internals', '1': 'mostly plain with some jargon',

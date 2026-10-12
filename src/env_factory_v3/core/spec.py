@@ -4,6 +4,8 @@ request.json
     id, family, category (direct_response | simple_agentic | multi_step_agentic), title,
     user_request   what the user says to the agent (public)
     business_rules implementation spec: the only semantic authority for env, oracle, arbiter and gates
+    language       optional; "zh" (default) or "en": the language of the scene, opening, policy, the
+                   simulated user and every platform text the agent sees
     agent_policy   optional; the same policies in business language (no tables, fields or clock
                    internals, no solution steps). When present it is all the agent ever sees of the rules
     tables         {table: [row objects]} initial data
@@ -20,6 +22,7 @@ from pathlib import Path
 CATEGORIES = ('direct_response', 'simple_agentic', 'multi_step_agentic')
 # business: one correct outcome, graded exactly against the oracle; rubric: subjective, graded by criteria.
 REWARD_TYPES = ('business', 'rubric')
+LANGUAGES = ('zh', 'en')
 REQUIRED = ('id', 'family', 'category', 'title', 'user_request', 'business_rules', 'tables', 'user_facts')
 
 
@@ -52,6 +55,8 @@ def validate(request):
     for text in ('user_request', 'business_rules', 'title'):
         if not isinstance(request.get(text), str) or not request[text].strip():
             problems.append(f'{text} must be nonempty text')
+    if request.get('language', 'zh') not in LANGUAGES:
+        problems.append(f'language must be one of {LANGUAGES}')
     if 'agent_policy' in request and not (isinstance(request['agent_policy'], str) and request['agent_policy'].strip()):
         problems.append('agent_policy must be nonempty text when present')
     events = tables.get('scheduled_events', []) if isinstance(tables, dict) else []

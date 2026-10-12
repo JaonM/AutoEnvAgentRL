@@ -134,7 +134,7 @@ class RenamedToolTests(unittest.TestCase):
 
 
 class NaturalEndTests(unittest.TestCase):
-    def test_idle_speech_gets_a_notice_naming_the_answer_tool_then_closes(self):
+    def test_idle_speech_gets_a_notice_then_closes(self):
         root = Path(tempfile.mkdtemp())
         status = pipeline.build(library_request(), root / 'build', runner=FakeRunner(), perturbed=20)
 
@@ -157,7 +157,8 @@ class NaturalEndTests(unittest.TestCase):
             env.reset(3)
             for turn in range(3):
                 env.step({'role': 'assistant', 'content': f'第{turn}句'})
-            self.assertIn(env.naming['v3_answer'], env.messages[-1]['content'])
+            self.assertIn('把处理结果告诉用户', env.messages[-1]['content'])  # no answer tool by default
+            self.assertNotIn(env.naming['v3_answer'], env.messages[-1]['content'])
             self.assertFalse(env.terminated)
             _, done = env.step({'role': 'assistant', 'content': '还在吗'})
         self.assertTrue(done)

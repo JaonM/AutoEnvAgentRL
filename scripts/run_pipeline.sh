@@ -26,6 +26,7 @@ V3 端到端生产线：知识图谱采样业务领域 → codex 写任务（规
   --seed N               采样随机种子（默认 0），便于复现
   --splits FILE          固化的节点→划分映射（默认 experiments/v3/graph_splits.json），保证划分互不重叠
   --rubric-share X       主观任务（rubric 评分）占比，0..1（默认 0）；从多步名额中划出
+  --english-share X      英文任务占比，0..1（默认 0）：场景、开场白、对外政策、模拟用户都用英文
 
 构建：
   --parallel N           并发生成 / 构建数（默认 2）
@@ -77,7 +78,7 @@ while [[ $# -gt 0 ]]; do
     -h|--help) usage; exit 0 ;;
     --dry-run) dry_run=true; shift ;;
     --no-docker) docker=false; shift ;;
-    --count|--count=*|--output|--output=*|--split|--split=*|--domains-file|--domains-file=*|--domains|--domains=*|--hops|--hops=*|--seed|--seed=*|--splits|--splits=*|--rubric-share|--rubric-share=*|--parallel|--parallel=*|--repairs|--repairs=*|--model|--model=*|--policy-k|--policy-k=*|--policy-user-mode|--policy-user-mode=*|--policy-prefix|--policy-prefix=*|--eval-share|--eval-share=*)
+    --count|--count=*|--output|--output=*|--split|--split=*|--domains-file|--domains-file=*|--domains|--domains=*|--hops|--hops=*|--seed|--seed=*|--splits|--splits=*|--rubric-share|--rubric-share=*|--english-share|--english-share=*|--parallel|--parallel=*|--repairs|--repairs=*|--model|--model=*|--policy-k|--policy-k=*|--policy-user-mode|--policy-user-mode=*|--policy-prefix|--policy-prefix=*|--eval-share|--eval-share=*)
       flag="${1%%=*}"
       if [[ "$1" == *=* ]]; then
         value="${1#*=}"; shift

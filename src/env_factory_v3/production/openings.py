@@ -24,6 +24,21 @@ PATTERNS = (
     (r'(时刻|时间点|时间)(是|为)?\s*\d+(?!\s*(分钟|小时|天|点|号|元|块))', '虚拟时间'),
 )
 
+PATTERNS_EN = (
+    (r'\b\d+\s*cents?\b', 'amount in cents (users say dollars)'),
+    (r'\b(confirm|check) with me (first|before)|\bwait for my (ok|approval|confirmation)', 'dictates the confirmation protocol'),
+    (r'\bbefore (each|every) (step|item|one)\b', 'dictates the confirmation protocol'),
+    (r'\b(current )?time (is )?\d+\b|\bday \d+\b|\bvirtual\b|time\.start', 'virtual clock'),
+    (r'\batomic|\broll ?back\b', 'transaction semantics'),
+)
+PERSONAS_EN = (
+    ('terse', 'one or two short sentences, straight to the point'),
+    ('in a hurry', 'a bit rushed, e.g. "quick question", "I\'m in a hurry"'),
+    ('gives context', 'half a sentence about why, then the request'),
+    ('polite', 'courteous but brief, e.g. "Hi, could you help me"'),
+    ('casual', 'chatty and informal, e.g. "hey", "so basically"'),
+)
+
 PERSONAS = (
     ('话少直接', '一两句话，开门见山，不寒暄'),
     ('着急', '语气有点急，比如“赶时间”“快帮我看下”'),
@@ -33,15 +48,18 @@ PERSONAS = (
 )
 
 
-def red_flags(text):
+def red_flags(text, language='zh'):
+    if language == 'en':
+        return sorted({label for pattern, label in PATTERNS_EN if re.search(pattern, text, re.I)})
     flags = [phrase for phrase in PHRASES if phrase in text]
     flags += [label for pattern, label in PATTERNS if re.search(pattern, text)]
     return sorted(set(flags))
 
 
-def persona(key):
+def persona(key, language='zh'):
     """A fixed persona per task id, so rewrites vary across tasks but are reproducible."""
-    return PERSONAS[int(hashlib.sha256(str(key).encode()).hexdigest(), 16) % len(PERSONAS)]
+    personas = PERSONAS_EN if language == 'en' else PERSONAS
+    return personas[int(hashlib.sha256(str(key).encode()).hexdigest(), 16) % len(personas)]
 
 
 def diversity(texts):

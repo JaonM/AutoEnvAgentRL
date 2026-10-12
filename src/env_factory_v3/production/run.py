@@ -84,7 +84,8 @@ def stage_generate(out, domains_, options, log):
             shutil.move(str(folder), str(out / f'generate.incomplete-{int(time.time())}'))
         summary = generate.generate(domains_, options['count'], folder, runner=options['runner'],
                                     parallel=options['parallel'], python=options['python'],
-                                    rubric_share=options['rubric_share'], opening_client=options['opening_client'])
+                                    rubric_share=options['rubric_share'], opening_client=options['opening_client'],
+                                    english_share=options.get('english_share', 0.0))
         log('generate', 'done', f"{summary['kept']}/{summary['requested']} requests")
     else:
         log('generate', 'reused', f"{summary['kept']}/{summary['requested']} requests")

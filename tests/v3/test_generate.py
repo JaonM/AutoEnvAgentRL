@@ -143,6 +143,18 @@ class GenerateTests(unittest.TestCase):
         service = server.Service(env, oracle, schema, {**request, 'agent_policy': POLICY})
         self.assertEqual(service.reset(world='original')['instructions']['business_rules'], POLICY)
 
+    def test_english_share_spreads_english_tasks_and_english_checks_apply(self):
+        from env_factory_v3.production import agent_policy, openings
+        langs = generate.languages(10, 0.7)
+        self.assertEqual(langs.count('en'), 7)
+        self.assertEqual(generate.languages(4, 0.0), ['zh'] * 4)
+        self.assertTrue(openings.red_flags('Please confirm with me first before each step', 'en'))
+        self.assertEqual(openings.red_flags('Hi, I want to cancel my order and get $12 back.', 'en'), [])
+        request = {**library_request(), 'language': 'en'}
+        clean = 'Only the borrower may renew. Loans with other readers waiting cannot be renewed; tell the user how many.'
+        self.assertEqual(agent_policy.internals(request, clean, ('renew', 'list_loans')), [])  # ordinary words
+        self.assertTrue(agent_policy.internals(request, 'Call list_loans, then renew.', ('list_loans',)))
+
     def test_generic_table_readers_are_rejected(self):
         from env_factory_v3 import checks
 

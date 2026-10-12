@@ -105,6 +105,8 @@ def main(argv=None):
                    help='persisted node -> split map, so splits stay disjoint across runs')
     p.add_argument('--rubric-share', type=float, default=0.0,
                    help='fraction of tasks that are subjective, graded by rubric (default 0)')
+    p.add_argument('--english-share', type=float, default=0.0,
+                   help='fraction of tasks written in English (scene, opening, policy, simulated user); default 0')
     p.add_argument('--parallel', type=int, default=2, help='concurrent generations / builds (default 2)')
     p.add_argument('--repairs', type=int, default=2, help='repair budget per build (default 2)')
     p.add_argument('--model', default='gpt-6.1-sol', help='codex model for generation and building')
@@ -218,6 +220,7 @@ def main(argv=None):
             return 2
         options = dict(count=args.count, split=args.split, domains_file=args.domains_file, domains=args.domains,
                        hops=args.hops, seed=args.seed, rubric_share=args.rubric_share, parallel=args.parallel,
+                       english_share=args.english_share,
                        repairs=args.repairs, docker=args.docker, policy_k=args.policy_k,
                        policy_user_mode=args.policy_user_mode, eval_share=args.eval_share,
                        python=sys.executable, runner=runner, opening_client=ChatClient('V3_OPENING'))

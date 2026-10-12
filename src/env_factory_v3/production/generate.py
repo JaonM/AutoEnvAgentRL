@@ -56,8 +56,19 @@ MAX_DIRECT_NUMBERS, MAX_WANTS = 8, 3  # what a user says in one opening message
 MIN_REFERENCE_CALLS = {'complex': 6}
 
 
-def opening_problems(text):
-    return [f'user_request reads unnatural: {flag}' for flag in openings.red_flags(text)]
+LANGUAGE_NAMES = {'zh': 'Chinese', 'en': 'English'}
+CURRENCY = {'zh': '元', 'en': 'dollars'}
+
+
+def languages(count, english_share=0.0):
+    """Language per task index: english_share of the tasks in English, spread evenly over the plan."""
+    english = round(count * english_share)
+    return ['en' if english and (i * english) // count != ((i + 1) * english) // count else 'zh'
+            for i in range(count)]
+
+
+def opening_problems(text, language='zh'):
+    return [f'user_request reads unnatural: {flag}' for flag in openings.red_flags(text, language)]
 
 
 def check_request(folder):
@@ -78,12 +89,15 @@ def check_request(folder):
     problems = spec.validate({**request, 'user_request': request.get('user_request') or scene['goal']})
     if problems:
         return problems, []
-    problems += [f'user_scene {p}' for p in opening_problems(json.dumps(scene, ensure_ascii=False))
+    language = request.get('language', 'zh')
+    problems += [f'user_scene {p}' for p in opening_problems(json.dumps(scene, ensure_ascii=False), language)
                  if '金额用' not in p]
     facts = request['user_facts']
     approvals = [k for k in facts if k.startswith('approve')]
     problems += [f'approval fact {k} must be a boolean' for k in approvals if not isinstance(facts[k], bool)]
     expected = json.loads((Path(folder) / 'assignment.json').read_text()) if (Path(folder) / 'assignment.json').exists() else {}
+    if expected.get('language', 'zh') != language:
+        problems.append(f'language must be "{expected.get("language", "zh")}" and every text field written in it')
     if expected.get('category') and request['category'] != expected['category']:
         problems.append(f'category must be {expected["category"]}')
     wanted = 'rubric' if expected.get('shape') == 'subjective' else 'business'
@@ -139,20 +153,27 @@ def missing_numbers(opening, scene):
 
 def write_opening(client, request, persona_key, attempts=3, avoid=()):
     """Stage two: the user's first message from the scene alone (never the rules, tables or facts)."""
-    scene = request['user_scene']
-    name, hint = openings.persona(persona_key)
+    scene, language = request['user_scene'], request.get('language', 'zh')
+    english = language == 'en'
+    name, hint = openings.persona(persona_key, language)
     feedback = ''
-    avoid_text = f"不要使用这些已被其他用户用滥的说法：{'、'.join(avoid)}。" if avoid else ''
+    if english:
+        avoid_text = f"do not use these overused phrases: {'; '.join(avoid)}." if avoid else ''
+    else:
+        avoid_text = f"不要使用这些已被其他用户用滥的说法：{'、'.join(avoid)}。" if avoid else ''
+    template = prompts.OPENING_WRITER_EN if english else prompts.OPENING_WRITER
     for _ in range(attempts):
-        text = (client.chat([{'role': 'user', 'content': prompts.OPENING_WRITER.format(
+        text = (client.chat([{'role': 'user', 'content': template.format(
             situation=scene['situation'], goal=scene['goal'], known=json.dumps(scene['known'], ensure_ascii=False),
-            wants='；'.join(map(str, scene['wants_to_know'])) or '（无）', persona=name, persona_hint=hint,
-            feedback=feedback, avoid=avoid_text)}], temperature=0.8).get('content') or '').strip()
-        flags, missing = openings.red_flags(text), missing_numbers(text, scene)
-        flags += [f'用滥的说法：{phrase}' for phrase in avoid if phrase in text]
+            wants=('; ' if english else '；').join(map(str, scene['wants_to_know'])) or ('(none)' if english else '（无）'),
+            persona=name, persona_hint=hint, feedback=feedback, avoid=avoid_text)}],
+            temperature=0.8).get('content') or '').strip()
+        flags, missing = openings.red_flags(text, language), missing_numbers(text, scene)
+        flags += [f'overused: {phrase}' for phrase in avoid if phrase in text]
         if text and not flags and not missing:
             return text, name, []
-        feedback = f'上一条：{text}\n问题：禁用说法 {flags}；漏说的数字 {missing}。请重写。\n'
+        feedback = (f'Previous: {text}\nProblems: phrases to avoid {flags}; numbers not mentioned {missing}. Rewrite.\n'
+                    if english else f'上一条：{text}\n问题：禁用说法 {flags}；漏说的数字 {missing}。请重写。\n')
     return None, name, [f'opening: red flags {flags}, missing numbers {missing}']
 
 
@@ -185,11 +206,16 @@ def plan(domains, count, rubric_share=0.0):
     return [(domains[i % len(domains)], category, shape) for i, (category, shape) in enumerate(slots)]
 
 
-def repeated_phrases(texts, size=6, share=0.3):
-    """Phrases of `size`+ characters that more than `share` of the openings (and at least 3) use."""
+def repeated_phrases(texts, size=6, share=0.3, language='zh'):
+    """Phrases that more than `share` of the openings (and at least 3) use: `size`+ characters in
+    Chinese, `size` // 2 + 1 consecutive words (four by default) in English."""
     counts = {}
     for text in texts:
-        seen = {text[i:i + size] for i in range(len(text) - size + 1)}
+        if language == 'en':
+            words, n = re.findall(r"[a-z']+", text.lower()), size // 2 + 1
+            seen = {' '.join(words[i:i + n]) for i in range(len(words) - n + 1)}
+        else:
+            seen = {text[i:i + size] for i in range(len(text) - size + 1)}
         for gram in seen:
             counts[gram] = counts.get(gram, 0) + 1
     limit = max(3, int(share * len(texts)) + 1)
@@ -198,10 +224,13 @@ def repeated_phrases(texts, size=6, share=0.3):
 
 def respread(kept, client, output):
     """Rewrite openings that share stock phrases with too many others (once)."""
-    phrases = repeated_phrases([r['user_request'] for r in kept])
+    phrases = {language: repeated_phrases([r['user_request'] for r in kept if r.get('language', 'zh') == language],
+                                          language=language) for language in LANGUAGE_NAMES}
     rewritten = []
     for request in kept:
-        hits = [p for p in phrases if p in request['user_request']]
+        language = request.get('language', 'zh')
+        text = request['user_request'].lower() if language == 'en' else request['user_request']
+        hits = [p for p in phrases[language] if p in text]
         if not hits:
             continue
         text, _, _ = write_opening(client, request, request['id'], avoid=tuple(hits))
@@ -213,7 +242,7 @@ def respread(kept, client, output):
 
 
 def generate(domains, count, output, *, runner, parallel=2, timeout=600, python='python', rubric_share=0.0,
-             opening_client=None):
+             opening_client=None, english_share=0.0):
     """Stage one: a codex session per task writes rules, tables, facts and a user scene. Stage two:
     opening_client (V3_OPENING_*, falling back to LLM_*) writes the opening from the scene alone."""
     if opening_client is None:
@@ -223,20 +252,25 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
     output = Path(output)
     output.mkdir(parents=True)
     assignments = plan(domains, count, rubric_share)
+    langs = languages(count, english_share)
 
     def one(index, assignment):
         domain, category, shape = assignment
         folder = output / 'sessions' / f'{index:03d}'
         folder.mkdir(parents=True)
+        language = langs[index]
         (folder / 'assignment.json').write_text(json.dumps(
-            {'domain': domain, 'category': category, 'shape': shape, 'id': f'gen-{index:03d}'}, ensure_ascii=False))
+            {'domain': domain, 'category': category, 'shape': shape, 'id': f'gen-{index:03d}', 'language': language},
+            ensure_ascii=False))
         detail = domain.get('detail', '')
         if domain.get('process') or domain.get('mechanisms'):
             detail += f" 业务环节：{domain.get('process', '')}；需要体现的机制：{'、'.join(domain.get('mechanisms', []))}。"
         runner(folder, prompts.REQUEST_AUTHOR.format(python=python, domain=domain['name'],
                                                        detail=detail, category=category,
                                                        shape=SHAPES[shape], id=f'gen-{index:03d}',
-                                                       reward_type='rubric' if shape == 'subjective' else 'business'),
+                                                       reward_type='rubric' if shape == 'subjective' else 'business',
+                                                       language=language, language_name=LANGUAGE_NAMES[language],
+                                                       currency=CURRENCY[language]),
                timeout=timeout, role='request_author')
         report = checks.run('request', folder)
         return index, assignment, report
@@ -245,11 +279,12 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
         results = list(pool.map(lambda pair: one(*pair), enumerate(assignments)))
     kept, rows = [], []
     for index, (domain, category, shape), report in results:
-        row = {'index': index, 'domain': domain['name'], 'category': category, 'shape': shape,
+        row = {'index': index, 'domain': domain['name'], 'category': category, 'shape': shape, 'language': langs[index],
                'passed': report['passed'], 'problems': report['problems'][:5]}
         if report['passed']:
             request = json.loads((output / 'sessions' / f'{index:03d}' / 'request.json').read_text())
             request.setdefault('time', {'start': 10, 'tick': 0})
+            request['language'] = langs[index]
             opening, persona_name, opening_problems_ = write_opening(opening_client, request, f'gen-{index:03d}')
             row.update(persona=persona_name)
             if opening is None:
@@ -269,7 +304,7 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
             else:
                 request['id'] = f'gen-{index:03d}'
                 request['source'] = {'generated': domain['name'], 'family': domain.get('family'),
-                                     'shape': shape, 'persona': persona_name,
+                                     'shape': shape, 'persona': persona_name, 'language': langs[index],
                                      'opening_writer': getattr(opening_client, 'model', None)}
                 kept.append(request)
                 (output / 'requests').mkdir(exist_ok=True)

@@ -74,7 +74,7 @@ class Service:
                      'advancing': 'scheduled_events' in request['tables']},
             'protocol': 'Use ask to learn user facts and confirm before every write; '
                         'pass the returned consent token to that exact write; finish with answer.',
-            'user_mode': user_mode}
+            'user_mode': user_mode, 'language': request.get('language', 'zh')}
         if user_mode == 'natural':
             # The agent must find out what to ask; no topic keys, no approval keys.
             self.instructions.pop('user_topics')

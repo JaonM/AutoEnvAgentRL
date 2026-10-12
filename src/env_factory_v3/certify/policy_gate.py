@@ -38,7 +38,6 @@ def _post(opener, url, body):
         raise ProviderError(f'service unreachable: {type(error).__name__}') from error
 
 
-LEFT = '（系统提示：请用 v3_answer 记录处理结果，并把结果告诉用户；继续空谈，对话将被结束。）'
 
 
 def left(reply):
@@ -57,6 +56,7 @@ def play(base_url, client, world, category, *, max_turns=30, answer_tool=True):
     tools = agent_view.tools(instructions, category, answer_tool=answer_tool)
     messages = agent_view.messages(instructions, answer_tool=answer_tool)
     natural = agent_view.speaks(instructions)
+    notice = agent_view.left_notice(agent_view.language(instructions), 'v3_answer' if answer_tool else None)
     # Structured: the answer ends the episode. Free dialogue: the answer is only recorded; the
     # episode ends when the user leaves (or at max_turns) and is graded then (server._close).
     answered, closed, calls, turns = False, False, 0, 0
@@ -77,7 +77,7 @@ def play(base_url, client, world, category, *, max_turns=30, answer_tool=True):
                     if ended == 'closed':
                         closed = True
                         break
-                    messages.append({'role': 'user', 'content': f'{text}\n\n{LEFT}' if ended else text})
+                    messages.append({'role': 'user', 'content': f'{text}\n\n{notice}' if ended else text})
                     continue
                 answer = agent_view.final_answer(reply.get('content'))
                 step({'type': 'answer', 'answer': answer if answer is not None else {}})
@@ -100,7 +100,7 @@ def play(base_url, client, world, category, *, max_turns=30, answer_tool=True):
                         result = step(action)
                         ended = left(result) if action['type'] == 'chat' else None
                         if ended == 'warning':
-                            result = {**result, 'notice': LEFT}
+                            result = {**result, 'notice': notice}
                         elif ended == 'closed':
                             closed = True
                 messages.append({'role': 'tool', 'tool_call_id': call.get('id', name), 'name': name,
@@ -121,7 +121,7 @@ def play(base_url, client, world, category, *, max_turns=30, answer_tool=True):
             pass
 
 
-SAY = """你是一位客服。请把下面的处理结果用平实的中文完整地告诉用户：每个数字和编号都要说到，金额按字段说明换算成元来说，
+SAY = """你是一位客服。请把下面的处理结果用平实的{language}完整地告诉用户：每个数字和编号都要说到，金额按字段说明换算成元（英文用美元）来说，
 结论性的选项用日常说法表达。只输出你对用户说的话。
 
 答案格式：
@@ -138,6 +138,7 @@ def extraction_probe(loaded, service, client):
     request = loaded['request']
     expected = loaded['oracle'].expected(request['tables'], request['user_facts'], request['time']['start'])['answer']
     speech = (client.chat([{'role': 'user', 'content': SAY.format(
+        language='英文' if request.get('language') == 'en' else '中文',
         schema=json.dumps(loaded['schema']['fields'], ensure_ascii=False), answer=json.dumps(
             expected, ensure_ascii=False))}], temperature=0).get('content') or '').strip()
     extracted = service.extractor().extract(loaded['schema'], [speech])

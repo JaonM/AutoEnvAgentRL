@@ -38,9 +38,6 @@ def bundle_identity(root):
     return hashlib.sha256(canonical(loaded['manifest']['files']).encode()).hexdigest()
 
 
-LEFT = '（系统提示：请用 {answer} 记录处理结果，并把结果告诉用户；继续空谈，对话将被结束。）'
-
-
 RESTORED = ('messages', 'tools', 'terminated', 'score', 'answer', 'unknown_tool_calls',
             'platform_tool_hallucinations')
 
@@ -137,6 +134,7 @@ class V3Episode:
         self.terminated, self.score, self.answer, self.call_ids = False, None, None, set()
         public = response['instructions']
         self.names = {tool['name'] for tool in public['tools']}
+        self.language = agent_view.language(public)
         arguments = {arg for tool in public['tools'] for arg in tool['parameters']['properties']}
         self.naming = agent_view.naming(int(seed), self.tool_naming, avoid=self.names | arguments)
         self.answer_tool = (self.user_mode != 'natural' or self.answer_tool_mode == 'always' or
@@ -173,7 +171,7 @@ class V3Episode:
             if self.score is None:
                 self._grade()
         elif result.get('ended') == 'warning':
-            return LEFT.format(answer=self.naming['v3_answer'])
+            return agent_view.left_notice(self.language, self.naming['v3_answer'] if self.answer_tool else None)
         return None
 
     def _grade(self):

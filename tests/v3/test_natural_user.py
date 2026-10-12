@@ -140,6 +140,41 @@ class SystemPromptTests(unittest.TestCase):
         self.assertIn('把结果告诉用户', system)
 
 
+class EnglishTests(unittest.TestCase):
+    def service(self, user=None):
+        env, oracle, schema = library_modules()
+        request = {**library_request(), 'language': 'en'}
+        return server.Service(env, oracle, schema, request, user_mode='natural', user_client=user or ScriptedUser())
+
+    def test_an_english_task_shows_the_agent_english_platform_texts(self):
+        instructions = self.service().reset(world='original')['instructions']
+        self.assertEqual(instructions['language'], 'en')
+        system = agent_view.messages(instructions, answer_tool=False)[0]['content']
+        self.assertTrue(system.startswith('You are a customer service agent'))
+        self.assertIn('Policy:', system)
+        chat = next(t for t in agent_view.tools(instructions, 'multi_step_agentic') if t['function']['name'] == 'v3_chat')
+        self.assertIn('Ask the user to approve', chat['function']['description'])
+        self.assertIn('System notice', agent_view.left_notice('en'))
+
+    def test_the_english_user_speaks_english_and_stops_with_its_own_marker(self):
+        class Bye(ScriptedUser):
+            def chat(self, messages, tools=None, **parameters):
+                self.seen.append(messages[0]['content'])
+                return {'content': 'Great, thanks. Bye!\n[END]'}
+        user = Bye()
+        service = self.service(user)
+        episode = service.reset(world='original')['episode']
+        reply = service.step(episode, {'type': 'chat', 'message': 'Both books are renewed.'})
+        self.assertEqual(reply['result']['ended'], 'closed')
+        self.assertNotIn('[END]', reply['result']['reply'])
+        self.assertTrue(user.seen[0].startswith('You are an ordinary customer'))
+
+    def test_dollar_amounts_count_as_said(self):
+        from env_factory_v3.core.numerals import said
+        self.assertTrue(said('Your refund is $3.50.', 350))
+        self.assertTrue(said('That comes to $1,234.50 in total.', 123450))
+
+
 class PlainSpeechTests(unittest.TestCase):
     def test_plain_messages_are_speech_and_the_user_ends_the_episode(self):
         import json as _json

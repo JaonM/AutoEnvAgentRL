@@ -221,14 +221,15 @@ REQUEST_AUTHOR = """You design one new business task for training customer-facin
 {domain}. {detail}
 Write request.json in this folder (assignment.json repeats the assignment):
 {{"id": "{id}", "family": "<short domain slug>", "category": "{category}", "reward_type": "{reward_type}",
-  "title": "<short Chinese title>", "user_scene": {{...}}, "business_rules": "...", "tables": {{...}},
+  "language": "{language}", "title": "<short title in {language_name}>", "user_scene": {{...}},
+  "business_rules": "...", "tables": {{...}},
   "user_facts": {{...}}, "time": {{"start": 10, "tick": 0}}}}
 Do not write the user's opening message: another writer turns user_scene into it without ever
 seeing the rules, tables or facts.
 
 Task shape: {shape}
 
-- business_rules (Chinese): the complete and only authority. State every rule the outcome
+- business_rules ({language_name}): the complete and only authority. State every rule the outcome
   depends on precisely (eligibility, limits, rounding, ordering, ties, what happens on refusal or
   failure, partial success). Amounts are integer cents in data; times are virtual integers.
   No rule may be open to two readings. For every row a write creates or changes, state the
@@ -244,13 +245,13 @@ Task shape: {shape}
   rows that wrong rules give different results (decoys, boundary values, an ineligible row).
 - user_facts: what only the user knows and an agent must ask for (ids, quantities, choices),
   plus one boolean approve_* fact per write the user is asked to approve.
-- user_scene (Chinese), the only input of the opening writer:
+- user_scene ({language_name}), the only input of the opening writer:
   {{"situation": "<who the user is and what happened, one sentence>",
     "goal": "<what they want done or decided, in their own terms, no rules>",
     "known": {{"<item>": <value>, ...}}, "wants_to_know": ["<result the user wants to be told>", ...]}}
   known holds only what the user can state up front (a direct task needs every number of its
   computation here, as the user would read it off a receipt or a price board; amounts in cents
-  are fine, the writer says them in 元). Keep it short enough to say in one breath: a direct task
+  are fine, the writer says them in {currency}). Keep it short enough to say in one breath: a direct task
   has at most 3 records and 8 numbers in known (design the computation to fit). wants_to_know has
   at most 3 short items in the user's own words; everything the final answer must report goes
   into business_rules ("最终必须告知……"), not into the scene. Never put business rules, confirmation steps, transaction
@@ -273,7 +274,7 @@ request needs through the tools (and the user), then return {{"reply": "<the mes
 assistant would send>"}}: built from the tool results and the user's facts (so it changes with
 the data), in the user's language, addressing everything the user asked for, and stating only
 what the tools and the user actually said. Write it the way a good customer-service agent
-talks: plain words, amounts in 元, no internal field names, table ids, status codes, raw cents,
+talks: plain words, amounts in the user's currency (元 in Chinese, dollars in English), no internal field names, table ids, status codes, raw cents,
 virtual clock values or quoted rule text, a few short paragraphs at most.
 """
 
@@ -328,7 +329,7 @@ POLICY_WRITER = """你要把一份写给开发者的业务实现规格，改写�
 
 要求：
 1. 保留每一条会影响处理结果的规则：资格条件、金额怎么算和怎么取整、处理顺序、上限和名额、被拒绝或失败后怎么办、部分成功、哪些操作需要用户同意、最后要告诉用户什么。数值、阈值和边界（包括是否含等号）必须和规格完全一致。
-2. 用业务语言写：不要出现表名、字段名、状态码、英文标识符、time.start、“虚拟时间”之类的实现细节。时间说成“现在”“开始前 30 分钟”这样的相对说法，时间单位照规格写（分钟、小时或天），但不要加“虚拟”二字；金额用“元”表述，精确到分（规格里的“分”除以 100 换算成元）。
+2. 用业务语言写：不要出现表名、字段名、状态码、英文标识符、time.start、“虚拟时间”之类的实现细节。时间说成“现在”“开始前 30 分钟”这样的相对说法，时间单位照规格写（分钟、小时或天），但不要加“虚拟”二字（英文手册不要出现 virtual）。{language_rule}
 3. 只写政策，不写解题步骤（不要写“首先查询……然后……”），也不要提工具名。
 4. 不要加入规格里没有的规则，不要写具体客户的编号或数据。
 {feedback}
@@ -344,3 +345,18 @@ POLICY_CHECKER = """下面是一份业务实现规格，和据此改写的客服
 {policy}
 
 只输出 JSON：{{"problems": ["<一句话说明一条缺失或不一致的规则>", ...]}}；没有问题时输出 {{"problems": []}}。"""
+
+OPENING_WRITER_EN = """You are an ordinary customer chatting online with a service agent. From the scene below, write
+the first message you send, in English.
+
+Your situation: {situation}
+What you want: {goal}
+What you know and will mention when you start: {known}
+What you want to be told in the end: {wants}
+Your speaking style: {persona} ({persona_hint})
+{feedback}
+Requirements: one to three casual sentences, like a real person; mention every number you know (say
+amounts in dollars: 180 cents is "$1.80"); mention what you want to be told only briefly, in your own
+words; {avoid}
+never restate rules or procedures, never dictate how the agent should confirm things with you, and never
+mention internal numbers such as "time 10" or "day 10". Output only the message itself."""
