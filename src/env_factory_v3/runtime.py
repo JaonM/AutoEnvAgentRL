@@ -117,6 +117,16 @@ def argument_docs(doc):
     return docs
 
 
+def summary(doc):
+    """A docstring without its Args: section (the arguments are described in the parameter schema)."""
+    lines = []
+    for line in (doc or '').splitlines():
+        if line.strip().lower() in ('args:', 'arguments:', 'parameters:'):
+            break
+        lines.append(line)
+    return '\n'.join(lines).strip()
+
+
 def _parameters(fn):
     return [p for p in list(inspect.signature(fn).parameters.values())[2:]
             if p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)]
@@ -153,10 +163,10 @@ def tool_specs(tools):
             if parameter.default is parameter.empty:
                 required.append(parameter.name)
         if is_write(fn):
-            properties['consent'] = {'type': 'string', 'description': 'token returned by confirm for this exact call'}
+            properties['consent'] = {'type': 'string', 'description': '用户同意这次具体写操作后返回的授权凭证'}
             required.append('consent')
         specs.append({'name': name, 'kind': 'write' if is_write(fn) else 'read',
-                      'description': inspect.getdoc(fn) or '',
+                      'description': summary(inspect.getdoc(fn)),
                       'parameters': {'type': 'object', 'properties': properties, 'required': required}})
     return specs
 

@@ -16,14 +16,14 @@ import random
 import re
 
 RESERVED = ('v3_ask', 'v3_confirm', 'v3_chat', 'v3_wait', 'v3_answer')
-SYSTEM = ('Handle the user request using only the public tools. Never guess private user facts: use '
-          'v3_ask. Before every write call v3_confirm with the exact tool and args, then pass the returned '
-          'token as `consent`. Finish with v3_answer, or a final JSON object with exactly the answer '
-          'schema fields.')
-SYSTEM_NATURAL = ('You are a business assistant chatting with a user. Talk to the user in plain messages, in '
-                  'their language: ask for what you need, explain, propose. Use only the public tools; never '
-                  'guess private details. Before every write, propose that exact write with v3_chat (it carries '
-                  'the proposal) and pass the returned consent token as `consent`. Finish by calling v3_answer.')
+SYSTEM = ('只使用提供的工具处理用户的请求。不要猜测用户的私人信息，需要时用 `v3_ask` 询问。每次写操作之前，先用 '
+          '`v3_confirm` 确认这次具体的工具和参数，再把返回的凭证作为 `consent` 传给这次写操作。最后调用 `v3_answer` '
+          '提交结果，或直接输出一个只含答案字段的 JSON 对象。')
+SYSTEM_NATURAL = ('你是一名业务助理，正在和用户在线对话。直接用平实的话回复用户：需要什么信息就问，说明结果，提出方案。'
+                  '只使用提供的工具，不要猜测用户的私人信息。')
+SYSTEM_WRITES = ('每次写操作之前，先用 `v3_chat` 向用户提出这次具体的写操作（附上 proposal）；用户同意后会返回授权凭证，'
+                 '把它作为 `consent` 传给这次写操作。')
+SYSTEM_FINISH = '处理完成后调用 `v3_answer` 提交最终结果。'
 PUBLIC = ('title', 'user_request', 'business_rules', 'user_topics', 'answer_schema', 'time')
 ALIASES = {
     'v3_answer': ('v3_answer', 'submit_result', 'finish_task', 'deliver_answer', 'submit_final_answer',
@@ -36,9 +36,9 @@ ALIASES = {
 }
 HELDOUT = {'v3_answer': 'return_outcome', 'v3_chat': 'obtain_user_ok', 'v3_ask': 'inquire_user',
            'v3_confirm': 'check_user_ok', 'v3_wait': 'let_time_pass', 'consent': 'permit_code'}
-ANSWER_TEXTS = ('Submit the final answer and end the episode.',
-                'Deliver the final result of this request; this ends the conversation.',
-                'Record the final outcome for the user and finish.')
+ANSWER_TEXTS = ('提交最终答案，结束本次对话。',
+                '交付这次请求的最终结果；调用后对话结束。',
+                '记录处理结果并结束本次服务。')
 
 
 def naming(seed, mode='random', avoid=()):
@@ -65,7 +65,7 @@ def platform_names():
 def _swap(text, names):
     for key in ('v3_answer', 'v3_chat', 'v3_ask', 'v3_confirm', 'v3_wait'):
         text = text.replace(key, names[key])
-    return re.sub(r'\bconsent\b', names['consent'], text)
+    return re.sub(r'(?<![A-Za-z0-9_])consent(?![A-Za-z0-9_])', names['consent'], text)
 
 
 def _rename(tools_, names):
@@ -106,33 +106,32 @@ def _tools(instructions, category):
     out = [function(t['name'], t['description'], copy.deepcopy(t['parameters']['properties']),
                     t['parameters']['required']) for t in instructions['tools']]
     if instructions.get('user_mode') == 'natural':
-        out.append(function(
-            'v3_chat', 'Ask the user to approve one exact write: say it in `message` and attach the exact '
-            '`proposal`. When the user agrees the result carries a consent token to pass as `consent` to '
-            'exactly that write. (For everything else just write to the user directly.)',
-            {'message': {'type': 'string', 'description': 'what you say to the user, in their language'},
-             'proposal': {'type': 'object', 'properties': {'tool': {'type': 'string'}, 'args': {'type': 'object'}},
-                          'required': ['tool', 'args'],
-                          'description': 'the exact write to approve'}}, ['message', 'proposal']))
+        if any(t.get('kind') == 'write' for t in instructions['tools']):
+            out.append(function(
+                'v3_chat', '请用户同意一次具体的写操作：在 `message` 里向用户说明，并在 `proposal` 里附上这次写操作'
+                '（工具名和参数）。用户同意时，结果里会带上授权凭证，把它作为 `consent` 传给这次写操作。'
+                '（其他时候直接对用户说话即可。）',
+                {'message': {'type': 'string', 'description': '对用户说的话'},
+                 'proposal': {'type': 'object', 'properties': {'tool': {'type': 'string'}, 'args': {'type': 'object'}},
+                              'required': ['tool', 'args'], 'description': '要用户同意的这次写操作'}},
+                ['message', 'proposal']))
         fields = instructions['answer_schema']['fields']
-        out.append(function('v3_answer', 'Submit the final answer and end the episode.', copy.deepcopy(fields),
-                            list(fields)))
+        out.append(function('v3_answer', ANSWER_TEXTS[0], copy.deepcopy(fields), list(fields)))
         return [out[-1]] if category == 'direct_response' else out
     facts = [t['key'] for t in instructions['user_topics'] if t['kind'] != 'approval']
     approvals = [t['key'] for t in instructions['user_topics'] if t['kind'] == 'approval']
     if facts:
-        out.append(function('v3_ask', 'Ask the user for one private fact by its topic key.',
+        out.append(function('v3_ask', '按话题键向用户询问一项私人信息。',
                             {'key': {'type': 'string', 'enum': facts}}, ['key']))
     if approvals:
         out.append(function(
-            'v3_confirm', 'Ask the user to approve one exact write. Returns a consent token, or null when '
-            'the user declines; pass the token as `consent` to exactly that write.',
+            'v3_confirm', '请用户确认一次具体的写操作。用户同意时返回授权凭证，拒绝时返回 null；把凭证作为 `consent` '
+            '传给这次写操作。',
             {'key': {'type': 'string', 'enum': approvals},
              'proposal': {'type': 'object', 'properties': {'tool': {'type': 'string'}, 'args': {'type': 'object'}},
                           'required': ['tool', 'args']}}, ['key', 'proposal']))
     fields = instructions['answer_schema']['fields']
-    out.append(function('v3_answer', 'Submit the final answer and end the episode.', copy.deepcopy(fields),
-                        list(fields)))
+    out.append(function('v3_answer', ANSWER_TEXTS[0], copy.deepcopy(fields), list(fields)))
     return [out[-1]] if category == 'direct_response' else out
 
 
@@ -140,17 +139,23 @@ def with_clock(tools_, instructions):
     """v3_wait only for tasks whose clock advances (scheduled events)."""
     if not instructions.get('time', {}).get('advancing'):
         return tools_
-    wait = function('v3_wait', 'Let virtual time pass (no real sleeping); returns the new time.',
-                    {'seconds': {'type': 'integer', 'description': 'virtual seconds to wait, >= 0'}}, ['seconds'])
+    wait = function('v3_wait', '让虚拟时间流逝（不会真的等待），返回新的当前时间。',
+                    {'seconds': {'type': 'integer', 'description': '要等待的虚拟时长，不小于 0'}}, ['seconds'])
     return [*tools_[:-1], wait, tools_[-1]]
 
 
 def messages(instructions, names=None):
     swap = (lambda text: _swap(text, names)) if names else (lambda text: text)
     if instructions.get('user_mode') == 'natural':
-        # The user's opening is a user turn; the rest is the assistant's working context.
-        context = {key: instructions[key] for key in ('business_rules', 'answer_schema', 'time')}
-        return [{'role': 'system', 'content': swap(SYSTEM_NATURAL) + '\n\n' + json.dumps(context, ensure_ascii=False)},
+        # The user's opening is a user turn; the rest is the assistant's working context. The answer
+        # format lives in the answer tool's parameters only, not here a second time.
+        writes = any(t.get('kind') == 'write' for t in instructions['tools'])
+        time = instructions['time']
+        clock = (f"当前时间：{time['start']}（虚拟时间，单位与业务规则一致）"
+                 + ('；时间会推进，需要时用 `v3_wait` 等待。' if time.get('advancing') else '；本次对话中时间不变。'))
+        text = SYSTEM_NATURAL + (SYSTEM_WRITES if writes else '') + SYSTEM_FINISH
+        return [{'role': 'system', 'content': swap(text) + '\n\n业务规则：\n' + instructions['business_rules']
+                 + '\n\n' + swap(clock)},
                 {'role': 'user', 'content': instructions['user_request']}]
     public = {key: instructions[key] for key in PUBLIC}
     return [{'role': 'system', 'content': swap(SYSTEM)},

@@ -94,6 +94,41 @@ class NaturalUserTests(unittest.TestCase):
         self.assertTrue(gates.approval_problems(swapped, self.request))
 
 
+class AgentViewFormatTests(unittest.TestCase):
+    def instructions(self, writes=True):
+        env, oracle, schema = library_modules()
+        service = server.Service(env, oracle, schema, library_request(), user_mode='natural', user_client=ScriptedUser())
+        instructions = service.reset(world='original')['instructions']
+        if not writes:
+            instructions = {**instructions, 'tools': [t for t in instructions['tools'] if t['kind'] == 'read']}
+        return instructions
+
+    def test_tool_descriptions_are_summaries_without_internal_arguments(self):
+        for tool in self.instructions()['tools']:
+            self.assertNotIn('Args:', tool['description'])
+            self.assertNotIn('db:', tool['description'])
+
+    def test_system_prompt_is_chinese_without_a_second_copy_of_the_answer_format(self):
+        system = agent_view.messages(self.instructions())[0]['content']
+        self.assertTrue(system.startswith('你是一名业务助理'))
+        self.assertIn('业务规则：', system)
+        self.assertNotIn('answer_schema', system)
+        self.assertIn('v3_chat', system)
+
+    def test_read_only_tasks_get_no_approval_tool(self):
+        instructions = self.instructions(writes=False)
+        names = [t['function']['name'] for t in agent_view.tools(instructions, 'multi_step_agentic')]
+        self.assertNotIn('v3_chat', names)
+        self.assertNotIn('v3_chat', agent_view.messages(instructions)[0]['content'])
+
+    def test_renaming_works_inside_chinese_text(self):
+        names = agent_view.naming(0, 'heldout')
+        system = agent_view.messages(self.instructions(), names)[0]['content']
+        self.assertIn('permit_code', system)
+        self.assertNotIn('consent', system)
+        self.assertNotIn('v3_answer', system)
+
+
 class PlainSpeechTests(unittest.TestCase):
     def test_plain_messages_are_speech_and_only_v3_answer_ends_the_episode(self):
         import json as _json
