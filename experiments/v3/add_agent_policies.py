@@ -29,7 +29,7 @@ def amend(folder, policy):
     (folder / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=1))
 
 
-def one(task, clients, k):
+def one(task, clients, k, attempts=3):
     from env_factory_v3 import bundle, docker, policies, policy
     folder = Path(task['sandbox'])
     row, started = {'id': task['id'], 'sandbox': str(folder)}, time.monotonic()
@@ -38,7 +38,8 @@ def one(task, clients, k):
         request = loaded['request']
         text = request.get('agent_policy')
         if not text:
-            text, problems = policies.write(clients['writer'], request, tuple(loaded['env'].make_tools()))
+            text, problems = policies.write(clients['writer'], request, tuple(loaded['env'].make_tools()),
+                                            attempts=attempts)
             if text is None:
                 return {**row, 'stage': 'policy', 'problems': problems[:5]}
             amend(folder, text)
@@ -62,6 +63,8 @@ def main():
     parser.add_argument('--tasks', required=True)
     parser.add_argument('--parallel', type=int, default=6)
     parser.add_argument('--policy-k', type=int, default=4)
+    parser.add_argument('--attempts', type=int, default=3, help='policy rewrites per bundle')
+    parser.add_argument('--retry', action='store_true', help='redo bundles whose earlier row did not finish')
     parser.add_argument('--output', required=True)
     args = parser.parse_args()
     from env_factory_v3.llm import ChatClient, load_env_file
@@ -69,10 +72,11 @@ def main():
     clients = {'writer': ChatClient('V3_OPENING'), 'agent': ChatClient('LLM'), 'user': ChatClient('V3_USER')}
     tasks = json.loads(Path(args.tasks).read_text())['tasks']
     out, lock = Path(args.output), threading.Lock()
-    done = {json.loads(line)['id'] for line in out.read_text().splitlines()} if out.exists() else set()
+    rows_before = [json.loads(line) for line in out.read_text().splitlines()] if out.exists() else []
+    done = {r['id'] for r in rows_before if r['stage'] == 'done' or not args.retry}
 
     def run(task):
-        row = one(task, clients, args.policy_k)
+        row = one(task, clients, args.policy_k, args.attempts)
         with lock:
             with out.open('a') as handle:
                 handle.write(json.dumps(row, ensure_ascii=False) + '\n')
