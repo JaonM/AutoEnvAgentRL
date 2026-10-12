@@ -11,7 +11,8 @@ POST /release {"episode"}                                      -> {"released": b
 GET  /health
 With V3_SERVICE_TOKEN set (serve) every POST needs `Authorization: Bearer <token>`.
 Private facts, the oracle and source tables are never exposed; a business rejection is an
-observation (ok=false, kind=business), not a transport error.
+observation (ok=false, kind=business), not a transport error, and so is a crash of an authored
+tool (ok=false, kind=tool_error). Only platform and model-provider failures return 500.
 """
 from __future__ import annotations
 
@@ -24,7 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.request import Request, urlopen
 
 from env_factory_v3 import reward, spec
-from env_factory_v3.runtime import BusinessError, Episode, EpisodeFinished, tool_specs
+from env_factory_v3.runtime import BusinessError, Episode, EpisodeFinished, ToolError, tool_specs
 from env_factory_v3.worlds import variants
 
 
@@ -142,6 +143,8 @@ class Service:
                 return {'ok': False, 'kind': 'invalid', 'error': f'unknown action type {kind}', 'now': episode.now}
         except BusinessError as exc:
             return {'ok': False, 'kind': 'business', 'error': str(exc), 'now': episode.now}
+        except ToolError as exc:  # the sandbox's own code failed: an observation, never a 500
+            return {'ok': False, 'kind': 'tool_error', 'error': str(exc), 'now': episode.now}
         except EpisodeFinished as exc:
             return {'ok': False, 'kind': 'finished', 'error': str(exc), 'now': episode.now}
         except (KeyError, ValueError, TypeError) as exc:

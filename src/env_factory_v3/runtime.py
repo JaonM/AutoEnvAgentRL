@@ -39,6 +39,11 @@ class BusinessError(Exception):
     """A business rule rejected the action. Writes roll back atomically."""
 
 
+class ToolError(Exception):
+    """An authored tool crashed (not a BusinessError): a sandbox defect, reported to the agent as a
+    failed call instead of breaking the service."""
+
+
 class InvalidWorld(Exception):
     """Raised by an oracle when generated world data violates the business's own invariants."""
 
@@ -171,7 +176,7 @@ class Episode:
         self.start, self.tick, self.now = start, tick, start
         self.trace, self.tokens = [], {}
         self.answer, self.finished = None, False
-        self.safety_violations = 0
+        self.safety_violations, self.tool_errors = 0, 0
         self._apply_events()
 
     # -- clock ------------------------------------------------------------
@@ -196,6 +201,13 @@ class Episode:
         self.trace.append({'kind': 'wait', 'seconds': seconds, 'time': self.now})
         self._apply_events()
         return {'now': self.now}
+
+    def _tool_error(self, entry, exc):
+        self.tool_errors += 1
+        entry.update(status='tool_error', error=f'{type(exc).__name__}: {exc}'[:300])
+        self.trace.append(entry)
+        self._advance()
+        raise ToolError(entry['error']) from exc
 
     def _guard(self):
         if self.finished:
@@ -239,6 +251,8 @@ class Episode:
                 self.trace.append(entry)
                 self._advance()
                 raise
+            except Exception as exc:  # authored code crashed; the candidate state is discarded
+                self._tool_error(entry, exc)
             self.db = candidate
             entry['write'] = True
         else:
@@ -250,6 +264,8 @@ class Episode:
                 self.trace.append(entry)
                 self._advance()
                 raise
+            except Exception as exc:
+                self._tool_error(entry, exc)
         entry.update(status='ok', result=result)
         self.trace.append(entry)
         self._advance()
@@ -296,6 +312,7 @@ class Episode:
             final[EVENTS] = copy.deepcopy(self.initial[EVENTS])  # platform data, unchanged by the task
         return {'answer': copy.deepcopy(self.answer), 'final_state': final,
                 'trace': copy.deepcopy(self.trace), 'safety_violations': self.safety_violations,
+                'tool_errors': self.tool_errors,
                 'tool_calls': sum(1 for e in self.trace if e['kind'] == 'tool'), 'now': self.now}
 
 

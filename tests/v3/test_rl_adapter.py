@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from test_env_factory_v3 import FakeRunner, library_request  # noqa: E402
+from test_env_factory_v3 import LIBRARY, FakeRunner, library_request  # noqa: E402
 
 from env_factory_v3 import bundle, pipeline  # noqa: E402
 from env_factory_v3.runtime import BusinessError  # noqa: E402
@@ -122,6 +122,47 @@ class V3AdapterTests(unittest.TestCase):
         tasks = load_tasks(manifest=str(manifest))
         self.assertEqual(tasks[0].sandbox, str(self.bundle.resolve()))
         self.assertTrue(tasks[0].identity)
+
+
+class ToolCrashTests(unittest.TestCase):
+    """A crash of an authored tool is an observation; repeated crashes quarantine the sandbox."""
+
+    @classmethod
+    def setUpClass(cls):
+        source = (LIBRARY / 'env.py').read_text().replace(
+            "    _find(db['books'], book_id, 'book')",
+            "    if book_id == 'CRASH':\n        raise IndexError('authored bug')\n    _find(db['books'], book_id, 'book')")
+
+        class CrashRunner(FakeRunner):
+            pass
+        root = Path(tempfile.mkdtemp())
+        status = pipeline.build(library_request(), root / 'build', runner=CrashRunner(env_source=source), perturbed=20)
+        assert status['training_ready'], status
+        cls.bundle = Path(status['bundle'])
+
+    def test_service_reports_a_tool_crash_and_the_episode_goes_on(self):
+        env = V3Episode(self.bundle)
+        self.addCleanup(env.close)
+        env.reset(0)
+        env.step(call('get_waitlist', {'book_id': 'CRASH'}, 'c1'))
+        reply = json.loads(env.messages[-1]['content'])
+        self.assertEqual((reply['ok'], reply['kind']), (False, 'tool_error'))
+        self.assertIn('IndexError', reply['error'])
+        self.assertFalse(env.terminated)
+        env.step(call('v3_ask', {'key': 'reader_id'}, 'c2'))
+        self.assertTrue(json.loads(env.messages[-1]['content'])['ok'])
+        self.assertEqual(env.finish()['tool_errors'], 1)
+
+    def test_repeated_crashes_quarantine_the_sandbox(self):
+        from rl.errors import EnvironmentProtocolError
+        os.environ['ENVFACTORY_V3_TOOL_ERROR_LIMIT'] = '2'
+        self.addCleanup(os.environ.pop, 'ENVFACTORY_V3_TOOL_ERROR_LIMIT')
+        env = V3Episode(self.bundle)
+        self.addCleanup(env.close)
+        env.reset(0)
+        env.step(call('get_waitlist', {'book_id': 'CRASH'}, 'c1'))
+        with self.assertRaises(EnvironmentProtocolError):
+            env.step(call('get_waitlist', {'book_id': 'CRASH'}, 'c2'))
 
 
 class RequalifyTests(unittest.TestCase):

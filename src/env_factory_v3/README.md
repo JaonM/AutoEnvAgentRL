@@ -235,7 +235,11 @@ records its family and provenance.
 askable user topics, answer schema). `POST /step {episode, action}` with action types `tool`,
 `ask`, `confirm`, `wait`, `answer` (natural user mode: `chat`). With `V3_SERVICE_TOKEN` set, every
 POST needs `Authorization: Bearer <token>`; `rl` gives each environment its own random token. `POST /reward {episode}` after the answer; `POST /release {episode}` frees it. Business
-rejections are observations (`ok: false, kind: business`).
+rejections are observations (`ok: false, kind: business`), and so is a crash of an authored tool
+(`ok: false, kind: tool_error`; a write is rolled back). Only platform and model-provider failures
+return 500, which rl treats as retryable infrastructure. In rl, `ENVFACTORY_V3_TOOL_ERROR_LIMIT`
+(default 3) tool crashes in one episode raise `EnvironmentProtocolError`, which quarantines the
+sandbox: it is not retried and never trained on.
 
 ## M1 limits
 

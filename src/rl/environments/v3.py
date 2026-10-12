@@ -19,7 +19,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
 from env_factory_v3 import agent_view
-from rl.errors import InfrastructureError
+from rl.errors import EnvironmentProtocolError, InfrastructureError
 
 def is_v3_bundle(root):
     root = Path(root)
@@ -46,6 +46,8 @@ class V3Episode:
         # structured: ask/confirm by topic key; natural: free dialogue with a simulated user.
         self.user_mode = os.environ.get('ENVFACTORY_V3_USER_MODE', 'structured')
         self.token = secrets.token_hex(16)  # only this runtime may drive its service
+        self.tool_error_limit = int(os.environ.get('ENVFACTORY_V3_TOOL_ERROR_LIMIT', '3'))
+        self.tool_errors = 0
         self.root = Path(root).resolve()
         loaded = bundle.load_bundle(self.root)
         self.base_url = self._start(loaded)
@@ -96,6 +98,13 @@ class V3Episode:
         status, reply = self.request('/step', {'episode': self.episode, 'action': action})
         if status != 200:
             raise InfrastructureError(f'V3 step rejected by transport: {status}')
+        if reply.get('kind') == 'tool_error':
+            # A crash of the sandbox's own tool is an observation for the agent; repeated crashes
+            # mean a defective sandbox, which rl quarantines instead of retrying or training on it.
+            self.tool_errors += 1
+            if self.tool_errors >= self.tool_error_limit:
+                raise EnvironmentProtocolError(f'V3 sandbox tools crashed {self.tool_errors} times in one episode: '
+                                               f'{reply.get("error")}')
         return reply
 
     # -- episode ----------------------------------------------------------------
@@ -105,7 +114,7 @@ class V3Episode:
         if status != 200:
             raise InfrastructureError('V3 reset failed')
         self.episode, self.world, self.seed = response['episode'], response['world'], seed
-        self.trace, self.actions = [], []
+        self.trace, self.actions, self.tool_errors = [], [], 0
         self.terminated, self.score, self.answer, self.call_ids = False, None, None, set()
         public = response['instructions']
         self.names = {tool['name'] for tool in public['tools']}
@@ -188,7 +197,7 @@ class V3Episode:
             self.score = {'reward': 0.0, 'success': False, 'reason': 'no_final_answer'}
         return {'final_reward': float(self.score['reward']), 'terminated': self.terminated,
                 'trace': copy.deepcopy(self.trace), 'score': copy.deepcopy(self.score),
-                'world': self.world, 'user_mode': self.user_mode, 'trainable': True}
+                'world': self.world, 'user_mode': self.user_mode, 'tool_errors': self.tool_errors, 'trainable': True}
 
     # -- continuation (trainer-side only) -----------------------------------------
     def snapshot(self):
