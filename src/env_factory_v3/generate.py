@@ -16,7 +16,7 @@ import json
 import re
 from pathlib import Path
 
-from env_factory_v3 import checks, prompts, spec
+from env_factory_v3 import checks, openings, prompts, spec
 
 MIX = (('direct_response', 'direct', 0.2), ('simple_agentic', 'simple', 0.2),
        ('multi_step_agentic', 'ordinary', 0.2), ('multi_step_agentic', 'complex', 0.4))
@@ -34,15 +34,11 @@ SHAPES = {
                   'The assistant still needs the tools for the facts (two or more reads; a write only if the '
                   'user asks for one). Graded by a rubric, so set "reward_type": "rubric".',
 }
-RED_FLAGS = ('别影响', '不影响已', '原子', '回滚', '都别扣', '一批都别', '一次办好', '多少分')
 SIMILAR = 0.6
 
 
 def opening_problems(text):
-    flags = [flag for flag in RED_FLAGS if flag in text]
-    if re.search(r'\d+\s*分(?![钟之])', text):
-        flags.append('amount stated in 分 (users say 元)')
-    return [f'user_request reads unnatural: {flag}' for flag in flags]
+    return [f'user_request reads unnatural: {flag}' for flag in openings.red_flags(text)]
 
 
 def check_request(folder):
@@ -115,7 +111,9 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
         folder.mkdir(parents=True)
         (folder / 'assignment.json').write_text(json.dumps(
             {'domain': domain, 'category': category, 'shape': shape, 'id': f'gen-{index:03d}'}, ensure_ascii=False))
-        runner(folder, prompts.REQUEST_AUTHOR.format(python=python, domain=domain['name'],
+        name, hint = openings.persona(f'gen-{index:03d}')
+        runner(folder, prompts.REQUEST_AUTHOR.format(python=python, domain=domain['name'], persona=name,
+                                                       persona_hint=hint,
                                                        detail=domain.get('detail', ''), category=category,
                                                        shape=SHAPES[shape], id=f'gen-{index:03d}',
                                                        reward_type='rubric' if shape == 'subjective' else 'business'),

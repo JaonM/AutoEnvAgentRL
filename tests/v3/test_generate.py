@@ -23,6 +23,19 @@ def natural(request, title):
     return request
 
 
+class OpeningTests(unittest.TestCase):
+    def test_red_flags_catch_protocol_and_virtual_time_but_not_plain_speech(self):
+        from env_factory_v3.openings import persona, red_flags
+        self.assertIn('交代确认流程', red_flags('每件寄之前先告诉我走哪家、多少钱，等我确认再寄'))
+        self.assertIn('交代确认流程', red_flags('先把分配发我，我确认后你再留'))
+        self.assertIn('虚拟时间', red_flags('当前时间是10，预约甲开诊时间30'))
+        self.assertIn('虚拟时间', red_flags('今天是第10天，课包还剩几课时'))
+        for plain in ('我这次停车181分钟，收费牌上写第一个小时3元，要交多少钱？', '先帮我确认下这个号还能不能挂，下午两点那个。',
+                      '我想查一下上次租车的押金现在能不能解冻；订单号我有。'):
+            self.assertEqual(red_flags(plain), [], plain)
+        self.assertEqual(persona('gen-007'), persona('gen-007'))
+
+
 class GenerateTests(unittest.TestCase):
     def test_plan_follows_the_v2_mix(self):
         shapes = [shape for _, _, shape in generate.plan(DOMAINS, 30)]

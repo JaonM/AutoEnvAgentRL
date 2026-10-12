@@ -229,10 +229,15 @@ Task shape: {shape}
   rows that wrong rules give different results (decoys, boundary values, an ineligible row).
 - user_facts: what only the user knows and an agent must ask for (ids, quantities, choices),
   plus one boolean approve_* fact per write the user is asked to approve.
-- user_request (Chinese): what a real user would say in a chat. Only their goal, what they know
-  and what they want to be told. Never restate business rules or transaction semantics, never use
-  field names, say amounts in 元, keep it to one to three short sentences. Do not include the
-  user_facts values unless a real user would open with them.
+- user_request (Chinese): what a real user would say in a chat, in the persona "{persona}"
+  ({persona_hint}). Only their goal, what they know and what they want to be told. Never restate
+  business rules or transaction semantics, never use field names, say amounts in 元, keep it to one
+  to three short sentences, and do not always start with "帮我"/"麻烦". Do not dictate the
+  confirmation steps ("每件先告诉我……等我确认再……"): the platform asks before every write anyway.
+  Never quote virtual clock values ("当前时间是10", "第10天"); say times relatively ("还有20分钟").
+  A direct task must state the numbers it needs, read off like a receipt in one or two sentences,
+  not listed item by item. Do not include the user_facts values unless a real user would open
+  with them.
 - Time does not pass in this task: queries, approvals and writes all happen at time.start. Do
   not describe a clock that ticks per action; time-dependent rules compare against time.start.
 - Use a domain different from library loans, procurement, subscriptions, document access,
