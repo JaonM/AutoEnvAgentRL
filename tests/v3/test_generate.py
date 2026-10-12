@@ -56,6 +56,19 @@ class OpeningTests(unittest.TestCase):
 
 
 class GenerateTests(unittest.TestCase):
+    def test_stock_phrases_are_detected_and_rewritten(self):
+        texts = ['退款能到账吗，弄完跟我说下结果哈', '车位还有吗，弄完跟我说下结果哈', '押金呢，弄完跟我说下结果哈', '我想问下运费']
+        self.assertIn('跟我说下结果', ''.join(generate.repeated_phrases(texts)))
+        request = natural(library_request(), 'x')
+        request.update(id='gen-001', user_request=texts[0])
+        output = Path(tempfile.mkdtemp())
+        (output / 'requests').mkdir()
+        writer = Writer(['书快到期了，能续就续上吧。'])
+        self.assertEqual(generate.respread([request, *[{**request, 'id': f'gen-00{i}', 'user_request': t}
+                                                       for i, t in ((2, texts[1]), (3, texts[2]))]],
+                                           writer, output)[:1], ['gen-001'])
+        self.assertIn('不要使用这些已被其他用户用滥的说法', writer.prompts[0])
+
     def test_plan_follows_the_v2_mix(self):
         shapes = [shape for _, _, shape in generate.plan(DOMAINS, 30)]
         self.assertEqual([shapes.count(s) for s in ('direct', 'simple', 'ordinary', 'complex')], [6, 6, 6, 12])

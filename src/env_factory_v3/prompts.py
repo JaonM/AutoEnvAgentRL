@@ -259,7 +259,9 @@ has a single "reply" field, the final message to the user. reference(api) must g
 request needs through the tools (and the user), then return {{"reply": "<the message a skilled
 assistant would send>"}}: built from the tool results and the user's facts (so it changes with
 the data), in the user's language, addressing everything the user asked for, and stating only
-what the tools and the user actually said.
+what the tools and the user actually said. Write it the way a good customer-service agent
+talks: plain words, amounts in 元, no internal field names, table ids, status codes, raw cents,
+virtual clock values or quoted rule text, a few short paragraphs at most.
 """
 
 RUBRIC_AUTHOR = """You define how a subjective business task is graded. Read brief.md (data.json and facts.json
@@ -275,9 +277,9 @@ Write rubric.json: {{"criteria": [{{"id": "<snake_case>", "weight": 1-5, "descri
   "good explanation"). Weight what matters most to the user higher.
 - basis: copied verbatim from the "User request" or "Business rules" section of brief.md, the
   text that makes the criterion matter.
-- Do not add a criterion about factual accuracy or about answering the request at all: the
-  platform always adds "grounded" and "answers_request" (a gate: a reply that does not deliver
-  what the user asked for scores 0).
+- Do not add a criterion about factual accuracy, answering the request at all, or plain
+  language: the platform always adds "grounded", "plain_language" and "answers_request" (a gate:
+  a reply that does not deliver what the user asked for scores 0).
   Do not grade wording style unless the request asks for it.
 
 Run `{python} -m env_factory_v3.checks rubric` until it prints PASS. Do not read or write files
@@ -293,7 +295,7 @@ OPENING_WRITER = """你是一位普通用户，正在和客服/业务助理在�
 你的说话风格：{persona}（{persona_hint}）
 {feedback}
 要求：一到三句口语，像真人；已知信息里的每个数字都要说到（金额按元说，1元=100分，如180分说“1.8元”）；
-想被告知的内容简单带过即可（如“弄完跟我说下结果”），不必逐项列出；
+想被告知的内容简单带过即可，不必逐项列出，用你自己的说法收尾（也可以不专门收尾）；{avoid}
 不要复述任何规则或办理流程，不要说“先告诉我……等我确认再……”，不要出现“当前时间是10”“第10天”这类编号；
 不要总以“帮我”“麻烦”开头。只输出这条消息本身。"""
 

@@ -36,7 +36,9 @@ SHAPES = {
     'subjective': 'A subjective request with no single correct reply: the user wants advice, a comparison '
                   'with a recommendation, an explanation of a refusal or a charge, or help with a complaint. '
                   'The assistant still needs the tools for the facts (two or more reads; a write only if the '
-                  'user asks for one). Graded by a rubric, so set "reward_type": "rubric".',
+                  'user asks for one). Graded by a rubric, so set "reward_type": "rubric". The rules state '
+                  'policies, not a reply checklist: at most 3 things the reply must cover, so there is room '
+                  'for judgement in how to advise and explain.',
 }
 SIMILAR = 0.6
 MAX_DIRECT_NUMBERS, MAX_WANTS = 8, 3  # what a user says in one opening message
@@ -135,17 +137,19 @@ def missing_numbers(opening, scene):
     return [n for n in scene_numbers(scene) if not any(form in opening for form in spoken(n))]
 
 
-def write_opening(client, request, persona_key, attempts=3):
+def write_opening(client, request, persona_key, attempts=3, avoid=()):
     """Stage two: the user's first message from the scene alone (never the rules, tables or facts)."""
     scene = request['user_scene']
     name, hint = openings.persona(persona_key)
     feedback = ''
+    avoid_text = f"不要使用这些已被其他用户用滥的说法：{'、'.join(avoid)}。" if avoid else ''
     for _ in range(attempts):
         text = (client.chat([{'role': 'user', 'content': prompts.OPENING_WRITER.format(
             situation=scene['situation'], goal=scene['goal'], known=json.dumps(scene['known'], ensure_ascii=False),
             wants='；'.join(map(str, scene['wants_to_know'])) or '（无）', persona=name, persona_hint=hint,
-            feedback=feedback)}], temperature=0.8).get('content') or '').strip()
+            feedback=feedback, avoid=avoid_text)}], temperature=0.8).get('content') or '').strip()
         flags, missing = openings.red_flags(text), missing_numbers(text, scene)
+        flags += [f'用滥的说法：{phrase}' for phrase in avoid if phrase in text]
         if text and not flags and not missing:
             return text, name, []
         feedback = f'上一条：{text}\n问题：禁用说法 {flags}；漏说的数字 {missing}。请重写。\n'
@@ -179,6 +183,33 @@ def plan(domains, count, rubric_share=0.0):
             slots[index] = ('multi_step_agentic', 'subjective')
             subjective -= 1
     return [(domains[i % len(domains)], category, shape) for i, (category, shape) in enumerate(slots)]
+
+
+def repeated_phrases(texts, size=6, share=0.3):
+    """Phrases of `size`+ characters that more than `share` of the openings (and at least 3) use."""
+    counts = {}
+    for text in texts:
+        seen = {text[i:i + size] for i in range(len(text) - size + 1)}
+        for gram in seen:
+            counts[gram] = counts.get(gram, 0) + 1
+    limit = max(3, int(share * len(texts)) + 1)
+    return sorted(gram for gram, n in counts.items() if n >= limit and not any(c in gram for c in '0123456789'))
+
+
+def respread(kept, client, output):
+    """Rewrite openings that share stock phrases with too many others (once)."""
+    phrases = repeated_phrases([r['user_request'] for r in kept])
+    rewritten = []
+    for request in kept:
+        hits = [p for p in phrases if p in request['user_request']]
+        if not hits:
+            continue
+        text, _, _ = write_opening(client, request, request['id'], avoid=tuple(hits))
+        if text:
+            request['user_request'] = text
+            (output / 'requests' / f"{request['id']}.json").write_text(json.dumps(request, ensure_ascii=False, indent=1))
+            rewritten.append(request['id'])
+    return rewritten
 
 
 def generate(domains, count, output, *, runner, parallel=2, timeout=600, python='python', rubric_share=0.0,
@@ -239,7 +270,9 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
                 (output / 'requests' / f'{request["id"]}.json').write_text(
                     json.dumps(request, ensure_ascii=False, indent=1))
         rows.append(row)
+    rewritten = respread(kept, opening_client, output)
     summary = {'requested': count, 'kept': len(kept), 'domains': [d['name'] for d in domains],
+               'openings_rewritten_for_repetition': rewritten,
                'opening_diversity': openings.diversity([k['user_request'] for k in kept]), 'rows': rows}
     (output / 'generation.json').write_text(json.dumps(summary, ensure_ascii=False, indent=1))
     return summary

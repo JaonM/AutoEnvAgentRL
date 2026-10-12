@@ -28,7 +28,13 @@ ANSWERS = {'id': 'answers_request', 'weight': 3, 'basis': 'platform', 'gate': Tr
                           'recommendation they wanted), not a promise, a pleasantry or a question back.',
            'levels': {'0': 'does not deliver it (empty, generic, evasive or off-topic)', '1': 'delivers part of it',
                       '2': 'delivers everything the user asked for'}}
-PLATFORM_IDS = ('answers_request', 'grounded')
+PLAIN = {'id': 'plain_language', 'weight': 2, 'basis': 'platform',
+         'description': 'The reply is easy for this user to understand: everyday words, amounts in 元, no internal '
+                        'field names, table ids, status codes, raw cents, virtual clock values or rule text the user '
+                        'never used; concise enough to read in one go.',
+         'levels': {'0': 'reads like a system report or leaks internals', '1': 'mostly plain with some jargon',
+                    '2': 'plain, concise customer-service language'}}
+PLATFORM_IDS = ('answers_request', 'grounded', 'plain_language')
 GROUNDED = {'id': 'grounded', 'weight': 2, 'basis': 'platform',
             'description': 'Every fact, number, id and status told to the user matches the tool results and '
                            'what the user said in this conversation; nothing is invented or misquoted.',
@@ -82,7 +88,7 @@ def check_rubric(rubric, request):
 
 
 def criteria(rubric):
-    return [*rubric['criteria'], ANSWERS, GROUNDED]
+    return [*rubric['criteria'], ANSWERS, GROUNDED, PLAIN]
 
 
 def transcript(result, facts, limit=600):

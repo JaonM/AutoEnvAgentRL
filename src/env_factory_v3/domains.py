@@ -30,6 +30,9 @@ DEVELOPMENT_FAMILIES = ('图书借阅续借与预约', '供应商采购与分批
                         '包裹计费与承运', '停车预约与充电车位', '仓储批次先到期先出', '文件版本保留与清理')
 SPLITS = ('dev', 'holdout-1', 'holdout-2', 'holdout-3', 'holdout-4', 'holdout-5')
 SIMILAR = 0.5
+# Deterministic backstop for the proposer: not mainstream, legitimate customer services.
+BLOCKED = ('通灵', '灵媒', '占卜', '算命', '风水', '法事', '招魂', '驱魔', '巫术', '神秘主义', '玄学', '赌', '博彩',
+           '色情', '成人用品', '邪教', '传销')
 
 PROPOSER = """你在为训练客服/业务助理 agent 设计业务领域。请把下面的素材组合成一个具体、真实存在的面向用户的业务领域。
 
@@ -40,6 +43,8 @@ PROPOSER = """你在为训练客服/业务助理 agent 设计业务领域。请�
 要求：
 - 领域必须是现实中用户会找客服或助理办理的业务，场景素材要实质用上（至少一个概念决定了业务内容），不是贴标签；
 - detail 用一句中文写清这个领域里有哪些业务对象、规则要点，以及上面的机制怎么出现；
+- 只接受常见、合法、面向普通用户或企业的正规服务（如出行、住宿、零售、金融保险、公共事业、教育、医疗挂号、政务、
+  物流仓储、文旅票务）；玄学迷信、宗教法事、博彩、成人、违法或灰色业务一律拒绝；
 - 如果这些素材实在组合不出合理的客服业务（比如纯自然或纯历史概念配理赔），就拒绝，不要硬凑。
 
 只输出 JSON：{{"accept": true/false, "name": "<领域名，10 字以内>", "detail": "<一句话>", "reason": "<拒绝原因，接受时为空>"}}"""
@@ -170,6 +175,10 @@ def propose(graph, client, count, *, split, seed=0, hops=2, exclude=(), max_atte
                       'component': str(graph.component[walk[0]]), 'split': split}
         if not verdict.get('accept') or not verdict.get('name') or not verdict.get('detail'):
             rejected.append({**provenance, 'reason': verdict.get('reason') or 'rejected'})
+            continue
+        blocked = [term for term in BLOCKED if term in verdict['name'] + verdict['detail']]
+        if blocked:
+            rejected.append({**provenance, 'reason': f'not a mainstream legitimate service: {blocked}'})
             continue
         twin = next((name for name in taken if similarity(verdict['name'], name) >= SIMILAR), None) or next(
             (d['name'] for d in accepted if similarity(verdict['detail'], d['detail']) >= SIMILAR), None)

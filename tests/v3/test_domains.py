@@ -68,6 +68,14 @@ class DomainTests(unittest.TestCase):
         self.assertTrue(any('near-duplicate' in r['reason'] for r in report['rejected'])
                         or len(report['accepted']) < 2)
 
+    def test_non_mainstream_services_are_rejected(self):
+        class Occult(Proposer):
+            def chat(self, messages, tools=None, **parameters):
+                return {'content': json.dumps({'accept': True, 'name': '通灵仪式预约结算', 'detail': '按分钟计费'})}
+        report = domains.propose(self.graph, Occult(), 1, split=self.graph.split_of('服装'), max_attempts=2)
+        self.assertEqual(report['accepted'], [])
+        self.assertTrue(all('mainstream' in r['reason'] for r in report['rejected']))
+
     def test_development_families_are_never_proposed_again(self):
         class Copycat(Proposer):
             def chat(self, messages, tools=None, **parameters):

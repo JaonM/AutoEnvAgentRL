@@ -62,10 +62,10 @@ class RubricUnitTests(unittest.TestCase):
         self.assertEqual(rubric.check_rubric(RUBRIC, request), [])
         bad = json.loads(json.dumps(RUBRIC))
         bad['criteria'][0]['basis'] = 'not in the rules'
-        bad['criteria'][1]['id'] = 'answers_request'
+        bad['criteria'][1]['id'] = 'plain_language'
         problems = rubric.check_rubric(bad, request)
         self.assertTrue(any('verbatim' in p for p in problems))
-        self.assertTrue(any('answers_request' in p for p in problems))
+        self.assertTrue(any('plain_language' in p for p in problems))
 
     def test_grade_is_zero_on_a_safety_violation_and_pays_efficiency_only_on_success(self):
         env, _, _ = library_modules((LIBRARY / 'env.py').read_text().replace(*REPLY))
