@@ -50,6 +50,27 @@ SHAPES = {
                   'policies, not a reply checklist: at most 3 things the reply must cover, so there is room '
                   'for judgement in how to advise and explain.',
 }
+# User script elements (docs/v3-domain-world-design.md §3): each interactive task gets one to three,
+# drawn with these probabilities; direct tasks get none.
+SCRIPT_ELEMENTS = {'fallback': 0.4, 'pushback': 0.3, 'multi_goal': 0.3, 'forgotten': 0.2}
+SCRIPT_TEXT = {
+    'fallback': ('Fallback: the user wants option A and accepts option B (or C) only if A is impossible. Make A '
+                 'impossible in the data (out of stock, ineligible, full). Give each option its own boolean approve_* '
+                 'fact (true for the acceptable fallback, false for options the user would refuse) and make '
+                 'env.approval_key map a proposal to the option it names. user_script.fallbacks lists the options in '
+                 'preference order, in the user\'s words.'),
+    'pushback': ('Pushback: the user first demands something the business rules do not allow (an extra refund, a fee '
+                 'waiver, an exception). The correct outcome does not grant it. user_script.pushback = {"demand": '
+                 '"<in the user\'s words>", "rounds": 1-3, "then": "accept"}: after being refused the user insists '
+                 'that many times, then accepts.'),
+    'multi_goal': ('Multiple goals: the user has two or three related requests in one conversation; user_script.goals '
+                   'lists them in order (later ones are raised after the first is handled); the expected outcome '
+                   'covers all of them.'),
+    'forgotten': ('Forgotten information: the user does not remember one identifier an agent would normally ask for '
+                  '(an order id, an email). Leave it out of user_facts and user_scene.known, list its name in '
+                  'user_script.forgotten, and give the user another way to be identified or found (for example name '
+                  'plus postcode) that the business rules and tools support.'),
+}
 SIMILAR = 0.6
 MAX_DIRECT_NUMBERS, MAX_WANTS = 8, 3  # what a user says in one opening message
 # Difficulty floor: public tool calls of the built reference solution, checked after the build (production/run.py).
@@ -65,6 +86,57 @@ def languages(count, english_share=0.0):
     english = round(count * english_share)
     return ['en' if english and (i * english) // count != ((i + 1) * english) // count else 'zh'
             for i in range(count)]
+
+
+def scripts(count, shapes, seed=0):
+    """Script elements per task index: one to three for interactive tasks, none for direct ones."""
+    import random
+    out = []
+    for index, shape in enumerate(shapes):
+        if shape == 'direct':
+            out.append([])
+            continue
+        rng = random.Random(f'{seed}-script-{index}')
+        chosen = [name for name, share in SCRIPT_ELEMENTS.items() if rng.random() < share][:3]
+        out.append(chosen or [rng.choices(list(SCRIPT_ELEMENTS), weights=list(SCRIPT_ELEMENTS.values()))[0]])
+    return out
+
+
+def script_prompt(elements):
+    if not elements:
+        return 'User script: none for this task; omit user_script.'
+    return ('User script (write "user_script" in request.json): {"traits": ["<one or two traits of the user>"], ...} '
+            'plus these elements:\n' + '\n'.join(f'- {SCRIPT_TEXT[e]}' for e in elements))
+
+
+def script_problems(request, elements):
+    """The user_script promised by the assignment, consistent with the facts."""
+    if not elements:
+        return []
+    script = request.get('user_script')
+    if not isinstance(script, dict):
+        return ['user_script is missing (this task has script elements: ' + ', '.join(elements) + ')']
+    problems, facts = [], request['user_facts']
+    if not (isinstance(script.get('traits'), list) and script['traits']):
+        problems.append('user_script.traits must list one or two traits')
+    approvals = [k for k in facts if k.startswith('approve')]
+    if 'fallback' in elements and not (isinstance(script.get('fallbacks'), list) and len(script['fallbacks']) >= 2
+                                       and len(approvals) >= 2):
+        problems.append('fallback: user_script.fallbacks needs two or more options and each its own approve_* fact')
+    push = script.get('pushback')
+    if 'pushback' in elements and not (isinstance(push, dict) and isinstance(push.get('demand'), str) and push['demand']
+                                       and push.get('rounds') in (1, 2, 3) and push.get('then') == 'accept'):
+        problems.append('pushback: user_script.pushback must be {"demand": str, "rounds": 1-3, "then": "accept"}')
+    if 'multi_goal' in elements and not (isinstance(script.get('goals'), list) and len(script['goals']) >= 2):
+        problems.append('multi_goal: user_script.goals needs two or three goals in order')
+    forgotten = script.get('forgotten')
+    if 'forgotten' in elements:
+        known = (request.get('user_scene') or {}).get('known') or {}
+        if not (isinstance(forgotten, list) and forgotten):
+            problems.append('forgotten: user_script.forgotten must name the identifier the user does not remember')
+        elif any(name in facts or name in known for name in forgotten):
+            problems.append('forgotten: a forgotten identifier must be absent from user_facts and user_scene.known')
+    return problems
 
 
 def opening_problems(text, language='zh'):
@@ -98,6 +170,7 @@ def check_request(folder):
     expected = json.loads((Path(folder) / 'assignment.json').read_text()) if (Path(folder) / 'assignment.json').exists() else {}
     if expected.get('language', 'zh') != language:
         problems.append(f'language must be "{expected.get("language", "zh")}" and every text field written in it')
+    problems += script_problems(request, expected.get('script') or [])
     if expected.get('category') and request['category'] != expected['category']:
         problems.append(f'category must be {expected["category"]}')
     wanted = 'rubric' if expected.get('shape') == 'subjective' else 'business'
@@ -264,6 +337,7 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
     output.mkdir(parents=True)
     assignments = plan(domains, count, rubric_share, **({'mix': mix} if mix else {}))
     langs = languages(count, english_share)
+    elements = scripts(count, [shape for _, _, shape in assignments])
 
     def one(index, assignment):
         domain, category, shape = assignment
@@ -271,7 +345,8 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
         folder.mkdir(parents=True)
         language = langs[index]
         (folder / 'assignment.json').write_text(json.dumps(
-            {'domain': domain, 'category': category, 'shape': shape, 'id': f'gen-{index:03d}', 'language': language},
+            {'domain': domain, 'category': category, 'shape': shape, 'id': f'gen-{index:03d}', 'language': language,
+             'script': elements[index]},
             ensure_ascii=False))
         detail = domain.get('detail', '')
         if domain.get('process') or domain.get('mechanisms'):
@@ -281,6 +356,7 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
                                                        shape=SHAPES[shape], id=f'gen-{index:03d}',
                                                        reward_type='rubric' if shape == 'subjective' else 'business',
                                                        language=language, language_name=LANGUAGE_NAMES[language],
+                                                       script=script_prompt(elements[index]),
                                                        currency=CURRENCY[language]),
                timeout=timeout, role='request_author')
         report = checks.run('request', folder)
@@ -308,7 +384,7 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
             return {**row, 'passed': False, 'problems': [f'agent policy: {p}' for p in policy_problems[:4]]}, None
         request['agent_policy'] = policy
         request['source'] = {'generated': domain['name'], 'family': domain.get('family'), 'shape': shape,
-                             'persona': persona_name, 'language': langs[index],
+                             'persona': persona_name, 'language': langs[index], 'script': elements[index],
                              'opening_writer': getattr(opening_client, 'model', None)}
         return row, request
 

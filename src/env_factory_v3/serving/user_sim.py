@@ -43,6 +43,34 @@ DECISION = {True: '（平台告知：你同意对方刚才提出的这一项具�
             False: '（平台告知：你不同意对方刚才提出的这一项具体操作。用一句话自然地表示不同意，不必解释原因。）'}
 
 
+SCRIPT = {
+    'zh': {'head': '\n\n你的剧本（照着演，但不要提起剧本本身）：', 'goals': '- 你要办的事，按顺序：{v}。第一件办完再提下一件。',
+           'fallbacks': '- 你的偏好，按顺序：{v}。前面的办不了，才接受后面的。',
+           'pushback': '- 一开始你会要求：{demand}。对方拒绝后，你还会再坚持 {rounds} 次。',
+           'forgotten': '- 你不记得：{v}。被问到就说记不清了，可以提供别的信息帮对方找到你。',
+           'traits': '- 你的性格：{v}。', 'enough': '（平台提示：你已经坚持够了，现在接受对方的答复，继续办别的事或道别。）'},
+    'en': {'head': '\n\nYour script (act it out, never mention it):', 'goals': '- What you need, in order: {v}. Raise the next one only after the first is handled.',
+           'fallbacks': '- Your preferences, in order: {v}. Accept a later option only if the earlier ones are impossible.',
+           'pushback': '- At first you demand: {demand}. After the agent refuses, you insist {rounds} more time(s).',
+           'forgotten': '- You do not remember: {v}. If asked, say you do not remember and offer other details so the agent can find you.',
+           'traits': '- Your personality: {v}.', 'enough': '(Platform notice: you have insisted enough; now accept the agent\'s answer and move on or say goodbye.)'},
+}
+
+
+def script_text(script, lang):
+    """The user_script as instructions to the simulated user (it shapes the talk, never the outcome)."""
+    if not script:
+        return ''
+    t, lines = SCRIPT[lang], []
+    join = '、' if lang == 'zh' else '; '
+    for key in ('goals', 'fallbacks', 'forgotten', 'traits'):
+        if script.get(key):
+            lines.append(t[key].format(v=join.join(map(str, script[key]))))
+    if script.get('pushback'):
+        lines.append(t['pushback'].format(demand=script['pushback'].get('demand'), rounds=script['pushback'].get('rounds')))
+    return t['head'] + '\n' + '\n'.join(lines) if lines else ''
+
+
 def describe(facts):
     lines = []
     for key, value in facts.items():
@@ -56,8 +84,13 @@ class UserSimulator:
         self.client, self.ended = client, False
         self.english = request.get('language', 'zh') == 'en'
         persona = PERSONA_EN if self.english else PERSONA
+        self.script = request.get('user_script') or {}
+        # Pushback: the platform, not the model, decides when the user has insisted enough.
+        rounds = (self.script.get('pushback') or {}).get('rounds')
+        self.pushback_left = rounds + 1 if isinstance(rounds, int) else None
         self.messages = [{'role': 'system', 'content': persona.format(request=request['user_request'],
-                                                                     facts=describe(private))},
+                                                                     facts=describe(private)) +
+                          script_text(self.script, 'en' if self.english else 'zh')},
                          {'role': 'assistant', 'content': request['user_request']}]
 
     def reply(self, message, decision=None):
@@ -65,6 +98,11 @@ class UserSimulator:
         Sets `ended` when the user says goodbye (the [结束] / [END] marker, which the agent never sees)."""
         notices = DECISION_EN if self.english else DECISION
         text = message if decision is None else f'{message}\n{notices[decision]}'
+        if self.pushback_left is not None:
+            self.pushback_left -= 1
+            if self.pushback_left <= 0:  # once: from now on the user accepts
+                text = f"{text}\n{SCRIPT['en' if self.english else 'zh']['enough']}"
+                self.pushback_left = None
         self.messages.append({'role': 'user', 'content': text})
         answer = (self.client.chat(self.messages, temperature=0.3).get('content') or '').strip()
         self.messages.append({'role': 'assistant', 'content': answer})

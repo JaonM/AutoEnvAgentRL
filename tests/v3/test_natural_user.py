@@ -175,6 +175,35 @@ class EnglishTests(unittest.TestCase):
         self.assertTrue(said('That comes to $1,234.50 in total.', 123450))
 
 
+class ScriptTests(unittest.TestCase):
+    def test_the_user_acts_out_its_script_and_the_platform_ends_the_pushback(self):
+        env, oracle, schema = library_modules()
+        request = {**library_request(), 'user_script': {
+            'traits': ['着急'], 'goals': ['续借', '问候补'], 'forgotten': ['邮箱'],
+            'pushback': {'demand': '免掉逾期费', 'rounds': 1, 'then': 'accept'}}}
+        user = ScriptedUser()
+        service = server.Service(env, oracle, schema, request, user_mode='natural', user_client=user)
+        episode = service.reset(world='original')['episode']
+        record = service._get(episode)
+        system = record['user'].messages[0]['content']
+        self.assertIn('免掉逾期费', system)
+        self.assertIn('不记得：邮箱', system)
+        for message in ('逾期费不能免', '规定如此', '还有别的吗'):
+            service.step(episode, {'type': 'chat', 'message': message})
+        notices = [m['content'] for m in record['user'].messages if m['role'] == 'user']
+        self.assertNotIn('坚持够了', notices[0])
+        self.assertIn('坚持够了', notices[1])                    # after the demand plus one insistence
+        self.assertEqual(sum('坚持够了' in n for n in notices), 1)  # said once
+
+    def test_the_author_brief_tells_how_the_user_behaves(self):
+        from env_factory_v3.core import spec
+        request = {**library_request(), 'user_script': {'traits': ['话少'], 'forgotten': ['email'],
+                                                        'goals': ['续借', '问候补']}}
+        text = spec.brief(request)
+        self.assertIn('How the user behaves', text)
+        self.assertIn('api.ask raises KeyError', text)
+
+
 class PlainSpeechTests(unittest.TestCase):
     def test_plain_messages_are_speech_and_the_user_ends_the_episode(self):
         import json as _json

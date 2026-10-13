@@ -11,7 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from test_env_factory_v3 import FakeRunner, library_request  # noqa: E402
-from test_generate import SCENE, Writer, policy_reply  # noqa: E402
+from test_generate import SCENE, Writer, policy_reply, script_for  # noqa: E402
 
 from env_factory_v3.production import run  # noqa: E402
 from rl.data.tasks import load_tasks  # noqa: E402
@@ -31,6 +31,8 @@ class LineRunner(FakeRunner):
             index = int(assignment['id'].split('-')[1])
             request.update(category='multi_step_agentic', title=f'续借任务{index}', user_scene=copy.deepcopy(SCENE),
                            business_rules=request['business_rules'] + f'（编号{index}的门店：' + '甲乙丙丁戊' * index + '）')
+            if assignment.get('script'):
+                request['user_script'] = script_for(assignment['script'])
             (Path(folder) / 'request.json').write_text(json.dumps(request, ensure_ascii=False))
             return {'role': role, 'status': 'exited'}
         return super().__call__(folder, prompt, timeout=timeout, role=role)

@@ -29,6 +29,20 @@ def natural(request, title):
     return request
 
 
+def script_for(elements):
+    """A user_script that satisfies the assigned elements on the library task (approve_first/second)."""
+    script = {'traits': ['话少']}
+    if 'fallback' in elements:
+        script['fallbacks'] = ['先续第一本', '不行就续第二本']
+    if 'pushback' in elements:
+        script['pushback'] = {'demand': '免掉逾期费', 'rounds': 2, 'then': 'accept'}
+    if 'multi_goal' in elements:
+        script['goals'] = ['续借', '问候补人数']
+    if 'forgotten' in elements:
+        script['forgotten'] = ['email']
+    return script if elements else None
+
+
 POLICY = '只能为借阅人本人续借；有其他读者排队的书不能续借，要告诉用户排队人数。'
 
 
@@ -172,6 +186,20 @@ class GenerateTests(unittest.TestCase):
                                        request)
         self.assertEqual(sorted(p.split(':')[0] for p in problems), ['tool dump_holds', 'tool read_table'])
 
+    def test_script_elements_are_assigned_and_checked(self):
+        shapes = ['direct', 'simple', 'complex', 'complex'] * 25
+        assigned = generate.scripts(len(shapes), shapes)
+        self.assertTrue(all(not a for a, s in zip(assigned, shapes) if s == 'direct'))
+        self.assertTrue(all(1 <= len(a) <= 3 for a, s in zip(assigned, shapes) if s != 'direct'))
+        self.assertGreater(sum('fallback' in a for a in assigned), sum('forgotten' in a for a in assigned))
+        request = library_request()
+        self.assertTrue(generate.script_problems(request, ['pushback']))  # missing user_script
+        request['user_script'] = script_for(['fallback', 'pushback', 'multi_goal', 'forgotten'])
+        self.assertEqual(generate.script_problems(request, ['fallback', 'pushback', 'multi_goal', 'forgotten']), [])
+        request['user_script']['forgotten'] = ['reader_id']  # still in user_facts
+        self.assertTrue(generate.script_problems(request, ['forgotten']))
+        self.assertIn('Pushback', generate.script_prompt(['pushback']))
+
     def test_numbers_said_in_chinese_count_as_said(self):
         scene = {'known': {'身份': '芭蕾舞者', '所需次数': 2, '课时': 12, '单价': 18000, '押金': 350, '人数': 10}}
         self.assertEqual(generate.missing_numbers('要上两次，一共十二课时，每节一百八，押金三块五，十个人', scene), [])
@@ -205,6 +233,8 @@ class GenerateTests(unittest.TestCase):
             if assignment['shape'] == 'direct':
                 request['tables'] = {name: [] for name in request['tables']}
                 request['user_scene']['known'] = {'剩余天数': 3}
+            if assignment.get('script'):
+                request['user_script'] = script_for(assignment['script'])
             if index >= 2:
                 request['title'] = f'不同的任务 {index}'
                 request['business_rules'] = f'完全不同的规则编号{index}：' + 'abcdefghij' * index

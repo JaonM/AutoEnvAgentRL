@@ -61,7 +61,9 @@ Write env.py:
    api.ask(fact_key), api.call(tool, **args) and api.confirm(approval_key, proposal).
    Before every write: token = api.confirm(approval_key, {{"tool": name, "args": exact_args}}),
    then api.call(name, consent=token, **exact_args). confirm returns None when the user
-   declines; then that write must not happen. Catch BusinessError where the rules allow
+   declines; then that write must not happen. api.ask raises KeyError for a fact the user does
+   not know (brief.md lists forgotten facts under "How the user behaves"): identify the user the
+   other way the rules allow. Handle every goal the user has, in order. Catch BusinessError where the rules allow
    partial success. Return the answer exactly in answer_schema.json's shape. When data.json has
    scheduled_events, time passes only through api.wait(seconds); the events change rows as the
    clock passes them and tools never see that table.
@@ -228,6 +230,8 @@ Do not write the user's opening message: another writer turns user_scene into it
 seeing the rules, tables or facts.
 
 Task shape: {shape}
+
+{script}
 
 - business_rules ({language_name}): the complete and only authority. State every rule the outcome
   depends on precisely (eligibility, limits, rounding, ordering, ties, what happens on refusal or

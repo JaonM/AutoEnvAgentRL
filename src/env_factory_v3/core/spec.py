@@ -4,6 +4,10 @@ request.json
     id, family, category (direct_response | simple_agentic | multi_step_agentic), title,
     user_request   what the user says to the agent (public)
     business_rules implementation spec: the only semantic authority for env, oracle, arbiter and gates
+    user_script    optional; how the simulated user behaves (goals in order, fallbacks, a pushback, forgotten
+                   facts, traits). It shapes the conversation only: every decision that changes the outcome
+                   is an approve_* fact read through env.approval_key, and forgotten facts are simply absent
+                   from user_facts.
     language       optional; "zh" (default) or "en": the language of the scene, opening, policy, the
                    simulated user and every platform text the agent sees
     agent_policy   optional; the same policies in business language (no tables, fields or clock
@@ -55,6 +59,9 @@ def validate(request):
     for text in ('user_request', 'business_rules', 'title'):
         if not isinstance(request.get(text), str) or not request[text].strip():
             problems.append(f'{text} must be nonempty text')
+    script = request.get('user_script')
+    if script is not None and not isinstance(script, dict):
+        problems.append('user_script must be an object')
     if request.get('language', 'zh') not in LANGUAGES:
         problems.append(f'language must be one of {LANGUAGES}')
     if 'agent_policy' in request and not (isinstance(request['agent_policy'], str) and request['agent_policy'].strip()):
@@ -143,6 +150,20 @@ Category: {request['category']}
 ## Virtual time
 {clock}
 """
+    script = request.get('user_script') or {}
+    if any(script.get(k) for k in ('goals', 'fallbacks', 'pushback', 'forgotten')):
+        lines = []
+        if script.get('goals'):
+            lines.append(f"- Goals, in order (later ones raised once the first is handled): {script['goals']}")
+        if script.get('fallbacks'):
+            lines.append(f"- Preference order (accepts a later option only if the earlier is impossible): {script['fallbacks']}")
+        if script.get('pushback'):
+            lines.append(f"- First demands something the rules do not allow: {script['pushback'].get('demand')}; insists "
+                         f"{script['pushback'].get('rounds')} time(s) after being refused, then accepts")
+        if script.get('forgotten'):
+            lines.append(f"- Does not remember: {script['forgotten']} (api.ask raises KeyError for them; use the "
+                         "other identification the rules allow)")
+        text += '\n## How the user behaves\n' + '\n'.join(lines) + '\n'
     if request.get('reward_type') == 'rubric':
         text += ('\n## Grading\nSubjective task: there is no single correct reply. The conversation and the final '
                  'reply are graded against rubric criteria (each grounded in the request or the rules) and against '
