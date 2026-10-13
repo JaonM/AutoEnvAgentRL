@@ -4,12 +4,14 @@
 # TRIALS trials each (default 1), seed 300. Compare arms only with each other (same server, same
 # settings); the full pre-registered evaluation stays eval_arm.sh.
 #   experiments/v3/bench/quick_eval.sh ARM MODEL_PATH [TRIALS]
+# THINK=1 serves the thinking template (reasoning before every reply, 4096-token budget per call).
 set -uo pipefail
 cd "$(dirname "$0")/../../.."
 arm=$1; model=$2; trials=${3:-1}; port=${BENCH_PORT:-8766}
+think=(); [ "${THINK:-0}" = 1 ] && think=(--thinking --max-tokens 4096)
 mkdir -p output/tau2
 started=$(date +%s)
-PYTHONPATH=src .venv/bin/python experiments/v3/bench/serve_openai.py --model "$model" --port "$port" --cache-size 40 --cache-gb 22 \
+PYTHONPATH=src .venv/bin/python experiments/v3/bench/serve_openai.py --model "$model" --port "$port" --cache-size 40 --cache-gb 22 ${think[@]+"${think[@]}"} \
   --log "output/tau2/server-q$arm.jsonl" > "output/tau2/server-q$arm.log" 2>&1 &
 server=$!
 trap 'kill $server 2>/dev/null' EXIT
@@ -22,6 +24,6 @@ for domain in airline retail; do
   pids+=($!)
 done
 wait "${pids[@]}"
-echo "{\"arm\": \"$arm\", \"model\": \"$model\", \"trials\": $trials, \"seconds\": $(( $(date +%s) - started ))}" \
+echo "{\"arm\": \"$arm\", \"model\": \"$model\", \"trials\": $trials, \"think\": ${THINK:-0}, \"seconds\": $(( $(date +%s) - started ))}" \
   > "output/tau2/q$arm.done"
 cat "output/tau2/q$arm.done"
