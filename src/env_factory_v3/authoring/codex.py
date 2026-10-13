@@ -66,7 +66,7 @@ def classify(status, returncode, usage, refused):
     silent non-zero exit, or a timeout before the model produced a single token (network down)."""
     if status == 'exited' and returncode != 0 and (refused or usage['output_tokens'] == 0):
         return 'infrastructure_error'
-    if status == 'timeout' and usage['output_tokens'] == 0:
+    if status == 'timeout' and (usage['output_tokens'] == 0 or refused):  # e.g. rate-limited mid-session
         return 'infrastructure_error'
     return status
 
