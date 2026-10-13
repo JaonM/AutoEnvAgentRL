@@ -155,6 +155,33 @@ class SufficiencyTests(LibraryBundle):
         self.assertIn('renewed_loan_ids', report['gaps']['fields'])
 
 
+class FuzzTests(unittest.TestCase):
+    def test_correct_tools_pass_and_crashes_and_hidden_state_are_found(self):
+        from env_factory_v3.certify import fuzz
+        env, _, _ = library_modules()
+        request = library_request()
+        self.assertTrue(fuzz.fuzz(env, request['tables'], 10, calls=15, walks=5)['passed'])
+
+        class Broken:
+            def make_tools(self):
+                seen = []
+
+                def lookup(db, now, loan_id: str):
+                    """Look up a loan.
+
+                    Args:
+                        loan_id: the loan
+                    """
+                    seen.append(loan_id)  # call history outside the tables
+                    if len(seen) > 1:
+                        raise ValueError('boom')
+                    return {'loan_id': loan_id}
+                return {'lookup': lookup}
+        report = fuzz.fuzz(Broken(), request['tables'], 10, calls=5, walks=2)
+        self.assertFalse(report['passed'])
+        self.assertTrue(report['tools']['lookup']['hidden_state'] or report['tools']['lookup']['crash'])
+
+
 class ThirdOracleTests(LibraryBundle):
     def test_a_disagreeing_third_oracle_rejects_the_task(self):
         folder = Path(tempfile.mkdtemp())

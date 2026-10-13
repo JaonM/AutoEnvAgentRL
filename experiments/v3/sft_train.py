@@ -1,4 +1,12 @@
-"""SFT cold start: one sample per successful teacher episode, loss on every assistant turn.
+"""SFT cold start from successful teacher episodes.
+
+Default (per turn, matching inference): one sample per assistant turn. The prompt is the chat
+template over the conversation so far, exactly as the model sees it when serving (history
+assistant turns carry no reasoning: Qwen3's template drops it and the serving loop never sends it
+back), and the loss covers that turn only. --think trains the teacher's reasoning as the turn's
+<think> block (turns whose reasoning is missing or longer than --reasoning-cap characters are
+skipped); without it the turn follows the empty think block of enable_thinking=False.
+--per-episode keeps the earlier rendering (one sample per episode, loss on every assistant turn).
 
 Each episode (collect_teacher.py) is rendered once with the model's chat template and its tools;
 the loss covers exactly the assistant turns (from after `<|im_start|>assistant\\n` through
@@ -42,6 +50,30 @@ def render(tokenizer, episode):
     return ids, mask
 
 
+def render_turns(tokenizer, episode, think, cap, limit=0, seed=0):
+    """[(token ids, loss mask)] for the assistant turns of one episode, as served (see module doc)."""
+    keep = ('role', 'content', 'tool_calls', 'tool_call_id', 'name')
+    messages = [{k: v for k, v in m.items() if k in keep} for m in episode['messages']]
+    reasoning = {int(k): v for k, v in (episode.get('reasoning') or {}).items()}
+    turns = [i for i, m in enumerate(messages) if m['role'] == 'assistant']
+    if think:
+        turns = [i for i in turns if (reasoning.get(i) or '').strip() and len(reasoning[i]) <= cap]
+    if limit and len(turns) > limit:
+        turns = sorted(random.Random(f"{seed}-{episode['id']}-{episode.get('seed')}").sample(turns, limit))
+    out = []
+    for i in turns:
+        options = {'tools': episode['tools'], 'tokenize': False, 'enable_thinking': think}
+        prompt = tokenizer.apply_chat_template(messages[:i], add_generation_prompt=True, **options)
+        last = {**messages[i], **({'reasoning_content': reasoning[i].strip()} if think else {})}
+        full = tokenizer.apply_chat_template(messages[:i] + [last], **options)
+        if not full.startswith(prompt):
+            raise ValueError(f"template prefix mismatch in {episode['id']} turn {i}")
+        head = tokenizer.encode(prompt, add_special_tokens=False)
+        tail = tokenizer.encode(full[len(prompt):].rstrip('\n'), add_special_tokens=False)
+        out.append((head + tail, [0] * len(head) + [1] * len(tail)))
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     parser.add_argument('--teacher', required=True, help='collect_teacher.py JSONL (only successful episodes are used)')
@@ -59,6 +91,10 @@ def main():
                              'otherwise --valid-share of the episodes at random')
     parser.add_argument('--evals-per-epoch', type=int, default=4)
     parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--think', action='store_true', help="train the teacher's reasoning as <think> blocks")
+    parser.add_argument('--reasoning-cap', type=int, default=1500, help='longest reasoning kept (characters)')
+    parser.add_argument('--turns-per-episode', type=int, default=0, help='sample at most this many turns (0: all)')
+    parser.add_argument('--per-episode', action='store_true', help='one sample per episode (earlier rendering)')
     args = parser.parse_args()
 
     import mlx.core as mx
@@ -79,15 +115,20 @@ def main():
     episodes = [r for r in map(json.loads, Path(args.teacher).read_text().splitlines())
                 if r.get('success') and r.get('messages')]
     random.Random(args.seed).shuffle(episodes)
-    samples = [render(tokenizer, e) for e in episodes]
-    kept = [(e, s) for e, s in zip(episodes, samples) if len(s[0]) <= args.max_tokens and sum(s[1])]
+    if args.per_episode:
+        pairs = [(e, render(tokenizer, e)) for e in episodes]
+    else:
+        pairs = [(e, s) for e in episodes for s in render_turns(tokenizer, e, args.think, args.reasoning_cap,
+                                                               args.turns_per_episode, args.seed)]
+    kept = [(e, s) for e, s in pairs if len(s[0]) <= args.max_tokens and sum(s[1])]
     if args.valid_ids:
         held = set(json.loads(Path(args.valid_ids).read_text()))
         valid, train = [s for e, s in kept if e['id'] in held], [s for e, s in kept if e['id'] not in held]
     else:
-        cut = max(1, round(len(kept) * args.valid_share))
-        valid, train = [s for _, s in kept[:cut]], [s for _, s in kept[cut:]]
-    print(f'{len(episodes)} successful episodes, {len(kept)} within {args.max_tokens} tokens: '
+        # Whole episodes go to validation, so no turn of a validation episode is trained on.
+        held = {id(e) for e in episodes[:max(1, round(len(episodes) * args.valid_share))]}
+        valid, train = [s for e, s in kept if id(e) in held], [s for e, s in kept if id(e) not in held]
+    print(f'{len(episodes)} successful episodes, {len(kept)} samples within {args.max_tokens} tokens: '
           f'{len(train)} train / {len(valid)} valid; '
           f'{sum(sum(m) for _, m in train)} assistant tokens of {sum(len(i) for i, _ in train)}', flush=True)
 

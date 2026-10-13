@@ -14,7 +14,7 @@ import random
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[3] / '.bench/tau2-repo/data/simulations/v3bench'
+ROOT = Path(__file__).resolve().parents[3] / '.bench/tau2-repo/data/simulations/v3bench'  # quick evals: arm qNAME
 DOMAINS = ('airline', 'retail')
 WRITE = ('book', 'update', 'cancel', 'send_certificate', 'transfer', 'modify', 'exchange', 'return')
 
@@ -22,6 +22,21 @@ WRITE = ('book', 'update', 'cancel', 'send_certificate', 'transfer', 'modify', '
 def needs_write(task):
     actions = (task.get('evaluation_criteria') or {}).get('actions') or []
     return any(any(word in action['name'] for word in WRITE) for action in actions)
+
+
+def outcome(sim):
+    """Why one simulation passed or failed: pass, infrastructure, max_steps, too_many_errors, db (wrong final
+    database), communicate / nl (database right, required information or assertion missed)."""
+    info = sim.get('reward_info') or {}
+    if (info.get('reward') or 0.0) >= 1 - 1e-9:
+        return 'pass'
+    reason = sim.get('termination_reason')
+    if reason in ('infrastructure_error', 'max_steps', 'too_many_errors'):
+        return reason
+    breakdown = info.get('reward_breakdown') or {}
+    if breakdown.get('DB', 1.0) < 1:
+        return 'db'
+    return 'communicate' if breakdown.get('COMMUNICATE', 1.0) < 1 else 'nl'
 
 
 def per_task(arm):
@@ -34,12 +49,14 @@ def per_task(arm):
         data = json.loads(path.read_text())
         tasks = {t['id']: t for t in data['tasks']}
         runs = {}
+        kinds = {}
         for sim in data['simulations']:
             reward = (sim.get('reward_info') or {}).get('reward') or 0.0
             runs.setdefault(sim['task_id'], []).append(1.0 if reward >= 1 - 1e-9 else 0.0)
+            kinds.setdefault(sim['task_id'], []).append(outcome(sim))
         for task_id, rewards in runs.items():
             out[(domain, task_id)] = {'rate': sum(rewards) / len(rewards), 'write': needs_write(tasks[task_id]),
-                                      'trials': len(rewards)}
+                                      'trials': len(rewards), 'outcomes': kinds[task_id]}
     return out
 
 
@@ -51,7 +68,10 @@ def table(rows):
         groups[domain] = [k for k in rows if k[0] == domain]
     groups['needs write'] = [k for k in rows if rows[k]['write']]
     groups['no write'] = [k for k in rows if not rows[k]['write']]
-    return {name: {'tasks': len(keys), 'pass^1': mean(keys)} for name, keys in groups.items()}
+    from collections import Counter
+    report = {name: {'tasks': len(keys), 'pass^1': mean(keys)} for name, keys in groups.items()}
+    report['outcomes'] = dict(Counter(o for k in rows for o in rows[k]['outcomes']).most_common())
+    return report
 
 
 def wilcoxon(differences):
