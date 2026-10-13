@@ -14,6 +14,11 @@ def assign_episode_reward(actions, result):
     actions[-1]['reward'] = reward
 
 
+def trainable(episode):
+    """False when the environment marked the episode invalid for training (its reward is not evidence)."""
+    return episode.get('trainable', True) is not False
+
+
 def make_samples(group, algorithm, gamma=1.0, lam=.95, discount_unit='action'):
     if algorithm not in {'ppo', 'grpo'}:
         raise ValueError('unsupported trajectory objective')
@@ -22,7 +27,14 @@ def make_samples(group, algorithm, gamma=1.0, lam=.95, discount_unit='action'):
     episodes = group['episodes']
     if not episodes or len({(e.get('task_id', group.get('task_id')), e['seed']) for e in episodes}) != 1:
         raise ValueError('a group must share the same initial task/seed')
-    grouped = group_advantages([e['final_reward'] for e in episodes]) if algorithm == 'grpo' else None
+    kept = [i for i, e in enumerate(episodes) if trainable(e)]
+    grouped = None
+    if algorithm == 'grpo':
+        # An untrainable episode (e.g. the simulated user misled the agent) neither sets the group
+        # baseline nor gets a gradient.
+        grouped = [0.0] * len(episodes)
+        for i, value in zip(kept, group_advantages([episodes[i]['final_reward'] for i in kept]) if len(kept) >= 2 else []):
+            grouped[i] = value
     samples = []
     for index, episode in enumerate(episodes):
         actions = episode['actions']
@@ -57,7 +69,7 @@ def make_samples(group, algorithm, gamma=1.0, lam=.95, discount_unit='action'):
                 'old_values': action.get('old_values', [0.] * n),
                 'advantage': grouped[index] if algorithm == 'grpo' else advantages[offset:offset+n],
                 'return': returns[offset:offset+n],
-                'weight': sum(action.get('loss_mask', [1]*n))
-                          / sum(sum(a.get('loss_mask', [1]*len(a['tokens']))) for a in actions) / len(episodes)})
+                'weight': (sum(action.get('loss_mask', [1]*n)) if index in kept else 0)
+                          / sum(sum(a.get('loss_mask', [1]*len(a['tokens']))) for a in actions) / max(1, len(kept))})
             offset += n
     return samples

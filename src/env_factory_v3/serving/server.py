@@ -19,6 +19,7 @@ from __future__ import annotations
 import copy
 import hmac
 import json
+import os
 import threading
 import time
 import uuid
@@ -39,7 +40,7 @@ IDLE_LIMIT = 3
 
 class Service:
     def __init__(self, env, oracle, schema, request, *, valid_worlds=None, perturbed=20, user_mode='structured',
-                 user_client=None, rubric=None, judge=None, extractor=None):
+                 user_client=None, rubric=None, judge=None, extractor=None, auditor=None, audit=None):
         if user_mode not in ('structured', 'natural'):
             raise ValueError(f'unknown user mode {user_mode}')
         if user_mode == 'natural' and user_client is None:
@@ -50,7 +51,11 @@ class Service:
         self.reward_type = request.get('reward_type', 'business')
         if self.reward_type == 'rubric' and rubric is None:
             raise ValueError('a rubric task needs its rubric')
-        self.rubric, self._judge, self._extractor = rubric, judge, extractor
+        self.rubric, self._judge, self._extractor, self._auditor = rubric, judge, extractor, auditor
+        # Failed free-dialogue episodes are audited for simulator slips (core/disclosure.py);
+        # V3_SIMULATOR_AUDIT=off disables it.
+        self.audit = (user_mode == 'natural' and os.environ.get('V3_SIMULATOR_AUDIT', 'on') != 'off'
+                      if audit is None else audit)
         if user_mode == 'natural':
             from env_factory_v3.certify.gates import approval_problems
             problems = approval_problems(env, request)
@@ -123,7 +128,7 @@ class Service:
         user = record['user']
         reply = user.reply(str(action.get('message') or ''), decision)
         episode.trace.append({'kind': 'chat', 'message': action.get('message'), 'reply': reply,
-                              'proposal': copy.deepcopy(proposal), 'time': episode.now})
+                              'proposal': copy.deepcopy(proposal), 'decision': decision, 'time': episode.now})
         record['idle'] = 0 if proposal is not None else record.get('idle', 0) + 1
         result = {'reply': reply, **({'consent': token} if proposal is not None else {})}
         if getattr(user, 'ended', False):
@@ -222,7 +227,30 @@ class Service:
                                  initial=record['data'], reference_calls=reference_calls)
             grade.update(answer_source=source, answer=result['answer'])
             grade.pop('state_diff', None)
+        if self.audit and not grade.get('success'):
+            grade.update(self.audit_simulator(record))
         return {**grade, 'world': record['world'], 'reward_type': self.reward_type}
+
+    def audit_simulator(self, record):
+        """{'simulator_audit', 'valid'}: valid is False when the simulated user's slip, not the agent,
+        may explain the failure (rl then leaves the episode out of training)."""
+        from env_factory_v3.core.llm import ProviderError
+        if 'audit' not in record:
+            private = {k: v for k, v in record['facts'].items() if k not in self.approvals}
+            try:
+                record['audit'] = self.auditor().audit(private, self.request.get('user_script'),
+                                                       record['episode'].trace)
+            except ProviderError as error:  # an unavailable auditor never blocks grading
+                record['audit'] = {'faults': [], 'valid': True, 'error': str(error)[:200]}
+        return {'simulator_audit': record['audit'], 'valid': record['audit']['valid']}
+
+    def auditor(self):
+        """The simulator auditor, created on first use from V3_JUDGE_* (falling back to LLM_*)."""
+        if self._auditor is None:
+            from env_factory_v3.core.disclosure import Auditor
+            from env_factory_v3.core.llm import ChatClient
+            self._auditor = Auditor(ChatClient('V3_JUDGE'))
+        return self._auditor
 
     def extractor(self):
         """The speech-to-answer extractor, created on first use from V3_JUDGE_* (falling back to LLM_*)."""

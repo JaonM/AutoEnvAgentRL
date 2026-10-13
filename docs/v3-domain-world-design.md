@@ -134,6 +134,18 @@ agent 面对的是一个**持续存在的系统**，有十几个工具、海量�
 6. **policy gate**：deepseek 在自由对话、复杂剧本下至少解出 1/4。
 7. **剧本执行诊断**（不作门槛）：抽样检查模拟器是否按剧本演出（坚持轮数、备选顺序、改口时机）。
 
+### 4.5 奖励可信度的补充措施（已实现）
+
+| 措施 | 做法 | 位置 | 是否在签名范围内 |
+|---|---|---|---|
+| 第三个 oracle | 世界认证后，再开一个独立会话按同一份规格写 oracle；每道题在它服务的所有世界上，第三个 oracle 必须与已认证的 oracle 一致，否则淘汰（stage `third_oracle`） | `production/world.py` 的 `third_oracle`、`third_opinion`、`guard` | 否 |
+| 手册充分性 | 把 agent 手册、用户全部事实、参考解查到的数据都给模型，要求它推断写操作和答案；k 次都推不对就淘汰（stage `sufficiency`），推不对的字段记为手册缺口 | `certify/sufficiency.py` | 否 |
+| 允许多种正确结果 | 规则明确允许自由选择、事实又没定下来时，oracle 在 `alternatives` 里列出其他正确结果（最多 3 个，不能重复，主结果有写操作时不能是"什么都不做"）；判分取最好的一个，`outcome` 记录命中哪个；仲裁者遇到这种分歧时补 alternatives | `core/reward.py`、`certify/gates.py`、`checks.py`、提示 ORACLE / ARBITER | 是 |
+| 模拟器透露审计 | 自由对话失败的回合，由评审模型检查模拟用户是否漏说、说错、编造或与平台决定相反；每条错误必须逐字引用用户原话（并指明事实键），否则丢弃。有错误的回合标为无效：奖励不变，但训练时不参与 GRPO 的组基线、也不产生梯度。`V3_SIMULATOR_AUDIT=off` 可关闭 | `core/disclosure.py`、`serving/server.py`、`rl/environments/v3.py`、`rl/data/trajectory.py` | 是 |
+| 分歧挖掘 | 读 policy gate 的结果：同一世界上 ≥2 个失败回合以相同的写操作和答案结束（收敛失败），或评审判为 `reference_suspect` / `policy_gap` 的任务被标记；`make_split.py --exclude` 可把它们排除出训练 | `production/disagreement.py` | 否 |
+
+世界模式下，新世界自动生成第三个 oracle，每道题自动做这两项检查；已有的试点用 `python -m env_factory_v3.production.world ... --reguard` 补做。
+
 ## 5. 运行时
 
 | 方面 | 设计 |
