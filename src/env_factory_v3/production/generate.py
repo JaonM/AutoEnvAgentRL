@@ -19,6 +19,7 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import re
+import time
 from pathlib import Path
 
 from env_factory_v3 import checks
@@ -78,6 +79,7 @@ SCRIPT_TEXT = {
 }
 SIMILAR = 0.6
 MAX_DIRECT_NUMBERS, MAX_WANTS = 8, 3  # what a user says in one opening message
+TASK_TIMEOUT = 900  # seconds to write one opening and policy before giving up on a stalled connection
 # Difficulty floor: public tool calls of the built reference solution, checked after the build (production/run.py).
 MIN_REFERENCE_CALLS = {'complex': 6}
 
@@ -399,8 +401,35 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
 
     # Openings and policies are independent model calls: write them in parallel, then drop
     # near-duplicates in index order (deterministic whatever the completion order).
-    with concurrent.futures.ThreadPoolExecutor(max(parallel, 8)) as pool:
-        finished = list(pool.map(finish, results))
+    pool = concurrent.futures.ThreadPoolExecutor(max(parallel, 8))
+    started, futures = {}, {}
+
+    def timed(item):
+        started[item[0]] = time.monotonic()
+        return finish(item)
+
+    for item in results:
+        futures[pool.submit(timed, item)] = item
+    finished, pending = {}, set(futures)
+    while pending:  # a stalled provider connection must not hold the whole batch (client timeouts do not always fire)
+        done, pending = concurrent.futures.wait(pending, timeout=30)
+        for future in done:
+            index, (domain, category, shape), report = futures[future]
+            try:
+                finished[index] = future.result()
+            except Exception as exc:
+                finished[index] = ({'index': index, 'domain': domain['name'], 'category': category, 'shape': shape,
+                                    'language': langs[index], 'passed': False, 'problems': [repr(exc)[:300]]}, None)
+        now = time.monotonic()
+        for future in [f for f in pending if now - started.get(futures[f][0], now) > TASK_TIMEOUT]:
+            index, (domain, category, shape), report = futures[future]
+            finished[index] = ({'index': index, 'domain': domain['name'], 'category': category, 'shape': shape,
+                                'language': langs[index], 'passed': False,
+                                'problems': ['timed out writing the opening or policy (stalled provider connection)']},
+                               None)
+            pending.discard(future)
+    pool.shutdown(wait=False, cancel_futures=True)
+    finished = [finished[index] for index, _, _ in results]
     kept, rows = [], []
     for row, request in finished:
         if request is not None:
