@@ -48,16 +48,22 @@ SCRIPT = {
            'fallbacks': '- 你的偏好，按顺序：{v}。前面的办不了，才接受后面的。',
            'pushback': '- 一开始你会要求：{demand}。对方拒绝后，你还会再坚持 {rounds} 次。',
            'forgotten': '- 你不记得：{v}。被问到就说记不清了，可以提供别的信息帮对方找到你。',
+           'ambiguous': '- 开场时你只会含糊地说“{phrase}”，不主动说明是哪一个；对方问你具体是哪个时，再按你的私人信息回答。',
+           'clarify': '- 你还没拿定主意，在这几种做法之间犹豫：{options}。你要先听对方讲清{decides_by}再决定；对方没问你要哪种之前，不要自己替对方选。',
+           'wrong_first': '- 第一次被问到{key}时，你会记错，说成“{wrong}”；对方说查不到或对不上时，你再想一想，改口说正确的“{right}”。',
            'traits': '- 你的性格：{v}。', 'enough': '（平台提示：你已经坚持够了，现在接受对方的答复，继续办别的事或道别。）'},
     'en': {'head': '\n\nYour script (act it out, never mention it):', 'goals': '- What you need, in order: {v}. Raise the next one only after the first is handled.',
            'fallbacks': '- Your preferences, in order: {v}. Accept a later option only if the earlier ones are impossible.',
            'pushback': '- At first you demand: {demand}. After the agent refuses, you insist {rounds} more time(s).',
            'forgotten': '- You do not remember: {v}. If asked, say you do not remember and offer other details so the agent can find you.',
+           'ambiguous': '- At first you only say vaguely "{phrase}" without saying which one; when the agent asks which one, answer from your private details.',
+           'clarify': '- You have not decided yet between: {options}. You want to hear {decides_by} before choosing; do not pick one until the agent asks you which you want.',
+           'wrong_first': '- The first time you are asked for your {key}, you misremember it and say "{wrong}"; when the agent says it cannot find it or it does not match, think again and give the correct "{right}".',
            'traits': '- Your personality: {v}.', 'enough': '(Platform notice: you have insisted enough; now accept the agent\'s answer and move on or say goodbye.)'},
 }
 
 
-def script_text(script, lang):
+def script_text(script, lang, facts=None):
     """The user_script as instructions to the simulated user (it shapes the talk, never the outcome)."""
     if not script:
         return ''
@@ -68,6 +74,15 @@ def script_text(script, lang):
             lines.append(t[key].format(v=join.join(map(str, script[key]))))
     if script.get('pushback'):
         lines.append(t['pushback'].format(demand=script['pushback'].get('demand'), rounds=script['pushback'].get('rounds')))
+    if isinstance(script.get('ambiguous'), dict):
+        lines.append(t['ambiguous'].format(phrase=script['ambiguous'].get('phrase')))
+    if isinstance(script.get('clarify'), dict):
+        lines.append(t['clarify'].format(options=join.join(map(str, script['clarify'].get('options') or [])),
+                                         decides_by=script['clarify'].get('decides_by')))
+    for key, wrong in (script.get('wrong_first') or {}).items():
+        right = (facts or {}).get(key)
+        if right is not None:
+            lines.append(t['wrong_first'].format(key=key, wrong=wrong, right=right))
     return t['head'] + '\n' + '\n'.join(lines) if lines else ''
 
 
@@ -90,7 +105,7 @@ class UserSimulator:
         self.pushback_left = rounds + 1 if isinstance(rounds, int) else None
         self.messages = [{'role': 'system', 'content': persona.format(request=request['user_request'],
                                                                      facts=describe(private)) +
-                          script_text(self.script, 'en' if self.english else 'zh')},
+                          script_text(self.script, 'en' if self.english else 'zh', facts)},
                          {'role': 'assistant', 'content': request['user_request']}]
 
     def reply(self, message, decision=None):

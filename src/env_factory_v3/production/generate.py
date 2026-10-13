@@ -53,7 +53,11 @@ SHAPES = {
 }
 # User script elements (docs/v3-domain-world-design.md §3): each interactive task gets one to three,
 # drawn with these probabilities; direct tasks get none.
-SCRIPT_ELEMENTS = {'fallback': 0.4, 'pushback': 0.3, 'multi_goal': 0.3, 'forgotten': 0.2, 'out_of_scope': 0.1}
+SCRIPT_ELEMENTS = {'fallback': 0.35, 'pushback': 0.3, 'multi_goal': 0.3, 'wrong_first': 0.25, 'ambiguous': 0.2,
+                   'clarify': 0.2, 'forgotten': 0.2, 'out_of_scope': 0.1}
+# Customer identification is a norm of customer service, not a script element: most interactive
+# tasks make the agent ask who the customer is before account-specific lookups or changes.
+IDENTITY_SHARE = 0.7
 SCRIPT_TEXT = {
     'fallback': ('Fallback: the user wants option A and accepts option B (or C) only if A is impossible. Make A '
                  'impossible in the data (out of stock, ineligible, full). Give each option its own boolean approve_* '
@@ -72,6 +76,27 @@ SCRIPT_TEXT = {
                      'nothing for it; the rules say how such requests are answered (decline, point elsewhere, or a '
                      'handover the domain itself provides). user_script.out_of_scope = "<the request in the user\'s '
                      'words>", also listed in user_script.goals.'),
+    'wrong_first': ('Wrong first: the user misremembers one identifier the agent must ask for (an order id, a '
+                    'booking reference, an email) and first gives a wrong value that exists nowhere in the data, so '
+                    'the lookup fails; asked again, the user gives the right one. Keep the right value in user_facts '
+                    '(not in user_scene.known) and set user_script.wrong_first = {"<that fact key>": "<the wrong '
+                    'value, plausible: one character or digit off>"}. The correct outcome is unchanged.'),
+    'ambiguous': ('Ambiguous request: the user refers vaguely to something ("change that order", "my booking") '
+                  'while several records fit (make at least two matching rows for this customer in the data). The '
+                  'one they mean is a user fact the opening does not reveal; the agent must ask which before acting. '
+                  'Set user_script.ambiguous = {"phrase": "<the vague words>", "fact": "<the fact key that '
+                  'identifies the intended record>"}.'),
+    'clarify': ('Unclear intent: the user mixes two or three possible actions without choosing ("maybe change my '
+                'flight, or cancel it, depending on the cost"). Which one they want is decided by information the '
+                'agent has to give first (a fee, an availability). Give each action its own boolean approve_* fact '
+                '(true only for the one the user would choose given the real data) and make env.approval_key map a '
+                'proposal to the action it names. Set user_script.clarify = {"options": ["<action in the user\'s '
+                'words>", ...], "decides_by": "<what the user needs to hear before choosing>"}. The user only chooses '
+                'after the agent explains the options; the agent must not act before asking.'),
+    'identity': ('Identify the customer: the business rules require the agent to identify the customer (an account '
+                 'id, email, phone or name plus postcode) before any account-specific lookup or change, and the tools '
+                 'need that identifier. Put the identifier in user_facts, not in user_scene.known, so the opening '
+                 'does not volunteer it and the agent has to ask.'),
     'forgotten': ('Forgotten information: the user does not remember one identifier an agent would normally ask for '
                   '(an order id, an email). Leave it out of user_facts and user_scene.known, list its name in '
                   'user_script.forgotten, and give the user another way to be identified or found (for example name '
@@ -105,7 +130,10 @@ def scripts(count, shapes, seed=0):
             continue
         rng = random.Random(f'{seed}-script-{index}')
         chosen = [name for name, share in SCRIPT_ELEMENTS.items() if rng.random() < share][:3]
-        out.append(chosen or [rng.choices(list(SCRIPT_ELEMENTS), weights=list(SCRIPT_ELEMENTS.values()))[0]])
+        chosen = chosen or [rng.choices(list(SCRIPT_ELEMENTS), weights=list(SCRIPT_ELEMENTS.values()))[0]]
+        if rng.random() < IDENTITY_SHARE or {'wrong_first', 'forgotten'} & set(chosen):
+            chosen.append('identity')  # besides the (up to three) script elements
+        out.append(chosen)
     return out
 
 
@@ -140,6 +168,37 @@ def script_problems(request, elements):
     if 'out_of_scope' in elements and not (isinstance(scope, str) and scope.strip()
                                            and scope in (script.get('goals') or [])):
         problems.append('out_of_scope: user_script.out_of_scope must be the request, also listed in user_script.goals')
+    wrong = script.get('wrong_first')
+    if 'wrong_first' in elements:
+        if not (isinstance(wrong, dict) and len(wrong) == 1):
+            problems.append('wrong_first: user_script.wrong_first must be {"<fact key>": "<wrong value>"}')
+        else:
+            (key, value), = wrong.items()
+            text = json.dumps(request.get('tables'), ensure_ascii=False)
+            if key not in facts:
+                problems.append(f'wrong_first: {key} must be a user fact (the right value)')
+            elif not isinstance(value, str) or not value or value == facts[key] or f'"{value}"' in text:
+                problems.append('wrong_first: the wrong value must differ from the fact and exist nowhere in the tables')
+    amb = script.get('ambiguous')
+    if 'ambiguous' in elements:
+        known = json.dumps((request.get('user_scene') or {}).get('known') or {}, ensure_ascii=False)
+        if not (isinstance(amb, dict) and isinstance(amb.get('phrase'), str) and amb['phrase'].strip()
+                and amb.get('fact') in facts):
+            problems.append('ambiguous: user_script.ambiguous must be {"phrase": str, "fact": <a user fact key>}')
+        elif str(facts[amb['fact']]) in known:
+            problems.append('ambiguous: the opening must not reveal which record the user means')
+    clarify = script.get('clarify')
+    if 'clarify' in elements and not (isinstance(clarify, dict) and isinstance(clarify.get('options'), list)
+                                      and 2 <= len(clarify['options']) <= 3 and clarify.get('decides_by')
+                                      and len(approvals) >= 2):
+        problems.append('clarify: user_script.clarify needs {"options": 2-3 actions, "decides_by": str} and an '
+                        'approve_* fact per action')
+    if 'identity' in elements:
+        known = json.dumps((request.get('user_scene') or {}).get('known') or {}, ensure_ascii=False)
+        identifiers = [k for k, v in facts.items() if not k.startswith('approve') and isinstance(v, (str, int))
+                       and str(v) not in known]
+        if not identifiers:
+            problems.append('identity: user_facts needs a customer identifier that user_scene.known does not reveal')
     forgotten = script.get('forgotten')
     if 'forgotten' in elements:
         known = (request.get('user_scene') or {}).get('known') or {}

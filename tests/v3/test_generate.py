@@ -43,6 +43,12 @@ def script_for(elements):
     if 'out_of_scope' in elements:
         script['out_of_scope'] = '顺便帮我订个餐厅'
         script['goals'] = script.get('goals', ['续借']) + ['顺便帮我订个餐厅']
+    if 'wrong_first' in elements:
+        script['wrong_first'] = {'reader_id': 'R9X'}  # matches nothing in the library tables
+    if 'ambiguous' in elements:
+        script['ambiguous'] = {'phrase': '我那本书', 'fact': 'loan_ids'}
+    if 'clarify' in elements:
+        script['clarify'] = {'options': ['续借第一本', '续借第二本'], 'decides_by': '能不能续'}
     return script if elements else None
 
 
@@ -193,7 +199,8 @@ class GenerateTests(unittest.TestCase):
         shapes = ['direct', 'simple', 'complex', 'complex'] * 25
         assigned = generate.scripts(len(shapes), shapes)
         self.assertTrue(all(not a for a, s in zip(assigned, shapes) if s == 'direct'))
-        self.assertTrue(all(1 <= len(a) <= 3 for a, s in zip(assigned, shapes) if s != 'direct'))
+        elements = lambda a: [e for e in a if e != 'identity']  # identification is a norm, not counted
+        self.assertTrue(all(1 <= len(elements(a)) <= 3 for a, s in zip(assigned, shapes) if s != 'direct'))
         self.assertGreater(sum('fallback' in a for a in assigned), sum('forgotten' in a for a in assigned))
         request = library_request()
         self.assertTrue(generate.script_problems(request, ['pushback']))  # missing user_script
@@ -256,3 +263,42 @@ class GenerateTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class RecoveryScriptTests(unittest.TestCase):
+    def test_wrong_first_and_identity_checks(self):
+        from env_factory_v3.production import generate
+        request = {'tables': {'orders': [{'id': 'W123'}]}, 'user_facts': {'order_id': 'W123', 'approve_x': True},
+                   'user_scene': {'known': {}}, 'user_script': {'traits': ['brief'], 'wrong_first': {'order_id': 'W124'}}}
+        self.assertEqual(generate.script_problems(request, ['wrong_first', 'identity']), [])
+        request['user_script']['wrong_first'] = {'order_id': 'W123'}
+        self.assertTrue(any('wrong value' in p for p in generate.script_problems(request, ['wrong_first'])))
+        request['user_scene']['known'] = {'order': 'W123'}
+        self.assertTrue(any('identity' in p for p in generate.script_problems(request, ['identity'])))
+
+    def test_identity_is_assigned_to_most_interactive_tasks(self):
+        from env_factory_v3.production import generate
+        plan = generate.scripts(200, ['complex'] * 200)
+        share = sum('identity' in s for s in plan) / 200
+        self.assertGreater(share, 0.6)
+        self.assertTrue(all('identity' in s for s in plan if 'wrong_first' in s))
+
+    def test_simulated_user_is_told_both_values(self):
+        from env_factory_v3.serving import user_sim
+        text = user_sim.script_text({'wrong_first': {'order_id': 'W124'}}, 'en', {'order_id': 'W123'})
+        self.assertIn('W124', text)
+        self.assertIn('W123', text)
+
+
+class ClarificationScriptTests(unittest.TestCase):
+    def test_ambiguous_and_clarify_are_checked_and_acted(self):
+        from env_factory_v3.production import generate
+        from env_factory_v3.serving import user_sim
+        request = copy.deepcopy(library_request())
+        request['user_script'] = script_for(['ambiguous', 'clarify'])
+        self.assertEqual(generate.script_problems(request, ['ambiguous', 'clarify']), [])
+        request['user_script']['ambiguous'] = {'phrase': 'x', 'fact': 'nope'}
+        self.assertTrue(generate.script_problems(request, ['ambiguous']))
+        text = user_sim.script_text(script_for(['ambiguous', 'clarify']), 'zh')
+        self.assertIn('我那本书', text)
+        self.assertIn('能不能续', text)
