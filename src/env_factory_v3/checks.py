@@ -174,8 +174,18 @@ def check_request(folder):
     return generated(folder)
 
 
+def check_world(folder):
+    from env_factory_v3.production.world import check_world as world
+    return world(folder)
+
+
+def check_task(folder):
+    from env_factory_v3.production.world import check_task as task
+    return task(folder)
+
+
 KINDS = {'schema': check_schema, 'env': check_env, 'oracle': check_oracle, 'diff': check_diff,
-         'request': check_request, 'rubric': check_rubric}
+         'request': check_request, 'rubric': check_rubric, 'world': check_world, 'task': check_task}
 
 
 def run(kind, folder):

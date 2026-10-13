@@ -63,7 +63,11 @@ Write env.py:
    then api.call(name, consent=token, **exact_args). confirm returns None when the user
    declines; then that write must not happen. api.ask raises KeyError for a fact the user does
    not know (brief.md lists forgotten facts under "How the user behaves"): identify the user the
-   other way the rules allow. Handle every goal the user has, in order. Catch BusinessError where the rules allow
+   other way the rules allow. Handle every goal the user has, in order.
+   World mode: when request.json has "goal_schema", this environment serves many tasks on one
+   database. The user's goals are the fact "goals" ([{{"process", "params"}}]): reference(api)
+   must handle any process in goal_schema with any valid params (read them with api.ask), never
+   only the sample task in facts.json. Catch BusinessError where the rules allow
    partial success. Return the answer exactly in answer_schema.json's shape. When data.json has
    scheduled_events, time passes only through api.wait(seconds); the events change rows as the
    clock passes them and tools never see that table.
@@ -92,6 +96,9 @@ def expected(data, facts, now) -> {{"answer": ..., "final_state": ...}}
 - answer: what the user must be told, exactly in answer_schema.json's shape.
 - scheduled_events (if present): apply them with env_factory_v3.runtime.apply_event in `at`
   order for the waiting a correct handling does; keep that table unchanged in final_state.
+- World mode: when request.json has "goal_schema", the same oracle serves many tasks on one
+  database: compute the outcome for whatever goals the fact "goals" lists, for any process in
+  goal_schema, never only the sample task in facts.json.
 - It runs on perturbed worlds and flipped approvals: never depend on particular ids or
   values. Raise InvalidWorld only when the data itself breaks an invariant stated in
   brief.md (e.g. a dangling reference); never to avoid a hard case.
@@ -364,3 +371,57 @@ amounts in dollars: 180 cents is "$1.80"); mention what you want to be told only
 words; {avoid}
 never restate rules or procedures, never dictate how the agent should confirm things with you, and never
 mention internal numbers such as "time 10" or "day 10". Output only the message itself."""
+
+WORLD_AUTHOR = """You design one complete customer-service business world for training agents: one database and
+one policy manual on which many different customer tasks will later be posed. Business domain: {domain}. {detail}
+Write request.json in this folder:
+{{"id": "{id}", "family": "<short domain slug>", "category": "multi_step_agentic", "reward_type": "business",
+  "language": "{language}", "title": "<short title in {language_name}>", "business_rules": "...",
+  "goal_schema": {{...}}, "tables": {{...}}, "user_facts": {{...}}, "user_scene": {{...}},
+  "time": {{"start": <int>, "tick": 0}}}}
+
+- business_rules ({language_name}): the full policy manual of this business, the only authority. Cover 6 to 10
+  business processes customers come for (for example look up, book, change, cancel, refund, exchange,
+  compensate, upgrade, transfer to a human agent when the policy says so). For each: eligibility, limits, fees and
+  rounding, deadlines relative to now, what happens on refusal or failure, partial success, and which writes need
+  the customer's approval. Customers must be identified (state how: e.g. name plus postcode, or email) before any
+  account data is shown or changed. For every row a write creates or changes, state the value of every column.
+  No rule may be open to two readings. Amounts are integer cents; times are virtual integers (minutes).
+- goal_schema: {{"<process>": {{"description": "<what the customer wants>", "params": {{"<name>": "<type and
+  meaning>"}}}}}} for those 6 to 10 processes. A task's goals are one to three of them with concrete params.
+- tables: a realistic database: at least 40 customers and at least 200 rows in all, with several payment methods,
+  statuses and edge cases (expired, ineligible, at a limit, out of stock); unique "id" per row; columns consistent.
+- user_facts: one sample task: "goals": [{{"process": ..., "params": {{...}}}}], the identity facts the rules ask
+  for, and one boolean approve_* fact per write the customer is asked to approve.
+- user_scene ({language_name}) for that sample task: {{"situation", "goal", "known", "wants_to_know"}} as a
+  customer would state them, with no rules, protocol or virtual clock values.
+- Use a domain different from library loans, procurement, subscriptions, document access, parcels, parking,
+  warehouse lots and file versions.
+
+Run `{python} -m env_factory_v3.checks world` until it prints PASS. Do not read or write files outside this
+folder. End with one line: the title.
+"""
+
+TASK_AUTHOR = """You write one customer task on an existing business world. Files in this folder: world.json (the
+policy manual "business_rules", "goal_schema" and the database "tables"), assignment.json (what this task must
+contain). Read them first.
+
+Write task.json:
+{{"title": "<short title in {language_name}>",
+  "user_facts": {{"goals": [{{"process": "<from goal_schema>", "params": {{...}}}}], <identity facts the rules ask
+  for>, <one boolean approve_* fact per write the customer is asked to approve>}},
+  "user_scene": {{"situation", "goal", "known", "wants_to_know"}},
+  "user_script": {{"traits": [...], ...}},
+  "overlay": [{{"table": "<table>", "id": "<row id>", "set": {{"<column>": <value>}}}}]}}
+
+- Processes for this task: {processes}. Pick a customer and records from the tables for which these goals make
+  sense under the rules; params must name real rows.
+- overlay: optional small changes to existing rows (only existing tables, ids and columns) that create the
+  situation this task needs (for example make the first-choice item unavailable, set a date just past a deadline).
+- user_scene ({language_name}): what the customer knows and says, in their own words: no rules, protocol or
+  virtual clock values; ids only if a customer would have them.
+- {script}
+
+Run `{python} -m env_factory_v3.checks task` until it prints PASS. Do not read or write files outside this folder.
+End with one line: the title.
+"""
