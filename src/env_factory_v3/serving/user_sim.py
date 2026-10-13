@@ -93,8 +93,21 @@ def describe(facts):
     return '\n'.join(lines) or '- （无）'
 
 
+APPROVALS = {'zh': '\n\n对方在修改你的数据之前会征求你的同意。你对这些具体操作的态度如下（只针对这里列出的操作）：\n{lines}\n'
+                    '对方问你是否同意某项操作时，按上面的态度明确回答“同意”或“不同意”；没列出的操作一律不同意。',
+             'en': '\n\nThe agent will ask for your agreement before changing your data. Your stance on these exact '
+                   'actions (only these):\n{lines}\nWhen the agent asks whether you agree to an action, answer '
+                   'clearly yes or no according to this; refuse anything not listed.'}
+
+
+def stances(facts, approvals, descriptions, lang):
+    yes, no = ('同意', '不同意') if lang == 'zh' else ('yes', 'no')
+    return '\n'.join(f"- {descriptions.get(key) or key.replace('approve_', '').replace('_', ' ')}: "
+                     f"{yes if facts.get(key) is True else no}" for key in sorted(approvals) if key in facts)
+
+
 class UserSimulator:
-    def __init__(self, client, request, facts, approvals):
+    def __init__(self, client, request, facts, approvals, plain=False):
         private = {k: v for k, v in facts.items() if k not in approvals}
         self.client, self.ended = client, False
         self.english = request.get('language', 'zh') == 'en'
@@ -105,7 +118,10 @@ class UserSimulator:
         self.pushback_left = rounds + 1 if isinstance(rounds, int) else None
         self.messages = [{'role': 'system', 'content': persona.format(request=request['user_request'],
                                                                      facts=describe(private)) +
-                          script_text(self.script, 'en' if self.english else 'zh', facts)},
+                          script_text(self.script, 'en' if self.english else 'zh', facts) +
+                          (APPROVALS['en' if self.english else 'zh'].format(lines=stances(
+                              facts, approvals, request.get('fact_descriptions') or {}, 'en' if self.english else 'zh'))
+                           if plain and approvals else '')},
                          {'role': 'assistant', 'content': request['user_request']}]
 
     def reply(self, message, decision=None):

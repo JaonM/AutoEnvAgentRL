@@ -26,6 +26,7 @@ TEXT = {
                     '只使用提供的工具，不要猜测用户的私人信息。'),
         'writes': ('每次写操作之前，先用 `v3_chat` 向用户提出这次具体的写操作（附上 proposal）；用户同意后会返回授权凭证，'
                    '把它作为 `consent` 传给这次写操作。'),
+        'writes_plain': '每次修改数据之前，先向用户说明这次具体要做的修改，请用户明确确认；用户同意后再执行。',
         'finish': ('确认结果后，调用 `v3_answer` 记录处理结果，并用平实的话把结果告诉用户；'
                    '用户表示没有其他问题时，对话结束。'),
         # Without an answer tool the agent delivers by talking; the result is read from what it said.
@@ -60,6 +61,8 @@ TEXT = {
                     'guess private user details.'),
         'writes': ('Before every write, propose that exact write to the user with `v3_chat` (attach the proposal); when '
                    'the user agrees you get an authorization token, pass it as `consent` to that exact write.'),
+        'writes_plain': ('Before any change, describe exactly what you are about to do and ask the user to explicitly '
+                         'confirm; make the change only after they agree.'),
         'finish': ('Once the outcome is settled, record it with `v3_answer` and tell the user the result in plain '
                    'words; the conversation ends when the user has nothing more to ask.'),
         'tell': ('Once the outcome is settled, tell the user the complete result in plain words; the conversation '
@@ -192,7 +195,7 @@ def _tools(instructions, category):
                     t['parameters']['required']) for t in instructions['tools']]
     text = TEXT[language(instructions)]
     if instructions.get('user_mode') == 'natural':
-        if any(t.get('kind') == 'write' for t in instructions['tools']):
+        if any(t.get('kind') == 'write' for t in instructions['tools']) and instructions.get('consent_mode') != 'plain':
             out.append(function(
                 'v3_chat', text['chat'],
                 {'message': {'type': 'string', 'description': text['chat_message']},
@@ -236,7 +239,8 @@ def messages(instructions, names=None, answer_tool=True):
         text, time = TEXT[language(instructions)], instructions['time']
         clock = text['clock'].format(start=time['start']) + (text['advancing'] if time.get('advancing') else text['fixed'])
         sep = '' if language(instructions) == 'zh' else ' '
-        system = sep.join([text['natural']] + ([text['writes']] if writes else []) +
+        writes_text = text['writes_plain'] if instructions.get('consent_mode') == 'plain' else text['writes']
+        system = sep.join([text['natural']] + ([writes_text] if writes else []) +
                           [text['finish'] if answer_tool else text['tell']])
         return [{'role': 'system', 'content': swap(system) + '\n\n' + text['rules'] + '\n' + instructions['business_rules']
                  + '\n\n' + swap(clock)},
