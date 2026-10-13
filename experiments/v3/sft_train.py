@@ -139,6 +139,8 @@ def main():
     parser.add_argument('--per-episode', action='store_true', help='one sample per episode (earlier rendering)')
     parser.add_argument('--rename-tools', type=float, default=0.0,
                         help='share of episodes whose business tools and parameters are renamed (tool_rename.py)')
+    parser.add_argument('--vary-results', type=float, default=0.0,
+                        help='share of episodes whose tool results switch to raw JSON / "Error: ..." text')
     parser.add_argument('--replay', nargs='*', default=[],
                         help='extra episode files mixed in as they are (e.g. the base model\'s own successes)')
     parser.add_argument('--no-error-turns', action='store_true',
@@ -170,6 +172,13 @@ def main():
         from tool_rename import augment
         rng = random.Random(args.seed + 1)
         episodes = [augment(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if rng.random() < args.rename_tools else e
+                    for e in episodes]
+    if args.vary_results:
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from tool_rename import vary_results
+        rng = random.Random(args.seed + 2)
+        episodes = [vary_results(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if rng.random() < args.vary_results else e
                     for e in episodes]
     if args.per_episode:
         pairs = [(e, render(tokenizer, e)) for e in episodes]

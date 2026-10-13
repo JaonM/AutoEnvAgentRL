@@ -53,6 +53,7 @@ class ScriptedPolicy:
 
 
 _MODE = unittest.mock.patch.dict(os.environ, {'ENVFACTORY_V3_USER_MODE': 'structured',
+                                                'ENVFACTORY_V3_RESULT_FORMAT': 'envelope',
                                               'ENVFACTORY_V3_TOOL_NAMES': 'fixed'})
 
 
@@ -482,3 +483,14 @@ class DockerTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ResultFormatTests(unittest.TestCase):
+    def test_results_render_in_the_formats_agents_meet(self):
+        from rl.environments.v3 import render_result
+        failed = {'ok': False, 'kind': 'business', 'error': 'Order not found'}
+        self.assertEqual(render_result(failed, 'raw'), 'Error: Order not found')
+        self.assertEqual(render_result(failed, 'text'), 'Order not found')
+        self.assertEqual(json.loads(render_result(failed, 'envelope'))['kind'], 'business')
+        self.assertEqual(json.loads(render_result({'ok': True, 'result': {'id': 'W1'}}, 'raw')), {'id': 'W1'})
+        self.assertIn('left', render_result({'ok': True, 'result': {'reply': 'bye'}, 'notice': 'the user left'}, 'raw'))

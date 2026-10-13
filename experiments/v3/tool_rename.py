@@ -1,4 +1,7 @@
-"""Business-tool renaming for SFT samples: the model must read its tool list, not remember names.
+"""SFT sample augmentation: renamed business tools and varied tool-result formats.
+
+The model must read its tool list, not remember names, and recognise a failed call however the
+platform reports it (τ²-bench returns raw JSON or plain "Error: ..." text, our service an envelope).
 
 B1 (SFT on 25 tasks) called tools that do not exist on τ²-bench (get_order_items, ...): a small model
 memorizes the names it trained on. An augmented episode renames every business tool and its
@@ -118,4 +121,32 @@ def augment(episode, seed):
             message['name'] = tools[message['name']]
         if message.get('role') == 'system':
             message['content'] = rewrite_text(message.get('content') or '', tools)
+    return episode
+
+
+def envelope(content, style):
+    """A tool result in one of the formats agents meet: 'envelope' (ours, unchanged), 'raw' (the result
+    as JSON, a failure as "Error: <message>"), or 'text' (raw, failures as "<message>")."""
+    if style == 'envelope':
+        return content
+    try:
+        value = json.loads(content)
+    except (TypeError, ValueError):
+        return content
+    if not isinstance(value, dict) or 'ok' not in value:
+        return content
+    if value.get('ok'):
+        result = value.get('result')
+        return result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+    message = str(value.get('error') or 'request failed')
+    return f'Error: {message}' if style == 'raw' else message
+
+
+def vary_results(episode, seed):
+    """A copy of the episode whose tool results all use one randomly chosen format."""
+    style = random.Random(f'{seed}-envelope').choice(['envelope', 'raw', 'raw', 'text'])
+    episode = copy.deepcopy(episode)
+    for message in episode['messages']:
+        if message.get('role') == 'tool':
+            message['content'] = envelope(message.get('content'), style)
     return episode

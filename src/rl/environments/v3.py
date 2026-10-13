@@ -38,6 +38,19 @@ def bundle_identity(root):
     return hashlib.sha256(canonical(loaded['manifest']['files']).encode()).hexdigest()
 
 
+def render_result(result, style):
+    """A tool result as the agent reads it: 'envelope' (the service's {"ok", "result" | "error"}),
+    'raw' (the result as JSON, a failure as "Error: <message>", as τ²-bench does) or 'text'."""
+    if style == 'envelope' or not isinstance(result, dict) or 'ok' not in result:
+        return json.dumps(result, ensure_ascii=False)
+    notice = f"\n{result['notice']}" if result.get('notice') else ''
+    if result.get('ok'):
+        value = result.get('result')
+        return (value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)) + notice
+    message = str(result.get('error') or 'request failed') + notice
+    return f'Error: {message}' if style == 'raw' else message
+
+
 RESTORED = ('messages', 'tools', 'terminated', 'score', 'answer', 'unknown_tool_calls',
             'platform_tool_hallucinations')
 
@@ -62,6 +75,9 @@ class V3Episode:
         # answer from its speech, as on τ²-bench; random: half the episodes (by seed) offer the answer
         # tool; always: every episode does.
         self.answer_tool_mode = os.environ.get('ENVFACTORY_V3_ANSWER_TOOL', 'never')
+        # random (default): per episode (by seed) tool results come as our envelope, raw JSON with
+        # "Error: ..." failures (τ²-bench's format), or plain text; envelope: always ours.
+        self.result_format = os.environ.get('ENVFACTORY_V3_RESULT_FORMAT', 'random')
         self.tool_errors = 0
         self.root = Path(root).resolve()
         loaded = bundle.load_bundle(self.root)
@@ -139,6 +155,8 @@ class V3Episode:
         self.naming = agent_view.naming(int(seed), self.tool_naming, avoid=self.names | arguments)
         self.answer_tool = (self.user_mode != 'natural' or self.answer_tool_mode == 'always' or
                             (self.answer_tool_mode == 'random' and random.Random(int(seed) * 7919 + 1).random() < 0.5))
+        self.result_style = ('envelope' if self.result_format == 'envelope' else
+                             random.Random(int(seed) * 7919 + 2).choice(['envelope', 'raw', 'raw', 'text']))
         self.tools = agent_view.tools(public, self.category, self.naming, self.answer_tool)
         self.messages = agent_view.messages(public, self.naming, self.answer_tool)
         return self.messages
@@ -225,7 +243,7 @@ class V3Episode:
                 result = ({'ok': False, 'kind': 'finished', 'error': 'episode terminated'} if self.terminated
                           else self._dispatch(name, params))
                 self.messages.append({'role': 'tool', 'tool_call_id': identifier, 'name': name,
-                                      'content': json.dumps(result, ensure_ascii=False)})
+                                      'content': render_result(result, self.result_style)})
         elif self.user_mode == 'natural':
             # Free dialogue: a plain message is speech to the user; their reply is the next user turn.
             said = self._step({'type': 'chat', 'message': message.get('content') or ''})
