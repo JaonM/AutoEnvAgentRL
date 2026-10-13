@@ -14,6 +14,9 @@ class Config:
     metrics_export_interval: int = 0
     group_artifacts_keep: int = 256
     zero_variance_policy: str = "retry_skip"
+    # GRPO advantage scale: "group" (std of the group) or "task" (std of the recent rewards of the same
+    # task across groups, AutoForge ERPO: less noise with small groups; falls back to the group early on)
+    advantage_std: str = "group"
     context_limit_policy: str = "finish"
     numerical_check_mode: str = "periodic"
     numerical_check_interval: int = 20
@@ -154,6 +157,8 @@ class Config:
             )
         if self.group_artifacts_keep < 1 or self.numerical_check_interval < 1:
             raise ValueError("artifact retention and numerical check interval must be positive")
+        if self.advantage_std not in {"group", "task"}:
+            raise ValueError("advantage_std must be group or task")
         if self.zero_variance_policy not in {"retry_skip", "retry_fail", "skip", "fail"}:
             raise ValueError("invalid zero_variance_policy")
         if self.context_limit_policy not in {"finish", "fail"}:

@@ -14,12 +14,29 @@ def assign_episode_reward(actions, result):
     actions[-1]['reward'] = reward
 
 
+class TaskScale:
+    """Recent trainable rewards per task; the GRPO advantage scale of Config.advantage_std == "task"."""
+
+    def __init__(self, window=64, minimum=8):
+        self.window, self.minimum, self.history = window, minimum, {}
+
+    def __call__(self, group):
+        rewards = [e['final_reward'] for e in group['episodes'] if trainable(e)]
+        seen = self.history.setdefault(group.get('task_id'), [])
+        seen.extend(rewards)
+        del seen[:-self.window]
+        if len(seen) < self.minimum:
+            return None  # too little history: use the group's own spread
+        mean = sum(seen) / len(seen)
+        return math.sqrt(sum((r - mean) ** 2 for r in seen) / len(seen))
+
+
 def trainable(episode):
     """False when the environment marked the episode invalid for training (its reward is not evidence)."""
     return episode.get('trainable', True) is not False
 
 
-def make_samples(group, algorithm, gamma=1.0, lam=.95, discount_unit='action'):
+def make_samples(group, algorithm, gamma=1.0, lam=.95, discount_unit='action', scale=None):
     if algorithm not in {'ppo', 'grpo'}:
         raise ValueError('unsupported trajectory objective')
     if discount_unit not in {'action', 'token'}:
@@ -33,7 +50,14 @@ def make_samples(group, algorithm, gamma=1.0, lam=.95, discount_unit='action'):
         # An untrainable episode (e.g. the simulated user misled the agent) neither sets the group
         # baseline nor gets a gradient.
         grouped = [0.0] * len(episodes)
-        for i, value in zip(kept, group_advantages([episodes[i]['final_reward'] for i in kept]) if len(kept) >= 2 else []):
+        rewards = [episodes[i]['final_reward'] for i in kept]
+        if scale is not None and len(kept) >= 2:
+            # Task-level scale: group mean, but the spread of this task's recent rewards (see Config.advantage_std).
+            mean = sum(rewards) / len(rewards)
+            values = [(r - mean) / (scale + 1e-8) for r in rewards]
+        else:
+            values = group_advantages(rewards) if len(kept) >= 2 else []
+        for i, value in zip(kept, values):
             grouped[i] = value
     samples = []
     for index, episode in enumerate(episodes):

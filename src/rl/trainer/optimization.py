@@ -12,6 +12,23 @@ from rl.data.trajectory import make_samples, trainable
 from rl.data.batching import combine_samples, minibatches
 
 
+def task_scale(session, group, record=True):
+    """Advantage scale for advantage_std == "task" (None: the group's own std)."""
+    if session.config.algorithm != "grpo" or session.config.advantage_std != "task":
+        return None
+    from rl.data.trajectory import TaskScale
+    tracker = getattr(session, "_task_scale", None)
+    if tracker is None:
+        tracker = session._task_scale = TaskScale()
+    if not record:  # replayed group: use the history without counting it again
+        seen = tracker.history.get(group.get("task_id")) or []
+        if len(seen) < tracker.minimum:
+            return None
+        mean = sum(seen) / len(seen)
+        return (sum((r - mean) ** 2 for r in seen) / len(seen)) ** 0.5
+    return tracker(group)
+
+
 def measure_drift(session: TrainingSession, group):
     from rl.data.replay import importance_diagnostics
 
@@ -85,6 +102,7 @@ def prepare(session: TrainingSession, group, path, replay_entry=None):
             session.config.gamma,
             session.config.gae_lambda,
             session.config.discount_unit,
+            task_scale(session, group),
         )
     )
     if reason:
@@ -288,6 +306,7 @@ def prepared_records(session: TrainingSession, *, only_untrained=False):
                     session.config.gamma,
                     session.config.gae_lambda,
                     session.config.discount_unit,
+                    task_scale(session, group, record=False),
                 ),
                 "path": record["path"],
                 "replay_entry": None,

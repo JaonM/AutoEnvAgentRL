@@ -40,6 +40,7 @@ def parse_args(argv=None):
             "bits": [4, 8],
             "discount_unit": ["action", "token"],
             "zero_variance_policy": ["retry_skip", "retry_fail", "skip", "fail"],
+            "advantage_std": ["group", "task"],
             "context_limit_policy": ["finish", "fail"],
             "numerical_check_mode": ["strict", "periodic"],
         }.get(name)

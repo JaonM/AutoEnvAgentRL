@@ -149,6 +149,21 @@ class SimulatorAuditTests(unittest.TestCase):
         self.assertEqual((advantages[2], samples[2]['weight']), (0.0, 0))
 
 
+class TaskScaleTests(unittest.TestCase):
+    def test_task_scale_uses_recent_rewards_of_the_task(self):
+        from rl.data.trajectory import TaskScale
+        tracker = TaskScale(window=64, minimum=4)
+        group = lambda rewards: {'task_id': 't', 'episodes': [{'final_reward': r} for r in rewards]}
+        self.assertIsNone(tracker(group([1.0, 0.0])))  # too little history: the group's own spread
+        scale = tracker(group([1.0, 0.0]))
+        self.assertAlmostEqual(scale, 0.5)
+        samples = make_samples({'task_id': 't', 'episodes': [
+            {'seed': 1, 'final_reward': r, 'bootstrap': 0.0,
+             'actions': [{'tokens': [1], 'old_logp': [0.0], 'reward': r, 'terminated': True}]} for r in (1.0, 0.5)]},
+            'grpo', scale=0.5)
+        self.assertAlmostEqual(samples[0]['advantage'], 0.5)
+
+
 class LibraryBundle(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
