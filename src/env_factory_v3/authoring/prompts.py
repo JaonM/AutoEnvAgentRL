@@ -382,7 +382,8 @@ Write request.json in this folder:
 
 - business_rules ({language_name}): the full policy manual of this business, the only authority. Cover 6 to 10
   business processes customers come for (for example look up, book, change, cancel, refund, exchange,
-  compensate, upgrade, transfer to a human agent when the policy says so). For each: eligibility, limits, fees and
+  compensate, upgrade). State which requests are outside this business's scope and how they are answered
+  (decline, point elsewhere, or a handover this business actually provides). For each: eligibility, limits, fees and
   rounding, deadlines relative to now, what happens on refusal or failure, partial success, and which writes need
   the customer's approval. Customers must be identified (state how: e.g. name plus postcode, or email) before any
   account data is shown or changed. For every row a write creates or changes, state the value of every column.

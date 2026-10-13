@@ -40,6 +40,9 @@ def script_for(elements):
         script['goals'] = ['续借', '问候补人数']
     if 'forgotten' in elements:
         script['forgotten'] = ['email']
+    if 'out_of_scope' in elements:
+        script['out_of_scope'] = '顺便帮我订个餐厅'
+        script['goals'] = script.get('goals', ['续借']) + ['顺便帮我订个餐厅']
     return script if elements else None
 
 
@@ -194,8 +197,9 @@ class GenerateTests(unittest.TestCase):
         self.assertGreater(sum('fallback' in a for a in assigned), sum('forgotten' in a for a in assigned))
         request = library_request()
         self.assertTrue(generate.script_problems(request, ['pushback']))  # missing user_script
-        request['user_script'] = script_for(['fallback', 'pushback', 'multi_goal', 'forgotten'])
-        self.assertEqual(generate.script_problems(request, ['fallback', 'pushback', 'multi_goal', 'forgotten']), [])
+        everything = ['fallback', 'pushback', 'multi_goal', 'forgotten', 'out_of_scope']
+        request['user_script'] = script_for(everything)
+        self.assertEqual(generate.script_problems(request, everything), [])
         request['user_script']['forgotten'] = ['reader_id']  # still in user_facts
         self.assertTrue(generate.script_problems(request, ['forgotten']))
         self.assertIn('Pushback', generate.script_prompt(['pushback']))

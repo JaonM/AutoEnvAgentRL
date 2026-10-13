@@ -52,7 +52,7 @@ SHAPES = {
 }
 # User script elements (docs/v3-domain-world-design.md §3): each interactive task gets one to three,
 # drawn with these probabilities; direct tasks get none.
-SCRIPT_ELEMENTS = {'fallback': 0.4, 'pushback': 0.3, 'multi_goal': 0.3, 'forgotten': 0.2}
+SCRIPT_ELEMENTS = {'fallback': 0.4, 'pushback': 0.3, 'multi_goal': 0.3, 'forgotten': 0.2, 'out_of_scope': 0.1}
 SCRIPT_TEXT = {
     'fallback': ('Fallback: the user wants option A and accepts option B (or C) only if A is impossible. Make A '
                  'impossible in the data (out of stock, ineligible, full). Give each option its own boolean approve_* '
@@ -66,6 +66,11 @@ SCRIPT_TEXT = {
     'multi_goal': ('Multiple goals: the user has two or three related requests in one conversation; user_script.goals '
                    'lists them in order (later ones are raised after the first is handled); the expected outcome '
                    'covers all of them.'),
+    'out_of_scope': ('Out of scope: besides its real request, the user asks for something this business does not '
+                     'handle at all (not covered by the rules, unlike a refused demand). The correct outcome changes '
+                     'nothing for it; the rules say how such requests are answered (decline, point elsewhere, or a '
+                     'handover the domain itself provides). user_script.out_of_scope = "<the request in the user\'s '
+                     'words>", also listed in user_script.goals.'),
     'forgotten': ('Forgotten information: the user does not remember one identifier an agent would normally ask for '
                   '(an order id, an email). Leave it out of user_facts and user_scene.known, list its name in '
                   'user_script.forgotten, and give the user another way to be identified or found (for example name '
@@ -129,6 +134,10 @@ def script_problems(request, elements):
         problems.append('pushback: user_script.pushback must be {"demand": str, "rounds": 1-3, "then": "accept"}')
     if 'multi_goal' in elements and not (isinstance(script.get('goals'), list) and len(script['goals']) >= 2):
         problems.append('multi_goal: user_script.goals needs two or three goals in order')
+    scope = script.get('out_of_scope')
+    if 'out_of_scope' in elements and not (isinstance(scope, str) and scope.strip()
+                                           and scope in (script.get('goals') or [])):
+        problems.append('out_of_scope: user_script.out_of_scope must be the request, also listed in user_script.goals')
     forgotten = script.get('forgotten')
     if 'forgotten' in elements:
         known = (request.get('user_scene') or {}).get('known') or {}
