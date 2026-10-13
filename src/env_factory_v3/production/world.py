@@ -189,11 +189,12 @@ def make_task(world_bundle, folder, *, index, processes, script, runner, client,
     request['user_request'] = opening
     request['source'] = {**(world.get('source') or {}), 'world': world['id'], 'task': index, 'processes': processes,
                          'script': script, 'persona': persona}
+    request['category'] = task_category(world_bundle, request)
     target = folder / 'bundle'
     if target.exists():
         shutil.rmtree(target)
     target.mkdir(parents=True)
-    for name in json.loads((world_bundle / 'manifest.json').read_text())['files']:
+    for name in json.loads((Path(world_bundle) / 'manifest.json').read_text())['files']:
         if name != 'request.json':
             shutil.copy(world_bundle / name, target / name)
     shutil.copy(world_bundle / 'manifest.json', target / 'manifest.json')
@@ -202,9 +203,55 @@ def make_task(world_bundle, folder, *, index, processes, script, runner, client,
     manifest['files']['request.json'] = bundle.sha256(target / 'request.json')
     manifest['world'] = world['id']
     (target / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=1))
+    return certify(task_id, target, folder)
+
+
+def task_category(world_bundle, request):
+    """A task's category from what its reference actually does (a world serves all three kinds)."""
+    from env_factory_v3.certify import gates
+    from env_factory_v3.core.sandbox import load_module
+    env = load_module(Path(world_bundle) / 'env.py', role='env')
+    for name in ('multi_step_agentic', 'simple_agentic', 'direct_response'):
+        try:
+            if gates.category({**request, 'category': name}, env)['passed']:
+                return name
+        except Exception:
+            break
+    return request['category']
+
+
+def certify(task_id, target, folder):
+    """Every gate on the composed task bundle; the full report is kept for diagnosis."""
+    from env_factory_v3.certify import bundle
     report = bundle.requalify(target)
     failed = [g for g in report.get('gate_names', []) if not report[g]['passed']]
+    slim = {k: v for k, v in report.items() if k != 'worlds'}
+    (Path(folder) / 'qualify.json').write_text(json.dumps(slim, ensure_ascii=False, indent=1, default=str))
     return {'id': task_id, 'passed': report['passed'], 'stage': 'gates', 'failed': failed, 'bundle': str(target)}
+
+
+def recertify_category(out):
+    """Tasks that failed only the category gate: set the category from the reference and requalify."""
+    rows_path = Path(out) / 'tasks.jsonl'
+    rows = [json.loads(line) for line in rows_path.read_text().splitlines()]
+    fixed = []
+    for row in rows:
+        if row.get('passed') or row.get('failed') != ['category']:
+            continue
+        target = Path(row['bundle'])
+        request = json.loads((target / 'request.json').read_text())
+        manifest = json.loads((target / 'manifest.json').read_text())
+        world_dir = next(p for p in Path(out).glob('*/build/bundle') if json.loads(
+            (p / 'request.json').read_text())['id'] == manifest.get('world'))
+        request['category'] = task_category(world_dir, request)
+        (target / 'request.json').write_text(json.dumps(request, ensure_ascii=False, indent=1))
+        from env_factory_v3.certify import bundle
+        manifest['files']['request.json'] = bundle.sha256(target / 'request.json')
+        (target / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=1))
+        row.update(certify(row['id'], target, target.parent), recertified=True)
+        fixed.append(row['id'])
+    rows_path.write_text(''.join(json.dumps(r, ensure_ascii=False) + '\n' for r in rows))
+    return fixed
 
 
 def plan_tasks(world, count, seed=0):
