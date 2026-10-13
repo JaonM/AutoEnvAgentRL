@@ -5,14 +5,15 @@
 # (same servers, same settings); the full pre-registered evaluation stays eval_arm.sh.
 #   experiments/v3/bench/quick_eval.sh ARM MODEL_PATH [TRIALS]
 # THINK=1 serves the thinking template (reasoning before every reply, THINK_BUDGET tokens, default 1024,
-# then </think> is forced; 4096-token budget per call). BATCH (default 8) decodes that many requests
-# together in each server (continuous batching with the prefix cache); SERVERS defaults to 1.
+# then </think> is forced; 4096-token budget per call). BATCH decodes that many requests together
+# (continuous batching with the prefix cache): default 4 with THINK=1, where decoding dominates, and 0
+# (one at a time) otherwise, where batching was slower and ran out of memory on 30k-token prompts.
 set -uo pipefail
 cd "$(dirname "$0")/../../.."
 arm=$1; model=$2; trials=${3:-1}; port=${BENCH_PORT:-8766}
-think=(); servers=${SERVERS:-1}
+think=(); servers=${SERVERS:-1}; batch=${BATCH:-0}
 if [ "${THINK:-0}" = 1 ]; then
-  think=(--thinking --max-tokens 4096 --think-budget "${THINK_BUDGET:-1024}")
+  think=(--thinking --max-tokens 4096 --think-budget "${THINK_BUDGET:-1024}"); batch=${BATCH:-4}
 fi
 mkdir -p output/tau2
 started=$(date +%s)
@@ -22,7 +23,7 @@ for i in $(seq 1 "$servers"); do
   p=$port; [ "$servers" -gt 1 ] && p=$(( port + 10 + i ))
   backends+=("$p")
   PYTHONPATH=src .venv/bin/python experiments/v3/bench/serve_openai.py --model "$model" --port "$p" \
-    --cache-size $(( 40 / servers + 4 )) --cache-gb "$cache_gb" --batch "${BATCH:-8}" ${think[@]+"${think[@]}"} \
+    --cache-size $(( 40 / servers + 4 )) --cache-gb "$cache_gb" --batch "$batch" ${think[@]+"${think[@]}"} \
     --log "output/tau2/server-q$arm-$i.jsonl" > "output/tau2/server-q$arm-$i.log" 2>&1 &
   pids+=($!)
 done
@@ -41,6 +42,6 @@ for domain in airline retail; do
   runs+=($!)
 done
 wait "${runs[@]}"
-echo "{\"arm\": \"$arm\", \"model\": \"$model\", \"trials\": $trials, \"think\": ${THINK:-0}, \"servers\": $servers, \"batch\": ${BATCH:-8}, \"seconds\": $(( $(date +%s) - started ))}" \
+echo "{\"arm\": \"$arm\", \"model\": \"$model\", \"trials\": $trials, \"think\": ${THINK:-0}, \"servers\": $servers, \"batch\": $batch, \"seconds\": $(( $(date +%s) - started ))}" \
   > "output/tau2/q$arm.done"
 cat "output/tau2/q$arm.done"
