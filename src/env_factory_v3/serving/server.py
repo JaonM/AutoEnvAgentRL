@@ -121,8 +121,10 @@ class Service:
                                             copy.deepcopy(record['facts']))
             except Exception as exc:
                 raise ValueError(f'proposal does not name an approvable write: {exc}') from exc
-            if key not in self.approvals:
+            if not isinstance(key, str) or not key:
                 raise ValueError(f'approval_key returned {key!r}, not an approval topic')
+            # A write the user has no approval fact for (in a domain world, another process than the
+            # ones they came for) is one they do not want: declined, never an error.
             token = episode.confirm(key, proposal)
             decision = token is not None
         user = record['user']

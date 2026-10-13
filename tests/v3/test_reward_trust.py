@@ -95,6 +95,17 @@ class SimulatorAuditTests(unittest.TestCase):
         clean.step(episode, {'type': 'chat', 'message': '请问您的读者号？'})
         self.assertIs(clean.reward(episode)['valid'], True)
 
+    def test_a_write_without_an_approval_fact_is_declined_not_an_error(self):
+        env, oracle, schema = library_modules()
+        service = server.Service(env, oracle, schema, library_request(), user_mode='natural', user_client=ScriptedUser(),
+                                 audit=False)
+        env.approval_key = lambda tool, args, facts: 'approve_another_process'  # e.g. a world's other process
+        episode = service.reset(world='original')['episode']
+        reply = service.step(episode, {'type': 'chat', 'message': '要不要续借？',
+                                       'proposal': {'tool': 'renew_loan', 'args': {'loan_id': 'L1', 'reader_id': 'R1'}}})
+        self.assertTrue(reply['ok'], reply)
+        self.assertIsNone(reply['result']['consent'])
+
     def test_untrainable_episodes_get_no_gradient_and_set_no_baseline(self):
         def episode(reward_, trainable=True):
             return {'seed': 1, 'final_reward': reward_, 'trainable': trainable, 'bootstrap': 0.0,
