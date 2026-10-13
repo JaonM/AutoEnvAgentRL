@@ -307,15 +307,32 @@ def main():
     print(json.dumps({k: (v.get('training_ready'), v.get('failure_class')) for k, v in statuses.items()}), flush=True)
 
     rows_path = out / 'tasks.jsonl'
-    done = {json.loads(l)['id'] for l in rows_path.read_text().splitlines()} if rows_path.exists() else set()
-    jobs = []
+    rows_before = [json.loads(l) for l in rows_path.read_text().splitlines()] if rows_path.exists() else []
+    done = {r['id'] for r in rows_before}
+    worlds = []
     for key, status in sorted(statuses.items()):
-        if not status.get('training_ready'):
-            continue
-        world_request = json.loads((Path(status['bundle']) / 'request.json').read_text())
-        for index, (processes, script) in enumerate(plan_tasks(world_request, args.tasks)):
-            if f'{world_request["id"]}-t{index:03d}' not in done:
-                jobs.append((status['bundle'], out / key / 'tasks' / f't{index:03d}', index, processes, script))
+        if status.get('training_ready'):
+            worlds.append((key, status['bundle'], json.loads((Path(status['bundle']) / 'request.json').read_text())))
+
+    def jobs_for(phase):
+        """Probe phase: the first task of every process (index < number of processes, single process).
+        Main phase: the rest, only on processes whose probe certified."""
+        out_jobs = []
+        for key, bundle_path, world_request in worlds:
+            plan = plan_tasks(world_request, args.tasks)
+            processes = sorted(world_request['goal_schema'])
+            trusted = {p for p in processes if any(r['passed'] and r['id'] == f"{world_request['id']}-t{processes.index(p):03d}"
+                                                    for r in rows_before)}
+            for index, (chosen, script) in enumerate(plan):
+                probe = index < len(processes)
+                if probe:
+                    chosen = [processes[index]]  # one process per probe
+                if probe != (phase == 'probe') or f"{world_request['id']}-t{index:03d}" in done:
+                    continue
+                if phase == 'main' and not set(chosen) <= trusted:
+                    continue
+                out_jobs.append((bundle_path, out / key / 'tasks' / f't{index:03d}', index, chosen, script))
+        return out_jobs
 
     def task(job):
         bundle_path, folder, index, processes, script = job
@@ -331,8 +348,13 @@ def main():
               flush=True)
         return row
 
-    with concurrent.futures.ThreadPoolExecutor(args.parallel * 2) as pool:
-        rows = list(pool.map(task, jobs))
+    rows = []
+    for phase in ('probe', 'main'):
+        jobs = jobs_for(phase)
+        with concurrent.futures.ThreadPoolExecutor(args.parallel * 2) as pool:
+            rows += list(pool.map(task, jobs))
+        rows_before = [json.loads(l) for l in rows_path.read_text().splitlines()] if rows_path.exists() else []
+        print(f"{phase}: {sum(r['passed'] for r in rows)}/{len(rows)} certified so far", flush=True)
     print(f"tasks: {sum(r['passed'] for r in rows)}/{len(rows)} certified", flush=True)
 
 
