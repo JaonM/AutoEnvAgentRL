@@ -9,12 +9,17 @@ nothing. This keeps successful episodes only, then
 - reports how many selected episodes demonstrate each τ²-relevant behaviour (asking consent, handling a
   refusal, writing, verifying identity, several goals, out-of-scope requests, pushback), so gaps can be
   filled by targeted collection,
+- caps each domain at --domain-share of the selection (a small model memorizes one domain's tools),
+- drops near-duplicate episodes of a task (same tool-call sequence and same closing words),
+- prints a diversity report against the targets (≥2000 episodes, ≥500 tasks, no domain above the cap,
+  every skill at --skill-min episodes) and exits with status 3 when a target is missed, so an
+  undersized set is never trained by accident (--allow-short overrides),
 - drops episodes whose speech leaks internal field names or cents, and episodes with more than
   --max-failed failed tool results (turns that failed are kept as context but not trained, see
   sft_train.py --no-error-turns).
 
-    python experiments/v3/sft_select.py --teacher output/v3_step1/teacher.jsonl --tasks output/v3_step1/tasks_all.json \
-        --output output/v3_step1/teacher_selected.jsonl
+    python experiments/v3/sft_select.py --teacher A.jsonl B.jsonl --tasks tasks_a.json tasks_b.json \
+        --output selected.jsonl
 """
 from __future__ import annotations
 
@@ -68,38 +73,63 @@ def skills(episode, request):
     return found
 
 
+def signature(episode):
+    """Near-duplicate key: the tool-call sequence and the last thing the agent said."""
+    calls = tuple(c['function']['name'] for m in episode['messages'] if m['role'] == 'assistant'
+                  for c in m.get('tool_calls') or [])
+    said = [m.get('content') or '' for m in episode['messages'] if m['role'] == 'assistant' and m.get('content')]
+    return calls, ' '.join((said[-1] if said else '').lower().split())[:160]
+
+
+SKILLS = ('asks_consent', 'handles_refusal', 'writes', 'verifies_identity', 'multi_goal', 'out_of_scope', 'pushback')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    parser.add_argument('--teacher', required=True)
-    parser.add_argument('--tasks', required=True, help='task list with sandbox paths (to read category and language)')
+    parser.add_argument('--teacher', nargs='+', required=True)
+    parser.add_argument('--tasks', nargs='+', required=True, help='task lists with sandbox paths')
     parser.add_argument('--output', required=True)
     parser.add_argument('--per-task', type=int, default=4)
     parser.add_argument('--direct-share', type=float, default=0.15)
     parser.add_argument('--english-share', type=float, default=0.7)
+    parser.add_argument('--domain-share', type=float, default=0.05)
     parser.add_argument('--max-failed', type=int, default=3)
+    parser.add_argument('--min-episodes', type=int, default=2000)
+    parser.add_argument('--min-tasks', type=int, default=500)
+    parser.add_argument('--skill-min', type=int, default=100)
+    parser.add_argument('--allow-short', action='store_true', help='write the selection even if targets are missed')
     parser.add_argument('--seed', type=int, default=0)
     args = parser.parse_args()
-    sandboxes = {t['id']: t['sandbox'] for t in json.loads(Path(args.tasks).read_text())['tasks']}
+    sandboxes = {t['id']: t['sandbox'] for path in args.tasks for t in json.loads(Path(path).read_text())['tasks']}
     meta, requests = {}, {}
     for task_id, sandbox in sandboxes.items():
         request = json.loads((Path(sandbox) / 'request.json').read_text())
-        meta[task_id], requests[task_id] = (request['category'], request.get('language', 'zh')), request
+        domain = (request.get('source') or {}).get('generated') or request.get('family') or task_id
+        meta[task_id], requests[task_id] = (request['category'], request.get('language', 'zh'), domain), request
     rng = random.Random(args.seed)
-    episodes = [r for r in map(json.loads, Path(args.teacher).read_text().splitlines())
+    episodes = [r for path in args.teacher for r in map(json.loads, Path(path).read_text().splitlines())
                 if r.get('success') and r.get('messages') and r['id'] in meta
                 and not r.get('speech_leaks') and failed_results(r['messages']) <= args.max_failed]
     by_task = collections.defaultdict(list)
     for episode in episodes:
         by_task[episode['id']].append(episode)
-    chosen = []
+    chosen, duplicates = [], 0
     for task_id, group in by_task.items():
         rng.shuffle(group)
+        unique, keys = [], set()
+        for episode in group:
+            key = signature(episode)
+            if key in keys:
+                duplicates += 1
+                continue
+            keys.add(key)
+            unique.append(episode)
         seen, picked = set(), []
-        for episode in group:  # distinct worlds first, then the rest
+        for episode in unique:  # distinct worlds first, then the rest
             if episode.get('world') not in seen:
                 seen.add(episode.get('world'))
                 picked.append(episode)
-        picked += [e for e in group if e not in picked]
+        picked += [e for e in unique if e not in picked]
         chosen += picked[:args.per_task]
     tools = [e for e in chosen if meta[e['id']][0] != 'direct_response']
     direct = [e for e in chosen if meta[e['id']][0] == 'direct_response']
@@ -113,12 +143,35 @@ def main():
         rng.shuffle(other)
         selected = english + other[:max(keep, 0)]
     rng.shuffle(selected)
+    cap = max(1, int(args.domain_share * len(selected)))
+    per_domain, capped = collections.Counter(), []
+    for episode in selected:
+        domain = meta[episode['id']][2]
+        if per_domain[domain] < cap:
+            per_domain[domain] += 1
+            capped.append(episode)
+    selected = capped
+    count = lambda index: dict(collections.Counter(meta[e['id']][index] for e in selected).most_common())
+    skill_counts = collections.Counter(k for e in selected for k in skills(e, requests[e['id']]))
+    sequences = collections.Counter(signature(e)[0] for e in selected)
+    domains = collections.Counter(meta[e['id']][2] for e in selected)
+    report = {'successful': len(episodes), 'near_duplicates_dropped': duplicates, 'selected': len(selected),
+              'tasks': len({e['id'] for e in selected}), 'domains': len(domains),
+              'largest_domain_share': round(max(domains.values()) / len(selected), 3) if selected else None,
+              'category': count(0), 'language': count(1),
+              'distinct_tool_sequences': round(len(sequences) / max(1, len(selected)), 3),
+              'skills': {k: skill_counts.get(k, 0) for k in SKILLS}}
+    missed = []
+    if len(selected) < args.min_episodes:
+        missed.append(f'episodes {len(selected)} < {args.min_episodes}')
+    if report['tasks'] < args.min_tasks:
+        missed.append(f"tasks {report['tasks']} < {args.min_tasks}")
+    missed += [f'skill {k} {v} < {args.skill_min}' for k, v in report['skills'].items() if v < args.skill_min]
+    report['targets_missed'] = missed
+    print(json.dumps(report, ensure_ascii=False, indent=1))
+    if missed and not args.allow_short:
+        raise SystemExit(3)
     Path(args.output).write_text(''.join(json.dumps(e, ensure_ascii=False) + '\n' for e in selected))
-    count = lambda key: dict(collections.Counter(meta[e['id']][key] for e in selected))
-    print(json.dumps({'successful': len(episodes), 'selected': len(selected), 'tasks': len({e['id'] for e in selected}),
-                      'category': count(0), 'language': count(1),
-                      'skills': dict(collections.Counter(k for e in selected for k in skills(e, requests[e['id']])))},
-                     ensure_ascii=False))
 
 
 if __name__ == '__main__':
