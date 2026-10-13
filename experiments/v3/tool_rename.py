@@ -150,3 +150,22 @@ def vary_results(episode, seed):
         if message.get('role') == 'tool':
             message['content'] = envelope(message.get('content'), style)
     return episode
+
+
+GREETINGS = {'en': ['Hi! How can I help you today?', 'Hello, how can I help you?', 'Hi there, what can I do for you today?'],
+             'zh': ['您好，请问有什么可以帮您？', '你好，有什么需要帮忙的吗？']}
+
+
+def greet(episode, seed):
+    """A copy of the episode opened by an agent greeting before the user's first message (τ²-bench
+    conversations start that way). The greeting is context only: it precedes every trained turn."""
+    episode = copy.deepcopy(episode)
+    messages = episode['messages']
+    first_user = next((i for i, m in enumerate(messages) if m['role'] == 'user'), None)
+    if first_user is None or any(m['role'] == 'assistant' for m in messages[:first_user]):
+        return episode
+    text = messages[first_user].get('content') or ''
+    language = 'zh' if any('\u4e00' <= ch <= '\u9fff' for ch in text) else 'en'
+    greeting = random.Random(f'{seed}-greet').choice(GREETINGS[language])
+    messages.insert(first_user, {'role': 'assistant', 'content': greeting, 'context_only': True})
+    return episode

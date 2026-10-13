@@ -160,6 +160,7 @@ def main():
               'largest_domain_share': round(max(domains.values()) / len(selected), 3) if selected else None,
               'category': count(0), 'language': count(1),
               'distinct_tool_sequences': round(len(sequences) / max(1, len(selected)), 3),
+              'consent_protocol': dict(collections.Counter(e.get('consent') or 'token' for e in selected)),
               'skills': {k: skill_counts.get(k, 0) for k in SKILLS}}
     missed = []
     if len(selected) < args.min_episodes:

@@ -93,7 +93,8 @@ def render_turns(tokenizer, episode, think, cap, limit=0, seed=0, skip_failed=Fa
     keep = ('role', 'content', 'tool_calls', 'tool_call_id', 'name')
     messages = [{k: v for k, v in m.items() if k in keep} for m in episode['messages']]
     reasoning = {int(k): v for k, v in (episode.get('reasoning') or {}).items()}
-    turns = [i for i, m in enumerate(messages) if m['role'] == 'assistant']
+    turns = [i for i, m in enumerate(episode['messages']) if m['role'] == 'assistant'
+             and not episode['messages'][i].get('context_only')]
     if skip_failed:
         untrained = failed_turns(messages) | redundant_turns(
             messages, {'consent', (episode.get('naming') or {}).get('consent', 'consent')})
@@ -141,6 +142,8 @@ def main():
                         help='share of episodes whose business tools and parameters are renamed (tool_rename.py)')
     parser.add_argument('--vary-results', type=float, default=0.0,
                         help='share of episodes whose tool results switch to raw JSON / "Error: ..." text')
+    parser.add_argument('--greet', type=float, default=0.0,
+                        help='share of episodes opened by an agent greeting before the user speaks (context only)')
     parser.add_argument('--replay', nargs='*', default=[],
                         help='extra episode files mixed in as they are (e.g. the base model\'s own successes)')
     parser.add_argument('--no-error-turns', action='store_true',
@@ -172,6 +175,13 @@ def main():
         from tool_rename import augment
         rng = random.Random(args.seed + 1)
         episodes = [augment(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if rng.random() < args.rename_tools else e
+                    for e in episodes]
+    if args.greet:
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from tool_rename import greet
+        rng = random.Random(args.seed + 3)
+        episodes = [greet(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if rng.random() < args.greet else e
                     for e in episodes]
     if args.vary_results:
         import sys
