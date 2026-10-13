@@ -80,7 +80,8 @@ def check(loaded, client, *, k=2):
             raw = {}
         predicted = [[w.get('tool'), {a: v for a, v in (w.get('args') or {}).items() if a != 'consent'}]
                      for w in raw.get('writes') or [] if isinstance(w, dict)]
-        fields = answers.compare(schema, answer, raw.get('answer') if isinstance(raw.get('answer'), dict) else None)
+        fields = answers.compare(schema, answer, raw.get('answer') if isinstance(raw.get('answer'), dict) else None,
+                                 answers.known_strings(request))
         writes_ok = sorted(canonical(w) for w in predicted) == want
         write_hits += writes_ok
         field_hits.update(name for name, ok in fields.items() if ok)

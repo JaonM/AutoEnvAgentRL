@@ -16,6 +16,13 @@ Format: {{"fields": {{"<name>": {{"type": ..., "description": ..., ...}}}}}}
   the user must get one, add at most one such field with "graded": false and put the actual
   outcome in a graded field (for example a "failure" enum next to it). The same applies to
   string properties inside objects and array items.
+- The agent delivers the answer by talking to the user, and the graded values are read back from
+  what it said. Every graded value must be something a good customer-service agent would actually
+  say: amounts, dates, counts, outcomes, and ids the user knows or needs (a booking reference, a
+  new confirmation number). Never ask for system-internal row ids or keys the user never sees
+  ("i1", "s2", "item-row-7"), internal clock ticks or day indexes (give relative or human units
+  instead), or odd formats ("dollars 42.50"). Keep objects small and flat; fewer, meaningful
+  fields beat exhaustive dumps of the database.
 - Do not decide the business outcome here; only its shape. Descriptions define meaning, units
   and how an absent value is written; they must not prescribe control flow (what happens after a
   refusal or failure, whether later steps still run, which rule wins) beyond what brief.md says.

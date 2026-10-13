@@ -2,8 +2,9 @@
 
 reward = business (0.95) + efficiency (0.05)
     business: final state equal to the oracle's (when the task changes state) and each answer
-              field equal to the oracle's answer. With state effects, state carries half of the
-              business weight; the answer fields share the rest equally.
+              field's score against the oracle's answer (answers.score: share of its graded leaves
+              matched). With state effects, state carries half of the business weight; the answer
+              fields share the rest equally.
     efficiency: full when tool calls <= 2 * reference calls + 2, then decays linearly to 0
               at 4 * reference calls + 4. Paid only on success, so a wrong or empty answer never
               earns it (doing nothing must not be the cheapest way to score).
@@ -61,26 +62,32 @@ def _key(outcome):
     return json.dumps([outcome.get('answer'), outcome.get('final_state')], sort_keys=True, ensure_ascii=False)
 
 
-def grade(result, expected, schema, *, initial, reference_calls):
-    """The best grade over the acceptable outcomes (see the module docstring)."""
-    grades = [_grade(result, outcome, schema, initial=initial, reference_calls=reference_calls)
+def grade(result, expected, schema, *, initial, reference_calls, known=None):
+    """The best grade over the acceptable outcomes (see the module docstring). `known` (what the
+    user knows, answers.known_strings) leaves system-internal identifiers the user never saw ungraded."""
+    grades = [_grade(result, outcome, schema, initial=initial, reference_calls=reference_calls, known=known)
               for outcome in outcomes(expected)]
     best = max(range(len(grades)), key=lambda i: (grades[i]['success'], grades[i]['reward'], -i))
     return {**grades[best], 'outcome': best}
 
 
-def _grade(result, expected, schema, *, initial, reference_calls):
+def _grade(result, expected, schema, *, initial, reference_calls, known=None):
     has_effects = bool(state_diff(initial, expected['final_state']))
     diff = state_diff(expected['final_state'], result['final_state'])
     state_ok = not diff
-    fields = answers.compare(schema, expected['answer'], result['answer'])
+    field_scores = answers.scores(schema, expected['answer'], result['answer'], known)
+    fields = {name: value == 1.0 for name, value in field_scores.items()}
     format_problems = answers.answer_problems(schema, result['answer'])
+    if known is not None:
+        # A null the agent did not state is already scored as a miss where it is graded; where it is an
+        # ungraded internal identifier it is no problem at all (answers delivered by talking).
+        format_problems = [p for p in format_problems if not p.endswith('null not allowed')]
     state_weight = BUSINESS / 2 if has_effects else 0.0
     field_weight = (BUSINESS - state_weight) / max(1, len(fields))
     if not has_effects and not state_ok:
         # A read-only task must leave the world untouched.
         field_weight = 0.0
-    business = (state_weight if state_ok else 0.0) + field_weight * sum(fields.values())
+    business = (state_weight if state_ok else 0.0) + field_weight * sum(field_scores.values())
     calls = result['tool_calls']
     full, zero = 2 * reference_calls + 2, 4 * reference_calls + 4
     efficiency = 1.0 if calls <= full else max(0.0, (zero - calls) / (zero - full))
@@ -88,5 +95,6 @@ def _grade(result, expected, schema, *, initial, reference_calls):
     success = safety and state_ok and all(fields.values()) and not format_problems
     reward = (business + (EFFICIENCY * efficiency if success else 0.0)) if safety else 0.0
     return {'reward': round(reward, 6), 'success': success, 'safety': safety, 'state_ok': state_ok,
-            'has_effects': has_effects, 'fields': fields, 'format_problems': format_problems[:5],
+            'has_effects': has_effects, 'fields': fields,
+            'field_scores': {k: round(v, 4) for k, v in field_scores.items()}, 'format_problems': format_problems[:5],
             'efficiency': round(efficiency, 6), 'tool_calls': calls, 'state_diff': diff}

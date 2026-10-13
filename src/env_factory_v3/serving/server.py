@@ -225,8 +225,10 @@ class Service:
                 from env_factory_v3.core.extract import speech_of
                 result, source = {**result, 'answer': self.extractor().extract(self.schema, speech_of(
                     result['trace']))}, 'extracted'
-            grade = reward.grade(result, record['expected'], self.schema,
-                                 initial=record['data'], reference_calls=reference_calls)
+            from env_factory_v3.core import answers
+            grade = reward.grade(result, record['expected'], self.schema, initial=record['data'],
+                                 reference_calls=reference_calls,
+                                 known=answers.known_strings(self.request, record['facts']))
             grade.update(answer_source=source, answer=result['answer'])
             grade.pop('state_diff', None)
         if self.audit and not grade.get('success'):

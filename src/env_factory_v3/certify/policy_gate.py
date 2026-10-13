@@ -123,8 +123,8 @@ def play(base_url, client, world, category, *, max_turns=30, answer_tool=True):
             pass
 
 
-SAY = """你是一位客服。请把下面的处理结果用平实的{language}完整地告诉用户：每个数字和编号都要说到，金额按字段说明换算成元（英文用美元）来说，
-结论性的选项用日常说法表达。只输出你对用户说的话。
+SAY = """你是一位耐心的真人客服。请把下面的处理结果用平实的{language}告诉用户，就像平时和客户说话一样：说清结论、金额（按字段说明换算成元，英文用美元）、
+日期和用户需要知道的编号；系统内部的行号、键名和代码不要念出来，结论性的选项用日常说法表达。只输出你对用户说的话。
 
 答案格式：
 {schema}
@@ -144,7 +144,7 @@ def extraction_probe(loaded, service, client):
         schema=json.dumps(loaded['schema']['fields'], ensure_ascii=False), answer=json.dumps(
             expected, ensure_ascii=False))}], temperature=0).get('content') or '').strip()
     extracted = service.extractor().extract(loaded['schema'], [speech])
-    fields = answers.compare(loaded['schema'], expected, extracted)
+    fields = answers.compare(loaded['schema'], expected, extracted, answers.known_strings(request))
     return {'passed': all(fields.values()), 'fields': fields, 'speech': speech[:600]}
 
 

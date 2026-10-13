@@ -11,10 +11,20 @@ A top-level field or object property with "graded": false (user-facing prose suc
 explanation) is shape-checked but excluded from the reward and the differential: two correct
 implementations never agree on wording. Outcomes must be expressed by graded fields (ids, numbers,
 booleans, enums).
+
+Comparison is about what was communicated, not its typography: strings compare after Unicode NFKC,
+case folding and removing whitespace ("尾号 6628" equals "尾号6628"). A field's score is the share of its
+graded leaves that match (objects average their properties, equal-length exact-order arrays their
+items), so one wrong sub-field no longer zeroes a whole object; a field counts as correct only when
+its score is 1. With `known` (strings the user knows: the request and their facts), a string leaf
+that looks like a system-internal identifier ("i1", "return-ord-102") and that the user never saw
+is not graded: an agent delivering by talking has no reason to read it out.
 """
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
 
 TYPES = {'string', 'integer', 'number', 'boolean', 'array', 'object'}
 PROSE_WORDS = ('reason', 'explanation', 'message', 'summary', 'note', 'comment', 'text', 'description', 'detail')
@@ -147,8 +157,10 @@ def normalize(spec, value):
         return ('null',)
     if _is_number(value):
         return ('number', round(float(value), 9))
-    if isinstance(value, bool) or isinstance(value, str):
-        return (type(value).__name__, value)
+    if isinstance(value, bool):
+        return ('bool', value)
+    if isinstance(value, str):
+        return ('str', text_key(value))
     if isinstance(value, list):
         item_spec = (spec or {}).get('items') or {}
         items = [normalize(item_spec, item) for item in value]
@@ -162,6 +174,49 @@ def normalize(spec, value):
     return ('other', repr(value))
 
 
+def text_key(value):
+    return re.sub(r'\s+', '', unicodedata.normalize('NFKC', value).casefold())
+
+
+MACHINE_ID = re.compile(r'^(?:[a-z]{1,3}\d{1,4}|[a-z][a-z0-9]*(?:[-_][a-z0-9]+)+)$')
+
+
+def internal(spec, value, known):
+    """A system-internal identifier the user never saw (graded only when known is None)."""
+    if known is None or not isinstance(value, str) or 'enum' in (spec or {}):
+        return False
+    return bool(MACHINE_ID.match(value)) and not any(value in text for text in known)
+
+
+def score(spec, expected, actual, known=None):
+    """Share of graded leaves of `expected` that `actual` matches (1.0 when nothing is graded)."""
+    spec = spec or {}
+    if internal(spec, expected, known):
+        return 1.0
+    if isinstance(expected, dict) and isinstance(actual, dict) and spec.get('properties'):
+        parts = [score(child, expected.get(name), actual.get(name), known)
+                 for name, child in spec['properties'].items() if child.get('graded', True)]
+        return sum(parts) / len(parts) if parts else 1.0
+    if (isinstance(expected, list) and isinstance(actual, list) and spec.get('order', 'exact') == 'exact'
+            and len(expected) == len(actual) and expected):
+        return sum(score(spec.get('items'), e, a, known) for e, a in zip(expected, actual)) / len(expected)
+    if known is not None and isinstance(expected, (dict, list)):
+        if normalize(spec, expected) == normalize(spec, actual):
+            return 1.0
+        if isinstance(expected, list) and isinstance(actual, list) and spec.get('order') == 'any' \
+                and len(expected) == len(actual):
+            # multiset: each expected item matched by a distinct actual item, internal ids ignored
+            left = list(actual)
+            for item in expected:
+                hit = next((a for a in left if score(spec.get('items'), item, a, known) == 1.0), None)
+                if hit is None:
+                    return 0.0
+                left.remove(hit)
+            return 1.0
+        return 0.0
+    return 1.0 if normalize(spec, expected) == normalize(spec, actual) else 0.0
+
+
 def field_equal(spec, expected, actual):
     return normalize(spec, expected) == normalize(spec, actual)
 
@@ -170,10 +225,32 @@ def graded_fields(schema):
     return {name: spec for name, spec in schema['fields'].items() if spec.get('graded', True)}
 
 
-def compare(schema, expected, actual):
-    """{graded field: bool}. A non-object answer fails every field."""
+def scores(schema, expected, actual, known=None):
+    """{graded field: share of its graded leaves matched}. A non-object answer scores 0 everywhere."""
     fields = graded_fields(schema)
     if not isinstance(actual, dict):
-        return {name: False for name in fields}
-    return {name: name in actual and name in expected and field_equal(spec, expected[name], actual[name])
+        return {name: 0.0 for name in fields}
+    return {name: (score(spec, expected[name], actual[name], known) if name in actual and name in expected else 0.0)
             for name, spec in fields.items()}
+
+
+def compare(schema, expected, actual, known=None):
+    """{graded field: bool}: True when the field's score is 1. A non-object answer fails every field."""
+    return {name: value == 1.0 for name, value in scores(schema, expected, actual, known).items()}
+
+
+def known_strings(request, facts=None):
+    """What the user knows: the opening request and every string among their facts."""
+    out = [request.get('user_request') or '']
+
+    def walk(value):
+        if isinstance(value, str):
+            out.append(value)
+        elif isinstance(value, dict):
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+    walk(facts if facts is not None else request.get('user_facts') or {})
+    return out

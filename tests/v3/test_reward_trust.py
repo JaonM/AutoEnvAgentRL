@@ -66,6 +66,39 @@ class AlternativeOutcomeTests(unittest.TestCase):
         self.assertTrue(reward.alternative_problems(many, SCHEMA, INITIAL))
 
 
+class AnswerComparisonTests(unittest.TestCase):
+    OBJ = {'fields': {'refund': {'type': 'object', 'description': 'r', 'properties': {
+        'return_id': {'type': 'string'}, 'amount_cents': {'type': 'integer'},
+        'destination': {'type': 'string'}, 'status': {'type': 'string', 'enum': ['done', 'refused']}}}}}
+
+    def test_typography_does_not_matter(self):
+        from env_factory_v3.core import answers
+        schema = {'fields': {'card': {'type': 'string', 'description': 'c'}}}
+        self.assertTrue(answers.compare(schema, {'card': '尾号6628的信用卡'}, {'card': '尾号 6628 的信用卡'})['card'])
+        self.assertTrue(answers.compare(schema, {'card': 'Visa ending 4242'}, {'card': 'visa  ending 4242'})['card'])
+
+    def test_one_wrong_sub_field_costs_a_share_not_the_field(self):
+        from env_factory_v3.core import answers
+        want = {'refund': {'return_id': 'R-77', 'amount_cents': 4300, 'destination': 'Visa 4821', 'status': 'done'}}
+        got = {'refund': {**want['refund'], 'amount_cents': 4000}}
+        self.assertEqual(answers.scores(self.OBJ, want, got)['refund'], 0.75)
+        self.assertFalse(answers.compare(self.OBJ, want, got)['refund'])
+
+    def test_internal_ids_the_user_never_saw_are_not_graded(self):
+        from env_factory_v3.core import answers
+        want = {'refund': {'return_id': 'return-ord-102', 'amount_cents': 4300, 'destination': 'Visa 4821',
+                           'status': 'done'}}
+        got = {'refund': {**want['refund'], 'return_id': None}}
+        self.assertFalse(answers.compare(self.OBJ, want, got)['refund'])  # strict without `known`
+        self.assertTrue(answers.compare(self.OBJ, want, got, known=['I want to return my jacket'])['refund'])
+        # an id the user gave in the opening is graded
+        self.assertFalse(answers.compare(self.OBJ, want, got, known=['return return-ord-102 please'])['refund'])
+        grade = reward.grade({'answer': got, 'final_state': INITIAL, 'safety_violations': 0, 'tool_calls': 1},
+                             {'answer': want, 'final_state': INITIAL}, self.OBJ, initial=INITIAL, reference_calls=1,
+                             known=['I want to return my jacket'])
+        self.assertTrue(grade['success'], grade)
+
+
 class SimulatorAuditTests(unittest.TestCase):
     def test_faults_must_quote_the_user_and_name_a_fact(self):
         facts = {'reader_id': 'R1'}
