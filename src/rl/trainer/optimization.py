@@ -8,7 +8,7 @@ if TYPE_CHECKING:
 import json
 from pathlib import Path
 import time
-from rl.data.trajectory import make_samples
+from rl.data.trajectory import make_samples, trainable
 from rl.data.batching import combine_samples, minibatches
 
 
@@ -57,10 +57,13 @@ def prepare(session: TrainingSession, group, path, replay_entry=None):
         pass
     elif age < 0 or age > max_age:
         reason = "policy_age"
-    elif session.config.algorithm == "grpo" and all(
-        (
+    elif session.config.algorithm == "grpo" and (
+        sum(trainable(episode) for episode in group["episodes"]) < 2
+        or all(
             abs(a) < 1e-08
-            for a in group_advantages([episode["final_reward"] for episode in group["episodes"]])
+            for a in group_advantages(
+                [episode["final_reward"] for episode in group["episodes"] if trainable(episode)]
+            )
         )
     ):
         reason = "zero_reward_variance"

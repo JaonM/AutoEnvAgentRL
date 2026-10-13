@@ -251,7 +251,9 @@ class V3Episode:
                 'world': self.world, 'user_mode': self.user_mode, 'tool_errors': self.tool_errors,
                 'tool_naming': self.tool_naming, 'answer_tool': self.answer_tool,
                 'unknown_tool_calls': self.unknown_tool_calls,
-                'platform_tool_hallucinations': self.platform_tool_hallucinations, 'trainable': True}
+                'platform_tool_hallucinations': self.platform_tool_hallucinations,
+                # False when the simulator audit found the user, not the agent, at fault (server.audit_simulator)
+                'trainable': self.score.get('valid', True) is not False}
 
     # -- continuation (trainer-side only) -----------------------------------------
     def snapshot(self):

@@ -18,7 +18,7 @@ import traceback
 from pathlib import Path
 
 from env_factory_v3.certify import gates
-from env_factory_v3.core import answers
+from env_factory_v3.core import answers, reward
 from env_factory_v3.core.sandbox import SandboxError, load_module
 from env_factory_v3.core.spec import load
 from env_factory_v3.core.worlds import variants
@@ -129,6 +129,7 @@ def check_oracle(folder):
             problems.append(f'{name}: not deterministic')
         problems += [f'{name}: {p}' for p in answers.answer_problems(schema, first['answer'])]
         problems += [f'{name}: {p}' for p in shape_problems(data, first['final_state'])]
+        problems += [f'{name}: {p}' for p in reward.alternative_problems(first, schema, data)]
         notes.append(f'{name}: answer={canonical(first["answer"])[:160]}')
     if valid < 5:
         problems.append(f'only {valid} valid worlds; raise InvalidWorld only for data that violates the business invariants')

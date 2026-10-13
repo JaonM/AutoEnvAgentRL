@@ -58,7 +58,7 @@ def compare_worlds(env, oracle, schema, request, *, perturbed=20, excluded=()):
             entry.update(status='oracle_error', error=traceback.format_exc(limit=3))
             worlds.append(entry)
             continue
-        problems = answers.answer_problems(schema, expected['answer'])
+        problems = answers.answer_problems(schema, expected['answer']) + reward.alternative_problems(expected, schema, data)
         if problems:
             entry.update(status='oracle_error', error='oracle answer violates schema: ' + '; '.join(problems[:3]))
             worlds.append(entry)

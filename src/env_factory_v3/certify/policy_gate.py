@@ -113,7 +113,9 @@ def play(base_url, client, world, category, *, max_turns=30, answer_tool=True):
         grade = _post(opener, base_url + '/reward', {'episode': episode})
         return {'world': world, 'reward': grade.get('reward'), 'success': grade.get('success') is True,
                 'fields': grade.get('fields'), 'state_ok': grade.get('state_ok'), 'safety': grade.get('safety'),
-                'turns': turns, 'tool_calls': calls, 'answered': answered, 'messages': messages}
+                'turns': turns, 'tool_calls': calls, 'answered': answered, 'answer': grade.get('answer'),
+                'outcome': grade.get('outcome'), 'valid': grade.get('valid', True),
+                'simulator_audit': grade.get('simulator_audit'), 'messages': messages}
     finally:
         try:
             _post(opener, base_url + '/release', {'episode': episode})
@@ -186,6 +188,7 @@ def gate(folder, client, *, k=4, parallel=4, max_turns=30, user_mode='structured
     report = {'model': client.model, 'user_mode': user_mode,
               'user_model': getattr(user_client, 'model', None), 'k': k, 'played': len(played), 'successes': successes,
               'success_rate': round(successes / len(played), 3) if played else None,
+              'simulator_faults': sum(e.get('valid') is False for e in played),
               'mean_reward': round(sum(e['reward'] or 0 for e in played) / len(played), 3) if played else None,
               'status': ('infrastructure' if not played or (probe or {}).get('infrastructure') else
                          'unextractable' if probe and not probe['passed'] else 'passed' if successes else 'unsolved'),

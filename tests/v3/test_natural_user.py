@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -12,6 +14,17 @@ from test_env_factory_v3 import LIBRARY, library_modules, library_request  # noq
 
 from env_factory_v3.certify import gates  # noqa: E402
 from env_factory_v3.serving import agent_view, server
+
+# The simulator audit calls a judge model; these tests cover the dialogue itself (see test_reward_trust).
+_AUDIT_OFF = unittest.mock.patch.dict(os.environ, {'V3_SIMULATOR_AUDIT': 'off'})
+
+
+def setUpModule():
+    _AUDIT_OFF.start()
+
+
+def tearDownModule():
+    _AUDIT_OFF.stop()
 
 
 class ScriptedUser:

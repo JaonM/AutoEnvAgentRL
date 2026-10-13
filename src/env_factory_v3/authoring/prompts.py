@@ -94,6 +94,11 @@ def expected(data, facts, now) -> {{"answer": ..., "final_state": ...}}
   happens only if the rules allow it at that point AND the user's matching approval fact is
   true. Committed operations stay committed unless the rules say otherwise.
 - answer: what the user must be told, exactly in answer_schema.json's shape.
+- alternatives (optional, rare): when brief.md genuinely leaves a choice open that facts.json
+  does not settle (e.g. "either of two equivalent options is acceptable"), return the other
+  correct outcomes as "alternatives": [{{"answer": ..., "final_state": ...}}] (at most 3, each
+  different from the main one). Never list a wrong or partial outcome, never "do nothing" when
+  the main outcome changes the world, and never use it to hedge a rule you find unclear.
 - scheduled_events (if present): apply them with env_factory_v3.runtime.apply_event in `at`
   order for the waiting a correct handling does; keep that table unchanged in final_state.
 - World mode: when request.json has "goal_schema", the same oracle serves many tasks on one
@@ -117,6 +122,9 @@ brief.md is the only authority.
 For each disagreement decide which side violates brief.md and fix that file (both if both are
 wrong). Never special-case ids or worlds; keep both interfaces; do not edit brief.md,
 data.json, facts.json, request.json or answer_schema.json.
+If brief.md explicitly lets either outcome stand (a stated free choice, not an unclear rule),
+the oracle is the side to fix: add the env's outcome to oracle.py's "alternatives" and record
+wrong_side "oracle".
 
 Write verdict.json:
 {{"decisions": [{{"issue": "...", "wrong_side": "env" | "oracle" | "both" | "ambiguous",
