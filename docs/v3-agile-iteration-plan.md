@@ -80,7 +80,7 @@
 | E10 | RL 用更强的模拟用户（保持终局奖励） | AutoForge、UserRL | 否 | I3 可选 | ⏳ |
 | E11 | 依据真实公开 API 规范设计工具和数据 | EnvFactory、DeepSeek-V3.2 | 否 | I6 以后 | ⏳ |
 | E12 | 推理预算控制：SFT 事后标注预算档位；RL rollout 按预算强制收尾（ThinkPrune），可选对超出部分小惩罚（L1/LCPO）。评测服务的预算已完成，rl 的 `iter_sample` / `BatchDecoder` 待加 | L1、ThinkPrune、s1 | 否 | I1c、I3 | 🔄 |
-| E13 | SFT 数据配比与清洗（`sft_select.py`，`sft_train.py --no-error-turns`） | EnvFactory | 否 | I1′ | ✅ 代码完成；难题补采进行中 |
+| E13 | SFT 数据配比与清洗：① 每个任务的成功回合上限 4 局，只回答的题 ≤15%，多步和需写入的题优先；② 没成功过的任务追加 seed，仍不成功的用更强的 teacher（deepseek-v4-pro）做 best-of-k，直到有 2–4 局成功；③ 出错的轮次保留在上下文、不计 loss，冗余调用删除；④ 英文 ≥70%，并按技能模式统计覆盖（身份核验、写操作前征求同意、用户拒绝、超出范围、多诉求），不足的定向补采；⑤ 太长的推理压缩改写成同语言的简洁推理，而不是丢弃 | EnvFactory、小模型学长推理的研究 | 否 | I1′ | 🔄 ①、③（出错轮次）、④（英文比例）已实现（`sft_select.py`、`sft_train.py --no-error-turns`）；②的追加 seed 进行中；②的 best-of-k、③的冗余删除、④的技能覆盖统计、⑤待做 |
 | E14 | 标准答案引导采集（含防提示泄漏检查） | APIGen-MT、特权信息蒸馏 | 否 | I2a | ⏳ |
 | E15 | 学生采样、teacher 纠正（可只在学生出错的轮次调用 teacher） | Guided-OPD、ATOD | 否 | I2b | ⏳ |
 
