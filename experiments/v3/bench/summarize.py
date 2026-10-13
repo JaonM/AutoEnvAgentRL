@@ -98,6 +98,8 @@ def wilcoxon(differences):
 
 def compare(a, b, keys):
     diffs = [b[k]['rate'] - a[k]['rate'] for k in keys]
+    if not diffs:
+        return {'tasks': 0}
     rng = random.Random(0)
     boots = sorted(sum(rng.choice(diffs) for _ in diffs) / len(diffs) for _ in range(10000))
     return {'tasks': len(keys), 'difference': round(sum(diffs) / len(diffs), 3),
