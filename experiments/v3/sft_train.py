@@ -50,12 +50,31 @@ def render(tokenizer, episode):
     return ids, mask
 
 
-def render_turns(tokenizer, episode, think, cap, limit=0, seed=0):
-    """[(token ids, loss mask)] for the assistant turns of one episode, as served (see module doc)."""
+def failed_turns(messages):
+    """Indexes of assistant turns whose tool calls came back with ok=false."""
+    out, current = set(), None
+    for index, message in enumerate(messages):
+        if message['role'] == 'assistant':
+            current = index
+        elif message['role'] == 'tool' and current is not None:
+            try:
+                if json.loads(message.get('content') or '{}').get('ok') is False:
+                    out.add(current)
+            except ValueError:
+                pass
+    return out
+
+
+def render_turns(tokenizer, episode, think, cap, limit=0, seed=0, skip_failed=False):
+    """[(token ids, loss mask)] for the assistant turns of one episode, as served (see module doc).
+    With skip_failed, a turn whose tool call failed stays in later turns' context but is not trained."""
     keep = ('role', 'content', 'tool_calls', 'tool_call_id', 'name')
     messages = [{k: v for k, v in m.items() if k in keep} for m in episode['messages']]
     reasoning = {int(k): v for k, v in (episode.get('reasoning') or {}).items()}
     turns = [i for i, m in enumerate(messages) if m['role'] == 'assistant']
+    if skip_failed:
+        failed = failed_turns(messages)
+        turns = [i for i in turns if i not in failed]
     if think:
         turns = [i for i in turns if (reasoning.get(i) or '').strip() and len(reasoning[i]) <= cap]
     if limit and len(turns) > limit:
@@ -95,6 +114,8 @@ def main():
     parser.add_argument('--reasoning-cap', type=int, default=1500, help='longest reasoning kept (characters)')
     parser.add_argument('--turns-per-episode', type=int, default=0, help='sample at most this many turns (0: all)')
     parser.add_argument('--per-episode', action='store_true', help='one sample per episode (earlier rendering)')
+    parser.add_argument('--no-error-turns', action='store_true',
+                        help='do not train turns whose tool calls failed (they stay as context)')
     args = parser.parse_args()
 
     import mlx.core as mx
@@ -119,7 +140,8 @@ def main():
         pairs = [(e, render(tokenizer, e)) for e in episodes]
     else:
         pairs = [(e, s) for e in episodes for s in render_turns(tokenizer, e, args.think, args.reasoning_cap,
-                                                               args.turns_per_episode, args.seed)]
+                                                               args.turns_per_episode, args.seed,
+                                                               args.no_error_turns)]
     kept = [(e, s) for e, s in pairs if len(s[0]) <= args.max_tokens and sum(s[1])]
     if args.valid_ids:
         held = set(json.loads(Path(args.valid_ids).read_text()))
