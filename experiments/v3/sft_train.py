@@ -137,6 +137,10 @@ def main():
     parser.add_argument('--reasoning-cap', type=int, default=1500, help='longest reasoning kept (characters)')
     parser.add_argument('--turns-per-episode', type=int, default=0, help='sample at most this many turns (0: all)')
     parser.add_argument('--per-episode', action='store_true', help='one sample per episode (earlier rendering)')
+    parser.add_argument('--rename-tools', type=float, default=0.0,
+                        help='share of episodes whose business tools and parameters are renamed (tool_rename.py)')
+    parser.add_argument('--replay', nargs='*', default=[],
+                        help='extra episode files mixed in as they are (e.g. the base model\'s own successes)')
     parser.add_argument('--no-error-turns', action='store_true',
                         help='do not train turns whose tool calls failed or only repeat earlier lookups '
                              '(they stay as context)')
@@ -157,9 +161,16 @@ def main():
                                                          'keys': None})
     grad_checkpoint(model.layers[0])
 
-    episodes = [r for r in map(json.loads, Path(args.teacher).read_text().splitlines())
+    episodes = [r for path in [args.teacher, *args.replay] for r in map(json.loads, Path(path).read_text().splitlines())
                 if r.get('success') and r.get('messages')]
     random.Random(args.seed).shuffle(episodes)
+    if args.rename_tools:
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from tool_rename import augment
+        rng = random.Random(args.seed + 1)
+        episodes = [augment(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if rng.random() < args.rename_tools else e
+                    for e in episodes]
     if args.per_episode:
         pairs = [(e, render(tokenizer, e)) for e in episodes]
     else:
