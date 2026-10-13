@@ -65,6 +65,28 @@ def failed_turns(messages):
     return out
 
 
+def redundant_turns(messages, consent_names=('consent',)):
+    """Indexes of assistant turns whose tool calls only repeat earlier identical calls, with no
+    successful write (a call carrying a consent token) since then: a repeated lookup."""
+    out, seen = set(), set()
+    results = {m.get('tool_call_id'): m.get('content') for m in messages if m['role'] == 'tool'}
+    for index, message in enumerate(messages):
+        calls = message.get('tool_calls') or [] if message['role'] == 'assistant' else []
+        keys = [(c['function']['name'], c['function'].get('arguments')) for c in calls]
+        if keys and all(k in seen for k in keys):
+            out.add(index)
+        seen.update(keys)
+        for call in calls:
+            arguments = call['function'].get('arguments') or ''
+            if any(f'"{name}"' in arguments for name in consent_names):
+                try:
+                    if json.loads(results.get(call.get('id')) or '{}').get('ok'):
+                        seen.clear()  # the world changed: later lookups may repeat legitimately
+                except ValueError:
+                    pass
+    return out
+
+
 def render_turns(tokenizer, episode, think, cap, limit=0, seed=0, skip_failed=False):
     """[(token ids, loss mask)] for the assistant turns of one episode, as served (see module doc).
     With skip_failed, a turn whose tool call failed stays in later turns' context but is not trained."""
@@ -73,8 +95,9 @@ def render_turns(tokenizer, episode, think, cap, limit=0, seed=0, skip_failed=Fa
     reasoning = {int(k): v for k, v in (episode.get('reasoning') or {}).items()}
     turns = [i for i, m in enumerate(messages) if m['role'] == 'assistant']
     if skip_failed:
-        failed = failed_turns(messages)
-        turns = [i for i in turns if i not in failed]
+        untrained = failed_turns(messages) | redundant_turns(
+            messages, {'consent', (episode.get('naming') or {}).get('consent', 'consent')})
+        turns = [i for i in turns if i not in untrained]
     if think:
         turns = [i for i in turns if (reasoning.get(i) or '').strip() and len(reasoning[i]) <= cap]
     if limit and len(turns) > limit:
@@ -115,7 +138,8 @@ def main():
     parser.add_argument('--turns-per-episode', type=int, default=0, help='sample at most this many turns (0: all)')
     parser.add_argument('--per-episode', action='store_true', help='one sample per episode (earlier rendering)')
     parser.add_argument('--no-error-turns', action='store_true',
-                        help='do not train turns whose tool calls failed (they stay as context)')
+                        help='do not train turns whose tool calls failed or only repeat earlier lookups '
+                             '(they stay as context)')
     args = parser.parse_args()
 
     import mlx.core as mx
