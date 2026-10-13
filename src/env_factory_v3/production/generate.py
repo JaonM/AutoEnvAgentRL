@@ -288,35 +288,42 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
 
     with concurrent.futures.ThreadPoolExecutor(parallel) as pool:
         results = list(pool.map(lambda pair: one(*pair), enumerate(assignments)))
+    def finish(item):
+        """Stage two and three for one request: the opening, then the agent policy (model calls only)."""
+        index, (domain, category, shape), report = item
+        row = {'index': index, 'domain': domain['name'], 'category': category, 'shape': shape,
+               'language': langs[index], 'passed': report['passed'], 'problems': report['problems'][:5]}
+        if not report['passed']:
+            return row, None
+        request = json.loads((output / 'sessions' / f'{index:03d}' / 'request.json').read_text())
+        request.setdefault('time', {'start': 10, 'tick': 0})
+        request['language'] = langs[index]
+        opening, persona_name, opening_problems_ = write_opening(opening_client, request, f'gen-{index:03d}')
+        row.update(persona=persona_name)
+        if opening is None:
+            return {**row, 'passed': False, 'problems': opening_problems_}, None
+        request['user_request'] = opening
+        policy, policy_problems = policies.write(opening_client, request)
+        if policy is None:
+            return {**row, 'passed': False, 'problems': [f'agent policy: {p}' for p in policy_problems[:4]]}, None
+        request['agent_policy'] = policy
+        request['source'] = {'generated': domain['name'], 'family': domain.get('family'), 'shape': shape,
+                             'persona': persona_name, 'language': langs[index],
+                             'opening_writer': getattr(opening_client, 'model', None)}
+        return row, request
+
+    # Openings and policies are independent model calls: write them in parallel, then drop
+    # near-duplicates in index order (deterministic whatever the completion order).
+    with concurrent.futures.ThreadPoolExecutor(max(parallel, 8)) as pool:
+        finished = list(pool.map(finish, results))
     kept, rows = [], []
-    for index, (domain, category, shape), report in results:
-        row = {'index': index, 'domain': domain['name'], 'category': category, 'shape': shape, 'language': langs[index],
-               'passed': report['passed'], 'problems': report['problems'][:5]}
-        if report['passed']:
-            request = json.loads((output / 'sessions' / f'{index:03d}' / 'request.json').read_text())
-            request.setdefault('time', {'start': 10, 'tick': 0})
-            request['language'] = langs[index]
-            opening, persona_name, opening_problems_ = write_opening(opening_client, request, f'gen-{index:03d}')
-            row.update(persona=persona_name)
-            if opening is None:
-                row.update(passed=False, problems=opening_problems_)
-                rows.append(row)
-                continue
-            request['user_request'] = opening
-            policy, policy_problems = policies.write(opening_client, request)
-            if policy is None:
-                row.update(passed=False, problems=[f'agent policy: {p}' for p in policy_problems[:4]])
-                rows.append(row)
-                continue
-            request['agent_policy'] = policy
+    for row, request in finished:
+        if request is not None:
             twin = next((k for k in kept if similarity(signature(k), signature(request)) >= SIMILAR), None)
             if twin is not None:
                 row.update(passed=False, problems=[f'near-duplicate of {twin["id"]}'])
             else:
-                request['id'] = f'gen-{index:03d}'
-                request['source'] = {'generated': domain['name'], 'family': domain.get('family'),
-                                     'shape': shape, 'persona': persona_name, 'language': langs[index],
-                                     'opening_writer': getattr(opening_client, 'model', None)}
+                request['id'] = f"gen-{row['index']:03d}"
                 kept.append(request)
                 (output / 'requests').mkdir(exist_ok=True)
                 (output / 'requests' / f'{request["id"]}.json').write_text(

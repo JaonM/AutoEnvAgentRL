@@ -175,3 +175,8 @@ H1 和 H2 同时成立，才算"显著提升"。H3 用来说明提升来自哪�
   - 结论表述相应改为：用领域匹配的合成数据训练（数据由本项目生成，不含任何 benchmark 数据）。
 - 推理服务：`experiments/v3/bench/serve_openai.py`，mlx-lm 生成，对话渲染（关闭思考）和工具调用解析与训练一致；
   τ² 运行脚本是 `experiments/v3/bench/run_tau2.sh`，用户模拟器为 deepseek-flash，温度 0，种子 300。
+- 2026-10-13：A 组基线完成，τ²-bench airline + retail 的 pass^1 为 0.154（airline 0.390，retail 0.050；需要写操作的题 0.028）。
+  按 H1，C 组需达到至少 0.254。按"是否需要写操作"拆分统计，是看到基线后加的补充分析，主指标不变。
+- 2026-10-13：第二批训练沙箱 300 个，使用 60 个领域（`experiments/v3/bench/domains_tau_matched_60.json`，含第一批的 30 个，
+  匹配领域约占 40%），输出到 `output/v3_bench_pool2`。用户指示：如果实验结果显示数据不够，继续扩充生成的沙箱。
+- 生成流程的开场白和对外政策改为并行编写（`production/generate.py`），第一批已用 `finish_generation.py` 补完。
