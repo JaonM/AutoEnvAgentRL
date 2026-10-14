@@ -58,6 +58,15 @@ Write env.py:
      enforce every rule in brief.md and raise BusinessError on a violation. Tools run on
      perturbed worlds, so never depend on particular ids or values from data.json.
    - Expose what an agent needs to do the task through tools; never expose facts.json.
+   - The tools are the business's whole service API, not a kit cut for this one request: besides
+     the reads this task needs, add at least three reads a colleague would use for neighbouring
+     questions in the same business (for example tracking, loyalty balance, opening hours,
+     another record type) that this task never needs. They read the same data and must work.
+   - Ids of internal records (items, payments, tickets, segments) come only from what another
+     read returns (an order's items from the order), never from something the user could know.
+   - In `Args:` describe each id's format with a made-up example that is not in data.json
+     (for example "order id such as 'ord-000'"); agents must take real ids from the user or
+     from tool results, never from the example.
 2. approval_key(tool, args, facts) -> str (only when facts.json has approval topics): the
    approval topic in facts.json that governs this exact write, derived from the arguments and
    the user's facts (for example: the loan is the first id the user listed -> approve_first).
