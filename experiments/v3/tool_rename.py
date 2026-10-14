@@ -204,3 +204,134 @@ def relayout(episode, seed):
         layout = LAYOUTS[random.Random(f'{seed}-layout').choice(sorted(LAYOUTS))]
         system['content'] = layout.format(instructions=instructions, label=label, policy=policy, clock=clock)
     return episode
+
+
+# Identifier recovery. τ²-bench's tool descriptions carry example values ("such as '#W0000000'") and the
+# probe SFT model called tools with them, then repeated the failing call until the episode ended: our
+# descriptions carry no examples and the teacher's successful episodes almost never contain a failed
+# lookup, so the student never saw an example value that is not data, nor a "not found" followed by a fix.
+ID_PARAM = re.compile(r'(^|_)(id|ids|ref|reference|number|no|code)$', re.IGNORECASE)
+
+
+READ_WORDS = {w for group in SYNONYMS if group[0] in ('get', 'list', 'search', 'check') for w in group} | {
+    'view', 'calculate', 'compute', 'quote', 'estimate', 'lookup', 'find', 'query'}
+
+
+def _is_lookup(name):
+    return any(word in READ_WORDS for word in name.lower().split('_'))
+
+
+def _calls(message):
+    return message.get('tool_calls') or [] if message.get('role') == 'assistant' else []
+
+
+def _arguments(call):
+    arguments = call['function'].get('arguments') or '{}'
+    try:
+        value = json.loads(arguments) if isinstance(arguments, str) else dict(arguments)
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _fake(value, rng, taken):
+    """A value shaped like `value` (same letters and separators, other digits) that the episode never uses."""
+    for attempt in range(20):
+        if attempt == 0 and rng.random() < 0.5:
+            fake = re.sub(r'\d', '0', value)
+        else:
+            fake = re.sub(r'\d', lambda m: str(rng.randrange(10)), value)
+        if fake != value and fake not in taken:
+            return fake
+    return None
+
+
+def _id_values(episode):
+    """{(tool, parameter): first real value} for identifier parameters the teacher's calls filled."""
+    out = {}
+    for message in episode['messages']:
+        for call in _calls(message):
+            for key, value in (_arguments(call) or {}).items():
+                if ID_PARAM.search(key) and isinstance(value, str) and re.search(r'\d', value) and len(value) >= 3:
+                    out.setdefault((call['function']['name'], key), value)
+    return out
+
+
+def example_values(episode, seed):
+    """A copy whose identifier parameters' descriptions end with a made-up example value ("such as
+    'ord-000'"), never one of the episode's real values."""
+    episode = copy.deepcopy(episode)
+    rng = random.Random(f'{seed}-examples')
+    taken = json.dumps(episode['messages'], ensure_ascii=False)
+    examples = {}
+    for (tool, key), value in _id_values(episode).items():
+        fake = _fake(value, rng, taken)
+        if fake:
+            examples[(tool, key)] = fake
+    for tool in episode['tools']:
+        function = tool.get('function') or {}
+        for key, schema in ((function.get('parameters') or {}).get('properties') or {}).items():
+            fake = examples.get((function.get('name'), key))
+            if fake and isinstance(schema, dict):
+                text = schema.get('description') or ''
+                chinese = any('一' <= ch <= '鿿' for ch in text)
+                suffix = f"，例如 '{fake}'" if chinese else f" Such as '{fake}'."
+                schema['description'] = (text.rstrip('.。 ') + ('.' if text and not chinese else '') + suffix).strip()
+    episode['examples'] = {f'{tool}.{key}': fake for (tool, key), fake in examples.items()}
+    return episode
+
+
+def inject_errors(episode, seed, limit=1):
+    """A copy where, before up to `limit` assistant turns whose call fills an identifier already seen in
+    the conversation, the agent first calls the same tool with a wrong identifier (the description's example
+    value when example_values ran, else the real one with a digit changed) and gets "not found". The wrong
+    call is context only; the following, original turn (the right identifier) is trained."""
+    episode = copy.deepcopy(episode)
+    rng = random.Random(f'{seed}-inject')
+    messages = episode['messages']
+    examples = episode.get('examples') or {}
+    envelope_format = any(m.get('role') == 'tool' and str(m.get('content') or '').startswith('{"ok"')
+                          for m in messages)
+    taken = json.dumps(messages, ensure_ascii=False)
+    candidates = []
+    for index, message in enumerate(messages):
+        if message.get('context_only'):
+            continue
+        seen = json.dumps(messages[:index], ensure_ascii=False)
+        for call in _calls(message):
+            if not _is_lookup(call['function']['name']):
+                continue  # a failed write means something else; only lookups get a wrong identifier
+            for key, value in (_arguments(call) or {}).items():
+                if ID_PARAM.search(key) and isinstance(value, str) and len(value) >= 3 and re.search(r'\d', value) \
+                        and json.dumps(value)[1:-1] in seen:
+                    clean = len(_calls(message)) == 1 and not (message.get('content') or '').strip()
+                    candidates.append((clean, index, call, key, value))
+                    break
+    rng.shuffle(candidates)
+    candidates.sort(key=lambda c: not c[0])  # prefer a lone call with no words: the fix is unmistakable
+    chosen, used = [], set()
+    for candidate in candidates:
+        if candidate[1] not in used and len(chosen) < limit:
+            chosen.append(candidate)
+            used.add(candidate[1])
+    for _, index, call, key, value in sorted(chosen, key=lambda c: -c[1]):
+        name = call['function']['name']
+        wrong = examples.get(f'{name}.{key}') if rng.random() < 0.6 else None
+        if not wrong:
+            digits = [i for i, ch in enumerate(value) if ch.isdigit()]
+            position = rng.choice(digits)
+            wrong = value[:position] + str((int(value[position]) + rng.randrange(1, 10)) % 10) + value[position + 1:]
+        if wrong in taken:
+            continue
+        arguments = {**_arguments(call), key: wrong}
+        entity = re.sub(ID_PARAM, '', key).replace('_', ' ').strip() or 'record'
+        error = f'{entity.capitalize()} not found'
+        call_id = f'call_inj_{rng.randrange(16 ** 8):08x}'
+        content = json.dumps({'ok': False, 'kind': 'business', 'error': error}) if envelope_format \
+            else f'Error: {error}'
+        messages[index:index] = [
+            {'role': 'assistant', 'content': '', 'context_only': True,
+             'tool_calls': [{'id': call_id, 'type': 'function',
+                             'function': {'name': name, 'arguments': json.dumps(arguments, ensure_ascii=False)}}]},
+            {'role': 'tool', 'tool_call_id': call_id, 'name': name, 'content': content}]
+    return episode

@@ -7,7 +7,10 @@ model (served by serve_openai.py) on held-out tasks through the training interfa
   repeat_failures   share of episodes that repeat an identical call right after it failed,
   unknown_tools     share of episodes calling a tool that is not in their tool list,
   step_limit        share of episodes the step limit ended (the user never left; rows record terminated),
-  asks_before_lookup share of episodes whose first account lookup comes after asking the user.
+  asks_before_lookup share of episodes whose first account lookup comes after asking the user,
+  wide_turns        share of episodes with a turn making more than 3 tool calls,
+  ungrounded_ids    share of identifier arguments never seen before in the conversation (invented),
+  example_copies    share of identifier arguments equal to an example value of a tool description.
 A model passes when none of these is worse than the base model's by more than the margins.
 
     python experiments/v3/dev_check.py --tasks DEV.json --port 8790 --model-name m --output OUT.jsonl
@@ -18,9 +21,38 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
+
+
+ID_KEY = re.compile(r'(^|_)(id|ids|ref|reference|number|no|code)$', re.IGNORECASE)
+EXAMPLE = re.compile(r"(?:such as|e\.g\.,?|例如)\s*'([^']+)'", re.IGNORECASE)
+
+
+def call_habits(row):
+    """(widest turn, identifier arguments, invented ones, example copies) of one episode."""
+    examples = set(EXAMPLE.findall(json.dumps(row.get('tools') or [], ensure_ascii=False)))
+    widest = ids = invented = copies = 0
+    seen = ''
+    for message in row['messages']:
+        calls = message.get('tool_calls') or [] if message['role'] == 'assistant' else []
+        widest = max(widest, len(calls))
+        for call in calls:
+            arguments = call['function'].get('arguments') or '{}'
+            try:
+                values = json.loads(arguments) if isinstance(arguments, str) else arguments
+            except ValueError:
+                values = {}
+            for key, value in (values if isinstance(values, dict) else {}).items():
+                if ID_KEY.search(key) and isinstance(value, str) and value:
+                    ids += 1
+                    invented += value not in seen
+                    copies += value in examples
+        seen += json.dumps({k: message.get(k) for k in ('content', 'tool_calls')}, ensure_ascii=False) \
+            if message['role'] != 'assistant' else ''
+    return widest, ids, invented, copies
 
 
 def metrics(rows):
@@ -54,10 +86,15 @@ def metrics(rows):
         if looked:
             lookups += 1
             asks += asked
+    habits = [call_habits(r) for r in played]
+    id_total = max(1, sum(h[1] for h in habits))
     return {'episodes': len(played), 'success': round(sum(bool(r.get('success')) for r in played) / n, 3),
             'mean_reward': round(sum(r.get('reward') or 0 for r in played) / n, 3),
             'repeat_failures': round(repeat / n, 3), 'unknown_tools': round(unknown / n, 3),
-            'step_limit': round(limit / n, 3), 'asks_before_lookup': round(asks / max(1, lookups), 3)}
+            'step_limit': round(limit / n, 3), 'asks_before_lookup': round(asks / max(1, lookups), 3),
+            'wide_turns': round(sum(h[0] > 3 for h in habits) / n, 3),
+            'ungrounded_ids': round(sum(h[2] for h in habits) / id_total, 3),
+            'example_copies': round(sum(h[3] for h in habits) / id_total, 3)}
 
 
 MARGINS = {'success': -0.05, 'repeat_failures': 0.05, 'unknown_tools': 0.03, 'step_limit': 0.05}

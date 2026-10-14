@@ -211,6 +211,12 @@ def main():
                         help='share of episodes whose system prompt uses another layout (tags, markdown, policy first)')
     parser.add_argument('--greet', type=float, default=0.0,
                         help='share of episodes opened by an agent greeting before the user speaks (context only)')
+    parser.add_argument('--example-values', type=float, default=0.0,
+                        help="share of episodes whose identifier parameters' descriptions carry a made-up example "
+                             "value (τ²-bench writes \"such as '#W0000000'\"; the student must not call with it)")
+    parser.add_argument('--inject-errors', type=float, default=0.0,
+                        help='share of episodes where one lookup is first called with a wrong identifier (the example '
+                             'value or a mistyped one) and fails; the failed call is context, the fix is trained')
     parser.add_argument('--replay', nargs='*', default=[],
                         help='extra episode files mixed in as they are (e.g. the base model\'s own successes)')
     parser.add_argument('--no-error-turns', action='store_true',
@@ -257,6 +263,16 @@ def main():
         rng = random.Random(args.seed + 3)
         episodes = [greet(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if rng.random() < args.greet else e
                     for e in episodes]
+    if args.example_values or args.inject_errors:
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from tool_rename import example_values, inject_errors
+        rng = random.Random(args.seed + 5)
+        episodes = [example_values(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if rng.random() < args.example_values
+                    else e for e in episodes]
+        rng = random.Random(args.seed + 6)
+        episodes = [inject_errors(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if rng.random() < args.inject_errors
+                    else e for e in episodes]
     if args.vary_results:
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parent))
