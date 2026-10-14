@@ -298,7 +298,10 @@ Task shape: {shape}
   are fine, the writer says them in {currency}). Keep it short enough to say in one breath: a direct task
   has at most 3 records and 8 numbers in known (design the computation to fit). wants_to_know has
   at most 3 short items in the user's own words; everything the final answer must report goes
-  into business_rules ("最终必须告知……"), not into the scene. Never put business rules, confirmation steps, transaction
+  into business_rules ("最终必须告知……"), not into the scene. Besides the outcome of any change,
+  the answer must include at least one concrete fact the agent can only learn from a lookup (how many
+  options are available, the new departure time, the remaining balance), the way real customers ask
+  "what are my options" or "when does it leave". Never put business rules, confirmation steps, transaction
   semantics or virtual clock values ("time 10", "day 30") in the scene; give times relative to now
   ("starts in 20 minutes", "expires in 2 days") in the unit the rules use. user_facts stay private:
   do not copy them into known unless the user would open with them.
