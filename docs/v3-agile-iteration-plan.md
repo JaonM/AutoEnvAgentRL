@@ -85,8 +85,9 @@
 
 | 轮 | 只改这一项 | 判定 | 状态 |
 |---|---|---|---|
-| **I3 配置（review 2026-10-15）** | RL 代码实现正确（采样与训练打分同温度并逐条核对 ≤0.001、只训练 agent token、k3 KL、过期与重要性漂移控制、不可训练对局屏蔽），但默认值不适合多轮任务：`max_steps` 6→30、`max_context` 4096→32768、`max_tokens` 256→1024、`max_tokens_per_micro_batch` 8192→32768（否则长对话后几轮直接报错）、`mini_batch_size` 1→8（每次更新 8 个任务）、`rollout_group` 4→8、`advantage_std` group→task、`tuning` qat→full（lr 1e-6）。固定在 `experiments/v3/bench/stage_I3.sh`。后续可试：损失按 token 而非按局平均（DAPO） | | ✅ 脚本已写，待 I2 后冒烟测试 |
+| **I3 配置（review 2026-10-15）** | RL 代码实现正确（采样与训练打分同温度并逐条核对 ≤0.001、只训练 agent token、k3 KL、过期与重要性漂移控制、不可训练对局屏蔽），但默认值不适合多轮任务：`max_steps` 6→30、`max_context` 4096→32768、`max_tokens` 256→1024、`max_tokens_per_micro_batch` 8192→32768（否则长对话后几轮直接报错）、`mini_batch_size` 1→8（每次更新 8 个任务）、`rollout_group` 4→8、`advantage_std` group→task、`tuning` qat→full（lr 1e-6）。已改成库的默认值（`src/rl/config.py`，另加 `rollout_concurrency` 2→8、`thinking_mode` auto→no-thinking），`experiments/v3/bench/stage_I3.sh` 里也显式写明。后续可试：损失按 token 而非按局平均（DAPO） | | ✅ 脚本已写，待 I2 后冒烟测试 |
 | **I3** | 在 I2 的模型上做 GRPO：只用 pass@4 在 20–80% 之间的任务；每组 8 条轨迹，难题 16 条；`--advantage-std task`；模拟器审计屏蔽；动态采样（E8） | 快评 + **里程碑全评** | ⏳ |
+| **I3e** | **损失的平均方式**：现在是原始 GRPO 的按序列平均（组间等权、组内各局等权、局内 token 等权），长对话里每个 token 权重小，循环重试这类长失败局中每次错误调用分到的惩罚被稀释；对比 DAPO 的按 token 平均（可选 Dr. GRPO 的固定常数归一）。看循环失败比例和平均对话长度 | 对比 I3 | ⏳ |
 | **I3b** | 反向课程（R2）：只用于从头开始时成功率约为 0 的难题。用 `/restore` 恢复到成功轨迹（教师示范或策略自己偶尔的成功）的第 k 轮之后，从那里接着做；起点成功率 > 0.6 后起点前移；前缀只作上下文 | 难题子集上从头开始的 pass@4 提高 + 快评 | ⏳ |
 | **I3a** | **低概率 token 掩码**（SPO）：优势只作用在旧策略概率 < 0.9 的 token 上（工具调用里的 JSON 套话、固定措辞不分配功劳），按被掩码 token 数归一化。SPO 报告仅给 GRPO 加上它，GSM8K 就从 45.7% 升到 53.6%；改动小，可单独作为一轮 | 对比 I3 | ⏳ |
 | **I3c-1 / I3c-2** | **同一棵树上对比两种优势算法**（采样完全相同，只换优势计算）：I3c-1 = Tree-GRPO（每条轨迹 = 树内组优势 + 树间组优势，步级功劳靠共享前缀隐式汇总）；I3c-2 = 段级价值差（每段 = V(下一个分叉点) − V(本段起点)，加整局组优势，TreeRL / SPO 式）。定位：在多轮 agent 的完整轮次上建树（Tree-GRPO），用分叉续写估计价值（VinePPO），按段算价值差（TreeRL / SPO），按熵选分叉点（ARPO），扩展到可精确分叉的有状态环境（数据库、同意凭证、模拟用户记忆） | 同等 rollout 预算下比 I3 和彼此 | ⏳ |

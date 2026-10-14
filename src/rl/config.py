@@ -16,7 +16,7 @@ class Config:
     zero_variance_policy: str = "retry_skip"
     # GRPO advantage scale: "group" (std of the group) or "task" (std of the recent rewards of the same
     # task across groups, AutoForge ERPO: less noise with small groups; falls back to the group early on)
-    advantage_std: str = "group"
+    advantage_std: str = "task"
     context_limit_policy: str = "finish"
     numerical_check_mode: str = "periodic"
     numerical_check_interval: int = 20
@@ -35,8 +35,8 @@ class Config:
     replay_max_uses: int = 4
     replay_max_age: int = 32
     replay_batches_per_batch: int = 0
-    tuning: str = "qat"
-    thinking_mode: str = "auto"
+    tuning: str = "full"
+    thinking_mode: str = "no-thinking"
     qat_scope: str = "projections"
     lora_targets: str = "self_attn.q_proj,self_attn.v_proj"
     lora_scale: float = 16.0
@@ -53,10 +53,10 @@ class Config:
     policy_publish_interval_steps: int = 1
     updates: int = 0
     rollout_workers: int = 1
-    rollout_concurrency: int = 2
+    rollout_concurrency: int = 8
     watchdog_interval: float = 1.0
     micro_batch_size: int = 4
-    max_tokens_per_micro_batch: int = 8192
+    max_tokens_per_micro_batch: int = 32768
     batch_logp_tolerance: float = 0.01
     sandbox_backend: str = "local"
     sandbox_images: str = ""
@@ -67,17 +67,17 @@ class Config:
     sandbox_memory: str = "1g"
     sandbox_services: str = ""
     environment_factory: str = "rl.environment:SandboxEpisode"
-    rollout_group: int = 4
+    rollout_group: int = 8
     over_sampling_batch_size: int = 0
     rollout_max_attempts: int = 3
-    batch_size: int = 1
-    mini_batch_size: int = 1
+    batch_size: int = 8
+    mini_batch_size: int = 8
     queue_size: int = 2
     max_policy_lag: int = 1
     max_groups: int = 0
-    max_steps: int = 6
-    max_tokens: int = 256
-    max_context: int = 4096
+    max_steps: int = 30
+    max_tokens: int = 1024
+    max_context: int = 32768
     layers: int = 1
     rank: int = 8
     bits: int = 4
