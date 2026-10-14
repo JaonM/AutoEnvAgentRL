@@ -113,6 +113,42 @@ def strip_notices(messages):
     return out
 
 
+def render_episode(tokenizer, episode, skip_failed=False):
+    """[(token ids, loss mask)] with the whole episode as ONE sample (non-thinking only): the chat template
+    over the full conversation, an empty think block inserted (as context) before every assistant turn that
+    lacks one, so each trained turn starts exactly as it does when served; the loss covers the trained
+    assistant turns. The prefix is computed once instead of once per turn (4-6x fewer tokens); the only
+    difference from serving is that later turns also see the earlier empty blocks in their history."""
+    keep = ('role', 'content', 'tool_calls', 'tool_call_id', 'name')
+    messages = strip_notices([{k: v for k, v in m.items() if k in keep} for m in episode['messages']])
+    assistants = [i for i, m in enumerate(episode['messages']) if m['role'] == 'assistant']
+    trained = {i for i in assistants if not episode['messages'][i].get('context_only')}
+    if skip_failed:
+        trained -= failed_turns(messages) | redundant_turns(
+            messages, {'consent', (episode.get('naming') or {}).get('consent', 'consent')})
+    text = tokenizer.apply_chat_template(messages, tools=episode['tools'], tokenize=False, enable_thinking=False)
+    head, empty = '<|im_start|>assistant\n', '<think>\n\n</think>\n\n'
+    pieces, cursor = [], 0
+    for index in assistants:
+        start = text.index(head, cursor)
+        body_start = start + len(head)
+        end = text.index('<|im_end|>', body_start) + len('<|im_end|>')
+        body = text[body_start:end]
+        pieces.append((text[cursor:body_start] + ('' if body.startswith('<think>') else empty), 0))
+        if body.startswith(empty):
+            pieces[-1] = (pieces[-1][0] + empty, 0)
+            body = body[len(empty):]
+        pieces.append((body, 1 if index in trained else 0))
+        cursor = end
+    pieces.append((text[cursor:].rstrip('\n'), 0))
+    ids, mask = [], []
+    for piece, train in pieces:
+        tokens = tokenizer.encode(piece, add_special_tokens=False) if piece else []
+        ids += tokens
+        mask += [train] * len(tokens)
+    return [(ids, mask)] if any(mask) else []
+
+
 def render_turns(tokenizer, episode, think, cap, limit=0, seed=0, skip_failed=False):
     """[(token ids, loss mask)] for the assistant turns of one episode, as served (see module doc).
     With skip_failed, a turn whose tool call failed stays in later turns' context but is not trained."""
@@ -164,6 +200,9 @@ def main():
     parser.add_argument('--reasoning-cap', type=int, default=1500, help='longest reasoning kept (characters)')
     parser.add_argument('--turns-per-episode', type=int, default=0, help='sample at most this many turns (0: all)')
     parser.add_argument('--per-episode', action='store_true', help='one sample per episode (earlier rendering)')
+    parser.add_argument('--render', choices=('turn', 'episode'), default='turn',
+                        help='turn: one sample per assistant turn (exact serving format); episode: one sample per '
+                             'episode with empty think blocks inserted (non-thinking only, much cheaper)')
     parser.add_argument('--rename-tools', type=float, default=0.0,
                         help='share of episodes whose business tools and parameters are renamed (tool_rename.py)')
     parser.add_argument('--vary-results', type=float, default=0.0,
@@ -227,6 +266,10 @@ def main():
                     for e in episodes]
     if args.per_episode:
         pairs = [(e, render(tokenizer, e)) for e in episodes]
+    elif args.render == 'episode':
+        if args.think:
+            raise SystemExit('--render episode is for non-thinking training only')
+        pairs = [(e, s) for e in episodes for s in render_episode(tokenizer, e, args.no_error_turns)]
     else:
         pairs = [(e, s) for e in episodes for s in render_turns(tokenizer, e, args.think, args.reasoning_cap,
                                                                args.turns_per_episode, args.seed,
