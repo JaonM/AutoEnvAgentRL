@@ -102,8 +102,8 @@ class WorldCheckTests(unittest.TestCase):
 
     def test_constants_of_the_world_are_found_and_earn_no_partial_credit(self):
         from env_factory_v3.core import answers
-        request = {'tables': {'loans': [{'id': 'L1', 'days': 3}, {'id': 'L2', 'days': 9}]}, 'time': {'start': 0},
-                   'user_facts': {'goals': [{'process': 'p1', 'params': {'loan_id': 'L1'}}]}}
+        request = {'tables': {'loans': [{'id': 'L1', 'days': 3}, {'id': 'L2', 'days': 9}, {'id': 'L3', 'days': 5}]},
+                   'time': {'start': 0}, 'user_facts': {'goals': [{'process': 'p1', 'params': {'loan_id': 'L1'}}]}}
 
         class Oracle:
             @staticmethod
