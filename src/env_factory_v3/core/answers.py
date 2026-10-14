@@ -160,6 +160,8 @@ def normalize(spec, value):
     if isinstance(value, bool):
         return ('bool', value)
     if isinstance(value, str):
+        if NUMERIC_TEXT.match(value.strip()):  # "12.50", "12.5" and "$12.50" are one amount
+            return ('number', round(float(value.strip().lstrip('$¥￥').replace(',', '')), 9))
         return ('str', text_key(value))
     if isinstance(value, list):
         item_spec = (spec or {}).get('items') or {}
@@ -172,6 +174,9 @@ def normalize(spec, value):
         return ('dict', tuple(sorted((key, normalize(properties.get(key), item)) for key, item in value.items()
                                      if (properties.get(key) or {}).get('graded', True))))
     return ('other', repr(value))
+
+
+NUMERIC_TEXT = re.compile(r'^[$¥￥]?-?\d{1,3}(,\d{3})*(\.\d+)?$|^[$¥￥]?-?\d+(\.\d+)?$')
 
 
 def text_key(value):
@@ -191,12 +196,24 @@ def internal(spec, value, known):
 def score(spec, expected, actual, known=None):
     """Share of graded leaves of `expected` that `actual` matches (1.0 when nothing is graded)."""
     spec = spec or {}
-    if internal(spec, expected, known):
-        return 1.0
+    if internal(spec, expected, known) and actual in (None, ''):
+        return 1.0  # an internal id the agent did not state is not required; naming another record is wrong
     if isinstance(expected, dict) and isinstance(actual, dict) and spec.get('properties'):
-        parts = [score(child, expected.get(name), actual.get(name), known)
-                 for name, child in spec['properties'].items() if child.get('graded', True)]
-        return sum(parts) / len(parts) if parts else 1.0
+        graded = [(name, child) for name, child in spec['properties'].items() if child.get('graded', True)]
+        parts = {name: score(child, expected.get(name), actual.get(name), known) for name, child in graded}
+        if not parts:
+            return 1.0
+        if all(value == 1.0 for value in parts.values()):
+            return 1.0
+        # Partial credit only for substance: an expected null (nothing to report) and an enum (a status, a
+        # decision) earn nothing on their own, so saying "refused" or nothing at all does not collect half
+        # an object; both are still required for the full score.
+        enums = {name for name, child in graded if child.get('enum')}
+        substance = [value for name, value in parts.items() if name not in enums and expected.get(name) is not None]
+        if not substance:
+            return 0.5 * sum(parts.values()) / len(parts) if all(parts[name] == 1.0 for name in enums) else 0.0
+        share = sum(substance) / len(substance)
+        return share if all(parts[name] == 1.0 for name in enums) else 0.5 * share
     if (isinstance(expected, list) and isinstance(actual, list) and spec.get('order', 'exact') == 'exact'
             and len(expected) == len(actual) and expected):
         return sum(score(spec.get('items'), e, a, known) for e, a in zip(expected, actual)) / len(expected)

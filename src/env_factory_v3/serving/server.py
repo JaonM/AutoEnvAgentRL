@@ -289,9 +289,9 @@ class Service:
             result, source = episode.result(), 'recorded'
             if self.user_mode == 'natural' and result['answer'] is None:
                 # Delivered by talking: the answer is what the agent told the user (extract.py).
-                from env_factory_v3.core.extract import speech_of
+                from env_factory_v3.core.extract import records_of, speech_of
                 result, source = {**result, 'answer': self.extractor().extract(self.schema, speech_of(
-                    result['trace']))}, 'extracted'
+                    result['trace']), records_of(result['trace']))}, 'extracted'
             from env_factory_v3.core import answers
             grade = reward.grade(result, record['expected'], self.schema, initial=record['data'],
                                  reference_calls=reference_calls,

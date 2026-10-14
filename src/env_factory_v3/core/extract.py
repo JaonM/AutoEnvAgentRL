@@ -9,6 +9,12 @@ results, so nothing the agent did not say can be credited. Every extracted numbe
 free string must then appear in that speech (numerals.said for numbers, so 36000 fen said as
 "360 元" counts); a value that does not is replaced by null. Enums and booleans are taken as the
 model read them. The result is graded exactly like a recorded answer.
+
+Records: an agent names records the way a person does ("the Basic plan"), not by id. The records its
+tool results returned (id plus a few naming strings) are listed for the model, which may fill an id
+for a record the agent named; such an id counts as said when one of that record's names was said.
+Without this, a record id the user never heard could only be skipped, so naming the wrong record
+went ungraded.
 """
 from __future__ import annotations
 
@@ -26,7 +32,7 @@ PROMPT = """下面是客服在一次服务中对用户说过的全部话。请�
 客服说过的话：
 {speech}
 
-要求：只依据客服说过的话，只提取客服给用户的处理结果；复述用户提供的信息、规则、价目或中间计算过程都不算结果。同一项前后说法不一致时，以最后一次为准。没说到的字段填 null，不要推测、补全或自己计算。数值按字段说明的单位换算（例如字段要求“分”/cents，客服说“360元”或“$360”就填 36000）。对话可能是中文或英文。枚举字段只能从给定选项中选，选不出就填 null。数组和对象按格式逐项填写，客服没说到的元素不要编造。
+{records}要求：只依据客服说过的话，只提取客服给用户的处理结果；复述用户提供的信息、规则、价目或中间计算过程都不算结果。同一项前后说法不一致时，以最后一次为准。没说到的字段填 null，不要推测、补全或自己计算。数值按字段说明的单位换算（例如字段要求“分”/cents，客服说“360元”或“$360”就填 36000）。对话可能是中文或英文。枚举字段只能从给定选项中选，选不出就填 null。数组和对象按格式逐项填写，客服没说到的元素不要编造。
 只输出一个 JSON 对象，键与答案格式的字段完全一致。"""
 
 
@@ -35,19 +41,49 @@ def speech_of(trace):
     return [e['message'] for e in trace if e.get('kind') == 'chat' and isinstance(e.get('message'), str)]
 
 
-def verify(value, spec, text):
-    """The value with every number or free string that was not actually said replaced by None."""
+MAX_RECORDS, NAMES_PER_RECORD = 120, 3
+
+
+def records_of(trace):
+    """{record id: [naming strings]} from the rows the agent's tool calls returned."""
+    found = {}
+
+    def walk(value):
+        if isinstance(value, dict):
+            if isinstance(value.get('id'), str):
+                names = [v for k, v in value.items() if k != 'id' and isinstance(v, str) and len(v) >= 3
+                         and not v.replace('-', '').replace('_', '').isdigit()][:NAMES_PER_RECORD]
+                if names:
+                    found.setdefault(value['id'], names)
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+    for entry in trace:
+        if entry.get('kind') == 'tool' and entry.get('status') == 'ok':
+            walk(entry.get('result'))
+    return dict(list(found.items())[:MAX_RECORDS])
+
+
+def verify(value, spec, text, records=None):
+    """The value with every number or free string that was not actually said replaced by None; a record id
+    counts as said when one of the record's names was (see Records above)."""
     if value is None or not isinstance(spec, dict):
         return value
     kind = spec.get('type')
     if kind in ('integer', 'number') and isinstance(value, (int, float)) and not isinstance(value, bool):
         return value if said(text, value) else None
     if kind == 'string' and isinstance(value, str) and 'enum' not in spec:
-        return value if value and value in text else None
+        if value and value in text:
+            return value
+        lowered = text.casefold()
+        named = any(name.casefold() in lowered for name in (records or {}).get(value, []))
+        return value if value and named else None
     if kind == 'array' and isinstance(value, list):
-        return [verify(item, spec.get('items'), text) for item in value]
+        return [verify(item, spec.get('items'), text, records) for item in value]
     if kind == 'object' and isinstance(value, dict) and spec.get('properties'):
-        return {key: verify(value.get(key), sub, text) for key, sub in spec['properties'].items()}
+        return {key: verify(value.get(key), sub, text, records) for key, sub in spec['properties'].items()}
     return value
 
 
@@ -55,13 +91,16 @@ class Extractor:
     def __init__(self, client):
         self.client, self.cache = client, {}
 
-    def extract(self, schema, speech):
-        """{field: value} for the schema's fields (None when not stated), or None without speech."""
+    def extract(self, schema, speech, records=None):
+        """{field: value} for the schema's fields (None when not stated), or None without speech. `records`
+        (records_of the episode's trace) lets the model fill ids of records the agent named."""
         text = '\n'.join(m for m in speech if m.strip())
         if not text:
             return None
         fields = schema['fields']
-        prompt = PROMPT.format(schema=json.dumps(fields, ensure_ascii=False, indent=1), speech=text)
+        listing = ('客服查到的记录（客服用名称或描述指代某条记录时，相应字段填这里的 id；没指代就不要填）：\n'
+                   + json.dumps(records, ensure_ascii=False) + '\n\n') if records else ''
+        prompt = PROMPT.format(schema=json.dumps(fields, ensure_ascii=False, indent=1), speech=text, records=listing)
         key = hashlib.sha256(prompt.encode()).hexdigest()
         if key not in self.cache:
             from env_factory_v3.core.llm import ProviderError
@@ -77,4 +116,4 @@ class Extractor:
                 raise ProviderError('extractor returned no usable answer')
             self.cache[key] = raw
         raw = copy.deepcopy(self.cache[key])
-        return {name: verify(raw.get(name), spec, text) for name, spec in fields.items()}
+        return {name: verify(raw.get(name), spec, text, records) for name, spec in fields.items()}

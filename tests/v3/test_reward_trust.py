@@ -81,8 +81,39 @@ class AnswerComparisonTests(unittest.TestCase):
         from env_factory_v3.core import answers
         want = {'refund': {'return_id': 'R-77', 'amount_cents': 4300, 'destination': 'Visa 4821', 'status': 'done'}}
         got = {'refund': {**want['refund'], 'amount_cents': 4000}}
-        self.assertEqual(answers.scores(self.OBJ, want, got)['refund'], 0.75)
+        self.assertAlmostEqual(answers.scores(self.OBJ, want, got)['refund'], 2 / 3)  # the status earns no share
         self.assertFalse(answers.compare(self.OBJ, want, got)['refund'])
+
+    def test_a_status_or_a_null_alone_earns_nothing(self):
+        from env_factory_v3.core import answers
+        want = {'refund': {'return_id': 'R-77', 'amount_cents': 4300, 'destination': None, 'status': 'done'}}
+        only_status = {'refund': {'return_id': None, 'amount_cents': None, 'destination': None, 'status': 'done'}}
+        self.assertEqual(answers.scores(self.OBJ, want, only_status)['refund'], 0.0)
+        wrong_status = {'refund': {**want['refund'], 'status': 'refused'}}
+        self.assertEqual(answers.scores(self.OBJ, want, wrong_status)['refund'], 0.5)
+
+    def test_amount_strings_compare_as_numbers(self):
+        from env_factory_v3.core import answers
+        schema = {'fields': {'total': {'type': 'string', 'description': 't'}}}
+        for said in ('12.5', '$12.50', '12.50'):
+            self.assertTrue(answers.compare(schema, {'total': '12.50'}, {'total': said})['total'], said)
+        self.assertFalse(answers.compare(schema, {'total': '12.50'}, {'total': '12.51'})['total'])
+
+    def test_naming_another_record_is_wrong_even_for_an_internal_id(self):
+        from env_factory_v3.core import answers
+        schema = {'fields': {'plan': {'type': 'string', 'description': 'p'}}}
+        known = ['I want the cheapest plan']
+        self.assertTrue(answers.compare(schema, {'plan': 'plan-basic'}, {'plan': None}, known)['plan'])
+        self.assertFalse(answers.compare(schema, {'plan': 'plan-basic'}, {'plan': 'plan-pro'}, known)['plan'])
+
+    def test_a_named_record_counts_as_said(self):
+        from env_factory_v3.core import extract
+        trace = [{'kind': 'tool', 'status': 'ok', 'result': [{'id': 'plan-basic', 'name': 'Basic Saver'},
+                                                             {'id': 'plan-pro', 'name': 'Pro Unlimited'}]}]
+        records = extract.records_of(trace)
+        spec = {'type': 'string'}
+        self.assertEqual(extract.verify('plan-basic', spec, 'I recommend the Basic Saver plan.', records), 'plan-basic')
+        self.assertIsNone(extract.verify('plan-pro', spec, 'I recommend the Basic Saver plan.', records))
 
     def test_internal_ids_the_user_never_saw_are_not_graded(self):
         from env_factory_v3.core import answers
