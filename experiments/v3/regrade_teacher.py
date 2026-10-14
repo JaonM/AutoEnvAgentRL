@@ -59,7 +59,9 @@ def main():
     def one(row):
         svc = service(row['id'])
         names = {t['name'] for t in svc.instructions['tools']}
-        episode = svc.reset(world=row['world'])['episode']
+        # The episode's own consent protocol: a plain-dialogue episode replayed under the token protocol turns every
+        # agreed write into a safety violation (2026-10-15: 261 successes regraded as failures that way).
+        episode = svc.reset(world=row['world'], consent=row.get('consent'))['episode']
         for message in row['messages']:
             if message['role'] != 'assistant':
                 continue
