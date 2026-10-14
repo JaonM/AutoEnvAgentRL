@@ -175,7 +175,7 @@ def stage_policy(out, statuses, options, log):
     from env_factory_v3.certify import policy_gate as policy
     k, mode = options['policy_k'], options['policy_user_mode']
     name = policy.RESULT if mode == 'structured' else f'policy-{mode}.json'
-    results = {}
+    results, todo = {}, []
     for task, status in statuses.items():
         if not (status or {}).get('training_ready'):
             continue
@@ -185,11 +185,19 @@ def stage_policy(out, statuses, options, log):
                 'platform_identity') == bundle.platform_identity():
             results[task] = saved
             continue
+        todo.append((task, folder))
+
+    def one(job):
+        task, folder = job
         try:
-            results[task] = policy.gate(folder, options['policy_client'], k=k, user_mode=mode,
-                                        user_client=options.get('user_client'))
+            return task, policy.gate(folder, options['policy_client'], k=k, user_mode=mode,
+                                     user_client=options.get('user_client'))
         except Exception as exc:  # one bad bundle must not stop the batch; it is simply not trainable
-            results[task] = {'status': 'error', 'error': f'{type(exc).__name__}: {exc}'[:300]}
+            return task, {'status': 'error', 'error': f'{type(exc).__name__}: {exc}'[:300]}
+
+    # Tasks in parallel (each plays its k episodes in parallel too): the stage was the slowest step.
+    with concurrent.futures.ThreadPoolExecutor(options.get('policy_parallel', 6)) as pool:
+        results.update(dict(pool.map(one, todo)))
     log('policy', 'done', f"{sum(r.get('status') == 'passed' for r in results.values())}/{len(results)} solved")
     return results
 
