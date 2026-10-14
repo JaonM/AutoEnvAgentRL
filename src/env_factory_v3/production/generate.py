@@ -9,7 +9,8 @@ from the scene and a persona only, so it cannot restate rules it never saw. The 
 no red flag and must say every number in the scene's known information. A third step rewrites
 the rules as the agent-facing policy manual (policies.write; request["agent_policy"]). Near-duplicates (character 3-gram Jaccard similarity
 of title, opening and rules) are dropped. The category mix follows V2's skeleton by default:
-direct 20%, simple 20%, ordinary multi-step 20%, complex multi-step 40%. With rubric_share > 0 that
+direct 10%, simple 20%, ordinary multi-step 15%, single-write 25%, complex multi-step 30% (τ²-bench's
+typical task is one approved write after a few reads). With rubric_share > 0 that
 fraction of the multi-step slots become subjective tasks (reward_type "rubric").
 
     python -m env_factory_v3 generate --domains domains.json --count 30 --output DIR
@@ -29,8 +30,9 @@ from env_factory_v3.core import spec
 from env_factory_v3.core.numerals import chinese, spoken  # noqa: F401  (chinese: re-exported for callers)
 from env_factory_v3.production import openings, agent_policy as policies
 
-MIX = (('direct_response', 'direct', 0.2), ('simple_agentic', 'simple', 0.2),
-       ('multi_step_agentic', 'ordinary', 0.2), ('multi_step_agentic', 'complex', 0.4))
+MIX = (('direct_response', 'direct', 0.1), ('simple_agentic', 'simple', 0.2),
+       ('multi_step_agentic', 'ordinary', 0.15), ('multi_step_agentic', 'single_write', 0.25),
+       ('multi_step_agentic', 'complex', 0.3))
 SHAPES = {
     'direct': 'Every number the answer needs is in the opening (as the user would quote a price list or a '
               'receipt); no tables or tools are needed; one exact numeric or enum answer.',
@@ -38,6 +40,11 @@ SHAPES = {
               'its items); the agent applies the rules to decide (for example eligibility); the user knows the '
               'ids; no writes.',
     'ordinary': 'Several reads whose results feed each other (search, filter, compute); no writes.',
+    'single_write': 'One clean job with exactly one write: identify the customer, two to four reads to find the '
+                    'record and check it against the rules, then one write the user approves (one approve_* '
+                    'fact), and tell the user the result (for example cancel one order, change one address, '
+                    'exchange one item). No decoys and no dependency between steps: the difficulty is doing an '
+                    'ordinary request correctly and completely.',
     'complex': 'A real multi-step job, not a short one with many rules. The shortest correct solution needs '
                'at least 6 public tool calls (reads and writes; asking the user or asking for approval does not '
                'count) and at least two writes, each needing the user\'s approval (facts approve_first / '
@@ -123,6 +130,15 @@ MAX_DIRECT_NUMBERS, MAX_WANTS = 8, 3  # what a user says in one opening message
 TASK_TIMEOUT = 900  # seconds to write one opening and policy before giving up on a stalled connection
 # Difficulty floor: public tool calls of the built reference solution, checked after the build (production/run.py).
 MIN_REFERENCE_CALLS = {'complex': 6}
+
+
+def actual_shape(structure):
+    """The shape a reference solution really has (gates.trace_structure): the label a task keeps."""
+    if structure['tool_calls'] == 0:
+        return 'direct'
+    if structure['writes'] == 0:
+        return 'simple' if not structure['result_dependency'] else 'ordinary'
+    return 'single_write' if structure['writes'] == 1 else 'complex'
 
 
 LANGUAGE_NAMES = {'zh': 'Chinese', 'en': 'English'}
@@ -276,6 +292,8 @@ def check_request(folder):
     wanted = 'rubric' if expected.get('shape') == 'subjective' else 'business'
     if expected and request.get('reward_type', 'business') != wanted:
         problems.append(f'reward_type must be "{wanted}" for this task')
+    if expected.get('shape') == 'single_write' and not approvals:
+        problems.append('a single-write task needs one write with its approve_* fact')
     if expected.get('shape') == 'complex' and len(approvals) < 2:
         problems.append('a complex task needs at least two writes, each with its own approve_* fact')
     if expected.get('shape') in ('direct',) and any(request['tables'].values()):
