@@ -138,6 +138,7 @@ def main():
                         help='domains held out of the selection for the behaviour check (dev_check.py); '
                              'airline and retail-like domains always stay in training')
     parser.add_argument('--dev-output', help='where to write the held-out task list')
+    parser.add_argument('--dev-from', help='a held-out task list whose domains stay held out (keeps the dev set fixed)')
     parser.add_argument('--seed', type=int, default=0)
     args = parser.parse_args()
     sandboxes = {t['id']: t['sandbox'] for path in args.tasks for t in json.loads(Path(path).read_text())['tasks']}
@@ -159,6 +160,8 @@ def main():
     all_domains = sorted({m[2] for m in meta.values()}, key=lambda d: hashlib.sha256(str(d).encode()).hexdigest())
     core = ('airline', 'flight', 'retail', 'e-commerce', 'ecommerce', 'online shop', 'order')
     held = set([d for d in all_domains if not any(word in str(d).lower() for word in core)][:args.dev_domains])
+    if args.dev_from:
+        held = set(json.loads(Path(args.dev_from).read_text())['domains'])
     if args.dev_output:
         dev = [{'id': t, 'sandbox': sandboxes[t], 'split': 'eval', 'weight': 1.0} for t in meta if meta[t][2] in held]
         Path(args.dev_output).write_text(json.dumps({'tasks': dev, 'domains': sorted(held)}, ensure_ascii=False, indent=1))
