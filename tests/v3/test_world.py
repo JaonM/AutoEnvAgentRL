@@ -18,7 +18,8 @@ from env_factory_v3.production import world  # noqa: E402
 
 GOALS = {f'p{i}': {'description': f'process {i}', 'params': {'loan_id': 'str'}} for i in range(6)}  # before outcomes
 OUTCOME = {'type': 'object', 'description': 'what happened',
-           'properties': {'status': {'type': 'string', 'enum': ['done', 'refused']}}}
+           'properties': {'status': {'type': 'string', 'enum': ['done', 'refused']},
+                          'reason': {'type': 'string', 'enum': ['late', 'ineligible'], 'nullable': True}}}
 SHAPED = {name: {**value, 'kind': 'inquiry' if name == 'p5' else 'account', 'outcome': OUTCOME}
           for name, value in GOALS.items()}
 
@@ -74,6 +75,24 @@ class WorldCheckTests(unittest.TestCase):
         problems = world.check_task(folder)[0]
         self.assertTrue(any('only inquiry goals' in p for p in problems))
         self.assertTrue(any('p5.days' in p for p in problems))
+
+    def test_an_outcome_that_ignores_its_goal_params_is_caught(self):
+        request = {'tables': {'loans': [{'id': 'L1', 'days': 3}, {'id': 'L2', 'days': 9}]}, 'time': {'start': 0},
+                   'user_facts': {'goals': [{'process': 'p1', 'params': {'loan_id': 'L1'}}]}}
+
+        class Reads:
+            @staticmethod
+            def expected(data, facts, now):
+                loan = next(r for r in data['loans'] if r['id'] == facts['goals'][0]['params']['loan_id'])
+                return {'answer': {'goal_1': {'days': loan['days']}}, 'final_state': data}
+
+        class Ignores:
+            @staticmethod
+            def expected(data, facts, now):
+                return {'answer': {'goal_1': {'days': 3}}, 'final_state': data}
+        self.assertTrue(world.goal_sensitivity(Reads, request)['passed'])
+        report = world.goal_sensitivity(Ignores, request)
+        self.assertEqual((report['passed'], report['insensitive']), (False, ['goal_1 (p1)']))
 
     def test_overlays_only_touch_existing_rows_and_columns(self):
         tables = world_request()['tables']

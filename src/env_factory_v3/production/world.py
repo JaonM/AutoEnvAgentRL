@@ -85,6 +85,12 @@ def outcome_problems(schema):
             problems.append(f'goal_schema.{name}.outcome must be an object field spec')
             continue
         problems += [f'goal_schema.{name}.outcome: {p}' for p in answers.check_schema({'fields': {name: outcome}})]
+        properties = outcome.get('properties') or {}
+        if value.get('kind') == 'account' and not any(
+                'reason' in key and (spec or {}).get('type') == 'string' and (spec or {}).get('enum')
+                for key, spec in properties.items()):
+            problems.append(f'goal_schema.{name}.outcome needs a "reason" string enum (why it was refused or could '
+                            'not be done; null on success): a blanket refusal must not match a checked one')
     inquiries = inquiry_processes(schema)
     if not 1 <= len(inquiries) <= 2:
         problems.append('goal_schema needs one or two "inquiry" processes (answered from the rules and the numbers '
@@ -239,6 +245,9 @@ WORLD_SHAPES = {
     'complex': 'Shape complex: at least two writes, each with its own approve_* fact; a first choice that is '
                'refused or ineligible so another route is needed; a dependency between the writes.',
 }
+# A world where most write-shaped tasks end in a refusal teaches "refuse without checking" (the refusal answer
+# then matches often enough to pay); at most this share of its certified write-shaped tasks may be refusals.
+REFUSAL_CAP = 0.3
 WORLD_MIX = (('direct', 0.1), ('simple', 0.2), ('ordinary', 0.15), ('single_write', 0.25), ('complex', 0.3))
 
 
@@ -317,11 +326,78 @@ def built_shape(target):
     return generate.actual_shape(trace_structure(result['trace'], request['user_facts']))
 
 
+def _alternatives(value, tables):
+    """Other plausible values for one goal param: another row id of the same table, or a changed number."""
+    if isinstance(value, bool):
+        return [not value]
+    if isinstance(value, (int, float)):
+        return [value + 1, value * 2 + 3] if value else [1, 5]
+    if isinstance(value, str):
+        for rows in tables.values():
+            ids = [r.get('id') for r in rows if isinstance(r, dict)]
+            if value in ids:
+                return [i for i in ids if i != value][:3]
+    return []
+
+
+def goal_sensitivity(oracle, request):
+    """Each goal must matter: changing one of its params (another row of the same table, another number) must
+    change the expected outcome (that goal's answer field or the final state) on at least one try. A goal whose
+    outcome ignores every param is graded on nothing the agent does about it; the differential check cannot see
+    this when env and oracle ignore it alike. Inconclusive when no param has an alternative."""
+    from env_factory_v3.runtime import canonical
+    tables, facts, start = request['tables'], request['user_facts'], request['time']['start']
+    base = oracle.expected(copy.deepcopy(tables), copy.deepcopy(facts), start)
+    insensitive, checked = [], 0
+    for index, goal in enumerate(facts.get('goals') or []):
+        field, tried, moved = f'goal_{index + 1}', 0, False
+        for key, value in (goal.get('params') or {}).items():
+            for other in _alternatives(value, tables):
+                changed = copy.deepcopy(facts)
+                changed['goals'][index]['params'][key] = other
+                try:
+                    outcome = oracle.expected(copy.deepcopy(tables), changed, start)
+                except Exception:  # noqa: BLE001 - an invalid alternative proves nothing either way
+                    continue
+                tried += 1
+                answer = lambda o: (o.get('answer') or {}).get(field, o.get('answer'))
+                if canonical(answer(outcome)) != canonical(answer(base)) or \
+                        canonical(outcome['final_state']) != canonical(base['final_state']):
+                    moved = True
+                    break
+            if moved:
+                break
+        if tried:
+            checked += 1
+            if not moved:
+                insensitive.append(f"{field} ({goal.get('process')})")
+    return {'passed': not insensitive, 'checked': checked, 'insensitive': insensitive}
+
+
+def is_refusal(oracle, request):
+    """A task whose correct handling changes nothing although its shape asks for a write."""
+    from env_factory_v3.runtime import canonical
+    if (request.get('source') or {}).get('shape') not in ('single_write', 'complex'):
+        return False
+    expected = oracle.expected(copy.deepcopy(request['tables']), copy.deepcopy(request['user_facts']),
+                               request['time']['start'])
+    return canonical(expected['final_state']) == canonical(request['tables'])
+
+
 def guard(row, world_bundle, target, folder, sufficiency_client=None):
-    """The reward-trust check on a certified task: policy sufficiency (when a client is given); failing
-    rejects the task."""
+    """The reward-trust checks on a certified task: every goal is sensitive to its params (goal_sensitivity), and
+    policy sufficiency (when a client is given). Either failing rejects the task."""
     if not row['passed']:
         return row
+    from env_factory_v3.certify import bundle
+    loaded = bundle.load_bundle(target)
+    if has_outcomes(loaded['request'].get('goal_schema')):
+        report = goal_sensitivity(loaded['oracle'], loaded['request'])
+        row['sensitivity'] = report
+        if not report['passed']:
+            return {**row, 'passed': False, 'stage': 'sensitivity', 'failed': ['sensitivity'],
+                    'problems': [f"outcome ignores the params of {report['insensitive']}"]}
+        row['refusal'] = is_refusal(loaded['oracle'], loaded['request'])
     if sufficiency_client is not None:
         from env_factory_v3.certify import sufficiency
         from env_factory_v3.core.llm import ProviderError
@@ -526,6 +602,13 @@ def main():
                 out_jobs.append((bundle_path, out / key / 'tasks' / f't{index:03d}', index, chosen, script, shape))
         return out_jobs
 
+    refusals = collections.Counter()  # per world: certified write-shaped tasks, and those whose outcome is a refusal
+    refusal_lock = __import__('threading').Lock()
+    for row in rows_before:
+        if row.get('passed') and 'refusal' in row:
+            refusals[(row['id'].rsplit('-t', 1)[0], 'all')] += 1
+            refusals[(row['id'].rsplit('-t', 1)[0], 'refusal')] += bool(row['refusal'])
+
     def task(job):
         bundle_path, folder, index, processes, script, shape = job
         try:
@@ -535,6 +618,15 @@ def main():
         except Exception as exc:  # one failing task never stops the others
             row = {'id': f'{Path(bundle_path).parent.parent.name}-t{index:03d}', 'passed': False, 'stage': 'error',
                    'problems': [f'{type(exc).__name__}: {exc}'[:300]]}
+        if row.get('passed') and shape in ('single_write', 'complex') and 'refusal' in row:
+            key = row['id'].rsplit('-t', 1)[0]
+            with refusal_lock:
+                if row['refusal'] and refusals[(key, 'refusal')] + 1 > REFUSAL_CAP * (refusals[(key, 'all')] + 1):
+                    row = {**row, 'passed': False, 'stage': 'refusal_cap', 'failed': ['refusal_cap'],
+                           'problems': [f'more than {REFUSAL_CAP:.0%} of this world\'s write tasks would be refusals']}
+                else:
+                    refusals[(key, 'all')] += 1
+                    refusals[(key, 'refusal')] += bool(row['refusal'])
         with open(rows_path, 'a') as handle:
             handle.write(json.dumps(row, ensure_ascii=False) + '\n')
         print(json.dumps({k: row.get(k) for k in ('id', 'passed', 'stage', 'failed', 'problems')}, ensure_ascii=False),

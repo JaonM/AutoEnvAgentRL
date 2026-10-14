@@ -429,7 +429,9 @@ Write request.json in this folder:
   - outcome: what the customer must be told when a goal of this process is handled, as one answer field spec of
     type "object" with "properties" (the same rules as an answer schema: ids, integers, booleans and string enums,
     a description with units and how absent or refused cases are written; only values a good agent would say).
-    It must cover refusal and partial cases too (for example a "status" enum). Each task's answer has one field
+    It must cover refusal and partial cases too: a "status" enum, and for an account process a "reason" string
+    enum naming why it was refused or could not be done (null on success), so an agent that refuses without
+    checking the data cannot match a correct refusal. Each task's answer has one field
     per goal, goal_1, goal_2, ..., in the order of its goals, each in its process's outcome shape.
 - tables: a realistic database: at least 40 customers and at least 200 rows in all, with several payment methods,
   statuses and edge cases (expired, ineligible, at a limit, out of stock); unique "id" per row; columns consistent.
