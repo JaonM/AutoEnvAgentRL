@@ -44,6 +44,25 @@ def api_problems(tools, request):
     return problems
 
 
+def write_argument_problems(tools):
+    """A write takes business parameters (ids, enums, amounts, short lists of ids), never an object copied from an
+    earlier result (a "quoted_terms" blob): an agent cannot reproduce such a blob exactly, so the task would grade
+    copying, not the business decision. A quote to honour is referenced by the id the quote lookup returned."""
+    import inspect
+    from env_factory_v3.runtime import is_write
+    problems = []
+    for name, fn in sorted(tools.items()):
+        if not is_write(fn):
+            continue
+        for argument, parameter in inspect.signature(fn).parameters.items():
+            annotation = parameter.annotation
+            text = annotation if isinstance(annotation, str) else getattr(annotation, '__name__', repr(annotation))
+            if argument not in ('db', 'now') and (annotation is dict or str(text).startswith('dict')):
+                problems.append(f'write tool {name}: argument {argument} is an object; take business parameters '
+                                '(ids, enums, amounts) and reference a quote by the id its lookup returns')
+    return problems
+
+
 def shape_problems(initial, final):
     problems = []
     if set(final) != set(initial):
@@ -106,6 +125,7 @@ def check_env(folder):
         return ['make_tools() must return a non-empty dict'], notes
     problems += tool_spec_problems(tools)
     problems += api_problems(tools, request)
+    problems += write_argument_problems(tools)
     problems += gates.approval_problems(env, request)
     start = request['time']['start']
     for name, data, facts in variants(request['tables'], request['user_facts'], perturbed=PERTURBED):
