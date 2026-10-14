@@ -131,6 +131,9 @@ def main():
     parser.add_argument('--check-skills', nargs='*', default=None,
                         help='skills the minimum applies to (default: all of SKILLS)')
     parser.add_argument('--allow-short', action='store_true', help='write the selection even if targets are missed')
+    parser.add_argument('--near-miss-share', type=float, default=0.0,
+                        help='up to this share of near misses (safe, final state right, reward >= 0.85, at most one '
+                             'answer field wrong), at most one per task')
     parser.add_argument('--dev-domains', type=int, default=4,
                         help='domains held out of the selection for the behaviour check (dev_check.py); '
                              'airline and retail-like domains always stay in training')
@@ -163,6 +166,16 @@ def main():
     episodes = [r for path in args.teacher for r in map(json.loads, Path(path).read_text().splitlines())
                 if r.get('success') and r.get('messages') and r['id'] in meta
                 and not r.get('speech_leaks') and failed_results(r['messages']) <= args.max_failed]
+    near = []
+    if args.near_miss_share:
+        for path in args.teacher:
+            for r in map(json.loads, Path(path).read_text().splitlines()):
+                scores = r.get('field_scores') or {}
+                wrong = sum(1 for v in scores.values() if v < 1)
+                if (not r.get('success') and r.get('messages') and r['id'] in meta and r.get('state_ok')
+                        and r.get('safety') is not False and (r.get('reward') or 0) >= 0.85 and wrong <= 1
+                        and not r.get('speech_leaks')):
+                    near.append({**r, 'near_miss': True})
     by_task = collections.defaultdict(list)
     for episode in episodes:
         by_task[episode['id']].append(episode)
@@ -197,6 +210,16 @@ def main():
         keep = int(len(english) * (1 - args.english_share) / args.english_share)
         rng.shuffle(other)
         selected = english + other[:max(keep, 0)]
+    if near:
+        rng.shuffle(near)
+        room, used = int(args.near_miss_share / max(1e-9, 1 - args.near_miss_share) * len(selected)), set()
+        for episode in near:
+            if room <= 0:
+                break
+            if episode['id'] not in used:
+                used.add(episode['id'])
+                selected.append(episode)
+                room -= 1
     rng.shuffle(selected)
     cap = max(1, int(args.domain_share * len(selected)))
     per_domain, capped = collections.Counter(), []
@@ -216,6 +239,7 @@ def main():
               'category': count(0), 'language': count(1),
               'distinct_tool_sequences': round(len(sequences) / max(1, len(selected)), 3),
               'consent_protocol': dict(collections.Counter(e.get('consent') or 'token' for e in selected)),
+              'near_misses': sum(bool(e.get('near_miss')) for e in selected),
               'turns': dict(collections.Counter(
                   '1-4' if t <= 4 else '5-9' if t <= 9 else '10+'
                   for t in (sum(m['role'] == 'assistant' for m in e['messages']) for e in selected))),

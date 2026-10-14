@@ -73,6 +73,8 @@ def play(task, seed, client, max_turns, style=True):
         return {'id': task['id'], 'seed': seed, 'world': result['world'], 'naming': env.naming,
                 'reward': result['final_reward'], 'success': bool(result['score'].get('success')),
                 'terminated': result.get('terminated'), 'consent': result.get('consent'),
+                'state_ok': result['score'].get('state_ok'), 'safety': result['score'].get('safety'),
+                'field_scores': result['score'].get('field_scores'),
                 'reason': result['score'].get('reason'), 'reward_type': result['score'].get('reward_type'),
                 'tools': tools, 'messages': env.messages, 'reasoning': reasoning, 'style': style,
                 'speech_leaks': leaks(env.messages),
