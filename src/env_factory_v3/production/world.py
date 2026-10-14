@@ -443,6 +443,20 @@ def is_refusal(oracle, request):
     return canonical(expected['final_state']) == canonical(request['tables'])
 
 
+def goal_signature(goals):
+    """What makes two tasks the same exercise: each goal's process and its params with numbers bucketed to one
+    significant digit, so two quotes that differ only in the fare paid count as one."""
+    def bucket(value):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return value
+        if value == 0:
+            return 0
+        magnitude = 10 ** (len(str(int(abs(value)))) - 1)
+        return round(value / magnitude) * magnitude
+    return json.dumps(sorted([g.get('process'), sorted((k, bucket(v)) for k, v in (g.get('params') or {}).items())]
+                             for g in goals or []), sort_keys=True, default=str)
+
+
 def guard(row, world_bundle, target, folder, sufficiency_client=None):
     """The reward-trust checks on a certified task: every goal is sensitive to its params (goal_sensitivity), and
     policy sufficiency (when a client is given). Either failing rejects the task."""
@@ -664,6 +678,10 @@ def main():
                 out_jobs.append((bundle_path, out / key / 'tasks' / f't{index:03d}', index, chosen, script, shape))
         return out_jobs
 
+    signatures = collections.defaultdict(set)  # per world: goal signatures of certified tasks (near-duplicate check)
+    for row in rows_before:
+        if row.get('passed') and row.get('signature'):
+            signatures[row['id'].rsplit('-t', 1)[0]].add(row['signature'])
     refusals = collections.Counter()  # per world: certified write-shaped tasks, and those whose outcome is a refusal
     refusal_lock = __import__('threading').Lock()
     for row in rows_before:
@@ -680,6 +698,18 @@ def main():
         except Exception as exc:  # one failing task never stops the others
             row = {'id': f'{Path(bundle_path).parent.parent.name}-t{index:03d}', 'passed': False, 'stage': 'error',
                    'problems': [f'{type(exc).__name__}: {exc}'[:300]]}
+        if row.get('passed'):
+            request = json.loads((Path(row['bundle']) / 'request.json').read_text())
+            signature = goal_signature(request['user_facts'].get('goals'))
+            key = row['id'].rsplit('-t', 1)[0]
+            with refusal_lock:
+                if signature in signatures[key]:
+                    row = {**row, 'passed': False, 'stage': 'duplicate', 'failed': ['duplicate'],
+                           'problems': ['the same exercise as an earlier task of this world (same goals and params '
+                                        'up to the amounts)']}
+                else:
+                    signatures[key].add(signature)
+                    row['signature'] = signature
         if row.get('passed') and shape in ('single_write', 'complex') and 'refusal' in row:
             key = row['id'].rsplit('-t', 1)[0]
             with refusal_lock:

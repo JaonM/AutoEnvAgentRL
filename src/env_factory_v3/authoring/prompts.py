@@ -487,6 +487,8 @@ Write task.json:
 - Name every approve_* fact by the "approval" pattern of its process in goal_schema (for example
   approve_cancel_<exchange_id> -> approve_cancel_HX1), one per write the customer is asked about.
 - {shape}
+- Make this task a different exercise from the world's other tasks: vary the case the rules distinguish (another
+  fare or tier, another timing window, an exception), not only the amounts.
 - Use the size of the world to make the conversation real: prefer a customer who has several similar records
   (so "my booking" needs a follow-up question), let goals across processes depend on each other (the outcome of
   the first changes what the second can do), and keep user_scene.known to at most two items so the agent has to

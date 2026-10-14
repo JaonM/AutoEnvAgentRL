@@ -208,7 +208,7 @@ def score(spec, expected, actual, known=None):
         # Partial credit only for substance: an expected null (nothing to report) and an enum (a status, a
         # decision) earn nothing on their own, so saying "refused" or nothing at all does not collect half
         # an object; both are still required for the full score.
-        enums = {name for name, child in graded if child.get('enum')}
+        enums = {name for name, child in graded if child.get('enum') or child.get('type') == 'boolean'}  # decisions
         # An exempt internal id the agent did not state is neither credit nor penalty.
         exempt = {name for name, child in graded if internal(child, expected.get(name), known)
                   and actual.get(name) in (None, '')}
