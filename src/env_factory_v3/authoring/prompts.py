@@ -444,6 +444,11 @@ Write task.json:
 
 - Processes for this task: {processes}. Pick a customer and records from the tables for which these goals make
   sense under the rules; params must name real rows.
+- {shape}
+- Use the size of the world to make the conversation real: prefer a customer who has several similar records
+  (so "my booking" needs a follow-up question), let goals across processes depend on each other (the outcome of
+  the first changes what the second can do), and keep user_scene.known to at most two items so the agent has to
+  ask for the rest.
 - overlay: optional small changes to existing rows (only existing tables, ids and columns) that create the
   situation this task needs (for example make the first-choice item unavailable, set a date just past a deadline).
 - user_scene ({language_name}): what the customer knows and says, in their own words: no rules, protocol or
