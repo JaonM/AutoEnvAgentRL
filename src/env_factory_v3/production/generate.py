@@ -516,8 +516,11 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
     for item in results:
         futures[pool.submit(timed, item)] = item
     finished, pending = {}, set(futures)
+    progress = time.monotonic()
     while pending:  # a stalled provider connection must not hold the whole batch (client timeouts do not always fire)
         done, pending = concurrent.futures.wait(pending, timeout=30)
+        if done:
+            progress = time.monotonic()
         for future in done:
             index, (domain, category, shape), report = futures[future]
             try:
@@ -526,7 +529,10 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
                 finished[index] = ({'index': index, 'domain': domain['name'], 'category': category, 'shape': shape,
                                     'language': langs[index], 'passed': False, 'problems': [repr(exc)[:300]]}, None)
         now = time.monotonic()
-        for future in [f for f in pending if now - started.get(futures[f][0], now) > TASK_TIMEOUT]:
+        # Every worker stuck on a stalled connection leaves the queued items unstarted (no start time), so they
+        # would never time out: with no progress at all for TASK_TIMEOUT, everything still pending times out.
+        stalled = now - progress > TASK_TIMEOUT
+        for future in [f for f in pending if stalled or now - started.get(futures[f][0], now) > TASK_TIMEOUT]:
             index, (domain, category, shape), report = futures[future]
             finished[index] = ({'index': index, 'domain': domain['name'], 'category': category, 'shape': shape,
                                 'language': langs[index], 'passed': False,
