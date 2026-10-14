@@ -57,6 +57,15 @@ def skills(episode, request, write_tools=()):
     results = {m.get('tool_call_id'): m.get('content') or '' for m in episode['messages'] if m['role'] == 'tool'}
     calls = [c for m in episode['messages'] if m['role'] == 'assistant' for c in m.get('tool_calls') or []]
     found = set()
+    # plain-dialogue consent: the agent's last words before a write asked the user something
+    last_words = ''
+    for message in episode['messages']:
+        if message['role'] == 'assistant':
+            for call in message.get('tool_calls') or []:
+                if call['function']['name'] in write_tools and any(q in last_words for q in ('?', '？')):
+                    found.add('asks_consent')
+            if not message.get('tool_calls') and (message.get('content') or '').strip():
+                last_words = message['content']
     for call in calls:
         name, arguments = call['function']['name'], call['function'].get('arguments') or ''
         result = results.get(call.get('id'), '')
