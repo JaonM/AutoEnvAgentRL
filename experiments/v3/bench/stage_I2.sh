@@ -11,7 +11,7 @@ selected=$1; replay=$2; out=$3
 mkdir -p "$out"
 PYTHONPATH=src .venv/bin/python -u experiments/v3/sft_train.py --teacher "$selected" --replay "$replay" \
   --model models/Qwen3-0.6B --output "$out/sft" --tuning lora --lora-rank 64 --learning-rate 1e-4 --epochs 1 \
-  --rename-tools 0.7 --vary-results 0.6 --greet 0.5 --relayout 0.5 --no-error-turns --max-tokens 16384 > "$out/sft.log" 2>&1
+  --rename-tools 0.7 --vary-results 0.6 --greet 0.5 --relayout 0.5 --no-error-turns --max-tokens 32768 --render episode > "$out/sft.log" 2>&1
 for alpha in 0.3 0.5 0.7; do
   PYTHONPATH=src .venv/bin/python experiments/v3/interpolate.py --base models/Qwen3-0.6B --tuned "$out/sft/model" \
     --alpha $alpha --output "$out/wise-$alpha" >> "$out/sft.log" 2>&1
