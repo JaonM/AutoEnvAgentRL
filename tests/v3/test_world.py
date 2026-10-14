@@ -183,6 +183,10 @@ class TaskCertificationTests(unittest.TestCase):
         self.assertTrue(all(p == ['p5'] and not script for p, script, s in rest if s == 'direct'))
         self.assertTrue(all(p == ['p4'] for p, _, s in rest if s == 'subjective'))
         self.assertTrue(all('p5' not in p and 'p4' not in p for p, _, s in rest if s not in ('direct', 'subjective')))
+        writing = {**SHAPED, 'p0': {**SHAPED['p0'], 'approval': 'approve_cancel_<loan_id>'}}
+        plan = world.plan_tasks({'id': 'w', 'goal_schema': writing}, 46)[len(writing):]
+        self.assertTrue(all(p[0] == 'p0' for p, _, s in plan if s in ('single_write', 'complex')))
+        self.assertTrue(all('p0' not in p for p, _, s in plan if s in ('simple', 'ordinary')))
 
 
 if __name__ == '__main__':

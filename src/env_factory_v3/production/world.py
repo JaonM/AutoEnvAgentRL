@@ -622,6 +622,9 @@ def plan_tasks(world, count, seed=0):
         return out
     inquiries, advice = inquiry_processes(schema), advice_processes(schema)
     accounts = [n for n in names if n not in inquiries and n not in advice] or names
+    # Write shapes go to processes that write (they declare an approval pattern); read shapes to the others.
+    writers = [n for n in accounts if (schema[n] or {}).get('approval')] or accounts
+    readers = [n for n in accounts if not (schema[n] or {}).get('approval')] or accounts
     shapes = [None] * min(count, len(names))
     rest = count - len(shapes)
     for shape, share in WORLD_MIX:
@@ -637,7 +640,9 @@ def plan_tasks(world, count, seed=0):
             out.append(([process], [] if process in inquiries else elements[i],
                         'direct' if process in inquiries else 'subjective' if process in advice else None))
             continue
-        pool = inquiries if shape == 'direct' else (advice or accounts) if shape == 'subjective' else accounts
+        pool = (inquiries if shape == 'direct' else (advice or accounts) if shape == 'subjective'
+                else writers if shape in ('single_write', 'complex') else readers if shape in ('simple', 'ordinary')
+                else accounts)
         processes = [pool[i % len(pool)]]
         if shape != 'direct' and rng.random() < 0.3 and len(pool) > 1:
             processes.append(pool[(i + 1 + rng.randrange(len(pool) - 1)) % len(pool)])
