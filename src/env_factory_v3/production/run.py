@@ -80,8 +80,7 @@ def stage_generate(out, domains_, options, log):
     folder = out / 'generate'
     summary = _read(folder / 'generation.json')
     if summary is None:
-        if folder.exists():
-            shutil.move(str(folder), str(out / f'generate.incomplete-{int(time.time())}'))
+        # An unfinished generation (codex at capacity, a crash) is resumed: sessions that passed are reused.
         summary = generate.generate(domains_, options['count'], folder, runner=options['runner'],
                                     parallel=options['parallel'], python=options['python'],
                                     rubric_share=options['rubric_share'], opening_client=options['opening_client'],

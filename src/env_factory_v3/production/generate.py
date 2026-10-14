@@ -22,6 +22,7 @@ import re
 import time
 from pathlib import Path
 
+from env_factory_v3.authoring.codex import InfrastructureError
 from env_factory_v3 import checks
 from env_factory_v3.authoring import prompts
 from env_factory_v3.core import spec
@@ -404,7 +405,7 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
         load_env_file()
         opening_client = ChatClient('V3_OPENING')
     output = Path(output)
-    output.mkdir(parents=True)
+    output.mkdir(parents=True, exist_ok=True)  # a rerun reuses the sessions that already passed
     assignments = plan(domains, count, rubric_share, **({'mix': mix} if mix else {}))
     langs = languages(count, english_share)
     elements = scripts(count, [shape for _, _, shape in assignments])
@@ -412,7 +413,11 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
     def one(index, assignment):
         domain, category, shape = assignment
         folder = output / 'sessions' / f'{index:03d}'
-        folder.mkdir(parents=True)
+        if (folder / 'request.json').exists():
+            report = checks.run('request', folder)
+            if report['passed']:
+                return index, assignment, report
+        folder.mkdir(parents=True, exist_ok=True)
         language = langs[index]
         (folder / 'assignment.json').write_text(json.dumps(
             {'domain': domain, 'category': category, 'shape': shape, 'id': f'gen-{index:03d}', 'language': language,
@@ -421,19 +426,27 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
         detail = domain.get('detail', '')
         if domain.get('process') or domain.get('mechanisms'):
             detail += f" 业务环节：{domain.get('process', '')}；需要体现的机制：{'、'.join(domain.get('mechanisms', []))}。"
-        runner(folder, prompts.REQUEST_AUTHOR.format(python=python, domain=domain['name'],
+        try:
+            runner(folder, prompts.REQUEST_AUTHOR.format(python=python, domain=domain['name'],
                                                        detail=detail, category=category,
                                                        shape=SHAPES[shape], id=f'gen-{index:03d}',
                                                        reward_type='rubric' if shape == 'subjective' else 'business',
                                                        language=language, language_name=LANGUAGE_NAMES[language],
                                                        script=script_prompt(elements[index]),
                                                        currency=CURRENCY[language]),
-               timeout=timeout, role='request_author')
+                   timeout=timeout, role='request_author')
+        except InfrastructureError as exc:  # codex at capacity or offline: this request waits for a rerun
+            return index, assignment, {'passed': False, 'problems': [f'infrastructure: {exc}'[:300]],
+                                       'infrastructure': True}
         report = checks.run('request', folder)
         return index, assignment, report
 
     with concurrent.futures.ThreadPoolExecutor(parallel) as pool:
         results = list(pool.map(lambda pair: one(*pair), enumerate(assignments)))
+    stalled = sum(1 for _, _, report in results if report.get('infrastructure'))
+    if stalled:
+        # Sessions that passed stay on disk and are reused by the rerun; only these are retried.
+        raise InfrastructureError(f'{stalled}/{len(results)} request sessions hit infrastructure errors; rerun')
     def finish(item):
         """Stage two and three for one request: the opening, then the agent policy (model calls only)."""
         index, (domain, category, shape), report = item
