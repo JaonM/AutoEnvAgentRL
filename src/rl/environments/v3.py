@@ -3,8 +3,9 @@
 
 The policy sees only the public instructions (request, rules, tool specs, askable user topics,
 answer schema). Private facts, the oracle and source tables stay inside the service. V3 bundles
-are deterministic, so a continuation snapshot is the world plus the actions taken so far and
-restore replays them.
+are deterministic, so a continuation snapshot is the world plus the actions taken so far (and the
+user's recorded replies); restore replays the tools and reuses those replies, so a resumed or branched
+episode continues exactly the same conversation.
 """
 from __future__ import annotations
 
@@ -110,7 +111,7 @@ class V3Episode:
         self.category = loaded['request']['category']
         self.task = {'task': loaded['request']['user_request']}
         self.episode, self.world, self.seed = None, None, None
-        self.messages, self.tools, self.trace, self.actions = [], [], [], []
+        self.messages, self.tools, self.trace, self.actions, self.replies = [], [], [], [], []
         self.terminated, self.score, self.answer, self.call_ids = False, None, None, set()
         self._closed = False
 
@@ -153,6 +154,8 @@ class V3Episode:
         status, reply = self.request('/step', {'episode': self.episode, 'action': action})
         if status != 200:
             raise InfrastructureError(f'V3 step rejected by transport: {status}')
+        # The user's words, so a restore replays this exact conversation instead of asking the user model again.
+        self.replies.append((reply.get('result') or {}).get('reply') if action.get('type') == 'chat' else None)
         if reply.get('kind') == 'tool_error':
             # A crash of the sandbox's own tool is an observation for the agent; repeated crashes
             # mean a defective sandbox, which rl quarantines instead of retrying or training on it.
@@ -176,7 +179,7 @@ class V3Episode:
         if status != 200:
             raise InfrastructureError('V3 reset failed')
         self.episode, self.world, self.seed = response['episode'], response['world'], seed
-        self.trace, self.actions, self.tool_errors = [], [], 0
+        self.trace, self.actions, self.replies, self.tool_errors = [], [], [], 0
         self.unknown_tool_calls, self.platform_tool_hallucinations = 0, 0
         self.terminated, self.score, self.answer, self.call_ids = False, None, None, set()
         public = response['instructions']
@@ -315,7 +318,7 @@ class V3Episode:
     # -- continuation (trainer-side only) -----------------------------------------
     def snapshot(self):
         return {'bundle_identity': bundle_identity(self.root), 'world': self.world, 'seed': self.seed,
-                'actions': copy.deepcopy(self.actions),
+                'actions': copy.deepcopy(self.actions), 'replies': copy.deepcopy(self.replies),
                 **{k: copy.deepcopy(getattr(self, k)) for k in RESTORED},
                 'call_ids': sorted(self.call_ids)}
 
@@ -323,8 +326,21 @@ class V3Episode:
         if snapshot['bundle_identity'] != bundle_identity(self.root):
             raise ValueError('V3 continuation bundle mismatch')
         self.reset(snapshot['seed'], world=snapshot['world'])
-        for action in snapshot['actions']:
-            self._step(action)
+        if self.user_mode == 'natural' and 'replies' in snapshot:
+            # Exact: the service replays the tools and takes each chat's recorded reply (POST /restore); a replay
+            # through /step would ask the user model again and continue a different conversation.
+            fresh = self.episode
+            status, response = self.request('/restore', {
+                'world': self.world, 'consent': self.consent,
+                'actions': [{'action': a, 'reply': r} for a, r in zip(snapshot['actions'], snapshot['replies'])]})
+            if status != 200:
+                raise InfrastructureError(f'V3 restore failed: {response}')
+            self.request('/release', {'episode': fresh})
+            self.episode = response['episode']
+            self.actions, self.replies = copy.deepcopy(snapshot['actions']), copy.deepcopy(snapshot['replies'])
+        else:
+            for action in snapshot['actions']:
+                self._step(action)
         for key in RESTORED:
             setattr(self, key, copy.deepcopy(snapshot[key]))
         self.call_ids = set(snapshot['call_ids'])

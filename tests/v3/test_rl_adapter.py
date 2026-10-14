@@ -321,6 +321,34 @@ class V3AdapterTests(unittest.TestCase):
         fork.close()  # releases its episode only; the original's service keeps serving
         self.assertEqual(self.env.request('/reset', {'seed': 0})[0], 200)
 
+    def test_a_free_dialogue_restore_reuses_the_recorded_replies(self):
+        environ = {'ENVFACTORY_V3_USER_MODE': 'natural', 'ENVFACTORY_V3_TOOL_NAMES': 'fixed',
+                   'ENVFACTORY_V3_CONSENT': 'token', 'V3_SIMULATOR_AUDIT': 'off'}
+        with unittest.mock.patch.dict(os.environ, environ):
+            calls = []
+
+            class Counting:
+                model = 'counting'
+
+                def chat(self, messages, **options):
+                    calls.append(1)
+                    return {'content': f'回复{len(calls)}'}
+            with unittest.mock.patch('env_factory_v3.core.llm.ChatClient', lambda *a, **k: Counting()):
+                env = V3Episode(self.bundle)
+                self.addCleanup(env.close)
+                env.reset(0)
+                chat = env.naming['v3_chat']
+                env.step(call(chat, {'message': '请问您的读者号？'}, 'c1'))
+                env.step(call(chat, {'message': '要续借哪几本？'}, 'c2'))
+                saved, before = env.snapshot(), len(calls)
+                restored = V3Episode(self.bundle)
+                self.addCleanup(restored.close)
+                restored.restore(saved)
+                self.assertEqual(len(calls), before)  # the user model was not asked again
+                self.assertEqual(restored.messages, env.messages)
+                users = lambda e: e.service.episodes[e.episode]['user'].messages
+                self.assertEqual(users(restored), users(env))
+
     def test_finished_episodes_are_released(self):
         self.env.reset(0)
         first = self.env.episode
