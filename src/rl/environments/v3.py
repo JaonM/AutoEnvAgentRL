@@ -38,6 +38,27 @@ def bundle_identity(root):
     return hashlib.sha256(canonical(loaded['manifest']['files']).encode()).hexdigest()
 
 
+LAYOUTS = {
+    'tags': '<instructions>\n{instructions}\nIn each turn either send one message to the user or make tool calls.\n'
+            '</instructions>\n<policy>\n{policy}\n</policy>{clock}',
+    'markdown': '# Role\n{instructions}\n\n# Policy\n{policy}{clock}',
+    'policy_first': '{label}\n{policy}\n\n{instructions}{clock}',
+}
+
+
+def relayout_system(content, layout):
+    """The free-dialogue system prompt in another layout (same instructions and policy), or unchanged."""
+    for label in ('\n\nPolicy:\n', '\n\n业务规则：\n'):
+        if label in content and layout in LAYOUTS:
+            instructions, rest = content.split(label, 1)
+            policy, _, clock = rest.rpartition('\n\n')
+            if not policy:
+                policy, clock = rest, ''
+            return LAYOUTS[layout].format(instructions=instructions, label=label.strip(), policy=policy,
+                                          clock='\n\n' + clock if clock else '')
+    return content
+
+
 def render_result(result, style):
     """A tool result as the agent reads it: 'envelope' (the service's {"ok", "result" | "error"}),
     'raw' (the result as JSON, a failure as "Error: <message>", as τ²-bench does) or 'text'."""
@@ -159,6 +180,13 @@ class V3Episode:
                              random.Random(int(seed) * 7919 + 2).choice(['envelope', 'raw', 'raw', 'text']))
         self.tools = agent_view.tools(public, self.category, self.naming, self.answer_tool)
         self.messages = agent_view.messages(public, self.naming, self.answer_tool)
+        # random (default): half of the free-dialogue episodes (by seed) present the system prompt in another
+        # layout (tags, markdown, policy first); fixed: the service's own layout.
+        if os.environ.get('ENVFACTORY_V3_SYSTEM_LAYOUT', 'random') == 'random' and self.user_mode == 'natural':
+            pick = random.Random(int(seed) * 7919 + 4)
+            if pick.random() < 0.5:
+                self.messages[0] = {**self.messages[0], 'content': relayout_system(
+                    self.messages[0]['content'], pick.choice(sorted(LAYOUTS)))}
         return self.messages
 
     def _dispatch(self, name, params):

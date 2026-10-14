@@ -169,3 +169,38 @@ def greet(episode, seed):
     greeting = random.Random(f'{seed}-greet').choice(GREETINGS[language])
     messages.insert(first_user, {'role': 'assistant', 'content': greeting, 'context_only': True})
     return episode
+
+
+# System prompt layouts: the instructions and the policy in different wrappers, so the student learns to
+# find and follow the policy whatever the layout (τ²-bench uses XML-like tags; we write plain text).
+LAYOUTS = {
+    'tags': '<instructions>\n{instructions}\nIn each turn either send one message to the user or make tool calls.\n'
+            '</instructions>\n<policy>\n{policy}\n</policy>{clock}',
+    'markdown': '# Role\n{instructions}\n\n# Policy\n{policy}{clock}',
+    'policy_first': '{label}\n{policy}\n\n{instructions}{clock}',
+}
+POLICY_LABELS = ('\n\nPolicy:\n', '\n\n业务规则：\n')
+
+
+def split_system(content):
+    """(instructions, label, policy, clock) of our system prompt, or None if it does not parse."""
+    for label in POLICY_LABELS:
+        if label in content:
+            instructions, rest = content.split(label, 1)
+            policy, _, clock = rest.rpartition('\n\n')
+            if not policy:
+                policy, clock = rest, ''
+            return instructions, label.strip(), policy, ('\n\n' + clock if clock else '')
+    return None
+
+
+def relayout(episode, seed):
+    """A copy of the episode whose system prompt uses another layout (same instructions and policy)."""
+    episode = copy.deepcopy(episode)
+    system = episode['messages'][0] if episode['messages'] and episode['messages'][0]['role'] == 'system' else None
+    parts = split_system(system['content']) if system else None
+    if parts:
+        instructions, label, policy, clock = parts
+        layout = LAYOUTS[random.Random(f'{seed}-layout').choice(sorted(LAYOUTS))]
+        system['content'] = layout.format(instructions=instructions, label=label, policy=policy, clock=clock)
+    return episode
