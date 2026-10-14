@@ -189,6 +189,8 @@ def main():
     parser.add_argument('--epochs', type=float, default=2.0)
     parser.add_argument('--learning-rate', type=float, default=1e-5)
     parser.add_argument('--grad-accumulation', type=int, default=4)
+    parser.add_argument('--grad-clip', type=float, default=1.0,
+                        help='clip the global gradient norm (0: off); one 30k-token episode can otherwise throw the run')
     parser.add_argument('--max-tokens', type=int, default=12288, help='longer episodes are skipped')
     parser.add_argument('--valid-share', type=float, default=0.1)
     parser.add_argument('--valid-ids', default=None,
@@ -347,6 +349,7 @@ def main():
     baseline = evaluate()
     history.append({'step': 0, 'valid_loss': round(baseline, 4)})
     print(f'step 0 valid loss {baseline:.4f}', flush=True)
+    norms = []
     for step in range(1, steps + 1):
         accumulated, losses = None, []
         for index in order[(step - 1) * args.grad_accumulation:step * args.grad_accumulation]:
@@ -354,12 +357,20 @@ def main():
             loss, grads = value_and_grad(model, mx.array(ids), mx.array(mask))
             accumulated = grads if accumulated is None else tree_map(lambda a, b: a + b, accumulated, grads)
             losses.append(loss.item())
-        optimizer.update(model, tree_map(lambda g: g / args.grad_accumulation, accumulated))
+        averaged = tree_map(lambda g: g / args.grad_accumulation, accumulated)
+        if args.grad_clip:
+            averaged, grad_norm = optim.clip_grad_norm(averaged, args.grad_clip)
+            norms.append(grad_norm.item())
+        optimizer.update(model, averaged)
         mx.eval(model.parameters(), optimizer.state)
         if step % eval_every == 0 or step == steps:
             current = evaluate()
             row = {'step': step, 'train_loss': round(sum(losses) / len(losses), 4), 'valid_loss': round(current, 4),
                    'seconds': round(time.monotonic() - started)}
+            if norms:
+                row.update(grad_norm_max=round(max(norms), 3), grad_norm_mean=round(sum(norms) / len(norms), 3),
+                           clipped=sum(n > args.grad_clip for n in norms))
+                norms = []
             history.append(row)
             print(json.dumps(row), flush=True)
             if current < best:
