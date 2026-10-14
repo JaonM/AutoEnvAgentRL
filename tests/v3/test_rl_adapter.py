@@ -301,6 +301,26 @@ class V3AdapterTests(unittest.TestCase):
         restored.step(call('v3_answer', answer, 'final'))
         self.assertEqual(restored.finish()['final_reward'], 1.0)
 
+    def test_a_fork_branches_the_same_episode_and_shares_the_transport(self):
+        self.env.reset(3)
+        policy = ScriptedPolicy(self.env)
+        policy.ask('reader_id')
+        fork = self.env.fork()
+        self.assertNotEqual(fork.episode, self.env.episode)
+        self.assertEqual(fork.messages, self.env.messages)
+        self.assertIs(fork.service, self.env.service)
+        from env_factory_v3.certify.bundle import load_bundle
+        reference = load_bundle(self.bundle)['env'].reference
+        for env in (fork, self.env):  # both branches finish the task from the same state
+            branch = ScriptedPolicy(env)
+            branch.count = 10
+            env.step(call('v3_answer', reference(branch), 'final'))
+        self.assertEqual(fork.finish()['final_reward'], 1.0)
+        self.assertEqual(self.env.finish()['final_reward'], 1.0)
+        self.assertEqual(len(fork.messages), len(self.env.messages))
+        fork.close()  # releases its episode only; the original's service keeps serving
+        self.assertEqual(self.env.request('/reset', {'seed': 0})[0], 200)
+
     def test_finished_episodes_are_released(self):
         self.env.reset(0)
         first = self.env.episode

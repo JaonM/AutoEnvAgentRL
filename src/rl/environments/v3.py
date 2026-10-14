@@ -329,6 +329,27 @@ class V3Episode:
             setattr(self, key, copy.deepcopy(snapshot[key]))
         self.call_ids = set(snapshot['call_ids'])
 
+    # The transport a fork shares with the episode it came from; everything else is per-episode state.
+    SHARED = frozenset({'service', 'server', 'opener', 'container', 'base_url', 'root', 'token'})
+
+    def fork(self):
+        """An exact copy of this episode at this point, for tree rollouts: the service copies its own state in
+        process (POST /fork: database, clock, consent tokens, the simulated user's conversation; no replay, no
+        model call) and this runtime's view (messages, tool naming, counters) is copied here. The fork shares
+        the transport; closing it releases only its episode."""
+        if self.episode is None or self._closed or self.terminated:
+            raise EnvironmentProtocolError('only a live episode can be forked')
+        status, response = self.request('/fork', {'episode': self.episode})
+        if status != 200:
+            raise EnvironmentProtocolError(f'fork failed: {response}')
+        forked = response['episode']
+        clone = copy.copy(self)
+        for key, value in vars(self).items():
+            if key not in self.SHARED:
+                setattr(clone, key, copy.deepcopy(value))
+        clone.episode, clone._owner, clone._closed = forked, False, False
+        return clone
+
     def _forget(self):
         # The service keeps every episode it served; release ours so long runs stay bounded.
         if self.episode is not None:
@@ -341,7 +362,8 @@ class V3Episode:
         try:
             self._forget()
         finally:
-            self._stop()
+            if getattr(self, '_owner', True):  # a fork never stops the transport it shares
+                self._stop()
 
 
 class V3DockerEpisode(V3Episode):
