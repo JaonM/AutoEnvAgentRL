@@ -209,7 +209,11 @@ def score(spec, expected, actual, known=None):
         # decision) earn nothing on their own, so saying "refused" or nothing at all does not collect half
         # an object; both are still required for the full score.
         enums = {name for name, child in graded if child.get('enum')}
-        substance = [value for name, value in parts.items() if name not in enums and expected.get(name) is not None]
+        # An exempt internal id the agent did not state is neither credit nor penalty.
+        exempt = {name for name, child in graded if internal(child, expected.get(name), known)
+                  and actual.get(name) in (None, '')}
+        substance = [value for name, value in parts.items()
+                     if name not in enums and name not in exempt and expected.get(name) is not None]
         if not substance:
             return 0.5 * sum(parts.values()) / len(parts) if all(parts[name] == 1.0 for name in enums) else 0.0
         share = sum(substance) / len(substance)
@@ -256,9 +260,23 @@ def compare(schema, expected, actual, known=None):
     return {name: value == 1.0 for name, value in scores(schema, expected, actual, known).items()}
 
 
+def referable_ids(tables):
+    """Ids of rows a person can name (a field with a name-like string: spaces or capitals, e.g. "Basic Saver"):
+    the agent can say the name and the extractor resolves it to the id, so such an id is graded, not exempt."""
+    out = []
+    for rows in (tables or {}).values():
+        for row in rows if isinstance(rows, list) else []:
+            if isinstance(row, dict) and isinstance(row.get('id'), str) and any(
+                    isinstance(v, str) and k != 'id' and len(v) >= 3 and (' ' in v.strip() or any(c.isupper() for c in v))
+                    and not v.replace('-', '').replace('_', '').isdigit() for k, v in row.items()):
+                out.append(row['id'])
+    return out
+
+
 def known_strings(request, facts=None):
-    """What the user knows: the opening request and every string among their facts."""
-    out = [request.get('user_request') or '']
+    """What the user knows or can be told by name: the opening request, every string among their facts, and the
+    ids of rows a person can name (referable_ids)."""
+    out = [request.get('user_request') or ''] + referable_ids(request.get('tables'))
 
     def walk(value):
         if isinstance(value, str):

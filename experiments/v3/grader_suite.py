@@ -8,6 +8,7 @@ serving free dialogue):
                                      reversed arrays (reported apart: equivalent only when order means nothing)
   wrong variants must score below 1  a number off by one, another enum value, another row id of the same
                                      table (or one character changed), an array missing an item
+  silence must score 0               the field's structure with every leaf null (an agent that said nothing)
 A miss is a comparison gap: a false negative teaches the student nothing (or an odd format), a false
 positive pays for a wrong answer.
 
@@ -143,10 +144,20 @@ def check(folder):
                     internal = answers.internal(leaf_spec, value, known)
                     found.append({'kind': 'false_positive', 'case': label + (' (internal-id exemption)' if internal else ''),
                                   'field': '.'.join(map(str, (name,) + path)), 'expected': value, 'variant': variant})
-            if value is None:
-                found.append({'kind': 'null_leaf', 'case': 'expected null: silence scores', 'field':
-                              '.'.join(map(str, (name,) + path))})
+        silent = silence(spec, expected[name])
+        if expected[name] is not None and silent != expected[name]:
+            got = answers.score(spec, expected[name], silent, known)
+            if got > 0:
+                found.append({'kind': 'false_positive', 'case': 'silence (every leaf null) earns credit',
+                              'field': name, 'score': round(got, 3)})
     return found
+
+
+def silence(spec, value):
+    """The same structure with every leaf null: an agent that said nothing about this field."""
+    if isinstance(value, dict) and (spec or {}).get('properties'):
+        return {key: silence(spec['properties'].get(key), item) for key, item in value.items()}
+    return None
 
 
 def main():
