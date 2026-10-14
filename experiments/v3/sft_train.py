@@ -51,6 +51,18 @@ def render(tokenizer, episode):
     return ids, mask
 
 
+def is_failure(content):
+    """A failed tool result in any format episodes carry: our envelope or "Error: ..." text."""
+    content = content or ''
+    if content.startswith('Error'):
+        return True
+    try:
+        value = json.loads(content)
+    except ValueError:
+        return False
+    return isinstance(value, dict) and value.get('ok') is False
+
+
 def failed_turns(messages):
     """Indexes of assistant turns whose tool calls came back with ok=false."""
     out, current = set(), None
@@ -59,7 +71,7 @@ def failed_turns(messages):
             current = index
         elif message['role'] == 'tool' and current is not None:
             try:
-                if json.loads(message.get('content') or '{}').get('ok') is False:
+                if is_failure(message.get('content')):
                     out.add(current)
             except ValueError:
                 pass
@@ -81,7 +93,7 @@ def redundant_turns(messages, consent_names=('consent',)):
             arguments = call['function'].get('arguments') or ''
             if any(f'"{name}"' in arguments for name in consent_names):
                 try:
-                    if json.loads(results.get(call.get('id')) or '{}').get('ok'):
+                    if not is_failure(results.get(call.get('id'))) and results.get(call.get('id')):
                         seen.clear()  # the world changed: later lookups may repeat legitimately
                 except ValueError:
                     pass

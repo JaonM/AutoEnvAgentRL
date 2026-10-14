@@ -87,7 +87,11 @@ def main():
         env = {**os.environ, 'DEV_BASE_URL': f'http://127.0.0.1:{args.port}/v1', 'DEV_MODEL': args.model_name,
                'DEV_API_KEY': 'local', 'PYTHONPATH': 'src', 'ENVFACTORY_V3_CONSENT': 'plain',
                'ENVFACTORY_V3_RESULT_FORMAT': 'random'}
-        subprocess.run([sys.executable, '-u', 'experiments/v3/collect_teacher.py', '--tasks', args.tasks,
+        # collect_teacher plays only train-split tasks: hand it the held-out tasks marked as such
+        tasks = json.loads(Path(args.tasks).read_text())
+        playable = Path(args.output).with_suffix('.tasks.json')
+        playable.write_text(json.dumps({'tasks': [{**t, 'split': 'train'} for t in tasks['tasks']]}, ensure_ascii=False))
+        subprocess.run([sys.executable, '-u', 'experiments/v3/collect_teacher.py', '--tasks', str(playable),
                         '--episodes', str(args.episodes), '--parallel', '8', '--prefix', 'DEV', '--no-style',
                         '--output', args.output], env=env, check=True)
     path = args.report or args.output
