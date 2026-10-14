@@ -231,6 +231,7 @@ def main():
     from mlx_lm.tuner.trainer import grad_checkpoint
     from mlx_lm.utils import load, save_config, save_model
 
+    mx.random.seed(args.seed)  # LoRA initialisation: without it the same data and seed train a different model
     model, tokenizer, config = load(args.model, return_config=True)
     if args.tuning == 'lora':
         from mlx_lm.tuner.utils import linear_to_lora_layers
@@ -239,8 +240,10 @@ def main():
                                                          'keys': None})
     grad_checkpoint(model.layers[0])
 
+    # Successes and the near misses sft_select chose (safe, final state right, at most one answer field wrong);
+    # filtering on success alone silently dropped every near miss.
     episodes = [r for path in [args.teacher, *args.replay] for r in map(json.loads, Path(path).read_text().splitlines())
-                if r.get('success') and r.get('messages')]
+                if (r.get('success') or r.get('near_miss')) and r.get('messages')]
     random.Random(args.seed).shuffle(episodes)
     if args.rename_tools:
         import sys
@@ -298,7 +301,8 @@ def main():
         # Whole episodes go to validation, so no turn of a validation episode is trained on.
         held = {id(e) for e in episodes[:max(1, round(len(episodes) * args.valid_share))]}
         valid, train = [s for e, s in kept if id(e) in held], [s for e, s in kept if id(e) not in held]
-    print(f'{len(episodes)} successful episodes, {len(kept)} samples within {args.max_tokens} tokens: '
+    print(f'{len(episodes)} episodes ({sum(bool(e.get("near_miss")) for e in episodes)} near misses), '
+          f'{len(kept)} samples within {args.max_tokens} tokens: '
           f'{len(train)} train / {len(valid)} valid; '
           f'{sum(sum(m) for _, m in train)} assistant tokens of {sum(len(i) for i, _ in train)}', flush=True)
 
