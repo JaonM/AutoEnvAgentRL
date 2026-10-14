@@ -429,6 +429,10 @@ Write request.json in this folder:
   - outcome: what the customer must be told when a goal of this process is handled, as one answer field spec of
     type "object" with "properties" (the same rules as an answer schema: ids, integers, booleans and string enums,
     a description with units and how absent or refused cases are written; only values a good agent would say).
+  - approval (every process whose handling writes): the approve_* fact key pattern its writes are approved
+    under, with the record id when one customer may decide differently per record, e.g. "approve_cancel_<exchange_id>".
+    env.approval_key must return exactly this pattern filled in for the write, and every task names its approval
+    facts by it.
     It must cover refusal and partial cases too: a "status" enum, and for an account process a "reason" string
     enum naming why it was refused or could not be done (null on success), so an agent that refuses without
     checking the data cannot match a correct refusal. Each task's answer has one field
@@ -460,6 +464,8 @@ Write task.json:
 
 - Processes for this task: {processes}. Pick a customer and records from the tables for which these goals make
   sense under the rules; params must name real rows.
+- Name every approve_* fact by the "approval" pattern of its process in goal_schema (for example
+  approve_cancel_<exchange_id> -> approve_cancel_HX1), one per write the customer is asked about.
 - {shape}
 - Use the size of the world to make the conversation real: prefer a customer who has several similar records
   (so "my booking" needs a follow-up question), let goals across processes depend on each other (the outcome of

@@ -85,6 +85,9 @@ def outcome_problems(schema):
             problems.append(f'goal_schema.{name}.outcome must be an object field spec')
             continue
         problems += [f'goal_schema.{name}.outcome: {p}' for p in answers.check_schema({'fields': {name: outcome}})]
+        approval = value.get('approval')
+        if approval is not None and not (isinstance(approval, str) and approval.startswith('approve_')):
+            problems.append(f'goal_schema.{name}.approval must be an approve_* fact key pattern')
         properties = outcome.get('properties') or {}
         if value.get('kind') == 'account' and not any(
                 'reason' in key and (spec or {}).get('type') == 'string' and (spec or {}).get('enum')
@@ -278,6 +281,24 @@ def make_task(world_bundle, folder, *, index, processes, script, runner, client,
         return {'id': task_id, 'passed': False, 'stage': 'task', 'problems': report['problems'][:5]}
     task = json.loads((session / 'task.json').read_text())
     request = compose(world, task, task_id)
+    missing = missing_approvals(world_bundle, request)
+    if missing:  # the world's env asks approvals under keys this task's facts never define: one rewrite
+        (session / 'approval_feedback.txt').write_text(
+            f'The world asks the customer to approve writes under these approve_* keys, which task.json does not '
+            f'define: {missing}. Name the approval facts exactly like that (goal_schema "approval" patterns).\n')
+        runner(session, prompts.TASK_AUTHOR.format(python=python, processes=', '.join(processes),
+                                                  language_name=generate.LANGUAGE_NAMES[language],
+                                                  script=generate.script_prompt(script),
+                                                  shape=WORLD_SHAPES.get(shape, 'Shape: any that fits the goals.'))
+               + '\nA previous task.json in this folder named approval facts wrongly; read approval_feedback.txt.\n',
+               timeout=timeout, role='task_author')
+        report = checks.run('task', session)
+        task = json.loads((session / 'task.json').read_text())
+        request = compose(world, task, task_id)
+        missing = missing_approvals(world_bundle, request) if report['passed'] else ['task check failed']
+        if missing:
+            return {'id': task_id, 'passed': False, 'stage': 'approval_facts',
+                    'problems': [f'approvals asked under keys the task does not define: {missing}']}
     opening, persona, problems = generate.write_opening(client, request, task_id)
     if opening is None:
         return {'id': task_id, 'passed': False, 'stage': 'opening', 'problems': problems}
@@ -313,6 +334,21 @@ def make_task(world_bundle, folder, *, index, processes, script, runner, client,
             return {**row, 'passed': False, 'stage': 'shape', 'failed': ['shape'],
                     'problems': [f"direct task whose reference makes tool calls ({row['actual_shape']})"]}
     return guard(row, world_bundle, target, folder, sufficiency_client)
+
+
+def missing_approvals(world_bundle, request):
+    """approve_* keys the world's reference asks on this task that its user facts do not define. A missing key
+    reads as "no", so the reference silently skips the write and the task's outcome becomes "nothing happened"
+    (the pilot's write tasks all did this: env asked approve_cancel, the task defined approve_cancel_HX1)."""
+    from env_factory_v3.core.sandbox import load_module
+    from env_factory_v3.runtime import run_reference
+    env = load_module(Path(world_bundle) / 'env.py', role='env')
+    try:
+        result = run_reference(env, request['tables'], request['user_facts'], start=request['time']['start'])
+    except Exception as exc:  # noqa: BLE001 - the gates report a reference that fails
+        return []
+    asked = [e.get('key') for e in result['trace'] if e.get('kind') == 'confirm']
+    return sorted({k for k in asked if k and k not in request['user_facts']})
 
 
 def built_shape(target):
