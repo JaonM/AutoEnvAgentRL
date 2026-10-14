@@ -54,6 +54,11 @@ def has_outcomes(schema):
     return bool(schema) and all(isinstance(v, dict) and isinstance(v.get('outcome'), dict) for v in schema.values())
 
 
+def advice_processes(schema):
+    """Processes where the customer wants a recommendation, comparison or explanation (subjective tasks)."""
+    return sorted(name for name, value in (schema or {}).items() if (value or {}).get('kind') == 'advice')
+
+
 def inquiry_processes(schema):
     """Processes answered from the policy manual and the numbers the customer states (direct tasks)."""
     return sorted(name for name, value in (schema or {}).items() if (value or {}).get('kind') == 'inquiry')
@@ -78,8 +83,8 @@ def outcome_problems(schema):
     from env_factory_v3.core import answers
     problems = []
     for name, value in schema.items():
-        if value.get('kind') not in ('inquiry', 'account'):
-            problems.append(f'goal_schema.{name}.kind must be "inquiry" or "account"')
+        if value.get('kind') not in ('inquiry', 'account', 'advice'):
+            problems.append(f'goal_schema.{name}.kind must be "inquiry", "account" or "advice"')
         outcome = value.get('outcome')
         if not isinstance(outcome, dict) or outcome.get('type') != 'object':
             problems.append(f'goal_schema.{name}.outcome must be an object field spec')
@@ -89,11 +94,19 @@ def outcome_problems(schema):
         if approval is not None and not (isinstance(approval, str) and approval.startswith('approve_')):
             problems.append(f'goal_schema.{name}.approval must be an approve_* fact key pattern')
         properties = outcome.get('properties') or {}
+        if value.get('kind') == 'advice':
+            keys = ' '.join(properties)
+            if not ('recommend' in keys or 'choice' in keys or 'option' in keys) or 'reason' not in keys:
+                problems.append(f'goal_schema.{name}.outcome (advice) needs the recommendation (an enum or id; '
+                                'alternatives when the rules allow several) and the reasons (rule enums) as key points')
         if value.get('kind') == 'account' and not any(
                 'reason' in key and (spec or {}).get('type') == 'string' and (spec or {}).get('enum')
                 for key, spec in properties.items()):
             problems.append(f'goal_schema.{name}.outcome needs a "reason" string enum (why it was refused or could '
                             'not be done; null on success): a blanket refusal must not match a checked one')
+    if not advice_processes(schema):
+        problems.append('goal_schema needs at least one "advice" process (the customer wants a recommendation, '
+                        'comparison or explanation about their own situation, decided by the rules)')
     inquiries = inquiry_processes(schema)
     if not 1 <= len(inquiries) <= 2:
         problems.append('goal_schema needs one or two "inquiry" processes (answered from the rules and the numbers '
@@ -194,6 +207,9 @@ def check_task(folder):
             problems.append(f'user_scene.known has more than {generate.MAX_DIRECT_NUMBERS} numbers: simplify')
         if task.get('overlay'):
             problems.append('a direct task changes no rows: drop the overlay')
+    elif assignment.get('shape') == 'subjective':
+        if not set(advice_processes(world['goal_schema'])) & {g.get('process') for g in goals}:
+            problems.append(f"a subjective task has an advice goal ({advice_processes(world['goal_schema'])})")
     elif assignment.get('shape') and inquiries and all(g.get('process') in inquiries for g in goals):
         problems.append('this task needs at least one account goal (not only inquiries)')
     problems += generate.script_problems(request, assignment.get('script') or [])
@@ -247,11 +263,16 @@ WORLD_SHAPES = {
                     'the customer approves (one approve_* fact true), then tell them the result. No decoys.',
     'complex': 'Shape complex: at least two writes, each with its own approve_* fact; a first choice that is '
                'refused or ineligible so another route is needed; a dependency between the writes.',
+    'subjective': 'Shape subjective: the customer wants advice about their own situation (which option suits them, '
+                  'a comparison, why they were charged): an advice goal. The agent has to look up their records '
+                  'and apply the rules; pick a situation where the rules decide the recommendation (or a small set '
+                  'of equally good ones) and its reasons, so it can be graded on those key points. No write.',
 }
 # A world where most write-shaped tasks end in a refusal teaches "refuse without checking" (the refusal answer
 # then matches often enough to pay); at most this share of its certified write-shaped tasks may be refusals.
 REFUSAL_CAP = 0.3
-WORLD_MIX = (('direct', 0.1), ('simple', 0.2), ('ordinary', 0.15), ('single_write', 0.25), ('complex', 0.3))
+WORLD_MIX = (('direct', 0.1), ('simple', 0.15), ('ordinary', 0.1), ('single_write', 0.25), ('complex', 0.3),
+             ('subjective', 0.1))
 
 
 def make_task(world_bundle, folder, *, index, processes, script, runner, client, python, timeout=600,
@@ -540,8 +561,8 @@ def plan_tasks(world, count, seed=0):
                 processes.append(names[(i + 1 + rng.randrange(len(names) - 1)) % len(names)])
             out.append((processes, elements[i], None))
         return out
-    inquiries = inquiry_processes(schema)
-    accounts = [n for n in names if n not in inquiries] or names
+    inquiries, advice = inquiry_processes(schema), advice_processes(schema)
+    accounts = [n for n in names if n not in inquiries and n not in advice] or names
     shapes = [None] * min(count, len(names))
     rest = count - len(shapes)
     for shape, share in WORLD_MIX:
@@ -555,9 +576,9 @@ def plan_tasks(world, count, seed=0):
         if i < len(names):
             process = names[i]
             out.append(([process], [] if process in inquiries else elements[i],
-                        'direct' if process in inquiries else None))
+                        'direct' if process in inquiries else 'subjective' if process in advice else None))
             continue
-        pool = inquiries if shape == 'direct' else accounts
+        pool = inquiries if shape == 'direct' else (advice or accounts) if shape == 'subjective' else accounts
         processes = [pool[i % len(pool)]]
         if shape != 'direct' and rng.random() < 0.3 and len(pool) > 1:
             processes.append(pool[(i + 1 + rng.randrange(len(pool) - 1)) % len(pool)])

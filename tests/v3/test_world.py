@@ -20,8 +20,11 @@ GOALS = {f'p{i}': {'description': f'process {i}', 'params': {'loan_id': 'str'}} 
 OUTCOME = {'type': 'object', 'description': 'what happened',
            'properties': {'status': {'type': 'string', 'enum': ['done', 'refused']},
                           'reason': {'type': 'string', 'enum': ['late', 'ineligible'], 'nullable': True}}}
-SHAPED = {name: {**value, 'kind': 'inquiry' if name == 'p5' else 'account', 'outcome': OUTCOME}
-          for name, value in GOALS.items()}
+ADVICE = {'type': 'object', 'description': 'the advice',
+          'properties': {'recommended_option': {'type': 'string', 'enum': ['a', 'b']},
+                         'reasons': {'type': 'array', 'items': {'type': 'string', 'enum': ['cheaper', 'eligible']}}}}
+SHAPED = {name: {**value, 'kind': {'p4': 'advice', 'p5': 'inquiry'}.get(name, 'account'),
+                 'outcome': ADVICE if name == 'p4' else OUTCOME} for name, value in GOALS.items()}
 
 
 def world_request(goals=SHAPED):
@@ -50,7 +53,10 @@ class WorldCheckTests(unittest.TestCase):
 
     def test_a_world_declares_outcomes_and_one_or_two_inquiries(self):
         folder = Path(tempfile.mkdtemp())
-        for goals, wanted in ((GOALS, 'kind'), ({k: {**v, 'kind': 'account'} for k, v in SHAPED.items()}, 'inquiry'),
+        no_advice = {k: {**v, 'kind': 'inquiry' if k == 'p5' else 'account', 'outcome': OUTCOME} for k, v in SHAPED.items()}
+        for goals, wanted in ((GOALS, 'kind'), ({k: {**v, 'kind': 'account'} for k, v in no_advice.items()}, 'inquiry'),
+                              (no_advice, 'advice'),
+                              ({**SHAPED, 'p4': {**SHAPED['p4'], 'outcome': OUTCOME}}, 'key points'),
                               ({**SHAPED, 'p0': {**SHAPED['p0'], 'outcome': {'type': 'string'}}}, 'outcome')):
             (folder / 'request.json').write_text(json.dumps(world_request(goals), ensure_ascii=False))
             self.assertTrue(any(wanted in p for p in world.check_world(folder)[0]), wanted)
@@ -155,12 +161,13 @@ class TaskCertificationTests(unittest.TestCase):
         plan = world.plan_tasks({'id': 'w', 'goal_schema': SHAPED}, 46)
         probes, rest = plan[:len(SHAPED)], plan[len(SHAPED):]
         self.assertEqual([p for p, _, _ in probes], [[name] for name in sorted(SHAPED)])
-        self.assertEqual(probes[5][2], 'direct')  # the inquiry probe
+        self.assertEqual((probes[4][2], probes[5][2]), ('subjective', 'direct'))  # the advice and inquiry probes
         shapes = [shape for _, _, shape in rest]
-        self.assertEqual([shapes.count(s) for s in ('direct', 'simple', 'ordinary', 'single_write', 'complex')],
-                         [4, 8, 6, 10, 12])
+        self.assertEqual([shapes.count(s) for s in ('direct', 'simple', 'ordinary', 'single_write', 'complex',
+                                                    'subjective')], [4, 6, 4, 10, 12, 4])
         self.assertTrue(all(p == ['p5'] and not script for p, script, s in rest if s == 'direct'))
-        self.assertTrue(all('p5' not in p for p, _, s in rest if s != 'direct'))
+        self.assertTrue(all(p == ['p4'] for p, _, s in rest if s == 'subjective'))
+        self.assertTrue(all('p5' not in p and 'p4' not in p for p, _, s in rest if s not in ('direct', 'subjective')))
 
 
 if __name__ == '__main__':

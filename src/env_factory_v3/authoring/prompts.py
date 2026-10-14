@@ -425,7 +425,13 @@ Write request.json in this folder:
   goals are one to three of them with concrete params.
   - kind "inquiry" (one or two processes): a policy question answered from the rules and the numbers the customer
     states (for example the fee for a change on a fare and a date they name): no identification, no table
-    lookup, no write; its params are those numbers. Every other process is "account".
+    lookup, no write; its params are those numbers.
+  - kind "advice" (at least one): the customer wants a recommendation, comparison or explanation about their own
+    situation (which plan or option suits them, why a charge happened); the agent looks up their records and
+    applies the rules; no write. Its outcome holds the key points a good answer must contain: the recommended
+    option (an enum or record id; when the rules make several equally good, the oracle lists the others as
+    alternatives) and the reasons as enums of the deciding rules, plus the amounts or dates the answer needs.
+  - Every other process is "account".
   - outcome: what the customer must be told when a goal of this process is handled, as one answer field spec of
     type "object" with "properties" (the same rules as an answer schema: ids, integers, booleans and string enums,
     a description with units and how absent or refused cases are written; only values a good agent would say).
