@@ -138,7 +138,7 @@ agent 面对的是一个**持续存在的系统**，有十几个工具、海量�
 
 | 措施 | 做法 | 位置 | 是否在签名范围内 |
 |---|---|---|---|
-| 第三个 oracle | 世界认证后，再开一个独立会话按同一份规格写 oracle；每道题在它服务的所有世界上，第三个 oracle 必须与已认证的 oracle 一致，否则淘汰（stage `third_oracle`） | `production/world.py` 的 `third_oracle`、`third_opinion`、`guard` | 否 |
+| ~~第三个 oracle~~ | 已移除（2026-10-14）：按同一份规格写，重复的是同一种理解，防不了系统性误读；改由按流程审计和逐条规则审计覆盖相关错误 | — | — |
 | 手册充分性 | 把 agent 手册、用户全部事实、参考解查到的数据都给模型，要求它推断写操作和答案；k 次都推不对就淘汰（stage `sufficiency`），推不对的字段记为手册缺口 | `certify/sufficiency.py` | 否 |
 | 允许多种正确结果 | 规则明确允许自由选择、事实又没定下来时，oracle 在 `alternatives` 里列出其他正确结果（最多 3 个，不能重复，主结果有写操作时不能是"什么都不做"）；判分取最好的一个，`outcome` 记录命中哪个；仲裁者遇到这种分歧时补 alternatives | `core/reward.py`、`certify/gates.py`、`checks.py`、提示 ORACLE / ARBITER | 是 |
 | 模拟器透露审计 | 自由对话失败的回合，由评审模型检查模拟用户是否漏说、说错、编造或与平台决定相反；每条错误必须逐字引用用户原话（并指明事实键），否则丢弃。有错误的回合标为无效：奖励不变，但训练时不参与 GRPO 的组基线、也不产生梯度。`V3_SIMULATOR_AUDIT=off` 可关闭 | `core/disclosure.py`、`serving/server.py`、`rl/environments/v3.py`、`rl/data/trajectory.py` | 是 |

@@ -129,7 +129,9 @@ def stage_build(out, options, log):
 def stage_difficulty(out, statuses, options, log):
     """Difficulty floor (generate.MIN_REFERENCE_CALLS): a training-ready bundle whose reference solution
     needs fewer public tool calls than its shape's floor is too easy to teach anything; it gets no image
-    and no policy gate."""
+    and no policy gate. Each result also records the shape the reference really has (actual_shape), so the
+    report shows the mix that was built, not only the one that was asked for."""
+    from env_factory_v3.certify.gates import trace_structure
     from env_factory_v3.production import generate
     from env_factory_v3.runtime import run_reference
     floors = options.get('min_reference_calls', generate.MIN_REFERENCE_CALLS)
@@ -141,13 +143,19 @@ def stage_difficulty(out, statuses, options, log):
             loaded = bundle.load_bundle(Path(status['bundle']))
             request = loaded['request']
             floor = floors.get((request.get('source') or {}).get('shape'), 0)
-            calls = run_reference(loaded['env'], request['tables'], request['user_facts'],
-                                  start=request['time']['start'])['tool_calls']
+            result = run_reference(loaded['env'], request['tables'], request['user_facts'],
+                                   start=request['time']['start'])
+            calls, actual = result['tool_calls'], generate.actual_shape(trace_structure(result['trace'],
+                                                                                      request['user_facts']))
         except Exception as exc:  # later stages report the broken bundle
             results[task] = {'passed': True, 'error': f'{type(exc).__name__}: {exc}'[:300]}
             continue
-        results[task] = {'passed': calls >= floor, 'reference_calls': calls, 'floor': floor}
-    log('difficulty', 'done', f"{sum(r['passed'] for r in results.values())}/{len(results)} above the floor")
+        results[task] = {'passed': calls >= floor, 'reference_calls': calls, 'floor': floor,
+                         'shape': (request.get('source') or {}).get('shape'), 'actual_shape': actual}
+    import collections
+    shapes = collections.Counter(r.get('actual_shape') for r in results.values() if r.get('actual_shape'))
+    log('difficulty', 'done', f"{sum(r['passed'] for r in results.values())}/{len(results)} above the floor; "
+                              f"built shapes {dict(shapes)}")
     return results
 
 

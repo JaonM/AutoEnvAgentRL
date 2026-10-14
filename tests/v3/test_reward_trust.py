@@ -1,5 +1,5 @@
 """Reward trust: acceptable alternatives, simulator audit, untrainable episodes, disagreement mining,
-policy sufficiency and the third oracle. No model calls."""
+policy sufficiency. No model calls."""
 from __future__ import annotations
 
 import copy
@@ -228,28 +228,6 @@ class FuzzTests(unittest.TestCase):
         report = fuzz.fuzz(Broken(), request['tables'], 10, calls=5, walks=2)
         self.assertFalse(report['passed'])
         self.assertTrue(report['tools']['lookup']['hidden_state'] or report['tools']['lookup']['crash'])
-
-
-class ThirdOracleTests(LibraryBundle):
-    def test_a_disagreeing_third_oracle_rejects_the_task(self):
-        folder = Path(tempfile.mkdtemp())
-        shutil.copy(LIBRARY / 'oracle.py', folder / 'oracle.py')
-        self.assertTrue(world.third_opinion(self.bundle, folder / 'oracle.py')['passed'])
-        source = (LIBRARY / 'oracle.py').read_text().replace("loan['due_day'] += book['renewal_days']",
-                                                              "loan['due_day'] += book['renewal_days'] + 1")
-        (folder / 'oracle.py').write_text(source)
-        opinion = world.third_opinion(self.bundle, folder / 'oracle.py')
-        self.assertFalse(opinion['passed'])
-        self.assertTrue(opinion['disagreements'])
-        # guard: a world folder layout <world>/build/bundle with <world>/oracle3
-        world_dir = Path(tempfile.mkdtemp())
-        (world_dir / 'build').mkdir()
-        shutil.copytree(self.bundle, world_dir / 'build' / 'bundle')
-        (world_dir / 'oracle3').mkdir()
-        (world_dir / 'oracle3' / 'oracle.py').write_text(source)
-        (world_dir / 'oracle3' / 'third_oracle.json').write_text('{"passed": true}')
-        row = world.guard({'id': 't', 'passed': True}, world_dir / 'build' / 'bundle', self.bundle, Path(tempfile.mkdtemp()))
-        self.assertEqual((row['passed'], row['stage']), (False, 'third_oracle'))
 
 
 if __name__ == '__main__':

@@ -111,9 +111,10 @@ class GenerateTests(unittest.TestCase):
                                            writer, output)[:1], ['gen-001'])
         self.assertIn('不要使用这些已被其他用户用滥的说法', writer.prompts[0])
 
-    def test_plan_follows_the_v2_mix(self):
+    def test_plan_follows_the_default_mix(self):
         shapes = [shape for _, _, shape in generate.plan(DOMAINS, 30)]
-        self.assertEqual([shapes.count(s) for s in ('direct', 'simple', 'ordinary', 'complex')], [6, 6, 6, 12])
+        self.assertEqual([shapes.count(s) for s in ('direct', 'simple', 'ordinary', 'single_write', 'complex')],
+                         [3, 6, 4, 8, 9])
 
     def test_request_check_rejects_bad_scenes_and_bad_approvals(self):
         folder = Path(tempfile.mkdtemp())
