@@ -1,12 +1,9 @@
-"""Qualified multi-sandbox task manifests and reproducible group scheduling."""
+"""Task manifests of certified sandbox bundles (env_factory) and reproducible group scheduling."""
 from dataclasses import asdict, dataclass
-import hashlib
 import json
 import math
 from pathlib import Path
 
-from rl.environments.local import verify_training_sandbox
-from rl.checkpointing.checkpoint import sha256
 
 
 @dataclass(frozen=True)
@@ -31,7 +28,7 @@ def load_tasks(*, sandbox='', manifest=''):
     else:
         entries = [{'id': 'task-1', 'sandbox': str(Path(sandbox).resolve())}]
         base = Path.cwd()
-    tasks, identifiers, identities, v2_texts = [], set(), {}, []
+    tasks, identifiers, identities = [], set(), {}
     for entry in entries:
         if not isinstance(entry, dict) or set(entry) - {'id', 'sandbox', 'split', 'weight'}:
             raise ValueError('invalid task manifest entry')
@@ -44,24 +41,10 @@ def load_tasks(*, sandbox='', manifest=''):
         if not math.isfinite(weight) or weight <= 0:
             raise ValueError('task weight must be finite and positive')
         candidate = (base / entry['sandbox']).resolve()
-        if (candidate / 'contract.json').is_file() and (candidate / 'delivery.json').is_file():
-            from env_factory_v2.delivery.training import verify_training_bundle
-            certificate = verify_training_bundle(candidate)
-            root, identity = candidate, certificate['identity']
-            public = json.loads((candidate / 'public.json').read_text())
-            v2_texts.append({'item_id': identifier, 'task': public['task'], 'split': split})
-        elif (candidate / 'manifest.json').is_file() and (candidate / 'env.py').is_file():
-            from rl.environments.v3 import bundle_identity, is_v3_bundle
-            if not is_v3_bundle(candidate):
-                raise ValueError(f'incomplete V3 bundle: {candidate}')
-            root, identity = candidate, bundle_identity(candidate)
-            request = json.loads((candidate / 'request.json').read_text())
-            v2_texts.append({'item_id': identifier, 'task': request['user_request'], 'split': split})
-        else:
-            root = verify_training_sandbox(candidate)
-            status = json.loads((root / 'status.json').read_text())
-            identity = hashlib.sha256(json.dumps({'artifacts':status['artifact_hashes'],
-                'task_sha256':sha256(root / 'task.json')},sort_keys=True).encode()).hexdigest()
+        from rl.environments.sandbox import bundle_identity, is_sandbox_bundle
+        if not is_sandbox_bundle(candidate):
+            raise ValueError(f'not a certified sandbox bundle: {candidate}')
+        root, identity = candidate, bundle_identity(candidate)
         if identity in identities:
             raise ValueError(f'duplicate sandbox identity: {identifier} and {identities[identity]}')
         identifiers.add(identifier)
@@ -69,15 +52,6 @@ def load_tasks(*, sandbox='', manifest=''):
         tasks.append(TaskSpec(identifier, str(root), split, weight, identity))
     if not any(t.split == 'train' for t in tasks):
         raise ValueError('at least one training task required')
-    if v2_texts:
-        from env_factory.tasks.task_similarity import task_family_ids
-        families = task_family_ids(v2_texts)
-        splits = {}
-        for row in v2_texts:
-            family = families[row['item_id']]
-            if family in splits and splits[family] != row['split']:
-                raise ValueError('V2 near-duplicate task family crosses train/eval split')
-            splits[family] = row['split']
     return tasks
 
 

@@ -1,9 +1,2 @@
-"""Compatibility entry point for :mod:`rl.environments.local`."""
-import importlib as _importlib
-import sys as _sys
-
-_impl = _importlib.import_module('rl.environments.local')
-if __name__ == "__main__":
-    _impl.main()
-else:
-    _sys.modules[__name__] = _impl
+"""Default environment factory entry point: ``rl.environment:SandboxEpisode`` (see rl.environments.sandbox)."""
+from rl.environments.sandbox import DockerSandboxEpisode, SandboxEpisode, is_sandbox_bundle  # noqa: F401

@@ -1,21 +1,22 @@
 [project]
 name = "AutoEnvAgentRL"
 version = "0.1.0"
-description = "Generate contract-driven Agentic RL tasks and executable sandboxes"
+description = "Automatically generate certified business sandboxes and train tool-using agents with SFT and RL"
 readme = "README.md"
 authors = [
     { name = "马强", email = "maqiangcsu@gmail.com" }
 ]
 requires-python = ">=3.14"
 dependencies = [
-    "ijson>=3.4.0",
-    "neo4j>=6.0.0",
-    "openpyxl>=3.1.0",
-    "pyarrow>=20.0.0",
     "python-dotenv>=1.1.0",
 ]
 
 [project.optional-dependencies]
+# Optional: sample generation domains from a Neo4j business knowledge graph (production/domains.py).
+graph = [
+    "neo4j>=6.0.0",
+]
+
 rl = [
     "mlx-lm>=0.31,<0.33",
     "numpy>=2.0",
@@ -42,4 +43,4 @@ testpaths = ["tests"]
 pythonpath = ["."]
 
 [tool.uv.build-backend]
-module-name = ["env_factory", "env_factory_v2", "env_factory_v3", "rl"]
+module-name = ["env_factory", "env_factory_v3", "rl"]

@@ -59,13 +59,6 @@ class Config:
     max_tokens_per_micro_batch: int = 8192
     batch_logp_tolerance: float = 0.01
     sandbox_backend: str = "local"
-    sandbox_images: str = ""
-    sandbox_max_active: int = 4
-    sandbox_startup_workers: int = 2
-    sandbox_idle_timeout: int = 300
-    sandbox_cpus: str = "1"
-    sandbox_memory: str = "1g"
-    sandbox_services: str = ""
     environment_factory: str = "rl.environment:SandboxEpisode"
     rollout_group: int = 4
     over_sampling_batch_size: int = 0
@@ -202,11 +195,6 @@ class Config:
                 raise ValueError(f"{name} must be positive")
         if self.sandbox_backend not in ("local", "docker"):
             raise ValueError("sandbox_backend must be local or docker")
-        if (
-            min(self.sandbox_max_active, self.sandbox_startup_workers, self.sandbox_idle_timeout)
-            <= 0
-        ):
-            raise ValueError("sandbox manager limits must be positive")
         if ":" not in self.environment_factory:
             raise ValueError("environment_factory must be module:callable")
         if not math.isfinite(self.batch_logp_tolerance) or self.batch_logp_tolerance <= 0:

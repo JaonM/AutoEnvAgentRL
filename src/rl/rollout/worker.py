@@ -109,11 +109,7 @@ def rollout_worker_main(index, config, shared_version, results, stop):
         snapshot_seconds = 0.
         version = -1
         while not stop.is_set():
-            ready = None
-            if config.get('sandbox_services'):
-                from rl.environments.remote import docker_task_ready
-                ready = lambda job: docker_task_ready(config['sandbox_services'], job['task_id'])
-            with task_queue.claim(ready=ready) as job:
+            with task_queue.claim() as job:
                 if job is None:
                     group_started_at = None
                     notify('task_queue_wait')
@@ -177,10 +173,6 @@ def rollout_worker_main(index, config, shared_version, results, stop):
                     group['shared_task'] = True
                     task_queue.publish(group)
                     logger.flush()
-                if config.get('sandbox_services') and env is not None:
-                    env.close()
-                    env = None
-                    current_task = None
                 # The durable result is authoritative; a full notification queue cannot block workers.
                 try:
                     results.put_nowait(group)

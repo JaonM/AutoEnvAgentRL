@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Local Apple Silicon RL: qualified sandbox -> rollout workers -> actor (PPO/GRPO).
+# Local Apple Silicon RL: certified sandbox bundles (env_factory) -> rollout workers -> actor (PPO/GRPO).
 # --tuning qat (default), lora, or full; full needs floating weights and enough RAM.
 # --tuning qat --qat-scope full trains every LM parameter with weight QAT; needs FP32 master/Adam memory.
 # --thinking-mode auto (default), thinking, or no-thinking controls Qwen3 chat templates.
@@ -10,8 +10,8 @@
 # --profile-memory measures synchronized stage peaks; see python -m rl.profile_memory.
 # CUDA export: scripts/convert_to_hf.sh (install --extra cuda-export).
 # Install once with: uv sync --extra rl
-# Default sandbox backend: Docker Engine manager (async prewarm, HTTP rollout, auto cleanup).
-# --sandbox-backend local explicitly uses the in-process development runtime.
+# Default sandbox backend: docker, each bundle served from its verified hardened container.
+# --sandbox-backend local serves the bundle in process (no container).
 # Required: --sandbox PATH --output NEW_PATH. See --help for algorithm budgets.
 # --epochs (2) counts full passes through the training sandbox dataset.
 # --batch-size (1) collects completed sandbox groups in completion order within an epoch.
@@ -31,8 +31,6 @@
 # --rollout-concurrency (2) caps per-worker environments and dynamic GPU decode rows.
 # Ready trajectories share one decode forward; tool-waiting trajectories leave the batch.
 # --micro-batch-size (4) and --max-tokens-per-micro-batch (8192) bound tensor computation.
-# --sandbox-services PATH reuses externally managed HTTP services (no auto cleanup).
-# Optional standalone prewarm: scripts/sandbox_services.sh start; returns before readiness.
 # Models, credentials and training artifacts are never embedded in this script.
 # TensorBoard is enabled by default; scripts/train_dashboard.sh opens the viewer.
 # --rollout-trace-samples N controls live traces; --no-tensorboard keeps JSONL only.

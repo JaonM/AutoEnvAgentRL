@@ -13,9 +13,6 @@ import pytest
     ('actor', 'backends.mlx.actor'),
     ('runtime', 'rollout.manager'),
     ('rollout_worker', 'rollout.worker'),
-    ('environment', 'environments.local'),
-    ('remote_environment', 'environments.remote'),
-    ('system_prompt', 'environments.system_prompt'),
     ('checkpoint', 'checkpointing.checkpoint'),
     ('evaluation', 'trainer.evaluation'),
     ('convert_cuda', 'export.hf'),
@@ -52,19 +49,10 @@ builtins.__import__ = checked
 from rl.config import Config
 from rl.trainer.cli import parse_args
 from rl.data.contracts import TrainingSegment
-from rl.environments.local import SandboxEpisode
+from rl.environments.sandbox import SandboxEpisode
 from rl.export.hf import convert
 from rl.export.verify import main
 args = parse_args(['--tasks', 'tasks.json', '--output', 'unused', '--tuning', 'full'])
 assert args.sandbox_backend == 'docker' and args.tuning == 'full'
 '''
     subprocess.run([sys.executable, '-c', script], check=True, capture_output=True, text=True)
-
-
-def test_service_payload_remains_standalone_after_move():
-    from rl.environments.services import docker_manager, kubernetes, sandbox_service
-    for module in (docker_manager, kubernetes):
-        payload = Path(module.__file__).with_name('sandbox_service.py')
-        assert payload.samefile(sandbox_service.__file__)
-        # The image receives this source as serve.py without installing rl.
-        assert 'from rl.' not in payload.read_text()

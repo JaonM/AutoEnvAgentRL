@@ -1,6 +1,0 @@
-{
-  "situation": "等待收货",
-  "desired_outcome": "知道配送进度和预计到达时间",
-  "known_information": {},
-  "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
-}

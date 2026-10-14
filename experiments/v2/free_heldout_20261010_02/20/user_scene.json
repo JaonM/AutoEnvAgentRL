@@ -1,6 +1,0 @@
-{
-  "situation": "准备使用两个服务",
-  "desired_outcome": "依次开启两个服务，如果第二个额度不足保留第一个",
-  "known_information": {},
-  "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
-}

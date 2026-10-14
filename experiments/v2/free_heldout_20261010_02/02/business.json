@@ -1,5 +1,0 @@
-{
-  "provenance": "held-out synthetic instance; frozen before contract generation",
-  "policy": "会员订单原价满200元打九折，然后减15元券；不满200元只减券。实付最低0元。",
-  "tables": []
-}

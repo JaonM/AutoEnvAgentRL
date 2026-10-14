@@ -1,228 +1,243 @@
+<div align="center">
+
 # AutoEnvAgentRL
+
+**Automatically generate certified business sandboxes and train tool-using conversational agents with SFT and reinforcement learning.**
 
 [中文](README.md) | [English](README-en.md)
 
-**Generate interactive tasks from a knowledge graph, build executable sandboxes, and use them for Agentic RL training.**
+![Python](https://img.shields.io/badge/python-3.14%2B-blue)
+![Platform](https://img.shields.io/badge/platform-Apple%20Silicon%20%7C%20MLX-black)
+![Docker](https://img.shields.io/badge/sandbox-Docker-2496ED)
+![Tests](https://img.shields.io/badge/tests-pytest-green)
 
-AutoEnvAgentRL helps agents learn within environments with concrete business constraints: clarify requirements with users, call tools, use earlier results in subsequent actions, and deliver verifiable outcomes. Tasks, business data, user scripts, tools, and rewards share a contract. A common runtime and multiple validation stages keep task generation and sandbox execution consistent.
+</div>
 
-**Everything is done on your macbook/studio**
+---
 
-Entry point: `scripts/run_pipeline.sh` → `python -m env_factory_v3 run` (V3 end to end: domain sampling → task generation → sandbox build → Docker → policy gate → tasks.json). The V1/V2 pipeline described below is now `scripts/run_pipeline_legacy.sh` → `python -m env_factory.task_pipeline`.
+## Table of contents
 
-V1/V2: Task generation and sandbox construction use Code Agent only (Codex, Claude, OpenCode), with `gpt-6.1-sol` as the default author and builder model. Legacy staged generation, fixed prototypes, and the experiment loop have been removed.
+- [Overview](#overview)
+- [Features](#features)
+- [How it works](#how-it-works)
+- [Quick start](#quick-start)
+- [Usage](#usage)
+- [Project structure](#project-structure)
+- [Configuration](#configuration)
+- [Testing](#testing)
+- [Documentation](#documentation)
+- [Contributing](#contributing)
+- [License](#license)
 
-Realism is unified: mechanisms are declared and verified in business contracts. Eligible multistep slots receive normal/change/recovery requirements in a 50/30/20 mix; singleton runs sample those probabilities. Per-mechanism results are written to `realism_summary.json`.
+## Overview
 
-## Purpose
+Training an agent that gets real business work done (customer service, bookings, after-sales) takes many **interactive, automatically gradable** environments: the agent talks with a user over several turns, follows a policy, changes data through tools, and ends with an outcome that can be checked automatically. Building such environments by hand is expensive, and letting a language model generate them directly rarely yields a reward you can trust.
 
-- **Generate tasks:** A Code Agent designs tasks, business data, tools, reference trajectories, and rewards from Scene graph paths. Routes include direct response, single-step, and multi-step agentic tasks.
-- **Build environments:** Compile task contracts into sandboxes with persistent state, tool endpoints, a user simulator, and a reward endpoint. The Code Agent supplies additional business implementations.
-- **Validate quality:** Run structural checks, independent semantic review, success and failure trajectories, counterfactual tests, and executable Docker validation to qualify training environments.
-- **Train agents:** Run asynchronous PPO / GRPO on Apple Silicon with MLX, parallel rollouts, batched decoding, limited reuse of older-policy trajectories, and quantization-aware tuning (QAT).
+AutoEnvAgentRL turns this into an automated production line:
+
+1. A code agent writes an **executable Python sandbox** (data, tools, a reference solution) and, in a separate session, an **independent oracle** for each business scenario.
+2. The two implementations must **agree exactly** on the original world, every approval flip and perturbed worlds before the sandbox is certified.
+3. Certified sandboxes are served over HTTP with a language-model user, ready for **SFT demonstration collection and reinforcement learning**.
+4. Training runs on Apple Silicon: generation, certification and training all fit on one Mac.
+
+## Features
+
+- **Trustworthy reward**: environment and oracle are written independently and accepted only after differential certification, negative checks, branch and perturbation audits; the reward comes from the oracle, never from author-written code.
+- **Deterministic grading, realistic dialogue**: the simulated user is a language model that only decides *how* to say things; whether a write is approved or which option is chosen comes from structured facts the platform enforces, so the reward stays deterministic.
+- **Rich user scripts**: several goals, fallbacks, persistent unreasonable demands, misremembered identifiers, vague requests, undecided users, questions before agreeing, changes of mind and out-of-scope requests combine into long, varied dialogues.
+- **Safety constraint**: any write the user did not agree to zeroes the episode; both a "proposal + consent token" protocol and plain-dialogue confirmation are supported.
+- **Grading what was said**: the agent tells the user the result like a human agent would; the platform extracts the answer from the dialogue and verifies every number and identifier was actually said.
+- **Hardened runtime**: generated code passes static sandbox rules; every sandbox is packed into a read-only, capability-free, non-root Docker image and re-verified offline.
+- **Training designed for transfer**: tool names, consent protocol, tool-result format and system-prompt layout are randomized per episode, so the policy learns to read its instructions instead of memorizing one platform.
+- **Local training**: asynchronous PPO / GRPO on MLX with parallel rollouts, batched decoding, LoRA / QAT / full fine-tuning and resumable checkpoints.
+
+## How it works
 
 ```text
-Scene knowledge graph
-    ↓
-Code Agent task generation → Preflight checks and semantic review
-    ↓
-Sandbox construction → Contract, reward, and executable Docker validation
-    ↓
-Docker sandbox services ← HTTP → Parallel rollout workers
-                                      ↓
-                         Complete trajectories and terminal rewards
-                                      ↓
-                              Actor: PPO / GRPO updates
+Business domains (sampled from a knowledge graph, or a list)
+        │
+        ▼
+Request generation: a code agent writes rules, data, user facts and script → a model writes the
+user's opening and the customer-facing policy manual
+        │
+        ▼
+Sandbox build: answer schema → environment (tools + reference) ∥ independent oracle →
+differential certification → arbitration → audits → every gate
+        │
+        ▼
+Delivery: signed bundle → hardened Docker image verified offline → policy gate (a strong model
+actually solves it in free dialogue)
+        │
+        ▼
+tasks.json ──► demonstration collection → SFT cold start ──► reinforcement learning (GRPO / PPO)
 ```
 
-Passing validation establishes eligibility under the current training contract. It does not establish that training improves model capabilities.
+Each certified sandbox (bundle) contains:
 
-## 1. Installation and configuration
+| File | Content |
+| --- | --- |
+| `request.json` | user request, business rules, customer-facing manual, tables, the user's private facts and script |
+| `env.py` | tools and the reference solution (may import only `env_factory.runtime`) |
+| `oracle.py` | the independently computed expected outcome (final state + answer) |
+| `answer_schema.json` | answer format and graded fields |
+| `gates.json`, `manifest.json` | certification report and file hashes signed for the platform identity |
+
+## Quick start
 
 ### Requirements
 
-| Purpose | Requirements |
+| Purpose | Requirement |
 | --- | --- |
-| Base environment | Python ≥ 3.14, uv |
-| Graph and task generation | Accessible Neo4j instance, model services, an installed and authenticated Code Agent CLI |
-| Sandbox builds and default training services | Docker Engine; Docker Desktop can be used on macOS |
-| Local RL training | Apple Silicon, Metal, and the optional `rl` dependencies |
+| Base | macOS (Apple Silicon), Python ≥ 3.14, [uv](https://github.com/astral-sh/uv) |
+| Sandbox generation and build | [Codex CLI](https://github.com/openai/codex), installed and logged in |
+| User simulation, openings, judging | an OpenAI-compatible chat model service (DeepSeek by default) |
+| Hardened images and training environments | Docker Desktop / Docker Engine |
+| Optional | Neo4j (sampling business domains from a knowledge graph) |
 
-From the repository root:
-
-```bash
-uv sync
-cp .env.example .env
-```
-
-Edit `.env` with your Neo4j connection and model service configuration. Do not commit credentials. Main configuration roles:
-
-| Configuration | Purpose |
-| --- | --- |
-| `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`, `NEO4J_DATABASE` | Scene graph database |
-| `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` | General model service and fallback values for role-specific settings |
-| `SANDBOX_LLM_*` | Sandbox user simulator and model-based evaluator |
-| `GRAPH_SEEDS_FILE` | Graph seed file, one term per line |
-| `WIKIPEDIA_DUMP_DB` | Optional local Wikipedia index; online sources are used when unset |
-
-Task authoring, sandbox construction, and independent review use the selected **Code Agent CLI's authentication and model configuration**. `--code-agent-model` does not change the standalone diagnostic or user-simulator model. Select the RL policy model separately with `train_rl.sh --model`.
-
-### Prepare the knowledge graph
-
-Skip this step if a Scene graph is already available. Otherwise, configure seed terms and Neo4j, then run:
+### Install
 
 ```bash
-./scripts/build_graph.sh --help
-./scripts/build_graph.sh
+git clone <repo-url> && cd EnvFactory
+uv sync                 # generation and certification
+uv sync --extra rl      # local training (MLX)
+cp .env.example .env    # fill in LLM_API_KEY and friends
 ```
 
-For a local Wikipedia index, see `scripts/download_wikipedia_dump.sh` and `scripts/index_wikipedia_dump.sh`. Graph construction writes incrementally to Neo4j.
-
-## 2. Generate tasks and build sandboxes
+### Generate your first sandboxes
 
 ```bash
-# Show options; preview the command without calling models, Neo4j, or Docker
-./scripts/run_pipeline_legacy.sh --help
-./scripts/run_pipeline_legacy.sh --dry-run
+cat > domains.json <<'EOF'
+[{"name": "Airline flight changes", "detail": "changes, refunds, baggage"},
+ {"name": "Online retail returns", "detail": "returns, exchanges, refunds"}]
+EOF
 
-# Generate and build one task by default
-./scripts/run_pipeline_legacy.sh
-
-# Generate and build five tasks in a specified output directory
-./scripts/run_pipeline_legacy.sh --count 5 --output output/my_tasks
-
-# Recovery tasks: stateful multistep generation with exercised events and faults
-
-# Set the content language and Code Agent model
-./scripts/run_pipeline_legacy.sh --code-agent-model gpt-6.1-sol --language en
+./scripts/run_pipeline.sh --domains-file domains.json --count 4 --parallel 2 --output output/run_demo
 ```
 
-### Common options
+`output/run_demo/tasks.json` lists the sandboxes ready for training and `report.md` summarizes every task and why any were excluded. Running again with the same `--output` resumes where it stopped.
 
-| Option | Default | Description |
-| --- | --- | --- |
-| `--count` | `1` | Number of new tasks to generate; acceptance is not guaranteed |
-| `--output` | `output` | Root directory for tasks, sandboxes, and logs |
-| `--code-agent` | `codex` | Supports `codex`, `claude`, and `opencode` |
-| `--code-agent-model` | `gpt-6.1-sol` | Task authoring model; required explicitly for non-codex CLIs |
-| `--sandbox-model` | `gpt-6.1-sol` (Codex) | Sandbox construction and independent review; other CLIs inherit the authoring model |
-| `--language` | `zh-CN` | Generated content language, such as `en` or `ja`; does not translate platform logs |
-| `--code-agent-timeout` | `600` | Cumulative author/repair subprocess budget in seconds; excludes parent validation. Each independent review has 180 seconds. |
-
-See the [quality improvement plan](docs/plans/astra-quality-improvement.md) (Chinese) for priorities and acceptance criteria.
-
-The default target mix is 20% direct response, 30% single-step agentic, and 50% multi-step agentic. Actual counts depend on allocation for small runs. There is no hard five-minute limit per sample.
-
-To switch CLIs, install and authenticate the chosen tool, then provide a model identifier available to your account:
+### Try a sandbox
 
 ```bash
-./scripts/run_pipeline_legacy.sh --code-agent claude --code-agent-model YOUR_MODEL
-./scripts/run_pipeline_legacy.sh --code-agent opencode --code-agent-model PROVIDER/MODEL
+# Serve it over HTTP; in natural mode a language model plays the user
+.venv/bin/python -m env_factory serve output/run_demo/build/gen-000/bundle --port 8090 --user-mode natural
 
+# Let a strong model play 4 free-dialogue episodes (policy gate)
+.venv/bin/python -m env_factory policy output/run_demo/build/gen-000/bundle --k 4 --user-mode natural
 ```
 
-To generate tasks only, or specifically generate multi-step tasks:
+### Train
 
 ```bash
-./scripts/generate_task.sh --count 5
-./scripts/generate_task.sh --training-category multi_step_agentic --count 5
+./scripts/train_rl.sh --tasks output/run_demo/tasks.json --model models/Qwen3-0.6B \
+  --output output/train-demo --tuning lora --rollout-group 8 --rollout-concurrency 8 --max-steps 30
 ```
 
-### Artifacts and logs
+SFT cold start, demonstration collection and behaviour checks: [docs/rl-training.md](docs/rl-training.md).
 
-```text
-output/
-├── artifacts/
-│   └── artifact-N/
-│       ├── task/          # Task contracts, business data, user scripts, generation evidence
-│       └── sandbox/       # Sandbox code, build logs, validation reports, status.json
-├── logs/pipeline-*        # Separate console log for each main-pipeline invocation
-├── generation.log        # Main-pipeline task-generation log
-└── pipeline_events.jsonl  # Stages, timings, results, and run IDs
-```
+## Usage
 
-Task IDs increase automatically. Failed tasks retain diagnostic evidence while other qualified tasks proceed to construction.
+### End-to-end production line
 
-Training requires **`training_ready == true`** in both `status.json` and `pipeline_result.json`, plus matching artifact hashes. Build `success` or a high quality score alone is insufficient. `training_ready` permits training; it does not certify real-policy behavior. Construction skips real rollouts and live reward calibration, records these checks as `not_run`, and uses the executable rubric for the full 10-point score. Actual rollouts and environment/reward monitoring run during RL training.
-
-Main-pipeline exit codes: `0` passes the selected validation, `1` fails qualification, and `2` indicates a configuration or infrastructure failure.
-
-## 3. Run RL training
-
-The local training implementation lives in `src/rl/` and uses MLX/Metal on Apple Silicon. Prepare a qualified sandbox and a compatible MLX policy model:
-
-```bash
-uv sync --extra rl
-./scripts/train_rl.sh --help
-
-./scripts/train_rl.sh \
-  --sandbox output/artifacts/artifact-1/sandbox \
-  --model /absolute/path/to/mlx-model \
-  --output output/rl_runs/grpo-new \
-  --algorithm grpo --tuning qat \
-  --epochs 2 --batch-size 1 --mini-batch-size 1 --rollout-group 4
-```
-
-Use `--algorithm ppo` for PPO with critic training; GRPO does not use a critic. Use `--tuning lora` for LoRA or `--tuning full` for full parameter training on floating-point weights with sufficient memory. Use `--tuning qat --qat-scope full` for full parameter QAT and standalone quantized export; this still requires memory for all FP32 masters and Adam states. Original Qwen3 supports `--thinking-mode thinking` / `no-thinking`. Supply a multi-sandbox dataset through `--tasks PATH`; see the [training guide](docs/agent_rl.md) for its format. Use a new output directory for a new run, or `--resume` with a compatible configuration to continue an existing run.
-
-See the [step-by-step RL training guide (Chinese)](docs/agent_rl.md#使用指南从准备到导出) for setup, multiple sandboxes, thinking modes, full/QLoRA/QAT training, TensorBoard, recovery, and HF export.
-
-Optimization options include configurable QLoRA targets, activation recomputation, chunked logits/prefill, packed QAT inference copies, independent checkpoint/publication intervals, and memory profiling. `scripts/convert_to_hf.sh` exports HF / PEFT models; see the [optimization and CUDA guide](docs/agent_rl.md#第一第二阶段优化配置).
-
-Training writes TensorBoard metrics and one live rollout text trace per group by default.
-Run `./scripts/train_dashboard.sh --logdir output/rl_runs/grpo-new/tensorboard` in another terminal
-and open `http://127.0.0.1:6006`. Use `--rollout-trace-samples N` to change trace sampling,
-or `--no-tensorboard` to disable event files while retaining append-only JSONL logs.
-Held-out evaluation runs every 100 optimizer steps at batch boundaries. Zero-variance groups
-are retried then explicitly skipped by default. Old artifacts are pruned while protecting
-checkpoint, replay and worker references. Live metrics use JSONL; JSON exports are written on exit.
+`./scripts/run_pipeline.sh` is the main entry point (equivalent to `python -m env_factory run`):
 
 | Option | Meaning |
 | --- | --- |
-| `--epochs` | Full passes through the training sandbox dataset |
-| `--batch-size` | Sandbox visits processed per batch; skipped visits do not count as updates |
-| `--mini-batch-size` | Sandboxes per gradient update, retaining each complete rollout group |
-| `--rollout-group` | Trajectories sampled per sandbox visit |
-| `--rollout-workers` | Independent sampling processes |
-| `--rollout-concurrency` | Concurrent trajectories per sampling process |
+| `--count N` | number of tasks to generate |
+| `--domains-file FILE` / `--split NAME` | use a domain list, or sample a knowledge-graph split (needs Neo4j) |
+| `--mix SPEC` | task shapes, e.g. `direct=0.1,simple=0.25,ordinary=0.25,complex=0.4` |
+| `--english-share X` | share of English tasks |
+| `--parallel N` | concurrent generations / builds |
+| `--policy-k N` | policy-gate episodes per sandbox (0 skips) |
+| `--no-docker` | skip hardened images (not recommended) |
 
-**Reward timing:** After an episode ends, the RL framework calls `/v1/reward` to obtain the combined process and outcome score. Intermediate actions do not fetch rewards. PPO assigns the terminal reward to the last action; GRPO uses terminal scores for within-group comparison. Older sandboxes must be rebuilt to support the terminal-scoring protocol.
+Full reference: `./scripts/run_pipeline.sh --help`.
 
-The default **Docker Engine + manager** backend asynchronously prewarms sandboxes, serves rollouts over HTTP, and manages container reuse and cleanup. Kubernetes is not required for a single machine. See the [sandbox service guide](docs/agent_rl.md#单机-docker-engine--沙箱管理器默认) for standalone prewarming and remote services. For local development, explicitly select `--sandbox-backend local`.
+### Command line
 
-## 4. Quality checks and further reading
+| Command | Purpose |
+| --- | --- |
+| `python -m env_factory run` | run or resume the whole production line |
+| `python -m env_factory generate` | build requests for new business domains |
+| `python -m env_factory domains` | sample domains from the knowledge graph × business grid |
+| `python -m env_factory build` / `batch` | build one / many sandboxes |
+| `python -m env_factory verify BUNDLE [--resign]` | check a bundle's signature; re-certify after platform changes |
+| `python -m env_factory docker BUNDLE` | build the hardened image and verify it offline |
+| `python -m env_factory serve BUNDLE` | serve a sandbox over HTTP |
+| `python -m env_factory policy BUNDLE` | policy gate: an independent model plays k episodes |
+| `python -m env_factory findings` / `clarify` | list open business-rule questions / record the owner's answers |
 
-Task and sandbox quality scores use a 0–10 scale. A hard-gate failure sets the effective score to zero; raw scores and failure evidence remain available for diagnosis.
+### HTTP API
 
-```bash
-uv run python examples/score_tasks.py output/artifacts/artifact-1/task/task.json --min-score 8 \
-  --report output/task_quality_report.json
-uv run python scripts/sandbox/score_sandbox_offline.py output/artifacts/artifact-1/sandbox
+| Route | Meaning |
+| --- | --- |
+| `POST /reset` | start an episode; returns what the agent may see |
+| `POST /step` | one action: call a tool, talk to the user, wait, record an answer |
+| `POST /reward` | end and grade |
+| `POST /release` | release the episode |
+| `GET /health` | health check |
+
+## Project structure
+
+```text
+src/
+  env_factory/          main pipeline: sandbox generation, certification and serving
+    runtime.py          the contract generated code runs against (write, BusinessError, Episode)
+    checks.py           self-checks run inside code-agent sessions
+    core/               task model and grading: spec, sandbox, worlds, answers, reward, rubric, extract
+    serving/            HTTP service, the agent's view, simulated user
+    certify/            gates, signing, Docker, policy gate, tool fuzzing, policy sufficiency
+    authoring/          the build of one sandbox and its prompts
+    production/         end-to-end line: domains, request generation, openings, manuals, domain worlds
+  env_factory_v3/       compatibility alias of the former package name (older sandboxes still import it)
+  rl/                   training: rollout, algorithms, MLX backend, checkpoints, observability, export
+scripts/                production-line and training entry points
+experiments/            SFT demonstration collection, selection, training, interpolation, behaviour checks
+tests/                  unit and integration tests
+docs/                   architecture, domain-world design, training guide
 ```
 
-The detailed guides below are primarily in Chinese.
+## Configuration
 
-| Document | Contents |
+`.env` (see `.env.example`):
+
+| Variable | Meaning |
 | --- | --- |
-| [Code Agent authoring](docs/code_agent_authoring.md) | Business design, tools, interactions, and reward contracts |
-| [Task generation pipeline](docs/task_generation_pipeline.md) | Generation stages and artifacts |
-| [Runtime integrity](docs/runtime_integrity.md) | Shared runtime, validation, and evidence boundaries |
-| [Agent RL](docs/agent_rl.md) | Training options, asynchronous scheduling, QAT, Docker, and recovery |
-| [Code structure](docs/code_structure.md) | Entry points and module boundaries |
-| [Pipeline](docs/task_generation_pipeline.md) | Code Agent generation, construction and validation |
-| [Training material certification](docs/production_readiness.md) | Production material certification, a separate scope from local RL training |
+| `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | default model service; every language-model role falls back to it |
+| `USER_SIM_*` | simulated user (optional override) |
+| `JUDGE_*` | answer extraction, rubric judge, simulator audit (optional override) |
+| `OPENING_*` | opening and manual writers (optional override) |
+| `DOMAIN_*` | knowledge-graph domain proposals (optional override) |
+| `NEO4J_URI` / `NEO4J_USER` / `NEO4J_PASSWORD` | optional: knowledge graph |
+| `SANDBOX_SERVICE_TOKEN` | optional: bearer token required by `serve` |
+| `SIMULATOR_AUDIT=off` | optional: disable the simulator audit of failed episodes |
 
-### Realistic business sandboxes
+Per-episode protocol randomization during training is controlled by `ENVFACTORY_*` variables; see [docs/rl-training.md](docs/rl-training.md).
 
-The shared runtime supports permissions and state transitions, conditional user
-responses, virtual time and external events, bounded fault injection, idempotent
-retries, and compensating operations. Code Agent authors these mechanics through
-`business_lifecycle`; generation validation and generated sandboxes share the implementation.
+## Testing
 
-The [procurement and cancellation example](examples/realism/README.md) includes
-local and Docker HTTP exercises for competing inventory reservations, rejected
-split orders, committed writes with lost responses, payment failures, refunds and
-reservation release. Passing this example does not grant model-authored tasks
-`training_ready` status.
+```bash
+.venv/bin/python -m pytest -q
+```
 
-`--generation-hops N` sets the maximum graph hop count (0..20, default 2). Each generation attempt samples uniformly from 0 through N; zero hops means one node. The main pipeline always generates new tasks; `--task-ids` has been removed.
+Tests never call external model services; model-dependent parts use deterministic stand-ins.
+
+## Documentation
+
+| Document | Content |
+| --- | --- |
+| [docs/architecture.md](docs/architecture.md) | production line, gates, grading, the free-dialogue user, HTTP protocol |
+| [docs/domain-world-design.md](docs/domain-world-design.md) | domain worlds: one certified environment hosting many tasks |
+| [docs/rl-training.md](docs/rl-training.md) | SFT cold start and reinforcement-learning guide (Chinese) |
+
+## Contributing
+
+Issues and pull requests are welcome. Before submitting:
+
+1. run `.venv/bin/python -m pytest -q` and make sure it passes;
+2. changes to `runtime.py`, `core/`, `serving/` or `certify/` (except `policy_gate`) change the platform identity: existing sandboxes need `verify --resign`; say so in the PR;
+3. never commit model weights, credentials or anything under `output/`.
+
+## License
+
+No open-source license has been chosen yet.

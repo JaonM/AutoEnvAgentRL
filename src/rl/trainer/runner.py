@@ -1,7 +1,6 @@
 """Training entry point, sandbox ownership and run lifecycle."""
 
 import json
-import os
 from pathlib import Path
 import time
 import traceback
@@ -14,65 +13,13 @@ from rl.trainer.cli import parse_args
 
 
 def train(config: Config):
+    """Train on certified sandbox bundles; --sandbox-backend docker runs each bundle's verified container."""
     config.validate()
-    candidates = [Path(config.sandbox)] if config.sandbox else []
-    if config.tasks and Path(config.tasks).is_file():
-        manifest_path = Path(config.tasks).resolve()
-        entries = json.loads(manifest_path.read_text()).get('tasks', [])
-        candidates = [manifest_path.parent / entry['sandbox'] for entry in entries]
-    if any((root / 'contract.json').is_file() and (root / 'delivery.json').is_file() for root in candidates):
-        from rl.data.tasks import load_tasks
-        tasks = load_tasks(sandbox=config.sandbox, manifest=config.tasks)
-        v2_tasks = [(Path(task.sandbox) / 'contract.json').is_file() for task in tasks]
-        if not all(v2_tasks) or config.sandbox_backend != 'local' or config.sandbox_services:
-            raise ValueError('V2 currently requires an all-V2 task set and --sandbox-backend local')
-        if config.environment_factory == 'rl.environment:SandboxEpisode':
-            config.environment_factory = 'rl.environments.v2:V2Episode'
-        if config.environment_factory != 'rl.environments.v2:V2Episode':
-            raise ValueError('V2 tasks require rl.environments.v2:V2Episode')
-    from rl.environments.v3 import is_v3_bundle
-    v3 = any(is_v3_bundle(root) for root in candidates)
-    if v3:
-        # Each V3 environment starts its bundle's own verified container; no V1 manager.
-        if not all(is_v3_bundle(root) for root in candidates) or config.sandbox_services:
-            raise ValueError('V3 requires an all-V3 task set and no external sandbox services')
-        factory = ('rl.environments.v3:V3DockerEpisode' if config.sandbox_backend == 'docker'
-                   else 'rl.environments.v3:V3Episode')
-        if config.environment_factory == 'rl.environment:SandboxEpisode':
-            config.environment_factory = factory
-        if config.environment_factory != factory:
-            raise ValueError(f'V3 tasks with --sandbox-backend {config.sandbox_backend} require {factory}')
-    manager = None
-    try:
-        if config.sandbox_backend == "docker" and (not config.sandbox_services) and not v3:
-            from dotenv import load_dotenv
-            from rl.environments.services.docker_manager import DockerManager
-            from rl.data.tasks import load_tasks
-
-            load_dotenv(PROJECT_ROOT / ".env")
-            if not os.environ.get("SANDBOX_TRAINER_API_KEY"):
-                os.environ["SANDBOX_TRAINER_API_KEY"] = uuid.uuid4().hex
-            tasks = load_tasks(sandbox=config.sandbox, manifest=config.tasks)
-            images = (
-                json.loads(Path(config.sandbox_images).read_text())
-                if config.sandbox_images
-                else None
-            )
-            manager = DockerManager(
-                tasks,
-                Path(config.output) / "docker_services",
-                images=images,
-                max_active=config.sandbox_max_active,
-                startup_workers=config.sandbox_startup_workers,
-                idle_timeout=config.sandbox_idle_timeout,
-                cpus=config.sandbox_cpus,
-                memory=config.sandbox_memory,
-            )
-            config.sandbox_services = manager.start()
-        return _train_with_status(config)
-    finally:
-        if manager is not None:
-            manager.close()
+    factory = ("rl.environments.sandbox:DockerSandboxEpisode" if config.sandbox_backend == "docker"
+               else "rl.environments.sandbox:SandboxEpisode")
+    if config.environment_factory == "rl.environment:SandboxEpisode":
+        config.environment_factory = factory
+    return _train_with_status(config)
 
 
 def _train_with_status(config: Config):

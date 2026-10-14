@@ -51,21 +51,6 @@ def initialize(session: TrainingSession, config, run_id, checkpoint_saver):
     load_dotenv(PROJECT_ROOT / ".env")
     os.environ.pop("SANDBOX_EVALUATOR_MOCK", None)
     os.environ["SANDBOX_MUTATION_MODE"] = "disabled"
-    if session.config.sandbox_services:
-        session.config.sandbox_services = str(Path(session.config.sandbox_services).resolve())
-        if not os.environ.get("SANDBOX_TRAINER_API_KEY"):
-            raise ValueError(
-                "remote sandbox requires SANDBOX_TRAINER_API_KEY matching the sandbox service"
-            )
-        if session.config.environment_factory not in (
-            "rl.environment:SandboxEpisode",
-            "rl.remote_environment:RemoteSandboxEpisode",
-        ):
-            raise ValueError("sandbox_services conflicts with custom environment_factory")
-        session.config.environment_factory = "rl.remote_environment:RemoteSandboxEpisode"
-        os.environ["RL_SANDBOX_SERVICES"] = session.config.sandbox_services
-    else:
-        os.environ["SANDBOX_TRAINER_API_KEY"] = uuid.uuid4().hex
     session.tasks = load_tasks(sandbox=session.config.sandbox, manifest=session.config.tasks)
     session.schedule = DatasetSchedule(
         session.tasks,

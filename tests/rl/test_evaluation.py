@@ -13,7 +13,7 @@ def test_evaluation_aggregates_tasks_and_closes_environments(monkeypatch):
         assert greedy
         return {'final_reward': 1. if environment.root == 'train' else .2,
                 'terminated': environment.root == 'train', 'seed': seed}
-    monkeypatch.setattr(evaluation, 'SandboxEpisode', Environment)
+    monkeypatch.setattr(evaluation, 'create_runtime', lambda factory, root: Environment(root))
     monkeypatch.setattr(evaluation, 'rollout', rollout)
     result = evaluation.evaluate(None, [TaskSpec('a','train'),TaskSpec('b','eval',split='eval')],
                                  {'seed':42,'eval_episodes':2})

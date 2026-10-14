@@ -3,7 +3,6 @@ import sqlite3
 from types import SimpleNamespace
 import pytest
 from rl.parallel_rollout import EnvironmentPool, parallel_rollouts
-from rl.environment import SandboxEpisode
 
 
 class ResumableRuntime:
@@ -61,30 +60,6 @@ def test_lost_step_reply_resumes_environment_without_repeating_committed_action(
     assert json.loads((continuation / 'progress.json').read_text())['completed'] == episodes
     # Fully completed groups require no runtime or policy invocation on recovery.
     assert parallel_rollouts(None, SimpleNamespace(workers=[]), config, 42, continuation=continuation) == episodes
-
-
-def test_sandbox_snapshot_restores_sqlite_and_conversation(tmp_path):
-    path = tmp_path / 'episode.sqlite3'
-    with sqlite3.connect(path) as db:
-        db.execute('CREATE TABLE state (value TEXT)')
-        db.execute("INSERT INTO state VALUES ('before')")
-    episode = SandboxEpisode.__new__(SandboxEpisode)
-    episode.app = SimpleNamespace(episode_store=SimpleNamespace(db_path=str(path)))
-    episode.messages = [{'role':'user', 'content':'before'}]
-    episode.conversation = list(episode.messages)
-    episode.reward, episode.terminated, episode.trace, episode.names = .5, False, [], {'tool'}
-    episode.tools = [{'type': 'function', 'function': {'name': 'tool'}}]
-    saved = episode.snapshot()
-    with sqlite3.connect(path) as db:
-        db.execute("UPDATE state SET value='after'")
-    episode.messages = []
-    episode.tools = []
-    episode.restore(saved)
-    with sqlite3.connect(path) as db:
-        assert db.execute('SELECT value FROM state').fetchone()[0] == 'before'
-    assert episode.messages[0]['content'] == 'before'
-    assert episode.names == {'tool'} and episode.reward == .5
-    assert episode.tools == saved['tools']
 
 
 def test_real_rollout_workers_share_queue_and_publish_complete_groups(tmp_path):

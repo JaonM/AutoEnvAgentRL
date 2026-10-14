@@ -6,10 +6,16 @@ from rl.dataset import DatasetSchedule
 
 def qualified(root, task):
     root.mkdir()
-    (root/'task.json').write_text(json.dumps(task))
-    digest=hashlib.sha256((root/'task.json').read_bytes()).hexdigest()
-    (root/'status.json').write_text(json.dumps({'training_ready':True,'artifact_hashes':{'task.json':digest}}))
-    (root/'pipeline_result.json').write_text(json.dumps({'training_ready':True}))
+    (root/'manifest.json').write_text(json.dumps(task))
+
+
+@pytest.fixture(autouse=True)
+def bundles(monkeypatch):
+    """Stand-in sandbox bundles: a manifest.json whose content is the identity."""
+    from rl.environments import sandbox
+    monkeypatch.setattr(sandbox, 'is_sandbox_bundle', lambda root: (root/'manifest.json').is_file())
+    monkeypatch.setattr(sandbox, 'bundle_identity',
+                        lambda root: hashlib.sha256((root/'manifest.json').read_bytes()).hexdigest())
 
 
 def test_manifest_checks_identity_and_separates_eval(tmp_path):

@@ -3,7 +3,6 @@
 from dataclasses import asdict
 from contextlib import contextmanager
 from rl.rollout.worker import rollout
-from rl.environments.local import SandboxEpisode
 from rl.data.contracts import create_runtime
 
 
@@ -11,11 +10,8 @@ def evaluate(policy, tasks, config):
     config = asdict(config) if not isinstance(config, dict) else config
     episodes = []
     for task in tasks:
-        environment = (
-            SandboxEpisode(task.sandbox)
-            if config.get("environment_factory", "rl.environment:SandboxEpisode")
-            == "rl.environment:SandboxEpisode"
-            else create_runtime(config["environment_factory"], task.sandbox)
+        environment = create_runtime(
+            config.get("environment_factory", "rl.environment:SandboxEpisode"), task.sandbox
         )
         try:
             for offset in range(config.get("eval_episodes", 1)):

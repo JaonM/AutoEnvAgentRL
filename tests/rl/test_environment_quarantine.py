@@ -127,29 +127,3 @@ def test_trainer_never_optimizes_or_replays_quarantined_group(tmp_path, monkeypa
     assert summary['totals']['quarantined_jobs'] == 1
     assert summary['totals']['reward_success_rate'] is None
     assert emitted[0][0] == ('task/quarantined',)
-
-
-def test_external_judge_fallback_is_retryable_not_permanent_quarantine():
-    from rl.environments.local import SandboxEpisode
-    from rl.errors import InfrastructureError
-    episode = SandboxEpisode.__new__(SandboxEpisode)
-    episode.reward = None
-    episode.terminated = True
-    episode.trace = []
-    def request(method, path):
-        if path == '/v1/reward':
-            return 200, {'reward': 0}
-        return 200, {'events': [{'event': 'evaluator_call', 'payload': {
-            'used_fallback': True, 'judgment_obtained': False}}]}
-    episode.request = request
-    with pytest.raises(InfrastructureError, match='used fallback'):
-        episode.finish()
-
-
-def test_invalid_numeric_reward_remains_non_retryable_protocol_failure():
-    from rl.environments.local import SandboxEpisode
-    episode = SandboxEpisode.__new__(SandboxEpisode)
-    episode.reward = None
-    episode.request = lambda *args: (200, {'reward': float('nan')})
-    with pytest.raises(ValueError, match='non-finite'):
-        episode.finish()

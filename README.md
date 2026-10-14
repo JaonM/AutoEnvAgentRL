@@ -1,223 +1,241 @@
+<div align="center">
+
 # AutoEnvAgentRL
+
+**自动生成可认证的业务沙箱，用 SFT + 强化学习训练会使用工具的对话 Agent。**
 
 [中文](README.md) | [English](README-en.md)
 
-**从知识图谱生成可交互任务，构建可执行沙箱，并用于 Agentic RL 训练。**
+![Python](https://img.shields.io/badge/python-3.14%2B-blue)
+![Platform](https://img.shields.io/badge/platform-Apple%20Silicon%20%7C%20MLX-black)
+![Docker](https://img.shields.io/badge/sandbox-Docker-2496ED)
+![Tests](https://img.shields.io/badge/tests-pytest-green)
 
-**一切都在你的 macbook/studio 上完成。**
+</div>
 
-项目目标是让 Agent 在有真实业务约束的环境中学习：向用户澄清需求、调用工具、使用前一步的结果完成后续操作，最终交付可验证的业务结果。项目将任务、业务数据、用户剧本、工具和奖励组织为统一契约，通过共享运行时和多层验收减少生成与构建的不一致。
+---
 
-主入口：`scripts/run_pipeline.sh` → `python -m env_factory_v3 run`（V3 端到端：领域采样 → 任务生成 → 沙箱构建 → Docker → policy gate → tasks.json）。下文描述的 V1/V2 流水线入口已改名为 `scripts/run_pipeline_legacy.sh` → `python -m env_factory.task_pipeline`。
+## 目录
 
-V1/V2：任务生成和沙箱构建仅支持 Code Agent（Codex、Claude、OpenCode）；默认作者及构建模型为 `gpt-6.1-sol`。不再提供旧模型阶段、规格原型或循环实验入口。
+- [简介](#简介)
+- [特性](#特性)
+- [工作原理](#工作原理)
+- [快速开始](#快速开始)
+- [使用](#使用)
+- [项目结构](#项目结构)
+- [配置](#配置)
+- [测试](#测试)
+- [文档](#文档)
+- [贡献](#贡献)
+- [许可证](#许可证)
 
-拟真机制统一按业务契约生成和验收，不再区分 standard/recovery。适合有状态场景的多步任务按正常／外部变化／故障恢复 50%／30%／20% 分配要求；单样本按该概率抽样。运行结果按机制汇总到 `realism_summary.json`。
+## 简介
 
-## 项目主旨
+训练一个能在真实业务里办事的 Agent（客服、预订、售后……），需要大量**可交互、可判分**的环境：Agent 要和用户多轮对话、按政策办事、调用工具改动数据，最后得到一个能自动判定对错的结果。手工搭建这样的环境成本很高，让大模型直接生成又很难保证判分可信。
 
-- **生成任务**：Code Agent 根据 Scene 图谱路径设计任务、业务数据、工具、参考轨迹与奖励，覆盖直接回答、单步和多步 Agentic 任务。
-- **构建环境**：将任务契约编译为沙箱，提供状态持久化、工具接口、用户模拟器与奖励接口；Code Agent 补充业务实现。
-- **验证质量**：前置结构检查、独立语义审核、成功与失败轨迹、反事实测试以及 Docker 可执行验收，筛选可用于训练的环境。
-- **训练 Agent**：在 Apple Silicon 上使用 MLX 运行异步 PPO / GRPO，支持并行 rollout、批量解码、有限旧策略数据复用及量化感知微调（QAT）。
+AutoEnvAgentRL 把这件事做成一条自动生产线：
+
+1. 由代码 Agent 为每个业务场景编写**可执行的 Python 沙箱**（数据、工具、参考解）和一个**独立的 oracle**；
+2. 两份独立实现必须在原始世界、审批翻转和扰动世界上**完全一致**，才算通过认证；
+3. 认证后的沙箱以 HTTP 服务对外，配有大模型扮演的用户，可直接用于 **SFT 示范采集和强化学习**；
+4. 训练框架在 Apple Silicon 上运行，一台 Mac 即可完成生成、认证和训练。
+
+## 特性
+
+- **可信的奖励**：环境与 oracle 由不同会话独立编写，经差分认证、反例检查、分支与扰动审计后才接受；奖励由 oracle 计算，作者从不编写奖励代码。
+- **确定的判分，真实的对话**：模拟用户由大模型扮演，只负责"怎么说"；是否同意写操作、选择哪个方案等决定都来自结构化事实，由平台执行，因此奖励完全确定。
+- **丰富的用户剧本**：多诉求、备选方案、坚持不合理要求、记错编号、意图含糊、拿不定主意、追问后再决定、中途改主意、超出范围等，组合出多轮、多样的对话。
+- **安全约束**：未经用户同意的写操作使整局奖励为 0；支持"提议 + 授权凭证"和"纯对话确认"两种同意协议。
+- **按说话判分**：Agent 像真人客服一样把结果说给用户，平台从对话中抽取答案，并校验每个数字和编号确实被说出。
+- **加固的运行环境**：生成代码通过静态沙箱规则检查；每个沙箱打包成只读、无权限、非 root 的 Docker 镜像，并在断网条件下复验全部认证项。
+- **为迁移而设计的训练**：每局随机化工具名、同意协议、工具返回格式和 system prompt 版式，让策略学会读说明再行动。
+- **本地训练**：基于 MLX 的异步 PPO / GRPO，支持并行 rollout、批量解码、LoRA / QAT / 全参数微调、断点续训。
+
+## 工作原理
 
 ```text
-Scene 知识图谱
-    ↓
-Code Agent 生成任务 → 前置检查与语义审核
-    ↓
-沙箱构建 → 契约、奖励与 Docker 可执行验收
-    ↓
-Docker 沙箱服务 ← HTTP → 并行 rollout workers
-                              ↓
-                     完整轨迹与终局奖励
-                              ↓
-                     Actor：PPO / GRPO 更新
+业务领域（知识图谱采样或领域清单）
+        │
+        ▼
+请求生成：代码 Agent 写业务规则、数据、用户事实与剧本 → 大模型写用户开场白与对外政策手册
+        │
+        ▼
+沙箱构建：答案格式 → 环境（工具 + 参考解）∥ 独立 oracle → 差分认证 → 仲裁 → 审计 → 全部门禁
+        │
+        ▼
+交付：签名的沙箱包 → 加固 Docker 镜像离线复验 → policy gate（强模型在自由对话中实际求解）
+        │
+        ▼
+tasks.json ──► 示范采集 → SFT 冷启动 ──► 强化学习（GRPO / PPO）
 ```
 
-通过门禁表示满足当前训练接入条件，不代表已经证明训练后的模型能力提升。
+每个认证沙箱（bundle）包含：
 
-## 1. 安装与配置
+| 文件 | 内容 |
+| --- | --- |
+| `request.json` | 用户请求、业务规则、对外手册、数据表、用户私人事实与剧本 |
+| `env.py` | 工具实现与参考解（只能导入 `env_factory.runtime`） |
+| `oracle.py` | 独立计算的期望结果（最终状态 + 答案） |
+| `answer_schema.json` | 答案格式与判分字段 |
+| `gates.json`、`manifest.json` | 认证报告与按平台身份签名的文件哈希 |
+
+## 快速开始
 
 ### 环境要求
 
 | 用途 | 要求 |
 | --- | --- |
-| 项目基础环境 | Python ≥ 3.14、uv |
-| 图谱与任务生成 | 可访问的 Neo4j、模型服务、已安装并认证的 Code Agent CLI |
-| 沙箱构建与默认训练服务 | Docker Engine；macOS 可使用 Docker Desktop |
-| 本地 RL 训练 | Apple Silicon、Metal，以及 `rl` 可选依赖 |
+| 基础 | macOS（Apple Silicon）、Python ≥ 3.14、[uv](https://github.com/astral-sh/uv) |
+| 沙箱生成与构建 | 已安装并登录的 [Codex CLI](https://github.com/openai/codex) |
+| 用户模拟、开场白、评审 | OpenAI 兼容的对话模型服务（默认 DeepSeek） |
+| 加固镜像与训练环境 | Docker Desktop / Docker Engine |
+| 可选 | Neo4j（从知识图谱采样业务领域） |
 
-在项目根目录执行：
+### 安装
 
 ```bash
-uv sync
-cp .env.example .env
+git clone <repo-url> && cd EnvFactory
+uv sync                 # 生成与认证
+uv sync --extra rl      # 本地训练（MLX）
+cp .env.example .env    # 填写 LLM_API_KEY 等
 ```
 
-编辑 `.env`，填写 Neo4j 连接信息和模型服务配置。不要提交实际凭据。主要配置角色如下：
+### 生成第一批沙箱
 
-| 配置 | 用途 |
+```bash
+# 准备一个领域清单
+cat > domains.json <<'EOF'
+[{"name": "Airline flight changes", "detail": "改签、退票、行李"},
+ {"name": "Online retail returns", "detail": "退货、换货、退款"}]
+EOF
+
+./scripts/run_pipeline.sh --domains-file domains.json --count 4 --parallel 2 --output output/run_demo
+```
+
+运行结束后，`output/run_demo/tasks.json` 列出可直接训练的沙箱，`report.md` 汇总每个任务的结果与淘汰原因。同一个 `--output` 再次运行会从中断处续跑。
+
+### 试玩一个沙箱
+
+```bash
+# 以 HTTP 服务方式启动，自由对话模式由大模型扮演用户
+.venv/bin/python -m env_factory serve output/run_demo/build/gen-000/bundle --port 8090 --user-mode natural
+
+# 让一个强模型在自由对话中实际玩 4 局（policy gate）
+.venv/bin/python -m env_factory policy output/run_demo/build/gen-000/bundle --k 4 --user-mode natural
+```
+
+### 训练
+
+```bash
+./scripts/train_rl.sh --tasks output/run_demo/tasks.json --model models/Qwen3-0.6B \
+  --output output/train-demo --tuning lora --rollout-group 8 --rollout-concurrency 8 --max-steps 30
+```
+
+SFT 冷启动、示范采集与行为检查见 [docs/rl-training.md](docs/rl-training.md)。
+
+## 使用
+
+### 端到端生产线
+
+`./scripts/run_pipeline.sh` 是主入口（等价于 `python -m env_factory run`），常用参数：
+
+| 参数 | 说明 |
 | --- | --- |
-| `NEO4J_URI`、`NEO4J_USER`、`NEO4J_PASSWORD`、`NEO4J_DATABASE` | Scene 图谱数据库 |
-| `LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL` | 通用模型服务及角色配置的回退值 |
-| `SANDBOX_LLM_*` | 沙箱用户模拟器与模型评分器 |
-| `GRAPH_SEEDS_FILE` | 图谱种子词文件，每行一个词语 |
-| `WIKIPEDIA_DUMP_DB` | 可选的本地 Wikipedia 索引；未配置时使用在线来源 |
+| `--count N` | 生成的任务数 |
+| `--domains-file FILE` / `--split NAME` | 使用领域清单，或从知识图谱划分采样（需要 Neo4j） |
+| `--mix SPEC` | 任务形态比例，如 `direct=0.1,simple=0.25,ordinary=0.25,complex=0.4` |
+| `--english-share X` | 英文任务占比 |
+| `--parallel N` | 并发生成 / 构建数 |
+| `--policy-k N` | policy gate 每个沙箱的对局数（0 跳过） |
+| `--no-docker` | 跳过加固镜像（不推荐） |
 
-任务作者、沙箱构建和独立审查使用所选 **Code Agent CLI 的认证与模型配置**。`--code-agent-model` 不改变独立诊断或用户模拟器模型；RL 训练的策略模型另外通过 `train_rl.sh --model` 指定。
+完整说明：`./scripts/run_pipeline.sh --help`。
 
-### 准备知识图谱
+### 命令行
 
-已有 Scene 图谱时可跳过此步。否则先配置种子词和 Neo4j，再运行：
+| 命令 | 作用 |
+| --- | --- |
+| `python -m env_factory run` | 运行或续跑整条生产线 |
+| `python -m env_factory generate` | 为新的业务领域生成构建请求 |
+| `python -m env_factory domains` | 从知识图谱 × 业务网格采样领域 |
+| `python -m env_factory build` / `batch` | 构建一个 / 一批沙箱 |
+| `python -m env_factory verify BUNDLE [--resign]` | 校验沙箱签名；平台代码变化后重新认证 |
+| `python -m env_factory docker BUNDLE` | 构建加固镜像并离线复验 |
+| `python -m env_factory serve BUNDLE` | 以 HTTP 服务运行沙箱 |
+| `python -m env_factory policy BUNDLE` | policy gate：独立模型实际求解 k 局 |
+| `python -m env_factory findings` / `clarify` | 查看业务规则中的待澄清问题 / 写入业务方答复 |
 
-```bash
-./scripts/build_graph.sh --help
-./scripts/build_graph.sh
-```
+### HTTP 接口
 
-本地 Wikipedia 数据索引的准备方法见脚本 `scripts/download_wikipedia_dump.sh`、`scripts/index_wikipedia_dump.sh`。图谱构建会增量写入 Neo4j。
+| 路由 | 说明 |
+| --- | --- |
+| `POST /reset` | 开始一局，返回 Agent 可见的说明 |
+| `POST /step` | 执行一个动作：调用工具、对用户说话、等待、记录答案 |
+| `POST /reward` | 结束并判分 |
+| `POST /release` | 释放 episode |
+| `GET /health` | 健康检查 |
 
-## 2. 生成任务并构建沙箱
-
-```bash
-# 查看参数；预览命令，不调用模型、图谱或 Docker
-./scripts/run_pipeline_legacy.sh --help
-./scripts/run_pipeline_legacy.sh --dry-run
-
-# 默认生成并构建 1 个任务
-./scripts/run_pipeline_legacy.sh
-
-# 生成并构建 5 个任务，指定输出目录
-./scripts/run_pipeline_legacy.sh --count 5 --output output/my_tasks
-
-# 恢复型复杂任务：强制有状态多步生成，验证外部事件与故障恢复
-
-# 指定生成语种与 Code Agent 模型
-./scripts/run_pipeline_legacy.sh --code-agent-model gpt-6.1-sol --language en
-```
-
-### 常用参数
-
-| 参数 | 默认值 | 说明 |
-| --- | --- | --- |
-| `--count` | `1` | 新生成的任务数量；不保证全部通过验收 |
-| `--output` | `output` | 任务、沙箱与日志的输出根目录 |
-| `--code-agent` | `codex` | 支持 `codex`、`claude`、`opencode` |
-| `--code-agent-model` | `gpt-6.1-sol` | 任务生成模型；非 codex 必须显式设置 |
-| `--sandbox-model` | `gpt-6.1-sol`（Codex） | 沙箱构建与独立审查模型；其他 CLI 默认沿用任务生成模型 |
-| `--language` | `zh-CN` | 生成内容语种，例如 `en`、`ja`；不翻译平台日志 |
-| `--code-agent-timeout` | `600` | 生成与修复模型进程累计预算；不含父进程验收，独立审查每次另有 180 秒 |
-
-良品率优化路线与验收标准见 [优化方案](docs/plans/astra-quality-improvement.md)。
-
-默认目标类别比例为直接回答 20%、单步 Agentic 30%、多步 Agentic 50%；小样本实际数量以分配结果为准。主链路没有单样本 5 分钟硬截止。
-
-切换 CLI 时，先完成对应工具安装与认证，再传入账号可用的模型标识：
-
-```bash
-./scripts/run_pipeline_legacy.sh --code-agent claude --code-agent-model YOUR_MODEL
-./scripts/run_pipeline_legacy.sh --code-agent opencode --code-agent-model PROVIDER/MODEL
-
-```
-
-只生成任务，或专门生成多步任务：
-
-```bash
-./scripts/generate_task.sh --count 5
-./scripts/generate_task.sh --training-category multi_step_agentic --count 5
-```
-
-`--generation-hops N` 设置图谱跳数上限（0..20，默认 2）；每次生成尝试均匀抽取 0..N 跳，0 跳表示单个节点。主流水线每次生成新任务，不再提供 `--task-ids`。
-
-### 产物与日志
+## 项目结构
 
 ```text
-output/
-├── artifacts/
-│   └── artifact-N/
-│       ├── task/          # 任务契约、业务数据、用户剧本与生成证据
-│       └── sandbox/       # 沙箱代码、构建日志、验收报告与 status.json
-├── logs/pipeline-*        # 每次主链路运行的独立终端日志
-├── generation.log        # 主链路任务生成日志
-└── pipeline_events.jsonl  # 阶段、耗时、结果与运行 ID
+src/
+  env_factory/          主链路：沙箱生成、认证与服务
+    runtime.py          生成代码的运行契约（write、BusinessError、Episode）
+    checks.py           代码 Agent 会话中运行的自检
+    core/               任务模型与判分：spec、sandbox、worlds、answers、reward、rubric、extract
+    serving/            HTTP 服务、Agent 视角、模拟用户
+    certify/            认证门禁、签名、Docker、policy gate、工具模糊测试、手册充分性
+    authoring/          单个沙箱的构建流程与提示
+    production/         端到端生产线：领域、请求生成、开场白、对外手册、领域世界
+  env_factory_v3/       旧包名的兼容别名（早期沙箱中的生成代码仍可导入）
+  rl/                   训练框架：rollout、算法、MLX 后端、检查点、观测、导出
+scripts/                生产线与训练入口
+experiments/            SFT 示范采集、筛选、训练、插值、行为检查等工具
+tests/                  单元与集成测试
+docs/                   架构、领域世界设计、训练指南
 ```
 
-新任务编号自动递增。失败任务保留诊断信息，其他合格任务继续构建。
+## 配置
 
-训练接入检查 `status.json` 和 `pipeline_result.json` 的 **`training_ready == true`**，并校验产物哈希；仅有构建 `success` 或高质量分不够。`training_ready` 表示允许进入训练，不代表经过真实策略验证。构建不运行真实 rollout 或 live 奖励校准，评分完全来自 10 分制可执行验收；对应 live 检查记录为 `not_run`。训练阶段继续执行真实 rollout，观察环境错误、终局奖励与策略成功率。
+`.env`（参考 `.env.example`）：
 
-主链路退出码：`0` 通过当前验收，`1` 不合格，`2` 配置或基础设施失败。
-
-## 3. 运行 RL 训练
-
-当前本地训练实现位于 `src/rl/`，使用 Apple Silicon 的 MLX/Metal。准备合格沙箱与兼容的 MLX 策略模型：
-
-```bash
-uv sync --extra rl
-./scripts/train_rl.sh --help
-
-./scripts/train_rl.sh \
-  --sandbox output/artifacts/artifact-1/sandbox \
-  --model /absolute/path/to/mlx-model \
-  --output output/rl_runs/grpo-new \
-  --algorithm grpo --tuning qat \
-  --epochs 2 --batch-size 1 --mini-batch-size 1 --rollout-group 4
-```
-
-`--algorithm ppo` 启用 PPO 和 critic 训练；GRPO 不使用 critic。`--tuning lora` 可切换为 LoRA；`--tuning full` 对浮点底座进行全参训练（需足够内存）。`--tuning qat --qat-scope full` 启用全参 QAT，并导出完整量化模型；它仍需全量 FP32 master/Adam 内存。原版 Qwen3 可用 `--thinking-mode thinking` / `no-thinking` 控制思考模式。多沙箱数据集通过 `--tasks PATH` 传入，格式见[训练文档](docs/agent_rl.md)。新运行使用新的输出目录，续训使用 `--resume` 并保持运行配置兼容。
-
-按步骤操作见 [RL 训练使用指南](docs/agent_rl.md#使用指南从准备到导出)：环境与模型准备、多沙箱、thinking、全参/QLoRA/QAT、TensorBoard、续训和 HF 导出。
-
-新增全层 QLoRA targets、activation 重算、logits/prefill 分块、packed QAT 推理副本、独立提交/发布频率和实测内存探针。`scripts/convert_to_hf.sh` 可导出标准 HF / PEFT 模型；详见[优化配置](docs/agent_rl.md#第一第二阶段优化配置)和[CUDA 转换](docs/agent_rl.md#转换到-cuda-生态)。
-
-训练默认记录 TensorBoard 曲线及每组一条实时 rollout 文本轨迹。在另一个终端运行
-`./scripts/train_dashboard.sh --logdir output/rl_runs/grpo-new/tensorboard`，
-浏览器打开 `http://127.0.0.1:6006`。用 `--rollout-trace-samples N` 调整轨迹数量，
-`--no-tensorboard` 关闭看板事件；追加式 JSONL 日志仍保留。详见[看板说明](docs/agent_rl.md#实时-tensorboard-看板)。
-默认每 100 个 optimizer step 在 batch 边界评估 held-out 任务；零方差组有限重试后跳过。
-运行中清理受保护引用之外的旧产物，实时指标使用 JSONL，完整 JSON 在退出时导出。
-参数与恢复语义见[长训练说明](docs/agent_rl.md#长训练稳定性性能与周期评估)。
-
-| 参数 | 含义 |
+| 变量 | 说明 |
 | --- | --- |
-| `--epochs` | 遍历训练沙箱数据集的次数 |
-| `--batch-size` | 每批按完成顺序处理的沙箱访问数，跳过不计有效更新 |
-| `--mini-batch-size` | 每个梯度更新 step 使用的沙箱数，保留各自完整 rollout group |
-| `--rollout-group` | 每次访问一个沙箱时采样的轨迹数 |
-| `--rollout-workers` | 独立采样进程数 |
-| `--rollout-concurrency` | 每个采样进程同时推进的轨迹数 |
+| `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | 默认模型服务，所有大模型角色都会回退到它 |
+| `USER_SIM_*` | 模拟用户（可选覆盖） |
+| `JUDGE_*` | 答案抽取、主观评审、模拟用户审计（可选覆盖） |
+| `OPENING_*` | 开场白与对外手册撰写（可选覆盖） |
+| `DOMAIN_*` | 知识图谱领域提议（可选覆盖） |
+| `NEO4J_URI` / `NEO4J_USER` / `NEO4J_PASSWORD` | 可选：知识图谱 |
+| `SANDBOX_SERVICE_TOKEN` | 可选：`serve` 要求的访问令牌 |
+| `SIMULATOR_AUDIT=off` | 可选：关闭失败对局的模拟用户审计 |
 
-**奖励时机**：episode 结束后，由 RL 框架调用 `/v1/reward`，统一获取过程与结果综合分；中间 action 不取分。PPO 将终局奖励放在最后一个 action，GRPO 使用终局分做组内比较。旧沙箱需要重建运行时以支持终局评分协议。
+训练时 episode 的协议随机化通过 `ENVFACTORY_*` 环境变量控制，见 [docs/rl-training.md](docs/rl-training.md)。
 
-默认使用 **Docker Engine + 管理器**异步预热沙箱，通过 HTTP 执行 rollout，并管理容器复用与回收。无需单机部署 Kubernetes。独立预热与远程服务接入见[沙箱服务说明](docs/agent_rl.md#单机-docker-engine--沙箱管理器默认)；本地开发可显式选择 `--sandbox-backend local`。
-
-## 4. 质量检查与进一步阅读
-
-任务和沙箱质量评分均为 0–10 分制；硬门禁失败时有效分为 0，原始分和失败证据用于诊断。
+## 测试
 
 ```bash
-uv run python examples/score_tasks.py output/artifacts/artifact-1/task/task.json --min-score 8 \
-  --report output/task_quality_report.json
-uv run python scripts/sandbox/score_sandbox_offline.py output/artifacts/artifact-1/sandbox
+.venv/bin/python -m pytest -q
 ```
+
+测试不调用外部模型服务；涉及模型的部分使用确定性的替身。
+
+## 文档
 
 | 文档 | 内容 |
 | --- | --- |
-| [Code Agent 编写规范](docs/code_agent_authoring.md) | 业务设计、工具、交互与奖励契约 |
-| [任务生成流水线](docs/task_generation_pipeline.md) | 生成阶段与产物结构 |
-| [运行时一致性](docs/runtime_integrity.md) | 共享运行时、验收与证据边界 |
-| [Agent RL](docs/agent_rl.md) | 训练参数、异步调度、QAT、Docker 与恢复 |
-| [代码结构](docs/code_structure.md) | 代码入口与模块边界 |
-| [流水线](docs/task_generation_pipeline.md) | Code Agent 生成、构建与验收 |
-| [训练素材准备认证](docs/production_readiness.md) | production 素材认证；与本地 RL 训练是不同范围 |
+| [docs/architecture.md](docs/architecture.md) | 生产线、门禁、判分、自由对话用户、HTTP 协议的详细说明 |
+| [docs/domain-world-design.md](docs/domain-world-design.md) | 领域世界：一个认证环境承载多个任务 |
+| [docs/rl-training.md](docs/rl-training.md) | SFT 冷启动与强化学习训练指南 |
 
-### 拟真业务沙箱
+## 贡献
 
-主运行时支持业务权限与状态迁移、条件式用户回应、虚拟时间和外部事件、
-有限故障注入、幂等重试及跨步骤补偿。Code Agent 可通过 `business_lifecycle`
-配置这些机制，预验收和生成沙箱使用同一实现。
+欢迎提交 Issue 和 Pull Request。提交前请：
 
-[采购与取消示例](examples/realism/README.md) 提供本地和 Docker HTTP 验收命令，
-覆盖库存竞争、拒绝拆单、提交成功但响应丢失、支付失败和退款释放库存。
-示例验收通过不等于模型生成任务已经获得 `training_ready`。
+1. 运行 `.venv/bin/python -m pytest -q` 并保证通过；
+2. 修改 `runtime.py`、`core/`、`serving/`、`certify/`（`policy_gate` 除外）会改变平台身份，已有沙箱需要 `verify --resign` 重新认证，请在 PR 中说明；
+3. 不要提交模型权重、凭据或 `output/` 下的产物。
+
+## 许可证
+
+尚未指定开源许可证。

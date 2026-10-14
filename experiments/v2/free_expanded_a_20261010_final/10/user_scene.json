@@ -1,6 +1,0 @@
-{
-  "situation": "设备故障准备送修",
-  "desired_outcome": "知道是否保修以及检修费",
-  "known_information": {},
-  "communication": "自然、简洁；可有合理省略；不要主动编写平台执行步骤"
-}
