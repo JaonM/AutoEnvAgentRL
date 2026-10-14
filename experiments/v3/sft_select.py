@@ -98,6 +98,9 @@ def main():
     parser.add_argument('--min-tasks', type=int, default=500)
     parser.add_argument('--skill-min', type=int, default=100)
     parser.add_argument('--allow-short', action='store_true', help='write the selection even if targets are missed')
+    parser.add_argument('--dev-domains', type=int, default=4,
+                        help='domains held out of the selection for the behaviour check (dev_check.py)')
+    parser.add_argument('--dev-output', help='where to write the held-out task list')
     parser.add_argument('--seed', type=int, default=0)
     args = parser.parse_args()
     sandboxes = {t['id']: t['sandbox'] for path in args.tasks for t in json.loads(Path(path).read_text())['tasks']}
@@ -107,6 +110,13 @@ def main():
         domain = (request.get('source') or {}).get('generated') or request.get('family') or task_id
         meta[task_id], requests[task_id] = (request['category'], request.get('language', 'zh'), domain), request
     rng = random.Random(args.seed)
+    import hashlib
+    all_domains = sorted({m[2] for m in meta.values()}, key=lambda d: hashlib.sha256(str(d).encode()).hexdigest())
+    held = set(all_domains[:args.dev_domains])
+    if args.dev_output:
+        dev = [{'id': t, 'sandbox': sandboxes[t], 'split': 'eval', 'weight': 1.0} for t in meta if meta[t][2] in held]
+        Path(args.dev_output).write_text(json.dumps({'tasks': dev, 'domains': sorted(held)}, ensure_ascii=False, indent=1))
+    meta = {t: m for t, m in meta.items() if m[2] not in held}
     episodes = [r for path in args.teacher for r in map(json.loads, Path(path).read_text().splitlines())
                 if r.get('success') and r.get('messages') and r['id'] in meta
                 and not r.get('speech_leaks') and failed_results(r['messages']) <= args.max_failed]
