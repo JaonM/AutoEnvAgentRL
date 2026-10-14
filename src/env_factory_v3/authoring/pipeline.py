@@ -93,7 +93,12 @@ class Build:
         if self.request.get('reward_type') == 'rubric':
             return self._run_rubric()
         folder = self.workdir('schema')
-        self.call(folder, prompts.SCHEMA, 'schema')
+        from env_factory_v3.production.world import task_schema
+        composed = task_schema(self.request.get('goal_schema'), self.request['user_facts'].get('goals'))
+        if composed is not None:  # a world: the answer contract comes from its processes' outcome shapes
+            (folder / 'answer_schema.json').write_text(json.dumps(composed, ensure_ascii=False, indent=1))
+        else:
+            self.call(folder, prompts.SCHEMA, 'schema')
         report = checks.run('schema', folder)
         self.stage('schema', passed=report['passed'], problems=report['problems'][:5])
         if not report['passed']:

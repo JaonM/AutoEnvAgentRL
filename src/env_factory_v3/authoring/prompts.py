@@ -83,7 +83,10 @@ Write env.py:
    World mode: when request.json has "goal_schema", this environment serves many tasks on one
    database. The user's goals are the fact "goals" ([{{"process", "params"}}]): reference(api)
    must handle any process in goal_schema with any valid params (read them with api.ask), never
-   only the sample task in facts.json. Catch BusinessError where the rules allow
+   only the sample task in facts.json. When goal_schema gives each process an "outcome", the answer
+   is {{"goal_1": ..., "goal_2": ...}}: one field per goal in order, in that process's outcome shape
+   (answer_schema.json shows it for the sample goals). An "inquiry" goal is answered from the rules
+   and its params alone, with no tool call. Catch BusinessError where the rules allow
    partial success. Return the answer exactly in answer_schema.json's shape. When data.json has
    scheduled_events, time passes only through api.wait(seconds); the events change rows as the
    clock passes them and tools never see that table.
@@ -119,7 +122,9 @@ def expected(data, facts, now) -> {{"answer": ..., "final_state": ...}}
   order for the waiting a correct handling does; keep that table unchanged in final_state.
 - World mode: when request.json has "goal_schema", the same oracle serves many tasks on one
   database: compute the outcome for whatever goals the fact "goals" lists, for any process in
-  goal_schema, never only the sample task in facts.json.
+  goal_schema, never only the sample task in facts.json. When each process has an "outcome", the
+  answer is {{"goal_1": ..., "goal_2": ...}}: one field per goal in order, in that process's
+  outcome shape.
 - It runs on perturbed worlds and flipped approvals: never depend on particular ids or
   values. Raise InvalidWorld only when the data itself breaks an invariant stated in
   brief.md (e.g. a dangling reference); never to avoid a hard case.
@@ -415,8 +420,17 @@ Write request.json in this folder:
   the customer's approval. Customers must be identified (state how: e.g. name plus postcode, or email) before any
   account data is shown or changed. For every row a write creates or changes, state the value of every column.
   No rule may be open to two readings. Amounts are integer cents; times are virtual integers (minutes).
-- goal_schema: {{"<process>": {{"description": "<what the customer wants>", "params": {{"<name>": "<type and
-  meaning>"}}}}}} for those 6 to 10 processes. A task's goals are one to three of them with concrete params.
+- goal_schema: {{"<process>": {{"description": "<what the customer wants>", "kind": "account" | "inquiry",
+  "params": {{"<name>": "<type and meaning>"}}, "outcome": <field spec>}}}} for those 6 to 10 processes. A task's
+  goals are one to three of them with concrete params.
+  - kind "inquiry" (one or two processes): a policy question answered from the rules and the numbers the customer
+    states (for example the fee for a change on a fare and a date they name): no identification, no table
+    lookup, no write; its params are those numbers. Every other process is "account".
+  - outcome: what the customer must be told when a goal of this process is handled, as one answer field spec of
+    type "object" with "properties" (the same rules as an answer schema: ids, integers, booleans and string enums,
+    a description with units and how absent or refused cases are written; only values a good agent would say).
+    It must cover refusal and partial cases too (for example a "status" enum). Each task's answer has one field
+    per goal, goal_1, goal_2, ..., in the order of its goals, each in its process's outcome shape.
 - tables: a realistic database: at least 40 customers and at least 200 rows in all, with several payment methods,
   statuses and edge cases (expired, ineligible, at a limit, out of stock); unique "id" per row; columns consistent.
 - user_facts: one sample task: "goals": [{{"process": ..., "params": {{...}}}}], the identity facts the rules ask
