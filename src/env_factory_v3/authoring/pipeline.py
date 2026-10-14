@@ -178,6 +178,12 @@ class Build:
         (folder / 'branches.json').write_text(json.dumps(found, ensure_ascii=False, indent=1))
         self.call(folder, prompts.AUDITOR, 'audit')
         verdict = branches.verdict(folder, found, self.request)
+        if not verdict['valid']:  # one retry: an invalid verdict (e.g. a quote not verbatim) is the auditor's slip
+            (folder / 'audit_feedback.txt').write_text(f"Your verdict was rejected: {verdict['reason']}\n"
+                                                       'Quote brief.md word for word (copy the exact text).\n')
+            self.call(folder, prompts.AUDITOR + '\nA previous verdict in this folder was rejected; read '
+                      'audit_feedback.txt and write the verdict again.\n', 'audit')
+            verdict = branches.verdict(folder, found, self.request)
         self.stage('branch_audit', **verdict)
         if not verdict['valid']:
             return self.fail('audit_invalid', verdict['reason'])
@@ -215,6 +221,12 @@ class Build:
         (folder / 'perturbations.json').write_text(json.dumps(found, ensure_ascii=False, indent=1, default=str))
         self.call(folder, prompts.PERTURBATION_AUDITOR, 'perturbation_audit')
         verdict = perturbations.verdict(folder, found, self.request)
+        if not verdict['valid']:  # one retry: an invalid verdict (e.g. a quote not verbatim) is the auditor's slip
+            (folder / 'audit_feedback.txt').write_text(f"Your verdict was rejected: {verdict['reason']}\n"
+                                                       'Quote brief.md word for word (copy the exact text).\n')
+            self.call(folder, prompts.PERTURBATION_AUDITOR + '\nA previous verdict in this folder was rejected; read '
+                      'audit_feedback.txt and write the verdict again.\n', 'perturbation_audit')
+            verdict = perturbations.verdict(folder, found, self.request)
         self.stage('perturbation_audit', **verdict)
         if not verdict['valid']:
             return self.fail('audit_invalid', verdict['reason'])
