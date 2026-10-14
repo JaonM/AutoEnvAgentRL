@@ -273,6 +273,10 @@ def make_task(world_bundle, folder, *, index, processes, script, runner, client,
     if opening is None:
         return {'id': task_id, 'passed': False, 'stage': 'opening', 'problems': problems}
     request['user_request'] = opening
+    if script and isinstance(request.get('user_script'), dict):  # one piece at a time, as on single tasks
+        traits = request['user_script'].setdefault('traits', [])
+        if generate.DISCLOSURE[language] not in traits:
+            traits.append(generate.DISCLOSURE[language])
     request['source'] = {**(world.get('source') or {}), 'world': world['id'], 'task': index, 'processes': processes,
                          'script': script, 'persona': persona, 'shape': shape}
     request['category'] = task_category(world_bundle, request)
