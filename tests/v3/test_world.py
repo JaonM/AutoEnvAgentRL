@@ -100,6 +100,21 @@ class WorldCheckTests(unittest.TestCase):
         report = world.goal_sensitivity(Ignores, request)
         self.assertEqual((report['passed'], report['insensitive']), (False, ['goal_1 (p1)']))
 
+    def test_constants_of_the_world_are_found_and_earn_no_partial_credit(self):
+        from env_factory_v3.core import answers
+        request = {'tables': {'loans': [{'id': 'L1', 'days': 3}, {'id': 'L2', 'days': 9}]}, 'time': {'start': 0},
+                   'user_facts': {'goals': [{'process': 'p1', 'params': {'loan_id': 'L1'}}]}}
+
+        class Oracle:
+            @staticmethod
+            def expected(data, facts, now):
+                loan = next(r for r in data['loans'] if r['id'] == facts['goals'][0]['params']['loan_id'])
+                return {'answer': {'goal_1': {'days': loan['days'], 'fee': 500}}, 'final_state': data}
+        self.assertEqual(world.constant_leaves(Oracle, request, perturbed=0), {'goal_1': ['fee']})
+        spec = {'type': 'object', 'properties': {'days': {'type': 'integer'}, 'fee': {'type': 'integer', 'partial': False}}}
+        self.assertEqual(answers.score(spec, {'days': 3, 'fee': 500}, {'days': 9, 'fee': 500}), 0.0)  # fee alone: 0
+        self.assertEqual(answers.score(spec, {'days': 3, 'fee': 500}, {'days': 3, 'fee': 500}), 1.0)
+
     def test_overlays_only_touch_existing_rows_and_columns(self):
         tables = world_request()['tables']
         changed, problems = world.apply_overlay(tables, [{'table': 'loans', 'id': 'L1', 'set': {'due_day': 99}}])

@@ -48,7 +48,7 @@ def check_schema(schema):
         out = []
         if top and not (isinstance(spec.get('description'), str) and spec['description'].strip()):
             out.append(f'{path}: description required')
-        allowed = {'type', 'description', 'nullable', 'items', 'properties', 'order', 'enum'} | \
+        allowed = {'type', 'description', 'nullable', 'items', 'properties', 'order', 'enum', 'partial'} | \
             ({'graded'} if named else set())
         extra = set(spec) - allowed
         if extra:
@@ -56,6 +56,8 @@ def check_schema(schema):
         if 'enum' in spec and (spec['type'] != 'string' or not isinstance(spec['enum'], list) or not spec['enum']
                                or not all(isinstance(v, str) for v in spec['enum'])):
             out.append(f'{path}: enum must be a nonempty list of strings on a string field')
+        if 'partial' in spec and spec['partial'] is not False:
+            out.append(f'{path}: partial may only be set to false')
         if named and 'graded' in spec and spec['graded'] is not False:
             out.append(f'{path}: graded may only be set to false')
         name = path.rsplit('.', 1)[-1].lower()
@@ -208,7 +210,9 @@ def score(spec, expected, actual, known=None):
         # Partial credit only for substance: an expected null (nothing to report) and an enum (a status, a
         # decision) earn nothing on their own, so saying "refused" or nothing at all does not collect half
         # an object; both are still required for the full score.
-        enums = {name for name, child in graded if child.get('enum') or child.get('type') == 'boolean'}  # decisions
+        # decisions (enums, booleans) and constants of the world (partial: false) are required, never partial credit
+        enums = {name for name, child in graded if child.get('enum') or child.get('type') == 'boolean'
+                 or child.get('partial') is False}
         # An exempt internal id the agent did not state is neither credit nor penalty.
         exempt = {name for name, child in graded if internal(child, expected.get(name), known)
                   and actual.get(name) in (None, '')}

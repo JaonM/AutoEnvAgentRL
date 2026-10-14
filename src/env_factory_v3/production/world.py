@@ -345,6 +345,15 @@ def make_task(world_bundle, folder, *, index, processes, script, runner, client,
     manifest = json.loads((target / 'manifest.json').read_text())
     manifest['files']['request.json'] = bundle.sha256(target / 'request.json')
     schema = task_schema(world.get('goal_schema'), request['user_facts'].get('goals'))
+    if schema is not None:
+        from env_factory_v3.core.sandbox import load_module
+        try:
+            constants = constant_leaves(load_module(world_bundle / 'oracle.py', role='oracle'), request)
+        except Exception:  # noqa: BLE001 - the gates report an oracle that fails on this task
+            constants = {}
+        for field, names in constants.items():
+            for name in names:
+                schema['fields'][field]['properties'][name]['partial'] = False
     if schema is not None:  # this task's own goals, not the sample customer's
         (target / 'answer_schema.json').write_text(json.dumps(schema, ensure_ascii=False, indent=1))
         manifest['files']['answer_schema.json'] = bundle.sha256(target / 'answer_schema.json')
@@ -441,6 +450,40 @@ def is_refusal(oracle, request):
     expected = oracle.expected(copy.deepcopy(request['tables']), copy.deepcopy(request['user_facts']),
                                request['time']['start'])
     return canonical(expected['final_state']) == canonical(request['tables'])
+
+
+def constant_leaves(oracle, request, perturbed=10):
+    """{goal field: [property names]} of outcome properties whose value is the same in every perturbed world and
+    under every param alternative: constants of the world (a fixed fee), which an agent can answer from memory.
+    They stay required for success but earn no partial credit (partial: false)."""
+    from env_factory_v3.core.worlds import variants
+    from env_factory_v3.runtime import canonical
+    tables, facts, start = request['tables'], request['user_facts'], request['time']['start']
+    cases = [(data, world_facts) for _, data, world_facts in variants(tables, facts, perturbed=perturbed)]
+    for index, goal in enumerate(facts.get('goals') or []):
+        for key, value in (goal.get('params') or {}).items():
+            for other in _alternatives(value, tables)[:2]:
+                changed = copy.deepcopy(facts)
+                changed['goals'][index]['params'][key] = other
+                cases.append((tables, changed))
+    answers_seen = []
+    for data, world_facts in cases:
+        try:
+            answers_seen.append(oracle.expected(copy.deepcopy(data), copy.deepcopy(world_facts), start)['answer'])
+        except Exception:  # noqa: BLE001 - an invalid case says nothing about constancy
+            continue
+    if len(answers_seen) < 3:
+        return {}
+    base, out = answers_seen[0], {}
+    for field, value in (base or {}).items():
+        if not isinstance(value, dict):
+            continue
+        same = [name for name in value if all(isinstance(a.get(field), dict) and
+                                                canonical(a[field].get(name)) == canonical(value[name])
+                                                for a in answers_seen[1:])]
+        if same and len(same) < len(value):
+            out[field] = same
+    return out
 
 
 def goal_signature(goals):
