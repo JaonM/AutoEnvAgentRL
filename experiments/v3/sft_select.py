@@ -27,25 +27,31 @@ import argparse
 import collections
 import json
 import random
+import sys
 from pathlib import Path
 
 
+def is_failure(content):
+    """A failed tool result in any of the formats episodes carry: our envelope, "Error: ..." text."""
+    content = content or ''
+    if content.startswith('Error'):
+        return True
+    try:
+        value = json.loads(content)
+    except ValueError:
+        return False
+    return isinstance(value, dict) and value.get('ok') is False
+
+
 def failed_results(messages):
-    count = 0
-    for message in messages:
-        if message.get('role') == 'tool':
-            try:
-                count += json.loads(message.get('content') or '{}').get('ok') is False
-            except ValueError:
-                pass
-    return count
+    return sum(is_failure(m.get('content')) for m in messages if m.get('role') == 'tool')
 
 
 IDENTITY = ('verify', 'identity', 'authenticat', 'lookup_customer', 'find_customer', 'find_user', 'get_user',
             'lookup_user', 'get_customer')
 
 
-def skills(episode, request):
+def skills(episode, request, write_tools=()):
     """The τ²-relevant behaviours one episode demonstrates (counted for coverage, not filtered on)."""
     consent = (episode.get('naming') or {}).get('consent', 'consent')
     results = {m.get('tool_call_id'): m.get('content') or '' for m in episode['messages'] if m['role'] == 'tool'}
@@ -58,7 +64,7 @@ def skills(episode, request):
             found.add('asks_consent')
             if '"consent": null' in result or '"consent": None' in result:
                 found.add('handles_refusal')
-        if f'"{consent}"' in arguments and '"ok": true' in result:
+        if (name in write_tools or f'"{consent}"' in arguments) and not is_failure(result):
             found.add('writes')
         if any(word in name.lower() for word in IDENTITY):
             found.add('verifies_identity')
@@ -67,10 +73,10 @@ def skills(episode, request):
                                                                                  for q in ('?', '？'))
     for index, message in enumerate(episode['messages']):
         content = message.get('content') or ''
-        if message['role'] == 'tool' and ('"ok": false' in content or content.startswith('Error')):
+        if message['role'] == 'tool' and is_failure(content):
             later = episode['messages'][index + 1:]
             # recovered: a later call succeeded, or the agent's next words asked the user
-            if any(m['role'] == 'tool' and '"ok": true' in (m.get('content') or '') for m in later) or \
+            if any(m['role'] == 'tool' and not is_failure(m.get('content')) for m in later) or \
                     any(asks(m) for m in later[:2]):
                 failed_then = True
     if failed_then:
@@ -123,9 +129,17 @@ def main():
     parser.add_argument('--seed', type=int, default=0)
     args = parser.parse_args()
     sandboxes = {t['id']: t['sandbox'] for path in args.tasks for t in json.loads(Path(path).read_text())['tasks']}
-    meta, requests = {}, {}
+    meta, requests, write_tools = {}, {}, {}
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'src'))
+    from env_factory_v3.core.sandbox import load_module
+    from env_factory_v3.runtime import is_write
     for task_id, sandbox in sandboxes.items():
         request = json.loads((Path(sandbox) / 'request.json').read_text())
+        try:
+            tools = load_module(Path(sandbox) / 'env.py', role='env').make_tools()
+            write_tools[task_id] = {name for name, fn in tools.items() if is_write(fn)}
+        except Exception:  # noqa: BLE001 - a bundle that will not load contributes no write names
+            write_tools[task_id] = set()
         domain = (request.get('source') or {}).get('generated') or request.get('family') or task_id
         meta[task_id], requests[task_id] = (request['category'], request.get('language', 'zh'), domain), request
     rng = random.Random(args.seed)
@@ -184,7 +198,7 @@ def main():
             capped.append(episode)
     selected = capped
     count = lambda index: dict(collections.Counter(meta[e['id']][index] for e in selected).most_common())
-    skill_counts = collections.Counter(k for e in selected for k in skills(e, requests[e['id']]))
+    skill_counts = collections.Counter(k for e in selected for k in skills(e, requests[e['id']], write_tools[e['id']]))
     sequences = collections.Counter(signature(e)[0] for e in selected)
     domains = collections.Counter(meta[e['id']][2] for e in selected)
     report = {'successful': len(episodes), 'near_duplicates_dropped': duplicates, 'selected': len(selected),
