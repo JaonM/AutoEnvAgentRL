@@ -1,7 +1,7 @@
-"""build pipeline: request -> answer schema -> (env.py || oracle.py) -> differential
+"""build pipeline: request -> answer schema -> (env.py || verifier.py) -> differential
 arbitration -> qualification gates -> bundle.
 
-One shared repair budget covers every corrective model session (author/oracle retry,
+One shared repair budget covers every corrective model session (author/verifier retry,
 arbitration, gate repair). Infrastructure refusals never consume it and never count as
 business failures.
 """
@@ -23,7 +23,7 @@ from env_factory.certify import bundle, gates
 from env_factory.core import answers, rubric, spec
 from env_factory.core.sandbox import load_module
 
-DEFAULT_TIMEOUTS = {'schema': 240, 'author': 720, 'oracle': 600, 'rubric_author': 400, 'arbiter': 600, 'audit': 300,
+DEFAULT_TIMEOUTS = {'schema': 240, 'author': 720, 'verifier': 600, 'rubric_author': 400, 'arbiter': 600, 'audit': 300,
                     'perturbation_audit': 300, 'repair': 600}
 
 
@@ -100,28 +100,28 @@ class Build:
             return self.fail('generation', 'answer schema failed its check')
         schema = json.loads((folder / 'answer_schema.json').read_text())
 
-        author, oracle = self.workdir('author', schema), self.workdir('oracle', schema)
+        author, verifier = self.workdir('author', schema), self.workdir('verifier', schema)
         with concurrent.futures.ThreadPoolExecutor(2) as pool:
             futures = [pool.submit(self.call, author, prompts.AUTHOR, 'author'),
-                       pool.submit(self.call, oracle, prompts.ORACLE, 'oracle')]
+                       pool.submit(self.call, verifier, prompts.VERIFIER, 'verifier')]
             for future in futures:
                 future.result()
-        for role, folder_, template in (('env', author, prompts.AUTHOR), ('oracle', oracle, prompts.ORACLE)):
+        for role, folder_, template in (('env', author, prompts.AUTHOR), ('verifier', verifier, prompts.VERIFIER)):
             report = checks.run(role, folder_)
             if not report['passed'] and self.spend():
                 retry = template + '\nA previous attempt in this folder failed its check; read check-' + role + '.json first.\n'
-                self.call(folder_, retry, 'author' if role == 'env' else 'oracle')
+                self.call(folder_, retry, 'author' if role == 'env' else 'verifier')
                 report = checks.run(role, folder_)
             self.stage(role, passed=report['passed'], problems=report['problems'][:5])
             if not report['passed']:
                 return self.fail('generation', f'{role} failed its self-check')
 
-        arbiter = self.workdir('arbiter', schema, copy_from=(author / 'env.py', oracle / 'oracle.py'))
+        arbiter = self.workdir('arbiter', schema, copy_from=(author / 'env.py', verifier / 'verifier.py'))
         report = checks.run('diff', arbiter)
         self.stage('differential', passed=report['passed'], before=report['notes'], problems=report['problems'][:8])
         if not report['passed']:
             if not self.spend():
-                return self.fail('disagreement', 'env and oracle disagree; no repair budget left')
+                return self.fail('disagreement', 'env and verifier disagree; no repair budget left')
             self.call(arbiter, prompts.ARBITER, 'arbiter')
             verdict = self.verdict(arbiter)
             self.stage('arbitration', **verdict)
@@ -139,8 +139,8 @@ class Build:
                 self.stage('arbitration', excluded_worlds=self.excluded)
             report = checks.run('diff', arbiter)
             self.stage('differential', passed=report['passed'], after=report['notes'], problems=report['problems'][:8])
-            if not report['passed'] or not checks.run('env', arbiter)['passed'] or not checks.run('oracle', arbiter)['passed']:
-                return self.fail('disagreement', 'env and oracle still disagree after arbitration')
+            if not report['passed'] or not checks.run('env', arbiter)['passed'] or not checks.run('verifier', arbiter)['passed']:
+                return self.fail('disagreement', 'env and verifier still disagree after arbitration')
 
         failure = self.audit_branches(arbiter, schema) or self.audit_perturbations(arbiter, schema)
         if failure:
@@ -163,7 +163,7 @@ class Build:
         return self.status
 
     def audit_branches(self, arbiter, schema):
-        """Refusal cascades env and oracle agree on still need a verbatim brief justification
+        """Refusal cascades env and verifier agree on still need a verbatim brief justification
         from a fresh auditor that sees neither implementation. Not a repair: no budget spent."""
         found = branches.cascades(load_module(arbiter / 'env.py', role='env'), self.request)
         self.stage('branch_audit', cascades=[{k: c[k] for k in ('world', 'denied', 'skipped_steps')} for c in found])
@@ -183,13 +183,13 @@ class Build:
         if not verdict['unsupported']:
             return None
         if not self.spend():
-            return self.fail('branch_unsupported', f'env and oracle skip steps the rules require on {verdict["unsupported"]}')
+            return self.fail('branch_unsupported', f'env and verifier skip steps the rules require on {verdict["unsupported"]}')
         # Both sides share the error, so both are fixed, from the auditor's quoted finding.
         for name in ('branches.json', 'audit.json'):
             shutil.copy(folder / name, arbiter / name)
         self.call(arbiter, prompts.BRANCH_REPAIR, 'repair')
-        if not all(checks.run(kind, arbiter)['passed'] for kind in ('env', 'oracle', 'diff')):
-            return self.fail('branch_unsupported', 'env and oracle no longer pass their checks after the branch repair')
+        if not all(checks.run(kind, arbiter)['passed'] for kind in ('env', 'verifier', 'diff')):
+            return self.fail('branch_unsupported', 'env and verifier no longer pass their checks after the branch repair')
         unsupported = [c for c, d in zip(found, verdict['decisions']) if d['verdict'] == 'unsupported']
         left = branches.unrepaired(load_module(arbiter / 'env.py', role='env'), self.request, unsupported)
         self.stage('branch_audit', repaired=not left, still_cascading=left)
@@ -222,12 +222,12 @@ class Build:
                 for name in ('perturbations.json', 'perturbation_audit.json'):
                     shutil.copy(folder / name, arbiter / name)
                 self.call(arbiter, prompts.PERTURBATION_REPAIR, 'repair')
-                if all(checks.run(kind, arbiter)['passed'] for kind in ('env', 'oracle', 'diff')):
+                if all(checks.run(kind, arbiter)['passed'] for kind in ('env', 'verifier', 'diff')):
                     still = {f['world'] for f in perturbations.insensitive(
                         load(), self.request, perturbed=self.perturbed, excluded=self.excluded)}
                     repaired = not (still & set(verdict['should_change']))
                 else:
-                    return self.fail('perturbation_unsupported', 'env and oracle no longer pass their checks '
+                    return self.fail('perturbation_unsupported', 'env and verifier no longer pass their checks '
                                      'after the perturbation repair')
             if not repaired:
                 drop |= set(verdict['should_change'])
@@ -295,9 +295,9 @@ class Build:
 
     def qualify(self, folder, schema):
         env = load_module(folder / 'env.py', role='env')
-        oracle = load_module(folder / 'oracle.py', role='oracle')
+        verifier = load_module(folder / 'verifier.py', role='verifier')
         started = time.monotonic()
-        report = gates.qualify(env, oracle, schema, self.request, perturbed=self.perturbed, excluded=self.excluded)
+        report = gates.qualify(env, verifier, schema, self.request, perturbed=self.perturbed, excluded=self.excluded)
         self.stage('gates', seconds=round(time.monotonic() - started, 1),
                    **{g: report[g]['passed'] for g in gates.gate_names(report)},
                    negatives_detail=report['negatives'].get('checks'), category_detail=report['category'])
@@ -322,7 +322,7 @@ class Build:
         except Exception:
             return {'valid': False, 'ambiguous': False, 'reason': 'verdict.json missing or malformed'}
         for decision in decisions:
-            if decision.get('wrong_side') not in ('env', 'oracle', 'both', 'ambiguous'):
+            if decision.get('wrong_side') not in ('env', 'verifier', 'both', 'ambiguous'):
                 return {'valid': False, 'ambiguous': False, 'reason': f'bad wrong_side in {decision}'}
             if not spec.quoted(self.request, decision.get('brief_quote')):
                 return {'valid': False, 'ambiguous': False, 'reason': 'brief_quote not found in the user request or '

@@ -1,6 +1,6 @@
 """Policy gate: can a strong model, seeing only what a trained policy sees, solve the task?
 
-An independent OpenAI-compatible model (not the one that wrote env.py and oracle.py) plays k
+An independent OpenAI-compatible model (not the one that wrote env.py and verifier.py) plays k
 episodes through the bundle's HTTP service and the shared agent view, one world per episode in
 the bundle's served order. A task no strong policy solves gives a learner no successful
 trajectories to start from. Provider failures are infrastructure errors, never business results.
@@ -138,7 +138,7 @@ def extraction_probe(loaded, service, client):
     the way a good agent would; the service's extractor must read every graded field back exactly."""
     from env_factory.core import answers
     request = loaded['request']
-    expected = loaded['oracle'].expected(request['tables'], request['user_facts'], request['time']['start'])['answer']
+    expected = loaded['verifier'].expected(request['tables'], request['user_facts'], request['time']['start'])['answer']
     speech = (client.chat([{'role': 'user', 'content': SAY.format(
         language='英文' if request.get('language') == 'en' else '中文',
         schema=json.dumps(loaded['schema']['fields'], ensure_ascii=False), answer=json.dumps(
@@ -180,7 +180,7 @@ def gate(folder, client, *, k=4, parallel=4, max_turns=30, user_mode='structured
     successes = sum(e['success'] for e in played)
     # Without an answer tool a business answer is read from speech: it must be readable at all.
     probe = None
-    if user_mode == 'natural' and loaded['oracle'] is not None and not all(tool_plan):
+    if user_mode == 'natural' and loaded['verifier'] is not None and not all(tool_plan):
         try:
             probe = extraction_probe(loaded, service, client)
         except ProviderError as error:

@@ -1,4 +1,4 @@
-"""Answer schema shared by the environment, the independent oracle and the reward.
+"""Answer schema shared by the environment, the independent verifier and the reward.
 
 answer_schema.json:
     {"fields": {"<name>": {"description": "...", "type": "integer", "nullable": false,

@@ -42,12 +42,12 @@ class ScriptedUser:
 
 class NaturalUserTests(unittest.TestCase):
     def setUp(self):
-        self.env, self.oracle, self.schema = library_modules()
+        self.env, self.verifier, self.schema = library_modules()
         self.request = library_request()
         for hold in self.request['tables']['holds']:
             hold['active'] = False  # both loans renewable, so both approvals matter
         self.user = ScriptedUser()
-        self.service = server.Service(self.env, self.oracle, self.schema, self.request,
+        self.service = server.Service(self.env, self.verifier, self.schema, self.request,
                                       valid_worlds=['original', 'flip:approve_first'], user_mode='natural',
                                       user_client=self.user)
 
@@ -92,10 +92,10 @@ class NaturalUserTests(unittest.TestCase):
 
     def test_natural_mode_refuses_a_bundle_without_a_faithful_approval_key(self):
         source = (LIBRARY / 'env.py').read_text()
-        missing, oracle, schema = library_modules(source.replace('def approval_key(', 'def _approval_key('))
+        missing, verifier, schema = library_modules(source.replace('def approval_key(', 'def _approval_key('))
         with self.assertRaises(ValueError):
-            server.Service(missing, oracle, schema, self.request, user_mode='natural', user_client=self.user)
-        report = gates.qualify(missing, oracle, schema, self.request, perturbed=5)
+            server.Service(missing, verifier, schema, self.request, user_mode='natural', user_client=self.user)
+        report = gates.qualify(missing, verifier, schema, self.request, perturbed=5)
         self.assertTrue(report['passed'])
         self.assertFalse(report['natural']['passed'])
 
@@ -111,8 +111,8 @@ class NaturalUserTests(unittest.TestCase):
 
 class AgentViewFormatTests(unittest.TestCase):
     def instructions(self, writes=True):
-        env, oracle, schema = library_modules()
-        service = server.Service(env, oracle, schema, library_request(), user_mode='natural', user_client=ScriptedUser())
+        env, verifier, schema = library_modules()
+        service = server.Service(env, verifier, schema, library_request(), user_mode='natural', user_client=ScriptedUser())
         instructions = service.reset(world='original')['instructions']
         if not writes:
             instructions = {**instructions, 'tools': [t for t in instructions['tools'] if t['kind'] == 'read']}
@@ -146,8 +146,8 @@ class AgentViewFormatTests(unittest.TestCase):
 
 class SystemPromptTests(unittest.TestCase):
     def test_the_agent_records_the_result_and_tells_the_user(self):
-        env, oracle, schema = library_modules()
-        service = server.Service(env, oracle, schema, library_request(), user_mode='natural', user_client=ScriptedUser())
+        env, verifier, schema = library_modules()
+        service = server.Service(env, verifier, schema, library_request(), user_mode='natural', user_client=ScriptedUser())
         system = agent_view.messages(service.reset(world='original')['instructions'])[0]['content']
         self.assertIn('记录处理结果', system)
         self.assertIn('把结果告诉用户', system)
@@ -155,9 +155,9 @@ class SystemPromptTests(unittest.TestCase):
 
 class EnglishTests(unittest.TestCase):
     def service(self, user=None):
-        env, oracle, schema = library_modules()
+        env, verifier, schema = library_modules()
         request = {**library_request(), 'language': 'en'}
-        return server.Service(env, oracle, schema, request, user_mode='natural', user_client=user or ScriptedUser())
+        return server.Service(env, verifier, schema, request, user_mode='natural', user_client=user or ScriptedUser())
 
     def test_an_english_task_shows_the_agent_english_platform_texts(self):
         instructions = self.service().reset(world='original')['instructions']
@@ -190,12 +190,12 @@ class EnglishTests(unittest.TestCase):
 
 class ScriptTests(unittest.TestCase):
     def test_the_user_acts_out_its_script_and_the_platform_ends_the_pushback(self):
-        env, oracle, schema = library_modules()
+        env, verifier, schema = library_modules()
         request = {**library_request(), 'user_script': {
             'traits': ['着急'], 'goals': ['续借', '问候补'], 'forgotten': ['邮箱'],
             'pushback': {'demand': '免掉逾期费', 'rounds': 1, 'then': 'accept'}}}
         user = ScriptedUser()
-        service = server.Service(env, oracle, schema, request, user_mode='natural', user_client=user)
+        service = server.Service(env, verifier, schema, request, user_mode='natural', user_client=user)
         episode = service.reset(world='original')['episode']
         record = service._get(episode)
         system = record['user'].messages[0]['content']
@@ -221,8 +221,8 @@ class PlainSpeechTests(unittest.TestCase):
     def test_plain_messages_are_speech_and_the_user_ends_the_episode(self):
         import json as _json
         from env_factory.certify import policy_gate as policy
-        env, oracle, schema = library_modules()
-        service = server.Service(env, oracle, schema, library_request(), user_mode='natural', user_client=Leaver())
+        env, verifier, schema = library_modules()
+        service = server.Service(env, verifier, schema, library_request(), user_mode='natural', user_client=Leaver())
         httpd = server.start(service)
 
         class Agent:
@@ -278,9 +278,9 @@ class Reader:
 class ConversationEndTests(unittest.TestCase):
     def service(self, user, request=None, **options):
         from env_factory.core.extract import Extractor
-        env, oracle, schema = library_modules()
+        env, verifier, schema = library_modules()
         options.setdefault('extractor', Extractor(Reader()))
-        return server.Service(env, oracle, schema, request or library_request(), user_mode='natural',
+        return server.Service(env, verifier, schema, request or library_request(), user_mode='natural',
                               user_client=user, **options)
 
     def test_idle_talk_is_warned_once_then_closed_without_an_answer(self):
@@ -346,7 +346,7 @@ class ConversationEndTests(unittest.TestCase):
 
     def test_a_subjective_task_is_graded_on_the_last_thing_said(self):
         from test_rubric import RUBRIC, REPLY, judge
-        env, oracle, schema = library_modules((LIBRARY / 'env.py').read_text().replace(*REPLY))
+        env, verifier, schema = library_modules((LIBRARY / 'env.py').read_text().replace(*REPLY))
         from env_factory.core import rubric
         request = {**library_request(), 'reward_type': 'rubric'}
         service = server.Service(env, None, rubric.SCHEMA, request, user_mode='natural', user_client=Leaver(),
@@ -363,8 +363,8 @@ class ServiceAndClarificationTests(unittest.TestCase):
         import json as _json
         from urllib.error import HTTPError
         from urllib.request import Request, urlopen
-        env, oracle, schema = library_modules()
-        httpd = server.start(server.Service(env, oracle, schema, library_request()), token='s3cret')
+        env, verifier, schema = library_modules()
+        httpd = server.start(server.Service(env, verifier, schema, library_request()), token='s3cret')
         base = f'http://127.0.0.1:{httpd.server_address[1]}'
         try:
             post = lambda headers: urlopen(Request(base + '/reset', data=b'{}', headers=headers), timeout=10)

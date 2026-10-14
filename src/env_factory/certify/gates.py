@@ -4,7 +4,7 @@ G1 static      generated code passes the sandbox rules, the answer schema is val
               tool parameter has a type and a description (the agent sees nothing else)
 natural        (readiness for the free-dialogue user, not a G1-G5 gate) approval_key maps each
               exact write to the approval topic the reference confirms
-G2 differential env.py's reference and the independent oracle agree (state and answer) on the
+G2 differential env.py's reference and the independent verifier agree (state and answer) on the
                original world, every approval flip and perturbed worlds; the reference earns
                reward 1.0 everywhere
 G3 negatives   auto-derived wrong behaviours never succeed: doing nothing, replaying a stale
@@ -24,15 +24,15 @@ from env_factory.runtime import (BusinessError, Episode, InvalidWorld, canonical
 from env_factory.core.worlds import state_diff, variants
 
 
-def _expected(oracle, data, facts, now):
-    result = oracle.expected(copy.deepcopy(data), copy.deepcopy(facts), now)
+def _expected(verifier, data, facts, now):
+    result = verifier.expected(copy.deepcopy(data), copy.deepcopy(facts), now)
     if not (isinstance(result, dict) and 'answer' in result and 'final_state' in result):
-        raise ValueError('oracle.expected must return {"answer": ..., "final_state": ...}')
+        raise ValueError('verifier.expected must return {"answer": ..., "final_state": ...}')
     return result
 
 
-def compare_worlds(env, oracle, schema, request, *, perturbed=20, excluded=()):
-    """Run reference and oracle on every world variant and grade the reference.
+def compare_worlds(env, verifier, schema, request, *, perturbed=20, excluded=()):
+    """Run reference and verifier on every world variant and grade the reference.
 
     `excluded` names perturbed worlds where the business rules were found ambiguous; they are
     reported but neither compared nor used for training.
@@ -49,18 +49,18 @@ def compare_worlds(env, oracle, schema, request, *, perturbed=20, excluded=()):
             worlds.append(entry)
             continue
         try:
-            expected = _expected(oracle, data, facts, start)
+            expected = _expected(verifier, data, facts, start)
         except InvalidWorld as exc:
             entry.update(status='invalid_world', reason=str(exc)[:200])
             worlds.append(entry)
             continue
         except Exception:
-            entry.update(status='oracle_error', error=traceback.format_exc(limit=3))
+            entry.update(status='verifier_error', error=traceback.format_exc(limit=3))
             worlds.append(entry)
             continue
         problems = answers.answer_problems(schema, expected['answer']) + reward.alternative_problems(expected, schema, data)
         if problems:
-            entry.update(status='oracle_error', error='oracle answer violates schema: ' + '; '.join(problems[:3]))
+            entry.update(status='verifier_error', error='verifier answer violates schema: ' + '; '.join(problems[:3]))
             worlds.append(entry)
             continue
         try:
@@ -87,10 +87,10 @@ def differential(worlds):
         counts[world['status']] = counts.get(world['status'], 0) + 1
     core = [w for w in worlds if not w['world'].startswith('perturb')]
     passed = (counts.get('mismatch', 0) == 0 and counts.get('env_error', 0) == 0
-              and counts.get('oracle_error', 0) == 0 and all(w['status'] == 'agree' for w in core)
+              and counts.get('verifier_error', 0) == 0 and all(w['status'] == 'agree' for w in core)
               and counts.get('agree', 0) >= len(core) + 5)
     return {'passed': passed, 'counts': counts,
-            'mismatches': [w for w in worlds if w['status'] in ('mismatch', 'env_error', 'oracle_error')]}
+            'mismatches': [w for w in worlds if w['status'] in ('mismatch', 'env_error', 'verifier_error')]}
 
 
 class _Wrapped:
@@ -120,12 +120,12 @@ class _Wrapped:
         return self.episode.call(name, **args)
 
 
-def negatives(env, oracle, schema, request, worlds):
+def negatives(env, verifier, schema, request, worlds):
     """Auto-derived wrong behaviours. Each applicable one must not succeed."""
     start = request['time']['start']
     data, facts = request['tables'], request['user_facts']
     original = next(w for w in worlds if w['world'] == 'original')
-    expected = _expected(oracle, data, facts, start)
+    expected = _expected(verifier, data, facts, start)
     has_effects = bool(state_diff(data, expected['final_state']))
     reference_calls = original['reference_calls']
     checks = {}
@@ -146,7 +146,7 @@ def negatives(env, oracle, schema, request, worlds):
     if stale:
         results = []
         for world in stale:
-            world_expected = _expected(oracle, world['data'], world['facts'], start)
+            world_expected = _expected(verifier, world['data'], world['facts'], start)
             judge('stale_answer', lambda api: copy.deepcopy(expected['answer']), world['data'], world['facts'], world_expected)
             results.append(checks.pop('stale_answer'))
         checks['stale_answer'] = {'applicable': True, 'passed': all(r['passed'] for r in results), 'worlds': len(results)}
@@ -233,7 +233,7 @@ def approval_problems(env, request):
     return problems[:10]
 
 
-def qualify(env, oracle, schema, request, *, perturbed=20, http=True, excluded=()):
+def qualify(env, verifier, schema, request, *, perturbed=20, http=True, excluded=()):
     """Run G2-G5 (G1 is enforced when modules are loaded). Returns the full gate report."""
     schema_problems = answers.check_schema(schema)
     tool_problems = tool_spec_problems(env.make_tools())
@@ -243,15 +243,15 @@ def qualify(env, oracle, schema, request, *, perturbed=20, http=True, excluded=(
               # Free dialogue readiness: not needed for the structured user, required for the natural one.
               'natural': {'passed': not approval, 'approval_problems': approval},
               'excluded_worlds': sorted(excluded)}
-    worlds = compare_worlds(env, oracle, schema, request, perturbed=perturbed, excluded=excluded)
+    worlds = compare_worlds(env, verifier, schema, request, perturbed=perturbed, excluded=excluded)
     report['differential'] = differential(worlds)
     report['valid_worlds'] = [w['world'] for w in worlds if w['status'] == 'agree']
-    report['negatives'] = (negatives(env, oracle, schema, request, worlds) if report['differential']['passed']
+    report['negatives'] = (negatives(env, verifier, schema, request, worlds) if report['differential']['passed']
                            else {'passed': False, 'note': 'not run: differential failed'})
     report['category'] = category(request, env) if report['differential']['passed'] else {'passed': False}
     if http and report['differential']['passed']:
         from env_factory.serving.server import replay_check
-        report['http'] = replay_check(env, oracle, schema, request)
+        report['http'] = replay_check(env, verifier, schema, request)
     else:
         report['http'] = {'passed': False, 'note': 'not run'}
     report['policy'] = {'status': 'not_run', 'note': 'run `policy BUNDLE` (independent model, k episodes)'}

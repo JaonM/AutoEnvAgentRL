@@ -29,7 +29,7 @@ EVENTS = 'scheduled_events'
 
 
 def apply_event(db, event):
-    """Set `event['set']` on row `event['row_id']` of `event['table']` (oracles may call this too)."""
+    """Set `event['set']` on row `event['row_id']` of `event['table']` (verifiers may call this too)."""
     row = next((r for r in db.get(event['table'], []) if r.get('id') == event['row_id']), None)
     if row is not None:
         row.update(copy.deepcopy(event['set']))
@@ -45,7 +45,7 @@ class ToolError(Exception):
 
 
 class InvalidWorld(Exception):
-    """Raised by an oracle when generated world data violates the business's own invariants."""
+    """Raised by a verifier when generated world data violates the business's own invariants."""
 
 
 class EpisodeFinished(Exception):

@@ -35,14 +35,14 @@ Training an agent that gets real business work done (customer service, bookings,
 
 AutoEnvAgentRL turns this into an automated production line:
 
-1. A code agent writes an **executable Python sandbox** (data, tools, a reference solution) and, in a separate session, an **independent oracle** for each business scenario.
+1. A code agent writes an **executable Python sandbox** (data, tools, a reference solution) and, in a separate session, an **independent verifier** for each business scenario.
 2. The two implementations must **agree exactly** on the original world, every approval flip and perturbed worlds before the sandbox is certified.
 3. Certified sandboxes are served over HTTP with a language-model user, ready for **SFT demonstration collection and reinforcement learning**.
 4. Training runs on Apple Silicon: generation, certification and training all fit on one Mac.
 
 ## Features
 
-- **Trustworthy reward**: environment and oracle are written independently and accepted only after differential certification, negative checks, branch and perturbation audits; the reward comes from the oracle, never from author-written code.
+- **Trustworthy reward**: environment and verifier are written independently and accepted only after differential certification, negative checks, branch and perturbation audits; the reward comes from the verifier, never from author-written code.
 - **Deterministic grading, realistic dialogue**: the simulated user is a language model that only decides *how* to say things; whether a write is approved or which option is chosen comes from structured facts the platform enforces, so the reward stays deterministic.
 - **Rich user scripts**: several goals, fallbacks, persistent unreasonable demands, misremembered identifiers, vague requests, undecided users, questions before agreeing, changes of mind and out-of-scope requests combine into long, varied dialogues.
 - **Safety constraint**: any write the user did not agree to zeroes the episode; both a "proposal + consent token" protocol and plain-dialogue confirmation are supported.
@@ -61,7 +61,7 @@ Request generation: a code agent writes rules, data, user facts and script → a
 user's opening and the customer-facing policy manual
         │
         ▼
-Sandbox build: answer schema → environment (tools + reference) ∥ independent oracle →
+Sandbox build: answer schema → environment (tools + reference) ∥ independent verifier →
 differential certification → arbitration → audits → every gate
         │
         ▼
@@ -78,7 +78,7 @@ Each certified sandbox (bundle) contains:
 | --- | --- |
 | `request.json` | user request, business rules, customer-facing manual, tables, the user's private facts and script |
 | `env.py` | tools and the reference solution (may import only `env_factory.runtime`) |
-| `oracle.py` | the independently computed expected outcome (final state + answer) |
+| `verifier.py` | the independently computed expected outcome (final state + answer) |
 | `answer_schema.json` | answer format and graded fields |
 | `gates.json`, `manifest.json` | certification report and file hashes signed for the platform identity |
 

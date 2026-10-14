@@ -1,7 +1,7 @@
 # EnvFactory architecture
 
 `env_factory` builds agent-RL business environments as plain Python and qualifies them by independent
-differential checks: an environment (tools plus a reference agent) and an oracle are written by
+differential checks: an environment (tools plus a reference agent) and a verifier are written by
 separate model sessions and must agree on every world variant before a sandbox is accepted.
 
 ## Code layout
@@ -28,12 +28,12 @@ is graded; they are the platform identity a bundle is signed for (`certify.bundl
 request.json ─► schema session ─► answer_schema.json
                      │
           ┌──────────┴──────────┐   (parallel, isolated folders, same schema)
-   author session          oracle session
-   env.py: tools+reference  oracle.py: expected(data, facts, now)
+   author session          verifier session
+   env.py: tools+reference  verifier.py: expected(data, facts, now)
           └──────────┬──────────┘
           differential check on original, approval flips, 20 perturbed worlds
                      │ disagreement → arbiter (verbatim brief quote; ambiguous → report)
-          branch audit: refusal cascades env and oracle share → fresh auditor (verbatim quote)
+          branch audit: refusal cascades env and verifier share → fresh auditor (verbatim quote)
           gates: static · differential · negatives · category · http
                      │
                bundle/ (+ manifest hashes) ─► serve / train
@@ -46,14 +46,14 @@ original world or an approval flip the build fails as `spec_ambiguous`; when onl
 are affected, those worlds are excluded from comparison and from training and listed in
 `spec_findings` for the business owner.
 
-Branch audit: env and oracle can make the same mistake, which the differential check cannot
+Branch audit: env and verifier can make the same mistake, which the differential check cannot
 see. The likeliest one is what happens after the user refuses an approval, because the original
 world approves everything. When an approval flip makes the reference drop a step it takes in the
 original world after that approval (a later confirmation, or a tool call with arguments never seen
 in the refused world), a fresh auditor that sees only the brief and the two traces must justify
 each cascade with a verbatim quote: `supported` passes, `ambiguous` fails as `spec_ambiguous`
 (ordering words alone never decide it). On `unsupported`, a repair session (one unit of repair
-budget) fixes env.py and oracle.py together from the auditor's finding. The build fails as
+budget) fixes env.py and verifier.py together from the auditor's finding. The build fails as
 `branch_unsupported` when no budget is left, when the checks fail afterwards, or when the refusal
 world still calls a skipped tool, or asks a skipped approval, fewer times than the original world
 (the refused write itself excepted). The comparison is by count because arguments may
@@ -83,13 +83,13 @@ At most two codex sessions run at once.
 | file | written by | meaning |
 | --- | --- | --- |
 | `request.json` | operator / `import-frozen` | user request, business rules, tables, private user facts, frozen clock |
-| `answer_schema.json` | schema session | the final answer contract shared by env, oracle and reward |
+| `answer_schema.json` | schema session | the final answer contract shared by env, verifier and reward |
 | `env.py` | author session | `make_tools()` (read tools, `@write` tools) and `reference(api)` |
-| `oracle.py` | oracle session, never sees env.py | `expected(data, facts, now) -> {answer, final_state}` |
+| `verifier.py` | verifier session, never sees env.py | `expected(data, facts, now) -> {answer, final_state}` |
 | `audit/audit.json` | audit session, sees neither implementation | verdict per refusal cascade (only when one exists) |
 | `perturbation_audit/perturbation_audit.json` | perturbation audit session | verdict per outcome-insensitive perturbed world |
 | `bundle/policy.json` | `policy` command | policy gate episodes, pass@k and success rate |
-| `gates.json` | platform | every gate result and the worlds env/oracle agree on |
+| `gates.json` | platform | every gate result and the worlds env/verifier agree on |
 | `manifest.json` | platform | file hashes and platform identity |
 
 ## Reward types
@@ -98,7 +98,7 @@ A request's `reward_type` selects how episodes are graded:
 
 | reward_type | for | graded by | build |
 | --- | --- | --- | --- |
-| `business` (default) | tasks with one correct outcome | the oracle's expected state and answer, compared exactly (below) | schema → env ∥ oracle → differential → arbitration → branch/perturbation audits → gates |
+| `business` (default) | tasks with one correct outcome | the verifier's expected state and answer, compared exactly (below) | schema → env ∥ verifier → differential → arbitration → branch/perturbation audits → gates |
 | `rubric` | subjective tasks: advice, comparisons, explanations, complaints | rubric criteria scored by a judge model (`JUDGE_*`, falling back to `LLM_*`, i.e. deepseek) | fixed reply schema → env ∥ rubric author → rubric gates |
 
 Rubric tasks: the answer is one ungraded `reply` (the final message to the user). A rubric author
@@ -114,25 +114,25 @@ on the original and every approval flip; an empty and a generic reply each score
 below the reference and ≤ 0.6 (criteria about the conversation itself still earn credit with an
 empty reply); the reference with its digits changed loses ≥ 0.15; a second fresh judging differs by ≤ 0.15), and
 http. The offline container check cannot reach the judge, so it runs only the deterministic gates.
-A rubric bundle carries `rubric.json` instead of `oracle.py`. `generate --rubric-share F` makes
+A rubric bundle carries `rubric.json` instead of `verifier.py`. `generate --rubric-share F` makes
 that fraction of tasks subjective.
 
 ## Reward (business tasks; no author-written reward code)
 
-`reward = 0.95 · business + 0.05 · efficiency`, derived from the oracle. Business: the final
-state must equal the oracle's (half the weight when the task changes state) and each answer
-field must equal the oracle's (sharing the rest). Efficiency is paid only on success, so a wrong
+`reward = 0.95 · business + 0.05 · efficiency`, derived from the verifier. Business: the final
+state must equal the verifier's (half the weight when the task changes state) and each answer
+field must equal the verifier's (sharing the rest). Efficiency is paid only on success, so a wrong
 or empty answer never earns it. A write attempted with no consent for that action
 (missing, forged, reused, or given for another tool) is a safety violation and zeroes the reward.
 A valid token used with arguments that differ from the approved proposal only refuses that write
-(the token stays usable, so the agent can correct the call). Episodes may be served on any world the env and oracle
+(the token stays usable, so the agent can correct the call). Episodes may be served on any world the env and verifier
 agree on, so memorised answers do not transfer between worlds.
 
 ## Gates (all mandatory)
 
 1. **static**: sandbox rules (no I/O, no clock, no reflection), a valid answer schema, and a type
    annotation plus an `Args:` description for every tool parameter (the agent sees nothing else)
-2. **differential**: reference and oracle agree on the original world, every approval flip and at least five perturbed worlds; the reference earns 1.0
+2. **differential**: reference and verifier agree on the original world, every approval flip and at least five perturbed worlds; the reference earns 1.0
 3. **negatives**, all derived automatically: do nothing, replay a stale answer on a changed world, skip consent, stop after the first write, forge consent (must earn 0)
 4. **category**: the reference trace has the structure the category needs (direct: no tools; simple: reads only, no result dependency; multi-step: ≥2 calls with a result dependency or a write)
 5. **http**: the reference replayed through the HTTP service earns the same full reward
@@ -153,7 +153,7 @@ at least one episode succeeds. Provider failures are infrastructure errors, not 
 .venv/bin/python -m env_factory serve output/build-01/bundle --port 8090
 ```
 
-Model sessions run `python -m env_factory.checks {schema|env|oracle|diff}` in their folder.
+Model sessions run `python -m env_factory.checks {schema|env|verifier|diff}` in their folder.
 
 ## Delivery and training
 

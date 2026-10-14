@@ -11,7 +11,7 @@ POST /reward  {"episode"}                                      -> grade (after t
 POST /release {"episode"}                                      -> {"released": bool}
 GET  /health
 With SANDBOX_SERVICE_TOKEN set (serve) every POST needs `Authorization: Bearer <token>`.
-Private facts, the oracle and source tables are never exposed; a business rejection is an
+Private facts, the verifier and source tables are never exposed; a business rejection is an
 observation (ok=false, kind=business), not a transport error, and so is a crash of an authored
 tool (ok=false, kind=tool_error). Only platform and model-provider failures return 500.
 """
@@ -40,15 +40,15 @@ IDLE_LIMIT = 3
 
 
 class Service:
-    def __init__(self, env, oracle, schema, request, *, valid_worlds=None, perturbed=20, user_mode='structured',
+    def __init__(self, env, verifier, schema, request, *, valid_worlds=None, perturbed=20, user_mode='structured',
                  user_client=None, rubric=None, judge=None, extractor=None, auditor=None, audit=None):
         if user_mode not in ('structured', 'natural'):
             raise ValueError(f'unknown user mode {user_mode}')
         if user_mode == 'natural' and user_client is None:
             raise ValueError('natural user mode needs a user simulator client')
-        self.env, self.oracle, self.schema, self.request = env, oracle, schema, request
+        self.env, self.verifier, self.schema, self.request = env, verifier, schema, request
         self.user_mode, self.user_client = user_mode, user_client
-        # business: graded exactly against the oracle; rubric: graded by criteria and a judge model.
+        # business: graded exactly against the verifier; rubric: graded by criteria and a judge model.
         self.reward_type = request.get('reward_type', 'business')
         if self.reward_type == 'rubric' and rubric is None:
             raise ValueError('a rubric task needs its rubric')
@@ -101,7 +101,7 @@ class Service:
             raise KeyError(f'unknown world {name}')
         data, facts = self.worlds[name]
         start = self.request['time']['start']
-        expected = (self.oracle.expected(copy.deepcopy(data), copy.deepcopy(facts), start)
+        expected = (self.verifier.expected(copy.deepcopy(data), copy.deepcopy(facts), start)
                     if self.reward_type == 'business' else None)
         approve = None
         if plain:
@@ -385,10 +385,10 @@ class HttpAPI:
         return self._step({'type': 'wait', 'seconds': seconds})
 
 
-def replay_check(env, oracle, schema, request, *, rubric=None, judge=None):
+def replay_check(env, verifier, schema, request, *, rubric=None, judge=None):
     """G5: the reference through the real HTTP API earns the same full reward (a passing rubric
     score for rubric tasks)."""
-    service = Service(env, oracle, schema, request, rubric=rubric, judge=judge)
+    service = Service(env, verifier, schema, request, rubric=rubric, judge=judge)
     server = start(service)
     try:
         base = f'http://127.0.0.1:{server.server_address[1]}'

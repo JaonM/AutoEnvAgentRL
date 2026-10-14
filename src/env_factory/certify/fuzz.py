@@ -9,7 +9,7 @@ copies and in random sequences on one copy. A call may refuse (BusinessError); i
 - crash (any other exception) on arguments of the declared types,
 - give a different result or state for the same call on the same state (each run with fresh tools),
 - keep state outside the tables (the same call on the same tables answers differently the second time
-  with the same tool objects, e.g. a call history kept in a closure, which the oracle cannot see),
+  with the same tool objects, e.g. a call history kept in a closure, which the verifier cannot see),
 - return something that is not JSON,
 - leave a table with rows whose columns changed or ids that are no longer unique.
 

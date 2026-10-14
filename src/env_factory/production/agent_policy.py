@@ -1,11 +1,11 @@
 """Agent-facing policy: the task's business rules rewritten in business language.
 
-business_rules is an implementation spec, written for the env author, the oracle and the auditors:
+business_rules is an implementation spec, written for the env author, the verifier and the auditors:
 it names tables, fields, status codes and the virtual clock, and sometimes the order of steps. An
 agent should learn from what a real assistant would be given, a policy manual. This module writes
 that manual (request["agent_policy"]) with a model, rejects one that still exposes internals
 (deterministic checks), and has a second pass confirm that every outcome-affecting rule survived
-(coverage check), with up to `attempts` rewrites. Grading never changes: env, oracle and gates keep
+(coverage check), with up to `attempts` rewrites. Grading never changes: env, verifier and gates keep
 following business_rules; the policy gate then shows the task is solvable from the manual alone.
 """
 from __future__ import annotations

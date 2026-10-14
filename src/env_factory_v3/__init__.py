@@ -1,6 +1,6 @@
 """Compatibility alias for code written before the rename to `env_factory`.
 
-Sandboxes built earlier contain generated env.py / oracle.py files that import `env_factory_v3.runtime`.
+Sandboxes built earlier contain generated env.py / verifier.py files that import `env_factory_v3.runtime`.
 Every `env_factory_v3.X` resolves to the very same module object as `env_factory.X`, so exceptions such
 as BusinessError raised by old sandbox code are the classes the runtime catches.
 """

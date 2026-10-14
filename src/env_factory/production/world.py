@@ -1,19 +1,19 @@
 """Domain worlds: one database and policy manual, built and certified once, with many tasks on it.
 
 A world is a build request with a "goal_schema" (the processes customers come for) and a large
-database. It goes through the ordinary build pipeline once: its env and oracle are written by
+database. It goes through the ordinary build pipeline once: its env and verifier are written by
 independent sessions and differentially qualified like any task, but their reference and
 expected() must serve any goal in goal_schema (docs/domain-world-design.md). A task on the world
 is a short codex session that writes only the customer side (goals and params, identity and
 approval facts, a user scene and script, small overlays on existing rows). The platform composes
-world + task into a request, writes the opening, copies the world's certified env and oracle,
+world + task into a request, writes the opening, copies the world's certified env and verifier,
 and re-runs every gate on it (bundle.requalify): differential across perturbed worlds and
 approval flips, negatives, category, http. Nothing a task author writes is trusted: the expected
-outcome comes from the world oracle and must match the env's reference.
+outcome comes from the world verifier and must match the env's reference.
 
 Two extra checks guard the reward of every task (docs/domain-world-design.md, reward trust):
-- third oracle: after the world is certified, one more independent session writes an oracle from
-  the same brief (third_oracle). A task is kept only when that oracle agrees with the certified
+- third verifier: after the world is certified, one more independent session writes a verifier from
+  the same brief (third_verifier). A task is kept only when that verifier agrees with the certified
   one on every world the task serves, so an outcome rests on three independent implementations.
 - policy sufficiency (certify/sufficiency.py): given the agent policy, all user facts and the
   reference's reads, a model must be able to predict the task's writes and answer.
@@ -166,34 +166,34 @@ def build_world(domain, folder, *, runner, client, python, language, index, repa
     request['source'] = {'generated': domain['name'], 'world': True, 'language': language, 'persona': persona}
     status = pipeline.build(request, folder / 'build', runner=runner, repairs=repairs)
     if status.get('training_ready'):
-        status['third_oracle'] = third_oracle(status['bundle'], folder / 'oracle3', runner=runner, python=python)
+        status['third_verifier'] = third_verifier(status['bundle'], folder / 'verifier3', runner=runner, python=python)
     return status
 
 
-def third_oracle(world_bundle, folder, *, runner, python, timeout=900):
-    """One more independent oracle for a certified world, written from the same brief; its
-    self-check result is kept in third_oracle.json (tasks are compared against it only if it passed)."""
+def third_verifier(world_bundle, folder, *, runner, python, timeout=900):
+    """One more independent verifier for a certified world, written from the same brief; its
+    self-check result is kept in third_verifier.json (tasks are compared against it only if it passed)."""
     from env_factory import checks
     from env_factory.core import answers
     world_bundle, folder = Path(world_bundle), Path(folder)
     request = json.loads((world_bundle / 'request.json').read_text())
     spec.materialize(request, folder, answers.load_schema(world_bundle / 'answer_schema.json'))
-    runner(folder, prompts.ORACLE.format(python=python), timeout=timeout, role='third_oracle')
-    report = checks.run('oracle', folder)
+    runner(folder, prompts.VERIFIER.format(python=python), timeout=timeout, role='third_verifier')
+    report = checks.run('verifier', folder)
     result = {'passed': report['passed'], 'problems': report['problems'][:5]}
-    (folder / 'third_oracle.json').write_text(json.dumps(result, ensure_ascii=False, indent=1))
+    (folder / 'third_verifier.json').write_text(json.dumps(result, ensure_ascii=False, indent=1))
     return result
 
 
-def third_opinion(target, oracle_path):
-    """Worlds of the task bundle where the third oracle's outcome and the certified one disagree."""
+def third_opinion(target, verifier_path):
+    """Worlds of the task bundle where the third verifier's outcome and the certified one disagree."""
     from env_factory.certify import bundle
     from env_factory.core import reward
     from env_factory.core.sandbox import load_module
     from env_factory.core.worlds import variants
     from env_factory.runtime import InvalidWorld
     loaded = bundle.load_bundle(target, require_current_platform=False)
-    third = load_module(oracle_path, role='oracle')
+    third = load_module(verifier_path, role='verifier')
     request, schema = loaded['request'], loaded['schema']
     served, start, disagreements, compared = set(loaded['valid_worlds']), request['time']['start'], [], 0
     as_result = lambda outcome: {'answer': outcome['answer'], 'final_state': outcome['final_state'],
@@ -201,7 +201,7 @@ def third_opinion(target, oracle_path):
     for name, data, facts in variants(request['tables'], request['user_facts'], perturbed=20):
         if name not in served:
             continue
-        main = loaded['oracle'].expected(copy.deepcopy(data), copy.deepcopy(facts), start)
+        main = loaded['verifier'].expected(copy.deepcopy(data), copy.deepcopy(facts), start)
         try:
             other = third.expected(copy.deepcopy(data), copy.deepcopy(facts), start)
             agree = any(reward.grade(as_result(a), b, schema, initial=data, reference_calls=1)['success']
@@ -267,18 +267,18 @@ def make_task(world_bundle, folder, *, index, processes, script, runner, client,
 
 
 def guard(row, world_bundle, target, folder, sufficiency_client=None):
-    """The reward-trust checks on a certified task: the third oracle (when the world has a passing
+    """The reward-trust checks on a certified task: the third verifier (when the world has a passing
     one) and policy sufficiency (when a client is given). Either failing rejects the task."""
     if not row['passed']:
         return row
-    oracle3 = Path(world_bundle).parent.parent / 'oracle3'
-    status = json.loads((oracle3 / 'third_oracle.json').read_text()) if (oracle3 / 'third_oracle.json').exists() else {}
+    verifier3 = Path(world_bundle).parent.parent / 'verifier3'
+    status = json.loads((verifier3 / 'third_verifier.json').read_text()) if (verifier3 / 'third_verifier.json').exists() else {}
     if status.get('passed'):
-        opinion = third_opinion(target, oracle3 / 'oracle.py')
-        (Path(folder) / 'third_oracle.json').write_text(json.dumps(opinion, ensure_ascii=False, indent=1, default=str))
-        row['third_oracle'] = opinion['passed']
+        opinion = third_opinion(target, verifier3 / 'verifier.py')
+        (Path(folder) / 'third_verifier.json').write_text(json.dumps(opinion, ensure_ascii=False, indent=1, default=str))
+        row['third_verifier'] = opinion['passed']
         if not opinion['passed']:
-            return {**row, 'passed': False, 'stage': 'third_oracle', 'failed': ['third_oracle']}
+            return {**row, 'passed': False, 'stage': 'third_verifier', 'failed': ['third_verifier']}
     if sufficiency_client is not None:
         from env_factory.certify import sufficiency
         from env_factory.core.llm import ProviderError
@@ -344,20 +344,20 @@ def recertify_category(out):
 
 def reguard(out, *, runner, python, client=None):
     """Run the reward-trust checks on the certified tasks of an existing world run (writing third
-    oracles for worlds that lack one); rows that fail are marked in tasks.jsonl, the rest gain the
+    verifiers for worlds that lack one); rows that fail are marked in tasks.jsonl, the rest gain the
     check results."""
     out = Path(out)
     statuses = json.loads((out / 'worlds.json').read_text())
     for key, status in statuses.items():
-        if status.get('training_ready') and 'third_oracle' not in status:
-            status['third_oracle'] = third_oracle(status['bundle'], out / key / 'oracle3', runner=runner, python=python)
+        if status.get('training_ready') and 'third_verifier' not in status:
+            status['third_verifier'] = third_verifier(status['bundle'], out / key / 'verifier3', runner=runner, python=python)
     (out / 'worlds.json').write_text(json.dumps(statuses, ensure_ascii=False, indent=1, default=str))
     rows_path = out / 'tasks.jsonl'
     rows = [json.loads(line) for line in rows_path.read_text().splitlines()]
     bundles = {s['id']: s['bundle'] for s in statuses.values() if s.get('training_ready')}
 
     def one(row):
-        if not row.get('passed') or 'third_oracle' in row or 'sufficiency' in row:
+        if not row.get('passed') or 'third_verifier' in row or 'sufficiency' in row:
             return row
         target = Path(row['bundle'])
         world_id = json.loads((target / 'manifest.json').read_text()).get('world')
@@ -371,7 +371,7 @@ def reguard(out, *, runner, python, client=None):
     rows_path.write_text(''.join(json.dumps(r, ensure_ascii=False) + '\n' for r in rows))
     stages = collections.Counter(r.get('stage') for r in rows if not r.get('passed'))
     return {'certified': sum(bool(r.get('passed')) for r in rows), 'rejected': dict(stages),
-            'third_oracles': {k: (s.get('third_oracle') or {}).get('passed') for k, s in statuses.items()}}
+            'third_verifiers': {k: (s.get('third_verifier') or {}).get('passed') for k, s in statuses.items()}}
 
 
 def plan_tasks(world, count, seed=0):
@@ -399,7 +399,7 @@ def main():
     parser.add_argument('--output', required=True)
     parser.add_argument('--no-sufficiency', action='store_true', help='skip the policy sufficiency check')
     parser.add_argument('--reguard', action='store_true',
-                        help='only run the reward-trust checks (third oracle, sufficiency) on certified tasks')
+                        help='only run the reward-trust checks (third verifier, sufficiency) on certified tasks')
     args = parser.parse_args()
     import sys
     from env_factory.authoring.codex import CodexRunner
@@ -422,14 +422,14 @@ def main():
     def world(i):
         key = f'world-{i:02d}'
         if (statuses.get(key) or {}).get('training_ready'):
-            if 'third_oracle' not in statuses[key]:  # certified before the third oracle existed
-                statuses[key]['third_oracle'] = third_oracle(statuses[key]['bundle'], out / key / 'oracle3',
+            if 'third_verifier' not in statuses[key]:  # certified before the third verifier existed
+                statuses[key]['third_verifier'] = third_verifier(statuses[key]['bundle'], out / key / 'verifier3',
                                                              runner=runner, python=sys.executable)
             return key, statuses[key]
         status = build_world(domains[i], out / key, runner=runner, client=client, python=sys.executable,
                              language=langs[i], index=i, repairs=args.repairs)
         return key, {k: status.get(k) for k in ('id', 'training_ready', 'failure_class', 'reason', 'bundle',
-                                                 'elapsed_seconds', 'third_oracle') if k in status or k != 'third_oracle'}
+                                                 'elapsed_seconds', 'third_verifier') if k in status or k != 'third_verifier'}
 
     with concurrent.futures.ThreadPoolExecutor(args.parallel) as pool:
         statuses.update(dict(pool.map(world, range(len(domains)))))

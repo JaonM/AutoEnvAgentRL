@@ -54,8 +54,8 @@ class ClockTests(unittest.TestCase):
         self.assertIn('advances only when the agent waits', spec.brief(with_event(library_request())[0]))
 
     def test_wait_is_offered_only_when_the_clock_advances(self):
-        env, oracle, schema = library_modules()
-        fixed = server.Service(env, oracle, schema, library_request())
+        env, verifier, schema = library_modules()
+        fixed = server.Service(env, verifier, schema, library_request())
         names = lambda service: [t['function']['name'] for t in agent_view.tools(
             service.instructions, 'multi_step_agentic')]
         self.assertNotIn('v3_wait', names(fixed))
@@ -64,7 +64,7 @@ class ClockTests(unittest.TestCase):
         with self.assertRaises(ValueError):  # in process too, so the author's self-check catches it
             Episode(env.make_tools(), library_request()['tables'], {}, start=10).wait(1)
         request, _ = with_event(library_request())
-        advancing = server.Service(env, oracle, schema, request)
+        advancing = server.Service(env, verifier, schema, request)
         self.assertIn('v3_wait', names(advancing))
         episode = advancing.reset(world='original')['episode']
         self.assertEqual(advancing.step(episode, {'type': 'wait', 'seconds': 5})['result'], {'now': 15})

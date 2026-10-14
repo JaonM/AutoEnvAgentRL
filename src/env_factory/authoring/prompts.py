@@ -87,13 +87,13 @@ Run `{python} -m env_factory.checks env` and iterate until it prints PASS. Do no
 write files outside this folder. End with a two-line summary.
 """
 
-ORACLE = """You are an independent auditor. Compute, from first principles, the outcome of a
+VERIFIER = """You are an independent auditor. Compute, from first principles, the outcome of a
 correct handling of the user's request.
 
 Folder: brief.md (business rules and user request; the only authority), data.json, facts.json,
 answer_schema.json (the required answer shape), request.json.
 
-Write oracle.py:
+Write verifier.py:
     from env_factory.runtime import InvalidWorld   # optional
 
 def expected(data, facts, now) -> {{"answer": ..., "final_state": ...}}
@@ -108,7 +108,7 @@ def expected(data, facts, now) -> {{"answer": ..., "final_state": ...}}
   the main outcome changes the world, and never use it to hedge a rule you find unclear.
 - scheduled_events (if present): apply them with env_factory.runtime.apply_event in `at`
   order for the waiting a correct handling does; keep that table unchanged in final_state.
-- World mode: when request.json has "goal_schema", the same oracle serves many tasks on one
+- World mode: when request.json has "goal_schema", the same verifier serves many tasks on one
   database: compute the outcome for whatever goals the fact "goals" lists, for any process in
   goal_schema, never only the sample task in facts.json.
 - It runs on perturbed worlds and flipped approvals: never depend on particular ids or
@@ -116,13 +116,13 @@ def expected(data, facts, now) -> {{"answer": ..., "final_state": ...}}
   brief.md (e.g. a dangling reference); never to avoid a hard case.
 Keep table names and row columns as in data.json. Pure function, standard library only.
 
-Run `{python} -m env_factory.checks oracle` and iterate until it prints PASS. Do not read
+Run `{python} -m env_factory.checks verifier` and iterate until it prints PASS. Do not read
 or write files outside this folder. End with a two-line summary.
 """
 
 ARBITER = """Two independent implementations of the same business disagree.
 - env.py: environment tools and a reference agent
-- oracle.py: an independent computation of the expected outcome
+- verifier.py: an independent computation of the expected outcome
 - mismatches.json: the worlds where they disagree, with both answers and state differences
 brief.md is the only authority.
 
@@ -130,11 +130,11 @@ For each disagreement decide which side violates brief.md and fix that file (bot
 wrong). Never special-case ids or worlds; keep both interfaces; do not edit brief.md,
 data.json, facts.json, request.json or answer_schema.json.
 If brief.md explicitly lets either outcome stand (a stated free choice, not an unclear rule),
-the oracle is the side to fix: add the env's outcome to oracle.py's "alternatives" and record
-wrong_side "oracle".
+the verifier is the side to fix: add the env's outcome to verifier.py's "alternatives" and record
+wrong_side "verifier".
 
 Write verdict.json:
-{{"decisions": [{{"issue": "...", "wrong_side": "env" | "oracle" | "both" | "ambiguous",
+{{"decisions": [{{"issue": "...", "wrong_side": "env" | "verifier" | "both" | "ambiguous",
                  "worlds": ["<world names from mismatches.json this decision covers>"],
                  "brief_quote": "<exact text from the user request or business rules that decides it>",
                  "reason": "..."}}]}}
@@ -145,7 +145,7 @@ ambiguous business rule must be clarified by its owner, not decided by you. Alwa
 worlds each decision covers; the platform drops perturbed worlds whose rules are ambiguous.
 
 Run `{python} -m env_factory.checks diff`, `{python} -m env_factory.checks env` and
-`{python} -m env_factory.checks oracle` until they pass (or only ambiguous issues remain).
+`{python} -m env_factory.checks verifier` until they pass (or only ambiguous issues remain).
 Do not read or write files outside this folder.
 """
 
@@ -178,20 +178,20 @@ section of brief.md (never from the answer schema). Do not write any other
 file and do not read or write files outside this folder. End with one line per world.
 """
 
-BRANCH_REPAIR = """An independent audit found a mistake env.py and oracle.py share: after the user
+BRANCH_REPAIR = """An independent audit found a mistake env.py and verifier.py share: after the user
 refuses one approval, both drop later steps that brief.md requires.
 - branches.json: each refused world, the steps the implementation skipped there, and both runs
 - audit.json: the auditor's verdict per world; fix the worlds marked "unsupported", following
   the quoted rule and reason
 brief.md is the only authority.
 
-Fix env.py's reference agent (and its tools if needed) and oracle.py so that, after a refusal,
+Fix env.py's reference agent (and its tools if needed) and verifier.py so that, after a refusal,
 everything the rules still require is handled: later steps are offered for their own approval
 and carried out when approved and valid, and the answer reports them. Change nothing else.
 Never special-case ids or worlds; keep both interfaces; do not edit brief.md, data.json,
 facts.json, request.json, answer_schema.json, branches.json or audit.json.
 
-Run `{python} -m env_factory.checks env`, `{python} -m env_factory.checks oracle` and
+Run `{python} -m env_factory.checks env`, `{python} -m env_factory.checks verifier` and
 `{python} -m env_factory.checks diff` until all three print PASS.
 Do not read or write files outside this folder. End with a two-line summary of the fix.
 """
@@ -224,19 +224,19 @@ rules" section of brief.md (never from the answer schema). Do not write any othe
 read or write files outside this folder. End with one line per world.
 """
 
-PERTURBATION_REPAIR = """An independent audit found rules env.py and oracle.py both ignore: in some perturbed
+PERTURBATION_REPAIR = """An independent audit found rules env.py and verifier.py both ignore: in some perturbed
 worlds a changed cell should change the outcome, yet both produce the original outcome.
 - perturbations.json: each world, its changed cells, and the unchanged writes and answer
 - perturbation_audit.json: the verdict per world; fix the worlds marked "should_change",
   following the quoted rule and reason
 brief.md is the only authority.
 
-Fix env.py (its tools and reference agent) and oracle.py so both enforce the quoted rules on
+Fix env.py (its tools and reference agent) and verifier.py so both enforce the quoted rules on
 any data. Change nothing else. Never special-case ids or worlds; keep both interfaces; do not
 edit brief.md, data.json, facts.json, request.json, answer_schema.json, perturbations.json or
 perturbation_audit.json.
 
-Run `{python} -m env_factory.checks env`, `{python} -m env_factory.checks oracle` and
+Run `{python} -m env_factory.checks env`, `{python} -m env_factory.checks verifier` and
 `{python} -m env_factory.checks diff` until all three print PASS.
 Do not read or write files outside this folder. End with a two-line summary of the fix.
 """

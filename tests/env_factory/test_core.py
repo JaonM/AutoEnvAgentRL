@@ -24,11 +24,11 @@ PERTURBED_ONLY = ("    loan['due_day'] += book['renewal_days']\n",
 # Both sides stop after the first refusal: a shared guess the differential check cannot see.
 CASCADE_ENV = ("            renewed.append(loan_id)\n    return",
                "            renewed.append(loan_id)\n        else:\n            break\n    return")
-CASCADE_ORACLE = ("            renewed.append(loan_id)\n    return",
+CASCADE_VERIFIER = ("            renewed.append(loan_id)\n    return",
                   "            renewed.append(loan_id)\n        else:\n            break\n    return")
 # Both sides ignore whether a loan is active: agreement everywhere, wrong on perturbed worlds.
 IGNORE_ACTIVE_ENV = ("    if not loan['active']:\n        reasons.append('inactive_loan')\n", "")
-IGNORE_ACTIVE_ORACLE = ("loan['reader_id'] == reader and loan['active'] and", "loan['reader_id'] == reader and")
+IGNORE_ACTIVE_VERIFIER = ("loan['reader_id'] == reader and loan['active'] and", "loan['reader_id'] == reader and")
 BUGGY = ("if any(h['active'] and h['book_id'] == book['id'] and h['reader_id'] != reader_id for h in db['holds']):",
          "if False:")
 
@@ -40,9 +40,9 @@ def library_request():
 def library_modules(env_source=None):
     folder = Path(tempfile.mkdtemp())
     (folder / 'env.py').write_text(env_source or (LIBRARY / 'env.py').read_text())
-    shutil.copy(LIBRARY / 'oracle.py', folder / 'oracle.py')
+    shutil.copy(LIBRARY / 'verifier.py', folder / 'verifier.py')
     schema = answers.load_schema(LIBRARY / 'answer_schema.json')
-    return load_module(folder / 'env.py', role='env'), load_module(folder / 'oracle.py', role='oracle'), schema
+    return load_module(folder / 'env.py', role='env'), load_module(folder / 'verifier.py', role='verifier'), schema
 
 
 class RuntimeTests(unittest.TestCase):
@@ -118,7 +118,7 @@ class SandboxTests(unittest.TestCase):
             self.assertTrue(check_source(source), source)
 
     def test_accepts_fixtures(self):
-        for name in ('env.py', 'oracle.py'):
+        for name in ('env.py', 'verifier.py'):
             self.assertEqual(check_source((LIBRARY / name).read_text()), [])
 
     def test_load_reports_missing_functions(self):
@@ -195,21 +195,21 @@ class SpecTests(unittest.TestCase):
 class GateTests(unittest.TestCase):
     def test_untyped_tool_parameters_fail_static(self):
         source = (LIBRARY / 'env.py').read_text().replace('book_id: str)', 'book_id)')
-        env, oracle, schema = library_modules(source)
-        report = gates.qualify(env, oracle, schema, library_request(), perturbed=5)
+        env, verifier, schema = library_modules(source)
+        report = gates.qualify(env, verifier, schema, library_request(), perturbed=5)
         self.assertFalse(report['static']['passed'])
         self.assertTrue(any('book_id' in p for p in report['static']['tool_problems']))
 
     def test_correct_environment_qualifies(self):
-        env, oracle, schema = library_modules()
-        report = gates.qualify(env, oracle, schema, library_request(), perturbed=20)
+        env, verifier, schema = library_modules()
+        report = gates.qualify(env, verifier, schema, library_request(), perturbed=20)
         self.assertTrue(report['passed'], {g: report[g] for g in ('differential', 'negatives', 'category', 'http')})
         self.assertTrue(report['negatives']['checks']['stale_answer']['applicable'])
         self.assertTrue(report['negatives']['checks']['forged_consent']['passed'])
 
-    def test_buggy_environment_is_caught_by_the_oracle(self):
-        env, oracle, schema = library_modules((LIBRARY / 'env.py').read_text().replace(*BUGGY))
-        report = gates.qualify(env, oracle, schema, library_request(), perturbed=20)
+    def test_buggy_environment_is_caught_by_the_verifier(self):
+        env, verifier, schema = library_modules((LIBRARY / 'env.py').read_text().replace(*BUGGY))
+        report = gates.qualify(env, verifier, schema, library_request(), perturbed=20)
         self.assertFalse(report['differential']['passed'])
         self.assertFalse(report['passed'])
 
@@ -224,9 +224,9 @@ class GateTests(unittest.TestCase):
 
 class ServerTests(unittest.TestCase):
     def test_http_episode(self):
-        env, oracle, schema = library_modules()
+        env, verifier, schema = library_modules()
         request = library_request()
-        service = server.Service(env, oracle, schema, request, valid_worlds=['original', 'flip:approve_first'])
+        service = server.Service(env, verifier, schema, request, valid_worlds=['original', 'flip:approve_first'])
         httpd = server.start(service)
         try:
             api = server.HttpAPI(f'http://127.0.0.1:{httpd.server_address[1]}', None)
@@ -248,10 +248,10 @@ class ServerTests(unittest.TestCase):
 class FakeRunner:
     """Writes fixture files instead of calling a model; `env_source` lets a test plant bugs."""
 
-    def __init__(self, env_source=None, arbiter=None, fail_role=None, oracle_source=None, auditor=None, repair=None,
+    def __init__(self, env_source=None, arbiter=None, fail_role=None, verifier_source=None, auditor=None, repair=None,
                  perturbation_auditor=None):
         self.env_source, self.arbiter, self.fail_role, self.roles = env_source, arbiter, fail_role, []
-        self.oracle_source, self.auditor, self.repair = oracle_source, auditor, repair
+        self.verifier_source, self.auditor, self.repair = verifier_source, auditor, repair
         self.perturbation_auditor = perturbation_auditor or self.all_consistent
 
     @staticmethod
@@ -269,8 +269,8 @@ class FakeRunner:
             shutil.copy(LIBRARY / 'answer_schema.json', folder / 'answer_schema.json')
         elif role == 'author':
             (folder / 'env.py').write_text(self.env_source or (LIBRARY / 'env.py').read_text())
-        elif role == 'oracle':
-            (folder / 'oracle.py').write_text(self.oracle_source or (LIBRARY / 'oracle.py').read_text())
+        elif role == 'verifier':
+            (folder / 'verifier.py').write_text(self.verifier_source or (LIBRARY / 'verifier.py').read_text())
         elif role == 'arbiter' and self.arbiter:
             self.arbiter(folder)
         elif role == 'audit' and self.auditor:
@@ -367,12 +367,12 @@ class PipelineTests(unittest.TestCase):
     def cascade_runner(self, verdict, quote='允许部分成功', repair=None):
         def auditor(folder):
             found = json.loads((folder / 'branches.json').read_text())
-            self.assertFalse((folder / 'env.py').exists() or (folder / 'oracle.py').exists())
+            self.assertFalse((folder / 'env.py').exists() or (folder / 'verifier.py').exists())
             (folder / 'audit.json').write_text(json.dumps({'branches': [
                 {'world': c['world'], 'verdict': verdict, 'brief_quote': quote, 'reason': 'x'} for c in found]},
                 ensure_ascii=False))
         return FakeRunner(env_source=(LIBRARY / 'env.py').read_text().replace(*CASCADE_ENV),
-                          oracle_source=(LIBRARY / 'oracle.py').read_text().replace(*CASCADE_ORACLE), auditor=auditor,
+                          verifier_source=(LIBRARY / 'verifier.py').read_text().replace(*CASCADE_VERIFIER), auditor=auditor,
                           repair=repair)
 
     def test_no_refusal_cascade_skips_the_audit(self):
@@ -401,7 +401,7 @@ class PipelineTests(unittest.TestCase):
         def repair(folder):
             self.assertTrue((folder / 'audit.json').exists())
             shutil.copy(LIBRARY / 'env.py', folder / 'env.py')
-            shutil.copy(LIBRARY / 'oracle.py', folder / 'oracle.py')
+            shutil.copy(LIBRARY / 'verifier.py', folder / 'verifier.py')
         runner = self.cascade_runner('unsupported', repair=repair)
         status = self.build(runner, self.both_renewable())
         self.assertTrue(status['training_ready'], status)
@@ -444,14 +444,14 @@ class PipelineTests(unittest.TestCase):
     def ignore_active_runner(self, verdict, repair=None, quote='仅本人有效借阅可续借'):
         def auditor(folder):
             found = json.loads((folder / 'perturbations.json').read_text())
-            self.assertFalse((folder / 'env.py').exists() or (folder / 'oracle.py').exists())
+            self.assertFalse((folder / 'env.py').exists() or (folder / 'verifier.py').exists())
             (folder / 'perturbation_audit.json').write_text(json.dumps({'worlds': [
                 {'world': f['world'], 'reason': 'x', 'brief_quote': quote,
                  'verdict': verdict if any(c['field'] == 'active' and c['table'] == 'loans'
                                            for c in f['changed_cells']) else 'consistent'}
                 for f in found]}, ensure_ascii=False))
         return FakeRunner(env_source=(LIBRARY / 'env.py').read_text().replace(*IGNORE_ACTIVE_ENV),
-                          oracle_source=(LIBRARY / 'oracle.py').read_text().replace(*IGNORE_ACTIVE_ORACLE),
+                          verifier_source=(LIBRARY / 'verifier.py').read_text().replace(*IGNORE_ACTIVE_VERIFIER),
                           perturbation_auditor=auditor, repair=repair)
 
     def flagged(self, status):
@@ -460,7 +460,7 @@ class PipelineTests(unittest.TestCase):
     def test_rule_both_sides_ignore_is_repaired(self):
         def repair(folder):
             shutil.copy(LIBRARY / 'env.py', folder / 'env.py')
-            shutil.copy(LIBRARY / 'oracle.py', folder / 'oracle.py')
+            shutil.copy(LIBRARY / 'verifier.py', folder / 'verifier.py')
         status = self.build(self.ignore_active_runner('should_change', repair))
         self.assertTrue(self.flagged(status))
         self.assertTrue(status['stages']['perturbation_audit']['repaired'])
@@ -494,7 +494,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(classify('exited', 0, {'output_tokens': 50}, False), 'exited')
 
     def test_infrastructure_errors_are_classified(self):
-        status = self.build(FakeRunner(fail_role='oracle'))
+        status = self.build(FakeRunner(fail_role='verifier'))
         self.assertEqual(status['failure_class'], 'infrastructure')
         self.assertEqual(status['repairs_used'], 0)
 
@@ -503,8 +503,8 @@ class PipelineTests(unittest.TestCase):
         request = library_request()
         spec.materialize(request, folder, json.loads((LIBRARY / 'answer_schema.json').read_text()))
         shutil.copy(LIBRARY / 'env.py', folder / 'env.py')
-        shutil.copy(LIBRARY / 'oracle.py', folder / 'oracle.py')
-        for kind in ('schema', 'env', 'oracle', 'diff'):
+        shutil.copy(LIBRARY / 'verifier.py', folder / 'verifier.py')
+        for kind in ('schema', 'env', 'verifier', 'diff'):
             self.assertTrue(checks.run(kind, folder)['passed'], kind)
 
 

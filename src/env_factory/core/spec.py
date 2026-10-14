@@ -3,7 +3,7 @@
 request.json
     id, family, category (direct_response | simple_agentic | multi_step_agentic), title,
     user_request   what the user says to the agent (public)
-    business_rules implementation spec: the only semantic authority for env, oracle, arbiter and gates
+    business_rules implementation spec: the only semantic authority for env, verifier, arbiter and gates
     user_script    optional; how the simulated user behaves (goals in order, fallbacks, a pushback, forgotten
                    facts, traits). It shapes the conversation only: every decision that changes the outcome
                    is an approve_* fact read through env.approval_key, and forgotten facts are simply absent
@@ -24,7 +24,7 @@ import json
 from pathlib import Path
 
 CATEGORIES = ('direct_response', 'simple_agentic', 'multi_step_agentic')
-# business: one correct outcome, graded exactly against the oracle; rubric: subjective, graded by criteria.
+# business: one correct outcome, graded exactly against the verifier; rubric: subjective, graded by criteria.
 REWARD_TYPES = ('business', 'rubric')
 LANGUAGES = ('zh', 'en')
 REQUIRED = ('id', 'family', 'category', 'title', 'user_request', 'business_rules', 'tables', 'user_facts')
@@ -124,7 +124,7 @@ def brief(request, schema=None):
     if 'scheduled_events' in request['tables']:
         clock = (f"Starts at now = {request['time']['start']} and advances only when the agent waits. Rows of "
                  "scheduled_events (platform data, hidden from tools) are applied with "
-                 "env_factory.runtime.apply_event when the clock reaches their `at`; the oracle must apply "
+                 "env_factory.runtime.apply_event when the clock reaches their `at`; the verifier must apply "
                  "them the same way for the waits a correct handling performs.")
     else:
         clock = f"Fixed at now = {request['time']['start']} for this task."

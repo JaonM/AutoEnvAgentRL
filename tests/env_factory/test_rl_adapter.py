@@ -202,7 +202,7 @@ class ExtractionProbeTests(unittest.TestCase):
         loaded = bundle.load_bundle(Path(pipeline.build(library_request(), root / 'build', runner=FakeRunner(),
                                                         perturbed=20)['bundle']))
         request = loaded['request']
-        expected = loaded['oracle'].expected(request['tables'], request['user_facts'], request['time']['start'])['answer']
+        expected = loaded['verifier'].expected(request['tables'], request['user_facts'], request['time']['start'])['answer']
 
         class Speaker:
             model = 'scripted-speaker'
@@ -395,9 +395,9 @@ class RequalifyTests(unittest.TestCase):
         manifest = json.loads((folder / 'manifest.json').read_text())
         manifest['platform_identity'] = 'an-older-platform'
         (folder / 'manifest.json').write_text(json.dumps(manifest))
-        source = (folder / 'oracle.py').read_text().replace("renewed.append(loan_id)", "pass", 1)
-        (folder / 'oracle.py').write_text(source)
-        manifest['files']['oracle.py'] = bundle.sha256(folder / 'oracle.py')
+        source = (folder / 'verifier.py').read_text().replace("renewed.append(loan_id)", "pass", 1)
+        (folder / 'verifier.py').write_text(source)
+        manifest['files']['verifier.py'] = bundle.sha256(folder / 'verifier.py')
         (folder / 'manifest.json').write_text(json.dumps(manifest))
         self.assertFalse(bundle.requalify(folder)['passed'])
         with self.assertRaises(ValueError):

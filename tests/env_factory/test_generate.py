@@ -166,8 +166,8 @@ class GenerateTests(unittest.TestCase):
         checker = Checker()
         policy, problems = policies.write(checker, request)
         self.assertEqual((policy, problems, checker.drafts), (POLICY, [], 2))
-        env, oracle, schema = __import__('test_core').library_modules()
-        service = server.Service(env, oracle, schema, {**request, 'agent_policy': POLICY})
+        env, verifier, schema = __import__('test_core').library_modules()
+        service = server.Service(env, verifier, schema, {**request, 'agent_policy': POLICY})
         self.assertEqual(service.reset(world='original')['instructions']['business_rules'], POLICY)
 
     def test_english_share_spreads_english_tasks_and_english_checks_apply(self):

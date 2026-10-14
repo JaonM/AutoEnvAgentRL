@@ -1,5 +1,5 @@
 """Reward trust: acceptable alternatives, simulator audit, untrainable episodes, disagreement mining,
-policy sufficiency and the third oracle. No model calls."""
+policy sufficiency and the third verifier. No model calls."""
 from __future__ import annotations
 
 import copy
@@ -110,10 +110,10 @@ class SimulatorAuditTests(unittest.TestCase):
 
     def test_a_failed_episode_with_a_simulator_slip_is_marked_invalid(self):
         from env_factory.core.extract import Extractor
-        env, oracle, schema = library_modules()
+        env, verifier, schema = library_modules()
         fault = {'faults': [{'kind': 'withheld', 'fact': 'reader_id', 'quote': '好的（1）', 'reason': 'x'}]}
         auditor = disclosure.Auditor(Canned(json.dumps(fault, ensure_ascii=False)))
-        service = server.Service(env, oracle, schema, library_request(), user_mode='natural', user_client=ScriptedUser(),
+        service = server.Service(env, verifier, schema, library_request(), user_mode='natural', user_client=ScriptedUser(),
                                  extractor=Extractor(Reader()), auditor=auditor, audit=True)
         episode = service.reset(world='original')['episode']
         service.step(episode, {'type': 'chat', 'message': '请问您的读者号？'})
@@ -121,7 +121,7 @@ class SimulatorAuditTests(unittest.TestCase):
         self.assertFalse(graded['success'])
         self.assertIs(graded['valid'], False)
         self.assertEqual(graded['simulator_audit']['faults'][0]['fact'], 'reader_id')
-        clean = server.Service(env, oracle, schema, library_request(), user_mode='natural', user_client=ScriptedUser(),
+        clean = server.Service(env, verifier, schema, library_request(), user_mode='natural', user_client=ScriptedUser(),
                                extractor=Extractor(Reader()), auditor=disclosure.Auditor(Canned('{"faults": []}')),
                                audit=True)
         episode = clean.reset(world='original')['episode']
@@ -129,8 +129,8 @@ class SimulatorAuditTests(unittest.TestCase):
         self.assertIs(clean.reward(episode)['valid'], True)
 
     def test_a_write_without_an_approval_fact_is_declined_not_an_error(self):
-        env, oracle, schema = library_modules()
-        service = server.Service(env, oracle, schema, library_request(), user_mode='natural', user_client=ScriptedUser(),
+        env, verifier, schema = library_modules()
+        service = server.Service(env, verifier, schema, library_request(), user_mode='natural', user_client=ScriptedUser(),
                                  audit=False)
         env.approval_key = lambda tool, args, facts: 'approve_another_process'  # e.g. a world's other process
         episode = service.reset(world='original')['episode']
@@ -230,26 +230,26 @@ class FuzzTests(unittest.TestCase):
         self.assertTrue(report['tools']['lookup']['hidden_state'] or report['tools']['lookup']['crash'])
 
 
-class ThirdOracleTests(LibraryBundle):
-    def test_a_disagreeing_third_oracle_rejects_the_task(self):
+class ThirdVerifierTests(LibraryBundle):
+    def test_a_disagreeing_third_verifier_rejects_the_task(self):
         folder = Path(tempfile.mkdtemp())
-        shutil.copy(LIBRARY / 'oracle.py', folder / 'oracle.py')
-        self.assertTrue(world.third_opinion(self.bundle, folder / 'oracle.py')['passed'])
-        source = (LIBRARY / 'oracle.py').read_text().replace("loan['due_day'] += book['renewal_days']",
+        shutil.copy(LIBRARY / 'verifier.py', folder / 'verifier.py')
+        self.assertTrue(world.third_opinion(self.bundle, folder / 'verifier.py')['passed'])
+        source = (LIBRARY / 'verifier.py').read_text().replace("loan['due_day'] += book['renewal_days']",
                                                               "loan['due_day'] += book['renewal_days'] + 1")
-        (folder / 'oracle.py').write_text(source)
-        opinion = world.third_opinion(self.bundle, folder / 'oracle.py')
+        (folder / 'verifier.py').write_text(source)
+        opinion = world.third_opinion(self.bundle, folder / 'verifier.py')
         self.assertFalse(opinion['passed'])
         self.assertTrue(opinion['disagreements'])
-        # guard: a world folder layout <world>/build/bundle with <world>/oracle3
+        # guard: a world folder layout <world>/build/bundle with <world>/verifier3
         world_dir = Path(tempfile.mkdtemp())
         (world_dir / 'build').mkdir()
         shutil.copytree(self.bundle, world_dir / 'build' / 'bundle')
-        (world_dir / 'oracle3').mkdir()
-        (world_dir / 'oracle3' / 'oracle.py').write_text(source)
-        (world_dir / 'oracle3' / 'third_oracle.json').write_text('{"passed": true}')
+        (world_dir / 'verifier3').mkdir()
+        (world_dir / 'verifier3' / 'verifier.py').write_text(source)
+        (world_dir / 'verifier3' / 'third_verifier.json').write_text('{"passed": true}')
         row = world.guard({'id': 't', 'passed': True}, world_dir / 'build' / 'bundle', self.bundle, Path(tempfile.mkdtemp()))
-        self.assertEqual((row['passed'], row['stage']), (False, 'third_oracle'))
+        self.assertEqual((row['passed'], row['stage']), (False, 'third_verifier'))
 
 
 if __name__ == '__main__':
@@ -258,11 +258,11 @@ if __name__ == '__main__':
 
 class PlainConsentTests(unittest.TestCase):
     def service(self):
-        env, oracle, schema = library_modules()
+        env, verifier, schema = library_modules()
         request = library_request()
         for hold in request['tables']['holds']:
             hold['active'] = False  # both loans renewable
-        return server.Service(env, oracle, schema, request, user_mode='natural', user_client=ScriptedUser(),
+        return server.Service(env, verifier, schema, request, user_mode='natural', user_client=ScriptedUser(),
                               audit=False, valid_worlds=['original', 'flip:approve_second']), request
 
     def test_plain_consent_has_no_token_and_no_proposal_channel(self):

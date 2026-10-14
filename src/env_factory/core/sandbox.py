@@ -1,4 +1,4 @@
-"""Static checks and loading for model-written business code (env.py, oracle.py).
+"""Static checks and loading for model-written business code (env.py, verifier.py).
 
 This is defense in depth, not a security boundary: generated code must also run inside
 the delivery container. The rules keep business code pure and deterministic: no I/O,
@@ -67,7 +67,7 @@ def load_module(path, *, role):
         spec.loader.exec_module(module)
     finally:
         sys.modules.pop(name, None)
-    required = {'env': ('make_tools', 'reference'), 'oracle': ('expected',)}.get(role, ())
+    required = {'env': ('make_tools', 'reference'), 'verifier': ('expected',)}.get(role, ())
     missing = [attr for attr in required if not callable(getattr(module, attr, None))]
     if missing:
         raise SandboxError(f'{path.name}: missing {", ".join(missing)}')

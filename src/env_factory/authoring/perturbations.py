@@ -1,4 +1,4 @@
-"""Perturbation audit: catch rules env and oracle both ignore on perturbed worlds.
+"""Perturbation audit: catch rules env and verifier both ignore on perturbed worlds.
 
 Agreement on a perturbed world proves nothing when both sides ignore the same rule (an
 inactive subscription still refunded). The signal: a perturbation changes a row the task acts

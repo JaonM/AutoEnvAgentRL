@@ -1,6 +1,6 @@
 """Policy sufficiency: does what the agent may read determine the graded outcome?
 
-The oracle computes the outcome from the full specification; the agent only reads the agent
+The verifier computes the outcome from the full specification; the agent only reads the agent
 policy. If a rule that decides the outcome is missing from the policy, a learner is rewarded for
 guessing, not for following the policy. The test removes every other difficulty: a model gets the
 agent policy, the user's request and all of the user's private facts (approvals included), the
@@ -98,7 +98,7 @@ def run(folder, client, *, k=2):
     from env_factory.certify import bundle
     folder = Path(folder)
     loaded = bundle.load_bundle(folder, require_current_platform=False)
-    if loaded['oracle'] is None:
+    if loaded['verifier'] is None:
         report = {'passed': True, 'note': 'rubric task: no exact outcome to predict'}
     else:
         report = check(loaded, client, k=k)

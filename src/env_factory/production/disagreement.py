@@ -3,10 +3,10 @@
 The policy gate already plays every task k times with a strong model (policy-natural.json /
 policy.json in the bundle). Its failures are free evidence about the reward:
 - convergent failures: two or more failed episodes that end with the same committed writes and
-  the same answer, different from the oracle's. Independent runs agreeing on one "wrong" outcome
-  suggest the oracle, or the policy the agent reads, may be what is wrong.
+  the same answer, different from the verifier's. Independent runs agreeing on one "wrong" outcome
+  suggest the verifier, or the policy the agent reads, may be what is wrong.
 - judged failures (--judge): a model (JUDGE_*, falling back to LLM_*) reads what the agent saw
-  (the agent policy and the dialogue), the user's private facts and the oracle's outcome, and
+  (the agent policy and the dialogue), the user's private facts and the verifier's outcome, and
   says whose fault the failure is: agent_error, reference_suspect, policy_gap or simulator.
 Episodes the simulator audit already marked invalid are skipped. A task is flagged when it has a
 convergent failure or a judged failure that is not agent_error; flagged tasks are listed for
@@ -111,9 +111,9 @@ def mine(folder, report, client=None):
     request = loaded['request']
     row = {'id': request['id'], 'bundle': str(folder), 'played': report.get('played'),
            'successes': report.get('successes'), 'failures': 0, 'skipped_invalid': 0, 'clusters': [], 'judged': []}
-    if loaded['oracle'] is None:  # subjective task: graded by its rubric, no oracle outcome to dispute
+    if loaded['verifier'] is None:  # subjective task: graded by its rubric, no verifier outcome to dispute
         return {**row, 'flagged': False, 'note': 'rubric task'}
-    service = server.Service(loaded['env'], loaded['oracle'], loaded['schema'], request,
+    service = server.Service(loaded['env'], loaded['verifier'], loaded['schema'], request,
                              valid_worlds=loaded['valid_worlds'])
     writes = {name for name, fn in loaded['env'].make_tools().items() if is_write(fn)}
     failures = []
@@ -130,7 +130,7 @@ def mine(folder, report, client=None):
         name = episode['world']
         if name not in expected_of and name in service.worlds:
             data, facts = service.worlds[name]
-            outcome = loaded['oracle'].expected(json.loads(json.dumps(data)), json.loads(json.dumps(facts)),
+            outcome = loaded['verifier'].expected(json.loads(json.dumps(data)), json.loads(json.dumps(facts)),
                                                 request['time']['start'])
             changes = {table: {'should_appear': d['missing'], 'should_disappear': d['unexpected']}
                        for table, d in state_diff(outcome['final_state'], data).items()}

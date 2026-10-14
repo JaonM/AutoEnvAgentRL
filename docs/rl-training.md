@@ -1,6 +1,6 @@
 # 训练：SFT 冷启动与强化学习
 
-训练框架位于 `src/rl/`，在 Apple Silicon（MLX / Metal）上运行异步 PPO / GRPO。训练环境是生产线产出的**认证沙箱**：每个 episode 通过沙箱的 HTTP 接口交互，奖励由独立 oracle 计算，策略只能看到公开说明（手册、工具、对话）。
+训练框架位于 `src/rl/`，在 Apple Silicon（MLX / Metal）上运行异步 PPO / GRPO。训练环境是生产线产出的**认证沙箱**：每个 episode 通过沙箱的 HTTP 接口交互，奖励由独立 verifier 计算，策略只能看到公开说明（手册、工具、对话）。
 
 ```text
 tasks.json（认证沙箱清单）

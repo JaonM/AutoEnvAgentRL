@@ -1,4 +1,4 @@
-"""Branch audit: catch refusal cascades that env and oracle may share.
+"""Branch audit: catch refusal cascades that env and verifier may share.
 
 The differential check cannot see an error both implementations make. The likeliest shared
 error is what happens after the user refuses one approval: the original world approves

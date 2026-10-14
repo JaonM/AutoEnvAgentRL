@@ -13,7 +13,7 @@
   python -m env_factory policy BUNDLE [--k 4]      # policy gate with an independent model
   python -m env_factory findings BUILD             # spec_findings as questions for the business owner
   python -m env_factory clarify --request R --answer TEXT --output R2   # rebuild R2 with the answers
-  python -m env_factory check {schema|env|oracle|diff}   # same as env_factory.checks
+  python -m env_factory check {schema|env|verifier|diff}   # same as env_factory.checks
 """
 from __future__ import annotations
 

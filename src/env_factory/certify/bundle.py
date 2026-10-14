@@ -11,12 +11,12 @@ from env_factory.core.sandbox import load_module
 from env_factory.core.spec import load
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent  # src/env_factory
-FILES = ('request.json', 'answer_schema.json', 'env.py', 'oracle.py', 'gates.json')
+FILES = ('request.json', 'answer_schema.json', 'env.py', 'verifier.py', 'gates.json')
 RUBRIC_FILES = ('request.json', 'answer_schema.json', 'env.py', 'rubric.json', 'gates.json')
 
 
 def files_for(request):
-    """Business bundles carry the oracle; rubric bundles carry the rubric instead."""
+    """Business bundles carry the verifier; rubric bundles carry the rubric instead."""
     return RUBRIC_FILES if request.get('reward_type') == 'rubric' else FILES
 
 
@@ -69,10 +69,12 @@ def load_bundle(folder, *, require_current_platform=True):
         raise ValueError('bundle was qualified on a different platform; requalify it with `verify`')
     gates_report = json.loads((folder / 'gates.json').read_text())
     rubric = 'rubric.json' in manifest['files']
+    # Bundles certified before the rename carry the verifier as oracle.py; requalify moves it.
+    verifier_file = 'oracle.py' if 'oracle.py' in manifest['files'] else 'verifier.py'
     return {'request': load(folder / 'request.json'),
             'schema': answers.load_schema(folder / 'answer_schema.json'),
             'env': load_module(folder / 'env.py', role='env'),
-            'oracle': None if rubric else load_module(folder / 'oracle.py', role='oracle'),
+            'verifier': None if rubric else load_module(folder / verifier_file, role='verifier'),
             'rubric': json.loads((folder / 'rubric.json').read_text()) if rubric else None,
             'valid_worlds': gates_report.get('valid_worlds') or ['original'],
             'manifest': manifest, 'gates': gates_report}
@@ -92,14 +94,14 @@ def qualify_loaded(loaded, *, judge='auto'):
     if loaded['rubric'] is not None:
         return gates.qualify_rubric(loaded['env'], loaded['rubric'], loaded['schema'], loaded['request'],
                                     judge=default_judge() if judge == 'auto' else judge)
-    return gates.qualify(loaded['env'], loaded['oracle'], loaded['schema'], loaded['request'],
+    return gates.qualify(loaded['env'], loaded['verifier'], loaded['schema'], loaded['request'],
                          excluded=loaded['gates'].get('excluded_worlds') or [])
 
 
 def service(loaded, **options):
     """The episode service for a loaded bundle (rubric bundles grade with the judge)."""
     from env_factory.serving import server
-    return server.Service(loaded['env'], loaded['oracle'], loaded['schema'], loaded['request'],
+    return server.Service(loaded['env'], loaded['verifier'], loaded['schema'], loaded['request'],
                           valid_worlds=loaded['valid_worlds'], rubric=loaded['rubric'], **options)
 
 
@@ -113,6 +115,8 @@ def requalify(folder):
     loaded = load_bundle(folder, require_current_platform=False)
     report = qualify_loaded(loaded)
     if report['passed']:
+        if (folder / 'oracle.py').exists() and not (folder / 'verifier.py').exists():
+            (folder / 'oracle.py').rename(folder / 'verifier.py')  # the file's name before the rename
         slim = {key: value for key, value in report.items() if key != 'worlds'}
         slim['worlds'] = [{k: w.get(k) for k in ('world', 'status', 'reward')} for w in report.get('worlds', [])]
         (folder / 'gates.json').write_text(json.dumps(slim, ensure_ascii=False, indent=1, default=str))

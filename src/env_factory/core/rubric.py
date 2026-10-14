@@ -1,6 +1,6 @@
 """Rubric reward for subjective tasks.
 
-Business tasks have one correct outcome, so the oracle's expected state and answer are compared
+Business tasks have one correct outcome, so the verifier's expected state and answer are compared
 exactly (core/reward.py). Subjective tasks (advice, explanation, comparison, handling a complaint)
 have no single correct reply. They are graded instead against criteria written at build time
 (rubric.json, each grounded in a verbatim quote of the request or rules) plus the platform's

@@ -82,7 +82,7 @@ def evaluate(folder):
     for name, data, facts in variants(request['tables'], request['user_facts'], perturbed=20):
         if name not in served:
             continue
-        expected = loaded['oracle'].expected(copy.deepcopy(data), copy.deepcopy(facts), start)
+        expected = loaded['verifier'].expected(copy.deepcopy(data), copy.deepcopy(facts), start)
         result = run_reference(loaded['env'], data, facts, start=start)
         grade = lambda answer: reward.grade(dict(result, answer=answer), expected, schema, initial=data,
                                             reference_calls=result['tool_calls'])

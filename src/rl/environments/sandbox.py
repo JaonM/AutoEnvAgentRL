@@ -2,7 +2,7 @@
 (SandboxEpisode) or from its verified hardened container (DockerSandboxEpisode).
 
 The policy sees only the public instructions (request, rules, tool specs, askable user topics,
-answer schema). Private facts, the oracle and source tables stay inside the service. bundles
+answer schema). Private facts, the verifier and source tables stay inside the service. bundles
 are deterministic, so a continuation snapshot is the world plus the actions taken so far and
 restore replays them.
 """
@@ -24,9 +24,9 @@ from rl.errors import EnvironmentProtocolError, InfrastructureError
 
 def is_sandbox_bundle(root):
     root = Path(root)
-    # Business bundles carry the oracle; subjective (rubric-graded) bundles carry rubric.json instead.
+    # Business bundles carry the verifier; subjective (rubric-graded) bundles carry rubric.json instead.
     return all((root / name).is_file() for name in ('manifest.json', 'gates.json', 'env.py')) and \
-        any((root / name).is_file() for name in ('oracle.py', 'rubric.json'))
+        any((root / name).is_file() for name in ('verifier.py', 'rubric.json'))
 
 
 def bundle_identity(root):

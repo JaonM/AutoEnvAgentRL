@@ -2,8 +2,8 @@
 
     python -m env_factory.checks schema   # answer_schema.json is valid
     python -m env_factory.checks env      # env.py loads, reference runs on all worlds, answer fits schema
-    python -m env_factory.checks oracle   # oracle.py loads and returns schema-valid results on all worlds
-    python -m env_factory.checks diff     # env.py and oracle.py agree everywhere (arbiter)
+    python -m env_factory.checks verifier   # verifier.py loads and returns schema-valid results on all worlds
+    python -m env_factory.checks diff     # env.py and verifier.py agree everywhere (arbiter)
     python -m env_factory.checks request  # a generated request.json is valid and reads naturally
     python -m env_factory.checks rubric   # rubric.json criteria are well formed and grounded
 
@@ -102,16 +102,16 @@ def check_env(folder):
     return problems, notes
 
 
-def check_oracle(folder):
+def check_verifier(folder):
     request = load(folder / 'request.json')
     schema = answers.load_schema(folder / 'answer_schema.json')
-    oracle = load_module(folder / 'oracle.py', role='oracle')
+    verifier = load_module(folder / 'verifier.py', role='verifier')
     problems, notes, valid = [], [], 0
     start = request['time']['start']
     for name, data, facts in variants(request['tables'], request['user_facts'], perturbed=PERTURBED):
         try:
-            first = oracle.expected(json.loads(json.dumps(data)), json.loads(json.dumps(facts)), start)
-            second = oracle.expected(json.loads(json.dumps(data)), json.loads(json.dumps(facts)), start)
+            first = verifier.expected(json.loads(json.dumps(data)), json.loads(json.dumps(facts)), start)
+            second = verifier.expected(json.loads(json.dumps(data)), json.loads(json.dumps(facts)), start)
             json.dumps(first, allow_nan=False)
         except InvalidWorld as exc:
             notes.append(f'{name}: invalid world ({exc})')
@@ -145,8 +145,8 @@ def check_diff(folder):
     request = load(folder / 'request.json')
     schema = answers.load_schema(folder / 'answer_schema.json')
     env = load_module(folder / 'env.py', role='env')
-    oracle = load_module(folder / 'oracle.py', role='oracle')
-    worlds = gates.compare_worlds(env, oracle, schema, request, perturbed=20, excluded=excluded_worlds(folder))
+    verifier = load_module(folder / 'verifier.py', role='verifier')
+    worlds = gates.compare_worlds(env, verifier, schema, request, perturbed=20, excluded=excluded_worlds(folder))
     result = gates.differential(worlds)
     (folder / 'mismatches.json').write_text(json.dumps(result['mismatches'], ensure_ascii=False, indent=1, default=str))
     notes = [f'counts: {result["counts"]}']
@@ -185,7 +185,7 @@ def check_task(folder):
     return task(folder)
 
 
-KINDS = {'schema': check_schema, 'env': check_env, 'oracle': check_oracle, 'diff': check_diff,
+KINDS = {'schema': check_schema, 'env': check_env, 'verifier': check_verifier, 'diff': check_diff,
          'request': check_request, 'rubric': check_rubric, 'world': check_world, 'task': check_task}
 
 

@@ -1,14 +1,14 @@
-"""Truth proxy for generated tasks: a third, independently written oracle from another provider.
+"""Truth proxy for generated tasks: a third, independently written verifier from another provider.
 
-  .venv/bin/python experiments/third_oracle.py BATCH_DIR [--prefix LLM]
+  .venv/bin/python experiments/third_verifier.py BATCH_DIR [--prefix LLM]
 
 Generated requests have no handwritten truth. For each training-ready build, a model from a
-different provider (default LLM_*: not the codex model that wrote env.py and oracle.py) writes
-oracle.py from brief.md alone (rules, tables, facts, answer schema). The script runs it and
+different provider (default LLM_*: not the codex model that wrote env.py and verifier.py) writes
+verifier.py from brief.md alone (rules, tables, facts, answer schema). The script runs it and
 feeds errors back (3 rounds), then compares it with the delivered env.py: final state on the
 original world and every approval flip, and answer numbers/ids on the same worlds plus perturbed
 ones. Agreement is evidence, not proof: two implementations can still share a misreading.
-Evaluation only; never shown to the pipeline. Writes third_oracle.json into the batch folder.
+Evaluation only; never shown to the pipeline. Writes third_verifier.json into the batch folder.
 """
 from __future__ import annotations
 
@@ -60,8 +60,8 @@ def code_of(text):
     return text
 
 
-def write_oracle(client, folder, request, schema):
-    path = folder / 'third_oracle.py'
+def write_verifier(client, folder, request, schema):
+    path = folder / 'third_verifier.py'
     messages = [{'role': 'user', 'content': PROMPT.format(
         brief=spec.brief(request, schema), data=json.dumps(request['tables'], ensure_ascii=False),
         facts=json.dumps(request['user_facts'], ensure_ascii=False))}]
@@ -69,7 +69,7 @@ def write_oracle(client, folder, request, schema):
         reply = client.chat(messages, temperature=0).get('content') or ''
         path.write_text(code_of(reply))
         try:
-            module = load_module(path, role='oracle')
+            module = load_module(path, role='verifier')
             for name, data, facts in variants(request['tables'], request['user_facts'], perturbed=0):
                 result = module.expected(copy.deepcopy(data), copy.deepcopy(facts), request['time']['start'])
                 assert set(result) == {'answer', 'final_state'}, 'must return answer and final_state'
@@ -111,9 +111,9 @@ def main(batch, prefix='LLM'):
         if loaded['rubric'] is not None:
             results[build.parent.name] = {'agree': None, 'note': 'rubric task: no expected outcome to compare'}
             continue
-        third = write_oracle(client, build.parent, loaded['request'], loaded['schema'])
+        third = write_verifier(client, build.parent, loaded['request'], loaded['schema'])
         if third is None:
-            results[build.parent.name] = {'agree': None, 'note': 'third oracle never ran'}
+            results[build.parent.name] = {'agree': None, 'note': 'third verifier never ran'}
         else:
             core, extra, rows = compare(loaded['env'], third, loaded['request'])
             results[build.parent.name] = {'agree': not core, 'core_disagreements': core,
@@ -122,7 +122,7 @@ def main(batch, prefix='LLM'):
     ran = [r for r in results.values() if r['agree'] is not None]
     summary = {'model': client.model, 'builds': len(results), 'ran': len(ran),
                'agree': sum(r['agree'] for r in ran), 'results': results}
-    (Path(batch) / 'third_oracle.json').write_text(json.dumps(summary, ensure_ascii=False, indent=1))
+    (Path(batch) / 'third_verifier.json').write_text(json.dumps(summary, ensure_ascii=False, indent=1))
     print(json.dumps({k: v for k, v in summary.items() if k != 'results'}))
 
 

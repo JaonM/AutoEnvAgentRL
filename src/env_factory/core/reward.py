@@ -1,8 +1,8 @@
-"""Terminal reward derived from the independent oracle; authors never write reward code.
+"""Terminal reward derived from the independent verifier; authors never write reward code.
 
 reward = business (0.95) + efficiency (0.05)
-    business: final state equal to the oracle's (when the task changes state) and each answer
-              field's score against the oracle's answer (answers.score: share of its graded leaves
+    business: final state equal to the verifier's (when the task changes state) and each answer
+              field's score against the verifier's answer (answers.score: share of its graded leaves
               matched). With state effects, state carries half of the business weight; the answer
               fields share the rest equally.
     efficiency: full when tool calls <= 2 * reference calls + 2, then decays linearly to 0
@@ -16,7 +16,7 @@ What the agent says to the user is never graded here: a business task is graded 
 state and the recorded answer only (a subjective task is graded on its reply, see rubric.py).
 
 Several acceptable outcomes: when the rules genuinely leave a choice open (facts do not pin it),
-the oracle lists the other correct outcomes under "alternatives" (at most MAX_ALTERNATIVES, each
+the verifier lists the other correct outcomes under "alternatives" (at most MAX_ALTERNATIVES, each
 different from the main one, never "do nothing" when the main outcome changes state). The result
 is graded against each and the best grade counts; `outcome` says which (0 is the main one).
 """
@@ -37,7 +37,7 @@ def outcomes(expected):
 
 
 def alternative_problems(expected, schema, initial):
-    """What is wrong with an oracle's "alternatives" (empty when there are none or they are valid)."""
+    """What is wrong with a verifier's "alternatives" (empty when there are none or they are valid)."""
     alternatives = expected.get('alternatives')
     if alternatives in (None, []):
         return []
