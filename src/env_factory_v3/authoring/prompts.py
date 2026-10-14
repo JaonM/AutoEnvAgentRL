@@ -6,8 +6,9 @@ facts.json hold the initial tables and the user's private facts).
 Write answer_schema.json: the JSON object the agent must return to the user at the end.
 Format: {{"fields": {{"<name>": {{"type": ..., "description": ..., ...}}}}}}
 - types: string, integer, number, boolean, array (needs "items"), object (optional "properties");
-  "nullable": true when a value can legitimately be absent; arrays may set "order": "any"
-  when order carries no meaning.
+  "nullable": true when a value can legitimately be absent; every array sets "order": "any"
+  when order carries no meaning or "exact" when it is a ranking or sequence. Amounts are integers
+  in the smallest unit (cents, fen), never strings.
 - Cover exactly what the user asked to learn or be told, nothing decorative. Express every
   outcome with ids, integers, booleans or string enums ("enum": [...]) so that two correct,
   independent implementations produce identical values. Every field needs a precise

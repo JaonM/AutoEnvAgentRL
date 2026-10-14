@@ -22,7 +22,7 @@ OUTCOME = {'type': 'object', 'description': 'what happened',
                           'reason': {'type': 'string', 'enum': ['late', 'ineligible'], 'nullable': True}}}
 ADVICE = {'type': 'object', 'description': 'the advice',
           'properties': {'recommended_option': {'type': 'string', 'enum': ['a', 'b']},
-                         'reasons': {'type': 'array', 'items': {'type': 'string', 'enum': ['cheaper', 'eligible']}}}}
+                         'reasons': {'type': 'array', 'order': 'any', 'items': {'type': 'string', 'enum': ['cheaper', 'eligible']}}}}
 SHAPED = {name: {**value, 'kind': {'p4': 'advice', 'p5': 'inquiry'}.get(name, 'account'),
                  'outcome': ADVICE if name == 'p4' else OUTCOME} for name, value in GOALS.items()}
 

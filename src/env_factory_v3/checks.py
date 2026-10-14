@@ -58,6 +58,30 @@ def shape_problems(initial, final):
     return problems
 
 
+MONEY_WORDS = ('cents', 'dollar', 'amount', 'fee', 'price', 'refund', 'total', 'cost', 'charge', 'balance', 'credit',
+               'yuan', 'fen')
+
+
+def authoring_problems(fields, path=''):
+    """Stricter rules for newly written answer contracts (old bundles still load): amounts are integers, never
+    strings ("12.50" vs "$12.50" compared as text); every array says whether its order matters."""
+    problems = []
+    for name, spec in (fields or {}).items():
+        if not isinstance(spec, dict) or spec.get('graded', True) is False:
+            continue
+        where = f'{path}{name}'
+        if spec.get('type') == 'string' and 'enum' not in spec and any(w in name.lower() for w in MONEY_WORDS):
+            problems.append(f'{where}: an amount must be an integer (in the smallest unit), not a string')
+        if spec.get('type') == 'array' and spec.get('order') not in ('any', 'exact'):
+            problems.append(f'{where}: an array must set "order": "any" (set semantics) or "exact" (a ranking)')
+        if spec.get('type') == 'array' and isinstance(spec.get('items'), dict):
+            items = spec['items']
+            problems += authoring_problems(items.get('properties') if items.get('type') == 'object' else {}, f'{where}[].')
+        if spec.get('type') == 'object':
+            problems += authoring_problems(spec.get('properties'), f'{where}.')
+    return problems
+
+
 def check_schema(folder):
     path = folder / 'answer_schema.json'
     if not path.exists():
@@ -66,7 +90,10 @@ def check_schema(folder):
         schema = json.loads(path.read_text())
     except json.JSONDecodeError as exc:
         return [f'answer_schema.json is not JSON: {exc}'], []
-    return answers.check_schema(schema), [f'fields: {sorted(schema.get("fields", {}))}']
+    problems = answers.check_schema(schema)
+    if not problems:
+        problems = authoring_problems(schema.get('fields'))
+    return problems, [f'fields: {sorted(schema.get("fields", {}))}']
 
 
 def check_env(folder):

@@ -90,6 +90,8 @@ def outcome_problems(schema):
             problems.append(f'goal_schema.{name}.outcome must be an object field spec')
             continue
         problems += [f'goal_schema.{name}.outcome: {p}' for p in answers.check_schema({'fields': {name: outcome}})]
+        from env_factory_v3.checks import authoring_problems
+        problems += [f'goal_schema.{name}.outcome: {p}' for p in authoring_problems({name: outcome})]
         approval = value.get('approval')
         if approval is not None and not (isinstance(approval, str) and approval.startswith('approve_')):
             problems.append(f'goal_schema.{name}.approval must be an approve_* fact key pattern')
