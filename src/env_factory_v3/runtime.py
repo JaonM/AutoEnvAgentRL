@@ -200,7 +200,8 @@ class Episode:
             self.trace.append({'kind': 'event', 'id': event['id'], 'time': self.now})
 
     def _advance(self):
-        self.now += self.tick
+        if self.tick:  # a calendar clock (ISO now) is always fixed
+            self.now += self.tick
         self._apply_events()
 
     def wait(self, seconds):

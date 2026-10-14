@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import random
+import re
 
 from env_factory_v3.runtime import canonical
 
@@ -18,6 +19,26 @@ def approval_flips(facts):
     return variants
 
 
+CALENDAR_SHIFTS = (-3 * 1440, -1440, -120, -60, 60, 120, 1440, 3 * 1440)  # minutes: hours and days around a boundary
+
+
+def _shift(value, minutes):
+    import datetime
+    moment = datetime.datetime.fromisoformat(value) + datetime.timedelta(minutes=minutes)
+    return moment.strftime('%Y-%m-%dT%H:%M') if 'T' in value else moment.strftime('%Y-%m-%d')
+
+
+def _calendar_cell(value):
+    import datetime
+    if not (isinstance(value, str) and re.match(r'^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2})?$', value)):
+        return False
+    try:
+        datetime.datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
 def _mutable_cells(data):
     cells = []
     for table in sorted(data):
@@ -28,7 +49,8 @@ def _mutable_cells(data):
                 value = row[column]
                 if column == 'id' or column.endswith('_id') or column.endswith('_ids'):
                     continue
-                if isinstance(value, bool) or (isinstance(value, int) and not isinstance(value, bool)):
+                if isinstance(value, bool) or (isinstance(value, int) and not isinstance(value, bool)) \
+                        or _calendar_cell(value):
                     cells.append((table, index, column))
     return cells
 
@@ -44,6 +66,10 @@ def perturb(data, seed):
         value = world[table][index][column]
         if isinstance(value, bool):
             world[table][index][column] = not value
+            continue
+        if isinstance(value, str):  # a calendar date or time: moved by hours or days, across deadlines
+            minutes = rng.choice(CALENDAR_SHIFTS if 'T' in value else [m for m in CALENDAR_SHIFTS if m % 1440 == 0])
+            world[table][index][column] = _shift(value, minutes)
             continue
         peers = sorted({row[column] for row in world[table] if isinstance(row, dict)
                         and isinstance(row.get(column), int) and not isinstance(row.get(column), bool)})

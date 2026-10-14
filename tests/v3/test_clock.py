@@ -70,5 +70,33 @@ class ClockTests(unittest.TestCase):
         self.assertEqual(advancing.step(episode, {'type': 'wait', 'seconds': 5})['result'], {'now': 15})
 
 
+class CalendarClockTests(unittest.TestCase):
+    def test_a_calendar_now_is_valid_fixed_and_shown_as_a_date(self):
+        from env_factory_v3.core import spec
+        from env_factory_v3.runtime import Episode
+        from env_factory_v3.serving import agent_view
+        request = {**library_request(), 'time': {'start': '2024-05-15T15:00', 'tick': 0}}
+        self.assertFalse([p for p in spec.validate(request) if 'time' in p])
+        bad = {**library_request(), 'time': {'start': '15 May', 'tick': 0}}
+        self.assertTrue([p for p in spec.validate(bad) if 'time' in p])
+        seen = []
+        episode = Episode({'probe': lambda db, now: seen.append(now) or {}}, {}, {}, start='2024-05-15T15:00')
+        episode.call('probe')
+        episode.call('probe')
+        self.assertEqual(seen, ['2024-05-15T15:00', '2024-05-15T15:00'])  # tools get the calendar now, fixed
+        text = agent_view.clock_text(agent_view.TEXT['en'], '2024-05-15T15:00', 'en')
+        self.assertEqual(text, 'Current time: 2024-05-15 15:00 (Wednesday)')
+
+    def test_perturbed_worlds_move_dates_by_hours_or_days(self):
+        from env_factory_v3.core.worlds import perturb
+        data = {'bookings': [{'id': f'b{i}', 'departs': '2024-05-31T23:00', 'booked_on': '2024-05-14'}
+                             for i in range(3)]}
+        moved = [perturb(data, seed) for seed in range(1, 30)]
+        values = {row['departs'] for world in moved for row in world['bookings']} | \
+            {row['booked_on'] for world in moved for row in world['bookings']}
+        self.assertIn('2024-06-01T00:00', values)  # across a day and a month boundary
+        self.assertTrue(any(v != '2024-05-14' and len(v) == 10 for v in values))
+
+
 if __name__ == '__main__':
     unittest.main()

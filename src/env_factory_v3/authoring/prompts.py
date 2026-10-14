@@ -43,6 +43,8 @@ Write env.py:
     from env_factory_v3.runtime import write, BusinessError
 
 1. make_tools() -> dict of name -> function.
+   - `now` is time.start: an int, or for a calendar clock an ISO string "YYYY-MM-DDTHH:MM" (compare with
+     datetime.fromisoformat; dates in the tables are ISO strings too).
    - Read tool: fn(db, now, **args) -> JSON. The signature and docstring are the only tool
      description an agent sees: annotate every argument with its type (str, int, float, bool,
      dict, list[...], or X | None) and give the docstring a summary plus an `Args:` section
@@ -110,6 +112,7 @@ Write oracle.py:
     from env_factory_v3.runtime import InvalidWorld   # optional
 
 def expected(data, facts, now) -> {{"answer": ..., "final_state": ...}}
+(`now` is time.start: an int, or an ISO string "YYYY-MM-DDTHH:MM" for a calendar clock.)
 - final_state: every table after all operations a correct handling performs. An operation
   happens only if the rules allow it at that point AND the user's matching approval fact is
   true. Committed operations stay committed unless the rules say otherwise.
@@ -262,7 +265,7 @@ Write request.json in this folder (assignment.json repeats the assignment):
 {{"id": "{id}", "family": "<short domain slug>", "category": "{category}", "reward_type": "{reward_type}",
   "language": "{language}", "title": "<short title in {language_name}>", "user_scene": {{...}},
   "business_rules": "...", "tables": {{...}},
-  "user_facts": {{...}}, "time": {{"start": 10, "tick": 0}}}}
+  "user_facts": {{...}}, "time": {{"start": "2024-05-15T15:00", "tick": 0}}}}
 Do not write the user's opening message: another writer turns user_scene into it without ever
 seeing the rules, tables or facts.
 
@@ -304,6 +307,10 @@ Task shape: {shape}
   Everything else the agent needs lives in user_facts and comes out only when the agent asks.
 - Time does not pass in this task: queries, approvals and writes all happen at time.start. Do
   not describe a clock that ticks per action; time-dependent rules compare against time.start.
+- Use calendar time, as real businesses do: time = {{"start": "<YYYY-MM-DDTHH:MM, now>", "tick": 0}};
+  dates and times in the tables are ISO strings ("2024-05-15" or "2024-05-15T09:30"); rules are stated
+  in calendar terms ("within 24 hours of booking", "at least 3 days before departure", "before 18:00
+  on the delivery day") so the agent has to reason about dates, including across days and months.
 - Use a domain different from library loans, procurement, subscriptions, document access,
   parcels, parking, warehouse lots and file versions.
 
@@ -411,7 +418,7 @@ Write request.json in this folder:
 {{"id": "{id}", "family": "<short domain slug>", "category": "multi_step_agentic", "reward_type": "business",
   "language": "{language}", "title": "<short title in {language_name}>", "business_rules": "...",
   "goal_schema": {{...}}, "tables": {{...}}, "user_facts": {{...}}, "user_scene": {{...}},
-  "time": {{"start": <int>, "tick": 0}}}}
+  "time": {{"start": "<YYYY-MM-DDTHH:MM, now>", "tick": 0}}}}
 
 - business_rules ({language_name}): the full policy manual of this business, the only authority. Cover 6 to 10
   business processes customers come for (for example look up, book, change, cancel, refund, exchange,
@@ -420,7 +427,8 @@ Write request.json in this folder:
   rounding, deadlines relative to now, what happens on refusal or failure, partial success, and which writes need
   the customer's approval. Customers must be identified (state how: e.g. name plus postcode, or email) before any
   account data is shown or changed. For every row a write creates or changes, state the value of every column.
-  No rule may be open to two readings. Amounts are integer cents; times are virtual integers (minutes).
+  No rule may be open to two readings. Amounts are integer cents; dates and times are ISO strings ("2024-05-15", "2024-05-15T09:30") against a fixed
+  calendar now (time.start), and rules are stated in calendar terms (hours, days, "before 18:00").
 - goal_schema: {{"<process>": {{"description": "<what the customer wants>", "kind": "account" | "inquiry",
   "params": {{"<name>": "<type and meaning>"}}, "outcome": <field spec>}}}} for those 6 to 10 processes. A task's
   goals are one to three of them with concrete params.
