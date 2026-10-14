@@ -47,7 +47,8 @@ def api_problems(tools, request):
 def write_argument_problems(tools):
     """A write takes business parameters (ids, enums, amounts, short lists of ids), never an object copied from an
     earlier result (a "quoted_terms" blob): an agent cannot reproduce such a blob exactly, so the task would grade
-    copying, not the business decision. A quote to honour is referenced by the id the quote lookup returned."""
+    copying, not the business decision. Amounts the agent worked out (reads return facts, not verdicts) come as
+    separate integer arguments, which can be predicted exactly."""
     import inspect
     from env_factory_v3.runtime import is_write
     problems = []
@@ -59,7 +60,7 @@ def write_argument_problems(tools):
             text = annotation if isinstance(annotation, str) else getattr(annotation, '__name__', repr(annotation))
             if argument not in ('db', 'now') and (annotation is dict or str(text).startswith('dict')):
                 problems.append(f'write tool {name}: argument {argument} is an object; take business parameters '
-                                '(ids, enums, amounts) and reference a quote by the id its lookup returns')
+                                '(ids, enums, amounts): each amount the agent must confirm as its own integer argument')
     return problems
 
 

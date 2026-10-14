@@ -51,8 +51,9 @@ Write env.py:
      with one `name: meaning` line per argument (units, id format, allowed values).
    - Write tool: decorate with @write; fn(db, now, **args) mutates db in place and returns a
      JSON receipt. Raise BusinessError to reject; the runtime rolls the write back. Its arguments are
-     business parameters (ids, enums, amounts, lists of ids), never an object copied from an earlier
-     result; to honour a quote, the quote lookup returns a quote id and the write takes that id.
+     business parameters (ids, enums, amounts, lists of ids), never an object: when the write must
+     confirm amounts the agent worked out and told the customer (a penalty, a refund), take each as its
+     own integer argument (penalty_cents, refund_cents) and reject a wrong one, never a bundle of terms.
    - Tools look like a real business API. Each read answers one business question about
      specific records (look up by id, list one customer's orders, search with filters) and
      returns only the records and fields that question needs. Never write a generic table
