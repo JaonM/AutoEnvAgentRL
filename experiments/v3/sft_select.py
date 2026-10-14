@@ -99,7 +99,8 @@ def main():
     parser.add_argument('--skill-min', type=int, default=100)
     parser.add_argument('--allow-short', action='store_true', help='write the selection even if targets are missed')
     parser.add_argument('--dev-domains', type=int, default=4,
-                        help='domains held out of the selection for the behaviour check (dev_check.py)')
+                        help='domains held out of the selection for the behaviour check (dev_check.py); '
+                             'airline and retail-like domains always stay in training')
     parser.add_argument('--dev-output', help='where to write the held-out task list')
     parser.add_argument('--seed', type=int, default=0)
     args = parser.parse_args()
@@ -112,7 +113,8 @@ def main():
     rng = random.Random(args.seed)
     import hashlib
     all_domains = sorted({m[2] for m in meta.values()}, key=lambda d: hashlib.sha256(str(d).encode()).hexdigest())
-    held = set(all_domains[:args.dev_domains])
+    core = ('airline', 'flight', 'retail', 'e-commerce', 'ecommerce', 'online shop', 'order')
+    held = set([d for d in all_domains if not any(word in str(d).lower() for word in core)][:args.dev_domains])
     if args.dev_output:
         dev = [{'id': t, 'sandbox': sandboxes[t], 'split': 'eval', 'weight': 1.0} for t in meta if meta[t][2] in held]
         Path(args.dev_output).write_text(json.dumps({'tasks': dev, 'domains': sorted(held)}, ensure_ascii=False, indent=1))
