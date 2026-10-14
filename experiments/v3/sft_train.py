@@ -23,6 +23,7 @@ import argparse
 import json
 import math
 import random
+import re
 import shutil
 import time
 from pathlib import Path
@@ -87,11 +88,24 @@ def redundant_turns(messages, consent_names=('consent',)):
     return out
 
 
+NOTICE = re.compile(r'\s*(\(System notice:[^)]*\)|（系统提示：[^）]*）)')
+
+
+def strip_notices(messages):
+    """Platform notices (the idle warning) appended to user turns and tool results: τ²-bench never sends
+    them, so the student must not learn to wait for one."""
+    out = []
+    for message in messages:
+        content = message.get('content')
+        out.append({**message, 'content': NOTICE.sub('', content)} if isinstance(content, str) else message)
+    return out
+
+
 def render_turns(tokenizer, episode, think, cap, limit=0, seed=0, skip_failed=False):
     """[(token ids, loss mask)] for the assistant turns of one episode, as served (see module doc).
     With skip_failed, a turn whose tool call failed stays in later turns' context but is not trained."""
     keep = ('role', 'content', 'tool_calls', 'tool_call_id', 'name')
-    messages = [{k: v for k, v in m.items() if k in keep} for m in episode['messages']]
+    messages = strip_notices([{k: v for k, v in m.items() if k in keep} for m in episode['messages']])
     reasoning = {int(k): v for k, v in (episode.get('reasoning') or {}).items()}
     turns = [i for i, m in enumerate(episode['messages']) if m['role'] == 'assistant'
              and not episode['messages'][i].get('context_only')]
