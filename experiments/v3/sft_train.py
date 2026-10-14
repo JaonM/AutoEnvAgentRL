@@ -184,7 +184,7 @@ def main():
     parser.add_argument('--teacher', required=True, help='collect_teacher.py JSONL (only successful episodes are used)')
     parser.add_argument('--model', default='models/Qwen3-0.6B', help='floating-point base model')
     parser.add_argument('--output', required=True)
-    parser.add_argument('--tuning', choices=('full', 'lora'), default='full')
+    parser.add_argument('--tuning', choices=('full', 'lora'), default='full', help='full (default since 2026-10-15) or lora')
     parser.add_argument('--lora-rank', type=int, default=16)
     parser.add_argument('--epochs', type=float, default=2.0)
     parser.add_argument('--learning-rate', type=float, default=1e-5)
