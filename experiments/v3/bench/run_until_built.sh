@@ -5,7 +5,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/../../.."
 out=$1; shift
-for round in 1 2 3 4; do
+for round in $(seq 1 "${ROUNDS:-4}"); do
   bash scripts/run_pipeline.sh --output "$out" "$@" > /dev/null 2>&1
   status=$?
   infra=$(python3 -c "import json,sys;t=json.load(open('$out/tasks.json'));print(sum(1 for e in t['excluded'] if e.get('failure_class')=='infrastructure'))" 2>/dev/null || echo unknown)
