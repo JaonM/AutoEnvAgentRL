@@ -97,6 +97,8 @@ def main():
     parser.add_argument('--min-episodes', type=int, default=2000)
     parser.add_argument('--min-tasks', type=int, default=500)
     parser.add_argument('--skill-min', type=int, default=100)
+    parser.add_argument('--check-skills', nargs='*', default=None,
+                        help='skills the minimum applies to (default: all of SKILLS)')
     parser.add_argument('--allow-short', action='store_true', help='write the selection even if targets are missed')
     parser.add_argument('--dev-domains', type=int, default=4,
                         help='domains held out of the selection for the behaviour check (dev_check.py); '
@@ -179,7 +181,9 @@ def main():
         missed.append(f'episodes {len(selected)} < {args.min_episodes}')
     if report['tasks'] < args.min_tasks:
         missed.append(f"tasks {report['tasks']} < {args.min_tasks}")
-    missed += [f'skill {k} {v} < {args.skill_min}' for k, v in report['skills'].items() if v < args.skill_min]
+    checked = args.check_skills if args.check_skills is not None else SKILLS
+    missed += [f'skill {k} {v} < {args.skill_min}' for k, v in report['skills'].items()
+               if k in checked and v < args.skill_min]
     report['targets_missed'] = missed
     print(json.dumps(report, ensure_ascii=False, indent=1))
     if missed and not args.allow_short:
