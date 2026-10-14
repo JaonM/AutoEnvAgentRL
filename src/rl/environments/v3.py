@@ -99,6 +99,9 @@ class V3Episode:
         # random (default): per episode (by seed) tool results come as our envelope, raw JSON with
         # "Error: ..." failures (τ²-bench's format), or plain text; envelope: always ours.
         self.result_format = os.environ.get('ENVFACTORY_V3_RESULT_FORMAT', 'random')
+        # random (default): 70% of free-dialogue episodes (by seed) use plain-dialogue consent (ask in words,
+        # write without a token, as on τ²-bench), the rest the proposal/token protocol; plain or token: always.
+        self.consent_mode = os.environ.get('ENVFACTORY_V3_CONSENT', 'random')
         self.tool_errors = 0
         self.root = Path(root).resolve()
         loaded = bundle.load_bundle(self.root)
@@ -162,7 +165,14 @@ class V3Episode:
     # -- episode ----------------------------------------------------------------
     def reset(self, seed, world=None):
         self._forget()
-        status, response = self.request('/reset', {'world': world} if world else {'seed': int(seed)})
+        consent = self.consent_mode
+        if consent == 'random':
+            consent = 'plain' if random.Random(int(seed) * 7919 + 3).random() < 0.7 else 'token'
+        if self.user_mode != 'natural':
+            consent = 'token'
+        body = {'world': world} if world else {'seed': int(seed)}
+        status, response = self.request('/reset', {**body, 'consent': consent})
+        self.consent = consent
         if status != 200:
             raise InfrastructureError('V3 reset failed')
         self.episode, self.world, self.seed = response['episode'], response['world'], seed
@@ -296,6 +306,7 @@ class V3Episode:
                 'trace': copy.deepcopy(self.trace), 'score': copy.deepcopy(self.score),
                 'world': self.world, 'user_mode': self.user_mode, 'tool_errors': self.tool_errors,
                 'tool_naming': self.tool_naming, 'answer_tool': self.answer_tool,
+                'consent': getattr(self, 'consent', None),
                 'unknown_tool_calls': self.unknown_tool_calls,
                 'platform_tool_hallucinations': self.platform_tool_hallucinations,
                 # False when the simulator audit found the user, not the agent, at fault (server.audit_simulator)

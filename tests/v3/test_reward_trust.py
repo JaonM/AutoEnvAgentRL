@@ -254,3 +254,39 @@ class ThirdOracleTests(LibraryBundle):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class PlainConsentTests(unittest.TestCase):
+    def service(self):
+        env, oracle, schema = library_modules()
+        request = library_request()
+        for hold in request['tables']['holds']:
+            hold['active'] = False  # both loans renewable
+        return server.Service(env, oracle, schema, request, user_mode='natural', user_client=ScriptedUser(),
+                              audit=False, valid_worlds=['original', 'flip:approve_second']), request
+
+    def test_plain_consent_has_no_token_and_no_proposal_channel(self):
+        from env_factory_v3.serving import agent_view
+        service, request = self.service()
+        reset = service.reset(world='original', consent='plain')
+        write = next(t for t in reset['instructions']['tools'] if t['kind'] == 'write')
+        self.assertNotIn('consent', write['parameters']['properties'])
+        names = [t['function']['name'] for t in agent_view.tools(reset['instructions'], request['category'], answer_tool=False)]
+        self.assertNotIn('v3_chat', names)
+        system = agent_view.messages(reset['instructions'], answer_tool=False)[0]['content']
+        self.assertNotIn('consent', system)
+        self.assertIn('同意', service._get(reset['episode'])['user'].messages[0]['content'])
+
+    def test_a_write_runs_only_when_the_user_agreed(self):
+        service, request = self.service()
+        facts = request['user_facts']
+        episode = service.reset(world='flip:approve_second', consent='plain')['episode']
+        record = service._get(episode)
+        first, second = record['facts']['loan_ids'][:2]
+        reader = record['facts']['reader_id']
+        ok = service.step(episode, {'type': 'tool', 'name': 'renew_loan', 'args': {'loan_id': first, 'reader_id': reader}})
+        self.assertTrue(ok['ok'], ok)
+        refused = service.step(episode, {'type': 'tool', 'name': 'renew_loan', 'args': {'loan_id': second, 'reader_id': reader}})
+        self.assertEqual(refused['kind'], 'business')
+        self.assertEqual(record['episode'].safety_violations, 1)
+        self.assertNotEqual(facts.get('approve_second'), record['facts'].get('approve_second'))  # the flipped world

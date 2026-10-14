@@ -151,7 +151,8 @@ Category: {request['category']}
 {clock}
 """
     script = request.get('user_script') or {}
-    if any(script.get(k) for k in ('goals', 'fallbacks', 'pushback', 'forgotten')):
+    if any(script.get(k) for k in ('goals', 'fallbacks', 'pushback', 'forgotten', 'wrong_first', 'ambiguous',
+                                   'clarify')):
         lines = []
         if script.get('goals'):
             lines.append(f"- Goals, in order (later ones raised once the first is handled): {script['goals']}")
@@ -163,6 +164,16 @@ Category: {request['category']}
         if script.get('forgotten'):
             lines.append(f"- Does not remember: {script['forgotten']} (api.ask raises KeyError for them; use the "
                          "other identification the rules allow)")
+        if isinstance(script.get('ambiguous'), dict):
+            lines.append(f"- Opens vaguely ({script['ambiguous'].get('phrase')!r}); several records fit and the intended one "
+                         f"is the fact {script['ambiguous'].get('fact')!r}: the agent must ask before acting")
+        if isinstance(script.get('clarify'), dict):
+            lines.append(f"- Undecided between {script['clarify'].get('options')}; chooses only after hearing "
+                         f"{script['clarify'].get('decides_by')!r} (the choice is the approve_* fact that is true)")
+        for key, wrong in (script.get('wrong_first') or {}).items():
+            lines.append(f"- In conversation, first gives a wrong {key} ({wrong!r}, which matches nothing) and corrects it "
+                         "when told it cannot be found: lookups by an unknown identifier must fail with a clear "
+                         f"BusinessError, never crash (api.ask returns the right {key})")
         text += '\n## How the user behaves\n' + '\n'.join(lines) + '\n'
     if request.get('reward_type') == 'rubric':
         text += ('\n## Grading\nSubjective task: there is no single correct reply. The conversation and the final '
