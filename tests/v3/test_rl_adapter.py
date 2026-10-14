@@ -233,7 +233,7 @@ class ContainerLifetimeTests(unittest.TestCase):
             return {'run': 'c0ffee', 'port': '127.0.0.1:1'}.get(args[0], '')
 
         with unittest.mock.patch.object(docker, 'docker', fake), \
-                unittest.mock.patch.object(docker, 'image_for', lambda folder: 'sha256:x'), \
+                unittest.mock.patch.object(docker, 'image_for', lambda folder: ('sha256:x', '/bundle')), \
                 unittest.mock.patch.object(docker, 'remove', lambda container: None):
             with self.assertRaises(RuntimeError):
                 docker.run('/nowhere', timeout=0.1)

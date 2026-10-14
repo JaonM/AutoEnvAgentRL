@@ -1,9 +1,11 @@
-"""Container delivery: one hardened image per bundle, verified offline inside a container.
+"""Container delivery: hardened images verified offline inside a container.
 
-build() packs this V3 package and the bundle into an image, runs every gate in it with no
-network, and records the image next to the bundle (docker_image.json, outside the hashed
-files). run() starts a serving container for training: same hardening, the HTTP port
-published on 127.0.0.1 only.
+build() packs this V3 package and one bundle into an image; build_many() packs several bundles (every
+certified task of one domain world, which differ only in their request, answer schema and manifest)
+into one image under /tasks/<n>, so a world is built and verified once instead of once per task. Every
+gate runs again inside the image with no network, per bundle, and the image is recorded next to each
+bundle (docker_image.json, outside the hashed files) with the path it is served from. run() starts a
+serving container for training on that path: same hardening, the HTTP port published on 127.0.0.1 only.
 """
 from __future__ import annotations
 
@@ -47,15 +49,24 @@ def docker(*args, timeout=600, env=None):
 
 
 def identity(folder):
-    """Image identity: the certified bundle files on this platform."""
+    """A bundle's content identity: its certified files on this platform."""
     manifest = bundle.load_bundle(folder)['manifest']
     return hashlib.sha256(json.dumps([manifest['platform_identity'], manifest['files']],
                                      sort_keys=True).encode()).hexdigest()
 
 
 def build(folder, *, base_image=BASE_IMAGE):
-    folder = Path(folder).resolve()
-    digest = identity(folder)
+    """One bundle in its own image, served from /bundle."""
+    return build_many([folder], base_image=base_image)[0]
+
+
+def build_many(folders, *, base_image=BASE_IMAGE, timeout=1800):
+    """Several bundles in one image (a world's tasks), each verified offline inside it; returns the metadata
+    written next to each bundle. One bundle keeps the single-bundle layout (/bundle)."""
+    folders = [Path(f).resolve() for f in folders]
+    paths = ['/bundle'] if len(folders) == 1 else [f'/tasks/{i:03d}' for i in range(len(folders))]
+    members = [{'path': path, 'identity': identity(folder)} for path, folder in zip(paths, folders)]
+    digest = hashlib.sha256(json.dumps(members, sort_keys=True).encode()).hexdigest()
     tag = f'envfactory-v3:{digest[:16]}'
     with tempfile.TemporaryDirectory(prefix='v3-docker-') as context:
         context = Path(context)
@@ -65,29 +76,40 @@ def build(folder, *, base_image=BASE_IMAGE):
                 target = package / path.relative_to(bundle.PACKAGE_ROOT)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(path, target)
-        (context / 'bundle').mkdir()
-        for name in (*bundle.load_bundle(folder)['manifest']['files'], 'manifest.json'):
-            shutil.copyfile(folder / name, context / 'bundle' / name)
-        (context / 'Dockerfile').write_text(DOCKERFILE.format(base=base_image))
+        for path, folder in zip(paths, folders):
+            target = context / path.lstrip('/')
+            target.mkdir(parents=True)
+            for name in (*bundle.load_bundle(folder)['manifest']['files'], 'manifest.json'):
+                shutil.copyfile(folder / name, target / name)
+        if len(folders) > 1:
+            (context / 'bundle').mkdir()  # the Dockerfile copies /bundle; a world image serves /tasks/<n>
+        (context / 'Dockerfile').write_text(DOCKERFILE.format(base=base_image).replace(
+            'COPY bundle /bundle', 'COPY bundle /bundle' + ('\nCOPY tasks /tasks' if len(folders) > 1 else '')))
         docker('build', '--tag', tag, str(context))
     image = docker('image', 'inspect', '--format', '{{.Id}}', tag)
-    # Every gate again, inside the image, with no network at all.
+    # Every gate again, inside the image, with no network at all: one container, every bundle in turn.
     output = docker('run', '--rm', '--network=none', *HARDENING, image,
-                    'python', '-m', 'env_factory_v3', 'container-check', '/bundle', timeout=1800)
+                    'python', '-m', 'env_factory_v3', 'container-check', *paths, timeout=timeout * len(folders))
     evidence = json.loads(output.splitlines()[-1])
-    manifest = bundle.load_bundle(folder)['manifest']
-    if not (evidence['passed'] and evidence['platform_identity'] == manifest['platform_identity']
-            and evidence['files'] == manifest['files']):
-        raise RuntimeError(f'container verification failed: {evidence}')
-    metadata = {'image_id': image, 'tag': tag, 'identity': digest, 'base_image': base_image,
-                'platform_identity': manifest['platform_identity'], 'files': manifest['files'],
-                'container_check': evidence, 'hardening': HARDENING, 'network_during_check': 'none'}
-    (folder / METADATA).write_text(json.dumps(metadata, indent=1))
-    return metadata
+    by_path = evidence['bundles'] if 'bundles' in evidence else {paths[0]: evidence}
+    results = []
+    for path, folder, member in zip(paths, folders, members):
+        manifest = bundle.load_bundle(folder)['manifest']
+        found = by_path.get(path) or {}
+        if not (found.get('passed') and found.get('platform_identity') == manifest['platform_identity']
+                and found.get('files') == manifest['files']):
+            raise RuntimeError(f'container verification failed for {folder}: {found}')
+        metadata = {'image_id': image, 'tag': tag, 'identity': member['identity'], 'path': path,
+                    'image_identity': digest, 'members': len(folders), 'base_image': base_image,
+                    'platform_identity': manifest['platform_identity'], 'files': manifest['files'],
+                    'container_check': found, 'hardening': HARDENING, 'network_during_check': 'none'}
+        (folder / METADATA).write_text(json.dumps(metadata, indent=1))
+        results.append(metadata)
+    return results
 
 
 def image_for(folder):
-    """The verified image of a bundle; refuses stale metadata."""
+    """(verified image, path of the bundle inside it); refuses stale metadata."""
     folder = Path(folder).resolve()
     path = folder / METADATA
     if not path.exists():
@@ -95,13 +117,13 @@ def image_for(folder):
     metadata = json.loads(path.read_text())
     if metadata['identity'] != identity(folder):
         raise ValueError(f'{folder}: image was verified for different bundle content or platform')
-    return metadata['image_id']
+    return metadata['image_id'], metadata.get('path', '/bundle')
 
 
 def run(folder, *, user_mode='structured', token=None, timeout=30):
     """Start a serving container; returns {'container', 'url'}. The natural user mode passes the
     simulator's provider settings by name (values never appear in argv)."""
-    image = image_for(folder)
+    image, served = image_for(folder)
     extra = []
     rubric = (Path(folder) / 'rubric.json').exists()  # the judge grades rubric episodes inside the container
     if user_mode == 'natural' or rubric:
@@ -110,7 +132,7 @@ def run(folder, *, user_mode='structured', token=None, timeout=30):
                 if os.environ.get(f'{prefix}_{name}'):
                     extra += ['--env', f'{prefix}_{name}']
     # --rm with --idle-exit: a container whose trainer died without removing it exits by itself.
-    command = ['python', '-m', 'env_factory_v3', 'serve', '/bundle', '--host', '0.0.0.0', '--port', str(PORT),
+    command = ['python', '-m', 'env_factory_v3', 'serve', served, '--host', '0.0.0.0', '--port', str(PORT),
                '--user-mode', user_mode, '--idle-exit', str(IDLE_EXIT)]
     if token:
         extra += ['--env', 'V3_SERVICE_TOKEN']  # value comes from the docker CLI's environment, not argv
