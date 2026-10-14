@@ -1,0 +1,12 @@
+[
+ {
+  "name": "Airline flight reservations",
+  "detail": "Customer service for airline flight reservations. Book, change or cancel flight reservations; cabin class and fare rules; change fees and cancellation refunds. Policies cover: verifying the customer's identity (e.g. name plus a postcode, email or booking reference) before looking up or changing anything; eligibility windows and status rules; fees, penalties and compensation amounts; refunds back to the original payment method; the customer must approve each change before it is made; some requests must be refused because the policy does not allow them; requests outside the policy are handed to a human agent.",
+  "group": "matched"
+ },
+ {
+  "name": "Online retail item exchanges",
+  "detail": "Customer service for online retail item exchanges. Exchange delivered items for another variant (size, colour, model) of the same product; price differences. Policies cover: verifying the customer's identity (e.g. name plus a postcode, email or booking reference) before looking up or changing anything; eligibility windows and status rules; fees, penalties and compensation amounts; refunds back to the original payment method; the customer must approve each change before it is made; some requests must be refused because the policy does not allow them; requests outside the policy are handed to a human agent.",
+  "group": "matched"
+ }
+]
