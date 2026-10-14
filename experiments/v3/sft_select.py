@@ -62,6 +62,21 @@ def skills(episode, request):
             found.add('writes')
         if any(word in name.lower() for word in IDENTITY):
             found.add('verifies_identity')
+    failed_then = False
+    asks = lambda m: m['role'] == 'assistant' and not m.get('tool_calls') and any(q in (m.get('content') or '')
+                                                                                 for q in ('?', '？'))
+    for index, message in enumerate(episode['messages']):
+        content = message.get('content') or ''
+        if message['role'] == 'tool' and ('"ok": false' in content or content.startswith('Error')):
+            later = episode['messages'][index + 1:]
+            # recovered: a later call succeeded, or the agent's next words asked the user
+            if any(m['role'] == 'tool' and '"ok": true' in (m.get('content') or '') for m in later) or \
+                    any(asks(m) for m in later[:2]):
+                failed_then = True
+    if failed_then:
+        found.add('recovers_from_error')
+    if str(episode.get('world') or '').startswith('flip'):
+        found.add('refusal_world')
     script = request.get('user_script') or {}
     goals = (request.get('user_facts') or {}).get('goals') or script.get('goals') or []
     if len(goals) >= 2:
@@ -81,7 +96,8 @@ def signature(episode):
     return calls, ' '.join((said[-1] if said else '').lower().split())[:160]
 
 
-SKILLS = ('asks_consent', 'handles_refusal', 'writes', 'verifies_identity', 'multi_goal', 'out_of_scope', 'pushback')
+SKILLS = ('asks_consent', 'handles_refusal', 'writes', 'verifies_identity', 'multi_goal', 'out_of_scope', 'pushback',
+          'recovers_from_error', 'refusal_world')
 
 
 def main():
@@ -138,6 +154,8 @@ def main():
                 continue
             keys.add(key)
             unique.append(episode)
+        # plain-dialogue consent first (τ²-style), refusal (flip) worlds next, then the rest
+        unique.sort(key=lambda e: (e.get('consent') != 'plain', not str(e.get('world') or '').startswith('flip')))
         seen, picked = set(), []
         for episode in unique:  # distinct worlds first, then the rest
             if episode.get('world') not in seen:
@@ -175,6 +193,9 @@ def main():
               'category': count(0), 'language': count(1),
               'distinct_tool_sequences': round(len(sequences) / max(1, len(selected)), 3),
               'consent_protocol': dict(collections.Counter(e.get('consent') or 'token' for e in selected)),
+              'turns': dict(collections.Counter(
+                  '1-4' if t <= 4 else '5-9' if t <= 9 else '10+'
+                  for t in (sum(m['role'] == 'assistant' for m in e['messages']) for e in selected))),
               'skills': {k: skill_counts.get(k, 0) for k in SKILLS}}
     missed = []
     if len(selected) < args.min_episodes:
