@@ -284,6 +284,9 @@ Task shape: {shape}
   semantics or virtual clock values ("time 10", "day 30") in the scene; give times relative to now
   ("starts in 20 minutes", "expires in 2 days") in the unit the rules use. user_facts stay private:
   do not copy them into known unless the user would open with them.
+  An interactive task (not direct) opens the way real customers do: known has at most 2 items and
+  no identifiers (ids, references, emails, phone numbers, exact amounts); the goal is stated broadly.
+  Everything else the agent needs lives in user_facts and comes out only when the agent asks.
 - Time does not pass in this task: queries, approvals and writes all happen at time.start. Do
   not describe a clock that ticks per action; time-dependent rules compare against time.start.
 - Use a domain different from library loans, procurement, subscriptions, document access,

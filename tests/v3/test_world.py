@@ -98,7 +98,7 @@ class TaskCertificationTests(unittest.TestCase):
     def test_task_plan_covers_every_process(self):
         plan = world.plan_tasks({'id': 'w', 'goal_schema': GOALS}, 12)
         self.assertEqual({p for processes, _ in plan for p in processes}, set(GOALS))
-        self.assertTrue(all(1 <= len([e for e in script if e != 'identity']) <= 3 for _, script in plan))
+        self.assertTrue(all(2 <= len([e for e in script if e != 'identity']) <= 4 for _, script in plan))
 
 
 if __name__ == '__main__':

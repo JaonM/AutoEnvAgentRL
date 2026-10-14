@@ -47,6 +47,10 @@ def script_for(elements):
         script['wrong_first'] = {'reader_id': 'R9X'}  # matches nothing in the library tables
     if 'ambiguous' in elements:
         script['ambiguous'] = {'phrase': '我那本书', 'fact': 'loan_ids'}
+    if 'inquisitive' in elements:
+        script['inquisitive'] = ['续借要收费吗？']
+    if 'change_of_mind' in elements:
+        script['change_of_mind'] = {'from': '续借第一本', 'to': '续借第二本', 'after': '听说第一本不能续'}
     if 'clarify' in elements:
         script['clarify'] = {'options': ['续借第一本', '续借第二本'], 'decides_by': '能不能续'}
     return script if elements else None
@@ -200,7 +204,7 @@ class GenerateTests(unittest.TestCase):
         assigned = generate.scripts(len(shapes), shapes)
         self.assertTrue(all(not a for a, s in zip(assigned, shapes) if s == 'direct'))
         elements = lambda a: [e for e in a if e != 'identity']  # identification is a norm, not counted
-        self.assertTrue(all(1 <= len(elements(a)) <= 3 for a, s in zip(assigned, shapes) if s != 'direct'))
+        self.assertTrue(all(2 <= len(elements(a)) <= 4 for a, s in zip(assigned, shapes) if s != 'direct'))
         self.assertGreater(sum('fallback' in a for a in assigned), sum('forgotten' in a for a in assigned))
         request = library_request()
         self.assertTrue(generate.script_problems(request, ['pushback']))  # missing user_script

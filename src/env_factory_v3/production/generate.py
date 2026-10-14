@@ -54,8 +54,14 @@ SHAPES = {
 }
 # User script elements (docs/v3-domain-world-design.md §3): each interactive task gets one to three,
 # drawn with these probabilities; direct tasks get none.
-SCRIPT_ELEMENTS = {'fallback': 0.35, 'pushback': 0.3, 'multi_goal': 0.3, 'wrong_first': 0.25, 'ambiguous': 0.2,
-                   'clarify': 0.2, 'forgotten': 0.2, 'out_of_scope': 0.1}
+SCRIPT_ELEMENTS = {'multi_goal': 0.5, 'fallback': 0.35, 'inquisitive': 0.35, 'pushback': 0.3, 'wrong_first': 0.25,
+                   'change_of_mind': 0.2, 'ambiguous': 0.2, 'clarify': 0.2, 'forgotten': 0.2, 'out_of_scope': 0.1}
+MIN_ELEMENTS, MAX_ELEMENTS = 2, 4  # interactive tasks: richer scripts make longer, more realistic dialogues
+# Appended to every interactive task's user_script.traits: customers answer what they are asked, one
+# piece at a time, so the agent has to elicit the details (dialogues in the first pools ended after a
+# median of 3 user replies).
+DISCLOSURE = {'zh': '只回答对方明确问到的那一项信息，一次只说一项，不主动补充其他细节',
+              'en': 'answers only exactly what is asked, one piece of information at a time, never volunteering other details'}
 # Customer identification is a norm of customer service, not a script element: most interactive
 # tasks make the agent ask who the customer is before account-specific lookups or changes.
 IDENTITY_SHARE = 0.7
@@ -77,6 +83,15 @@ SCRIPT_TEXT = {
                      'nothing for it; the rules say how such requests are answered (decline, point elsewhere, or a '
                      'handover the domain itself provides). user_script.out_of_scope = "<the request in the user\'s '
                      'words>", also listed in user_script.goals.'),
+    'inquisitive': ('Inquisitive: before agreeing to any change, the user asks one or two questions about its '
+                    'consequences (a fee, what happens to the old booking, when the refund arrives) that the rules '
+                    'answer; they decide only after hearing the answers. Add a trait saying so in the user\'s words '
+                    'to user_script.traits and set user_script.inquisitive = ["<question>", ...].'),
+    'change_of_mind': ('Change of mind: the user first asks for option A, and after hearing a condition the rules '
+                       'impose on it (a fee, a delay, a restriction) switches to option B. Give each option its own '
+                       'boolean approve_* fact (A false, B true) and make env.approval_key map a proposal to the option '
+                       'it names. Set user_script.change_of_mind = {"from": "<A>", "to": "<B>", "after": "<what makes '
+                       'them switch>"} and add a trait describing the switch in the user\'s words.'),
     'wrong_first': ('Wrong first: the user misremembers one identifier the agent must ask for (an order id, a '
                     'booking reference, an email) and first gives a wrong value that exists nowhere in the data, so '
                     'the lookup fails; asked again, the user gives the right one. Keep the right value in user_facts '
@@ -130,8 +145,11 @@ def scripts(count, shapes, seed=0):
             out.append([])
             continue
         rng = random.Random(f'{seed}-script-{index}')
-        chosen = [name for name, share in SCRIPT_ELEMENTS.items() if rng.random() < share][:3]
-        chosen = chosen or [rng.choices(list(SCRIPT_ELEMENTS), weights=list(SCRIPT_ELEMENTS.values()))[0]]
+        chosen = [name for name, share in SCRIPT_ELEMENTS.items() if rng.random() < share][:MAX_ELEMENTS]
+        while len(chosen) < MIN_ELEMENTS:
+            extra = rng.choices(list(SCRIPT_ELEMENTS), weights=list(SCRIPT_ELEMENTS.values()))[0]
+            if extra not in chosen:
+                chosen.append(extra)
         if rng.random() < IDENTITY_SHARE or {'wrong_first', 'forgotten'} & set(chosen):
             chosen.append('identity')  # besides the (up to three) script elements
         out.append(chosen)
@@ -180,6 +198,17 @@ def script_problems(request, elements):
                 problems.append(f'wrong_first: {key} must be a user fact (the right value)')
             elif not isinstance(value, str) or not value or value == facts[key] or f'"{value}"' in text:
                 problems.append('wrong_first: the wrong value must differ from the fact and exist nowhere in the tables')
+    if 'inquisitive' in elements and not (isinstance(script.get('inquisitive'), list) and script['inquisitive']):
+        problems.append('inquisitive: user_script.inquisitive must list the questions the user asks before agreeing')
+    shift = script.get('change_of_mind')
+    if 'change_of_mind' in elements and not (isinstance(shift, dict) and shift.get('from') and shift.get('to')
+                                             and shift.get('after') and len(approvals) >= 2):
+        problems.append('change_of_mind: user_script.change_of_mind needs {"from", "to", "after"} and an approve_* '
+                        'fact per option')
+    if elements and 'direct' not in elements:
+        known = (request.get('user_scene') or {}).get('known') or {}
+        if isinstance(known, dict) and len(known) > 2:
+            problems.append(f'user_scene.known has {len(known)} items; an interactive task opens with at most 2')
     amb = script.get('ambiguous')
     if 'ambiguous' in elements:
         known = json.dumps((request.get('user_scene') or {}).get('known') or {}, ensure_ascii=False)
@@ -466,6 +495,10 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
         if policy is None:
             return {**row, 'passed': False, 'problems': [f'agent policy: {p}' for p in policy_problems[:4]]}, None
         request['agent_policy'] = policy
+        if elements[index] and isinstance(request.get('user_script'), dict):
+            traits = request['user_script'].setdefault('traits', [])
+            if DISCLOSURE[langs[index]] not in traits:
+                traits.append(DISCLOSURE[langs[index]])
         request['source'] = {'generated': domain['name'], 'family': domain.get('family'), 'shape': shape,
                              'persona': persona_name, 'language': langs[index], 'script': elements[index],
                              'opening_writer': getattr(opening_client, 'model', None)}

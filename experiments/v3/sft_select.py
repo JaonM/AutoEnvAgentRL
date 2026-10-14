@@ -194,7 +194,9 @@ def main():
             keys.add(key)
             unique.append(episode)
         # plain-dialogue consent first (τ²-style), refusal (flip) worlds next, then the rest
-        unique.sort(key=lambda e: (e.get('consent') != 'plain', not str(e.get('world') or '').startswith('flip')))
+        replies = lambda e: sum(1 for m in e['messages'][1:] if m['role'] == 'user')
+        unique.sort(key=lambda e: (e.get('consent') != 'plain', not str(e.get('world') or '').startswith('flip'),
+                                   -replies(e)))  # longer dialogues first among equals
         seen, picked = set(), []
         for episode in unique:  # distinct worlds first, then the rest
             if episode.get('world') not in seen:
@@ -243,6 +245,8 @@ def main():
               'distinct_tool_sequences': round(len(sequences) / max(1, len(selected)), 3),
               'consent_protocol': dict(collections.Counter(e.get('consent') or 'token' for e in selected)),
               'near_misses': sum(bool(e.get('near_miss')) for e in selected),
+              'user_replies': dict(sorted(collections.Counter(
+                  min(sum(1 for m in e['messages'][2:] if m['role'] == 'user'), 10) for e in selected).items())),
               'turns': dict(collections.Counter(
                   '1-4' if t <= 4 else '5-9' if t <= 9 else '10+'
                   for t in (sum(m['role'] == 'assistant' for m in e['messages']) for e in selected))),
