@@ -281,11 +281,24 @@ def example_values(episode, seed):
     return episode
 
 
-def inject_errors(episode, seed, limit=1):
+ASK_AGAIN = {
+    'en': ["I couldn't find a {entity} with {wrong}. Could you double-check it for me?",
+           "Sorry, {wrong} doesn't match any {entity} on our side. Could you check the number again?",
+           "I'm not finding {wrong} in our system. Could you confirm the {entity} once more?"],
+    'zh': ['没有查到 {wrong}，麻烦您再核对一下这个编号？', '系统里没有 {wrong} 的记录，请您再确认一下好吗？']}
+CORRECTED = {'en': ["Sorry, it's {value}.", 'Oops, my mistake: {value}.', "Let me check... it's {value}."],
+             'zh': ['不好意思，是 {value}。', '抱歉说错了，是 {value}。']}
+
+
+def inject_errors(episode, seed, limit=1, ask_share=1.0):
     """A copy where, before up to `limit` assistant turns whose call fills an identifier already seen in
     the conversation, the agent first calls the same tool with a wrong identifier (the description's example
     value when example_values ran, else the real one with a digit changed) and gets "not found". The wrong
-    call is context only; the following, original turn (the right identifier) is trained."""
+    call is context only. When the right identifier came from the user, a real agent cannot know it: (with
+    probability ask_share) it tells the user it found nothing and asks them to check (trained), the user repeats
+    the right value (context), then the original turn follows; when it came from a tool result, the original
+    turn (the right identifier) follows directly. The probe showed why: with only direct fixes the student
+    learned "call again after an error" and repeated failing calls."""
     episode = copy.deepcopy(episode)
     rng = random.Random(f'{seed}-inject')
     messages = episode['messages']
@@ -329,9 +342,18 @@ def inject_errors(episode, seed, limit=1):
         call_id = f'call_inj_{rng.randrange(16 ** 8):08x}'
         content = json.dumps({'ok': False, 'kind': 'business', 'error': error}) if envelope_format \
             else f'Error: {error}'
-        messages[index:index] = [
+        inserted = [
             {'role': 'assistant', 'content': '', 'context_only': True,
              'tool_calls': [{'id': call_id, 'type': 'function',
                              'function': {'name': name, 'arguments': json.dumps(arguments, ensure_ascii=False)}}]},
             {'role': 'tool', 'tool_call_id': call_id, 'name': name, 'content': content}]
+        source = next((m for m in messages[:index] if json.dumps(value)[1:-1] in json.dumps(m, ensure_ascii=False)
+                       and m.get('role') in ('user', 'tool')), None)
+        if source is not None and source['role'] == 'user' and rng.random() < ask_share:
+            chinese = any('\u4e00' <= ch <= '\u9fff' for ch in source.get('content') or '')
+            language = 'zh' if chinese else 'en'
+            inserted += [
+                {'role': 'assistant', 'content': rng.choice(ASK_AGAIN[language]).format(entity=entity, wrong=wrong)},
+                {'role': 'user', 'content': rng.choice(CORRECTED[language]).format(value=value)}]
+        messages[index:index] = inserted
     return episode
