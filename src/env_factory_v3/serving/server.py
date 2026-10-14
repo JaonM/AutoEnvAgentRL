@@ -39,6 +39,16 @@ from env_factory_v3.runtime import BusinessError, Episode, EpisodeFinished, Tool
 IDLE_LIMIT = 3
 
 
+class _Recorded:
+    """A user model stand-in that answers with one recorded reply (Service.restore)."""
+
+    def __init__(self, reply):
+        self.reply = reply
+
+    def chat(self, messages, **options):
+        return {'content': self.reply}
+
+
 class Service:
     def __init__(self, env, oracle, schema, request, *, valid_worlds=None, perturbed=20, user_mode='structured',
                  user_client=None, rubric=None, judge=None, extractor=None, auditor=None, audit=None):
@@ -222,6 +232,38 @@ class Service:
             return {'ok': False, 'kind': 'invalid', 'error': str(exc), 'now': episode.now}
         return {'ok': True, 'result': result, 'now': episode.now}
 
+    def fork(self, identifier):
+        """An exact copy of an episode at this point (trainer-side: tree rollouts branch from it): the database,
+        clock, trace, consent tokens and the simulated user's conversation are copied in process, with no replay
+        and no model call. The world's read-only inputs and the model client stay shared."""
+        record = self._get(identifier)
+        shared = [self.user_client, record['data'], record['facts'], record.get('expected'), record['episode'].initial,
+                  record['episode'].tools, record['episode'].approve]
+        memo = {id(value): value for value in shared if value is not None}
+        with self.lock:
+            clone = copy.deepcopy(record, memo)
+            fork_id = uuid.uuid4().hex
+            self.episodes[fork_id] = clone
+        return {'episode': fork_id, 'world': record['world']}
+
+    def restore(self, world, actions, consent=None):
+        """A new episode on `world` brought to the state after `actions` ([{"action": ..., "reply": ...}], e.g. a
+        recorded demonstration): tool calls run again (the sandbox is deterministic) and every chat takes its
+        recorded reply instead of asking the user model, so the conversation is exactly the recorded one."""
+        started = self.reset(world=world, consent=consent)
+        record = self._get(started['episode'])
+        user, results = record.get('user'), []
+        for item in actions:
+            action = item['action']
+            if action.get('type') == 'chat' and user is not None:
+                user.client = _Recorded(item.get('reply') or '')
+            try:
+                results.append(self.step(started['episode'], action))
+            finally:
+                if user is not None:
+                    user.client = self.user_client
+        return {**started, 'results': results}
+
     def release(self, identifier):
         with self.lock:
             return {'released': self.episodes.pop(identifier, None) is not None}
@@ -334,6 +376,11 @@ def make_handler(service, token=None):
                     return self._send(200, service.reward(body['episode']))
                 if self.path == '/release':
                     return self._send(200, service.release(body['episode']))
+                if self.path == '/fork':
+                    return self._send(200, service.fork(body['episode']))
+                if self.path == '/restore':
+                    return self._send(200, service.restore(body.get('world'), body.get('actions') or [],
+                                                           body.get('consent')))
                 return self._send(404, {'error': 'not found'})
             except KeyError as exc:
                 return self._send(404, {'error': str(exc)})
