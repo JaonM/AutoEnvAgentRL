@@ -106,6 +106,16 @@ class AnswerComparisonTests(unittest.TestCase):
         self.assertTrue(answers.compare(schema, {'plan': 'plan-basic'}, {'plan': None}, known)['plan'])
         self.assertFalse(answers.compare(schema, {'plan': 'plan-basic'}, {'plan': 'plan-pro'}, known)['plan'])
 
+    def test_another_name_of_the_expected_record_is_right(self):
+        from env_factory_v3.core import answers
+        tables = {'gift_cards': [{'id': 'gc-new', 'code': 'GIFT-88', 'status': 'active'},
+                                 {'id': 'gc-old', 'code': 'GIFT-12', 'status': 'active'}]}
+        aliases = answers.aliases_of(tables)
+        spec = {'type': 'string'}
+        self.assertEqual(answers.score(spec, 'gc-new', 'GIFT-88', ['x'], aliases), 1.0)  # the card's own number
+        self.assertEqual(answers.score(spec, 'gc-new', 'GIFT-12', ['x'], aliases), 0.0)  # another card
+        self.assertNotIn('active', aliases)  # a value shared by several rows names none of them
+
     def test_a_named_record_counts_as_said(self):
         from env_factory_v3.core import extract
         trace = [{'kind': 'tool', 'status': 'ok', 'result': [{'id': 'plan-basic', 'name': 'Basic Saver'},

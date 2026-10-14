@@ -75,7 +75,8 @@ def _grade(result, expected, schema, *, initial, reference_calls, known=None):
     has_effects = bool(state_diff(initial, expected['final_state']))
     diff = state_diff(expected['final_state'], result['final_state'])
     state_ok = not diff
-    field_scores = answers.scores(schema, expected['answer'], result['answer'], known)
+    aliases = answers.aliases_of(initial, expected['final_state']) if known is not None else None
+    field_scores = answers.scores(schema, expected['answer'], result['answer'], known, aliases)
     fields = {name: value == 1.0 for name, value in field_scores.items()}
     format_problems = answers.answer_problems(schema, result['answer'])
     if known is not None:

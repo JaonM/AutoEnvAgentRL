@@ -195,14 +195,37 @@ def internal(spec, value, known):
     return bool(MACHINE_ID.match(value)) and not any(value in text for text in known)
 
 
-def score(spec, expected, actual, known=None):
-    """Share of graded leaves of `expected` that `actual` matches (1.0 when nothing is graded)."""
+def aliases_of(*states):
+    """{text key of a row's string value: row id} for values naming exactly one row (a card number, an order
+    reference): an agent says "gift card GIFT-88" for row gc-new, and that is the same record."""
+    seen = {}
+    for state in states:
+        for rows in (state or {}).values():
+            for row in rows if isinstance(rows, list) else []:
+                if not (isinstance(row, dict) and isinstance(row.get('id'), str)):
+                    continue
+                for key, value in row.items():
+                    if key != 'id' and isinstance(value, str) and len(value) >= 3:
+                        seen.setdefault(text_key(value), set()).add(row['id'])
+    return {key: next(iter(ids)) for key, ids in seen.items() if len(ids) == 1}
+
+
+def same_record(expected, actual, aliases):
+    return bool(aliases) and isinstance(expected, str) and isinstance(actual, str) and \
+        aliases.get(text_key(actual)) == expected
+
+
+def score(spec, expected, actual, known=None, aliases=None):
+    """Share of graded leaves of `expected` that `actual` matches (1.0 when nothing is graded). `aliases`
+    (aliases_of the tables) accepts another name of the expected record."""
     spec = spec or {}
+    if same_record(expected, actual, aliases):
+        return 1.0
     if internal(spec, expected, known) and actual in (None, ''):
         return 1.0  # an internal id the agent did not state is not required; naming another record is wrong
     if isinstance(expected, dict) and isinstance(actual, dict) and spec.get('properties'):
         graded = [(name, child) for name, child in spec['properties'].items() if child.get('graded', True)]
-        parts = {name: score(child, expected.get(name), actual.get(name), known) for name, child in graded}
+        parts = {name: score(child, expected.get(name), actual.get(name), known, aliases) for name, child in graded}
         if not parts:
             return 1.0
         if all(value == 1.0 for value in parts.values()):
@@ -224,7 +247,7 @@ def score(spec, expected, actual, known=None):
         return share if all(parts[name] == 1.0 for name in enums) else 0.5 * share
     if (isinstance(expected, list) and isinstance(actual, list) and spec.get('order', 'exact') == 'exact'
             and len(expected) == len(actual) and expected):
-        return sum(score(spec.get('items'), e, a, known) for e, a in zip(expected, actual)) / len(expected)
+        return sum(score(spec.get('items'), e, a, known, aliases) for e, a in zip(expected, actual)) / len(expected)
     if known is not None and isinstance(expected, (dict, list)):
         if normalize(spec, expected) == normalize(spec, actual):
             return 1.0
@@ -233,7 +256,7 @@ def score(spec, expected, actual, known=None):
             # multiset: each expected item matched by a distinct actual item, internal ids ignored
             left = list(actual)
             for item in expected:
-                hit = next((a for a in left if score(spec.get('items'), item, a, known) == 1.0), None)
+                hit = next((a for a in left if score(spec.get('items'), item, a, known, aliases) == 1.0), None)
                 if hit is None:
                     return 0.0
                 left.remove(hit)
@@ -250,18 +273,18 @@ def graded_fields(schema):
     return {name: spec for name, spec in schema['fields'].items() if spec.get('graded', True)}
 
 
-def scores(schema, expected, actual, known=None):
+def scores(schema, expected, actual, known=None, aliases=None):
     """{graded field: share of its graded leaves matched}. A non-object answer scores 0 everywhere."""
     fields = graded_fields(schema)
     if not isinstance(actual, dict):
         return {name: 0.0 for name in fields}
-    return {name: (score(spec, expected[name], actual[name], known) if name in actual and name in expected else 0.0)
-            for name, spec in fields.items()}
+    return {name: (score(spec, expected[name], actual[name], known, aliases) if name in actual and name in expected
+                   else 0.0) for name, spec in fields.items()}
 
 
-def compare(schema, expected, actual, known=None):
+def compare(schema, expected, actual, known=None, aliases=None):
     """{graded field: bool}: True when the field's score is 1. A non-object answer fails every field."""
-    return {name: value == 1.0 for name, value in scores(schema, expected, actual, known).items()}
+    return {name: value == 1.0 for name, value in scores(schema, expected, actual, known, aliases).items()}
 
 
 def referable_ids(tables):
