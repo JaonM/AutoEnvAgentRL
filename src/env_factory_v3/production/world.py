@@ -575,6 +575,9 @@ def main():
     parser.add_argument('--repairs', type=int, default=2)
     parser.add_argument('--output', required=True)
     parser.add_argument('--no-sufficiency', action='store_true', help='skip the policy sufficiency check')
+    parser.add_argument('--docker', action='store_true',
+                        help='after the tasks, build one hardened image per world holding all its certified tasks, '
+                             'each verified offline inside it (certify/docker.build_many)')
     parser.add_argument('--reguard', action='store_true',
                         help='only run the reward-trust check (policy sufficiency) on certified tasks')
     args = parser.parse_args()
@@ -677,6 +680,29 @@ def main():
         rows_before = [json.loads(l) for l in rows_path.read_text().splitlines()] if rows_path.exists() else []
         print(f"{phase}: {sum(r['passed'] for r in rows)}/{len(rows)} certified so far", flush=True)
     print(f"tasks: {sum(r['passed'] for r in rows)}/{len(rows)} certified", flush=True)
+    if args.docker:
+        print(json.dumps(build_images(out, statuses)), flush=True)
+
+
+def build_images(out, statuses):
+    """One image per world with every certified task (built once all its tasks are in); images.json records them."""
+    from env_factory_v3.certify import docker
+    rows = [json.loads(line) for line in (Path(out) / 'tasks.jsonl').read_text().splitlines()]
+    images = {}
+    for key, status in sorted(statuses.items()):
+        if not status.get('training_ready'):
+            continue
+        world_id = status.get('id') or key
+        bundles = [r['bundle'] for r in rows if r.get('passed') and r['id'].rsplit('-t', 1)[0] == world_id]
+        if not bundles:
+            continue
+        try:
+            built = docker.build_many(bundles)
+            images[key] = {'image': built[0]['image_id'], 'tasks': len(built)}
+        except Exception as exc:  # noqa: BLE001 - reported; its tasks stay without an image
+            images[key] = {'error': f'{type(exc).__name__}: {exc}'[:500]}
+    (Path(out) / 'images.json').write_text(json.dumps(images, indent=1))
+    return images
 
 
 if __name__ == '__main__':

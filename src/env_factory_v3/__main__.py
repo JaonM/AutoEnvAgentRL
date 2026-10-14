@@ -69,8 +69,8 @@ def main(argv=None):
     p = sub.add_parser('verify')
     p.add_argument('bundle')
     p.add_argument('--resign', action='store_true', help='on success, re-sign the bundle for this platform')
-    p = sub.add_parser('container-check', help='inside the image: every gate on the bundle, JSON evidence')
-    p.add_argument('bundle')
+    p = sub.add_parser('container-check', help='inside the image: every gate on each bundle, JSON evidence')
+    p.add_argument('bundle', nargs='+')
     p = sub.add_parser('policy', help='policy gate: an independent model plays k episodes')
     p.add_argument('bundle')
     p.add_argument('--k', type=int, default=4)
@@ -180,12 +180,16 @@ def main(argv=None):
         print(json.dumps({g: report[g]['passed'] for g in gates.gate_names(report)} | {'passed': report['passed']}))
         return 0 if report['passed'] else 1
     if args.command == 'container-check':
-        loaded = bundle.load_bundle(args.bundle)
-        report = bundle.qualify_loaded(loaded, judge=None)  # offline: no judge model in the container
-        print(json.dumps({'passed': report['passed'], 'platform_identity': bundle.platform_identity(),
-                          'files': loaded['manifest']['files'],
-                          'gates': {g: report[g]['passed'] for g in gates.gate_names(report)}}))
-        return 0 if report['passed'] else 1
+        evidence = {}
+        for path in args.bundle:
+            loaded = bundle.load_bundle(path)
+            report = bundle.qualify_loaded(loaded, judge=None)  # offline: no judge model in the container
+            evidence[path] = {'passed': report['passed'], 'platform_identity': bundle.platform_identity(),
+                              'files': loaded['manifest']['files'],
+                              'gates': {g: report[g]['passed'] for g in gates.gate_names(report)}}
+        passed = all(e['passed'] for e in evidence.values())
+        print(json.dumps(evidence[args.bundle[0]] if len(args.bundle) == 1 else {'passed': passed, 'bundles': evidence}))
+        return 0 if passed else 1
     if args.command == 'policy':
         from env_factory_v3.certify import policy_gate as policy
         policy.load_env_file()

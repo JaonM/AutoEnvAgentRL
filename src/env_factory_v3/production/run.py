@@ -167,7 +167,7 @@ def stage_docker(out, statuses, options, log):
             continue
         folder = Path(status['bundle'])
         try:
-            results[task] = {'image': docker.image_for(folder), 'reused': True}
+            results[task] = {'image': docker.image_for(folder)[0], 'reused': True}
         except ValueError:
             try:
                 metadata = docker.build(folder)
