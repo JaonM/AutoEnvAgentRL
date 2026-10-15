@@ -8,15 +8,26 @@ after a backoff; it is never treated as a business failure.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
+import shutil
 import signal
+import tempfile
 import subprocess
 import threading
 import time
 from pathlib import Path
 
 MODEL = 'gpt-6.1-sol'
+# Isolation (plan W6): a session works on a copy of its folder in a fresh temporary directory, so no sibling session
+# (the other implementation, the bundle) sits next to it; afterwards its log is scanned for reads of the project's
+# output tree or paths that climb out of its folder, and a violating session's new or changed files are discarded.
+# ENVFACTORY_CODEX_ISOLATE=0 turns this off.
+PROJECT = Path(__file__).resolve().parents[3]
+ISOLATION_ROOT = Path(os.environ.get('ENVFACTORY_CODEX_ROOT', tempfile.gettempdir())) / 'envfactory-codex'
+CLIMB = re.compile(r'(?<![\w.])\.\./')
 MAX_SESSIONS = 2
 _SLOTS = threading.BoundedSemaphore(MAX_SESSIONS)
 INFRA_MARKERS = ('403 Forbidden', '429', 'Too Many Requests', '502 Bad Gateway', '503', 'stream disconnected',
@@ -71,6 +82,26 @@ def classify(status, returncode, usage, refused):
     return status
 
 
+SIBLING = re.compile(r'session-[A-Za-z0-9_]{6,}')
+
+
+def isolation_violations(events_path, project=PROJECT, own=None):
+    """Commands or paths in a session's log that reach the project's output tree, climb out of its folder, or name
+    another session's temporary directory (concurrent sessions share ISOLATION_ROOT)."""
+    found = []
+    output = str(Path(project) / 'output')
+    for line in Path(events_path).read_text().splitlines() if Path(events_path).exists() else []:
+        others = [name for name in SIBLING.findall(line) if name != own]
+        if output in line or CLIMB.search(line) or others:
+            found.append(line[:200])
+    return found[:5]
+
+
+def _fingerprint(folder):
+    return {p.relative_to(folder): hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in Path(folder).rglob('*') if p.is_file()}
+
+
 class CodexRunner:
     """Runs one role session; the pipeline injects a fake runner in tests."""
 
@@ -95,11 +126,18 @@ class CodexRunner:
     def _once(self, folder, prompt, timeout, attempt):
         (folder / 'prompt.txt').write_text(prompt)
         events_path, stderr_path = folder / f'events-{attempt}.jsonl', folder / f'stderr-{attempt}.txt'
+        isolate = os.environ.get('ENVFACTORY_CODEX_ISOLATE', '1') != '0'
+        workdir, before = folder, _fingerprint(folder)
+        if isolate:
+            ISOLATION_ROOT.mkdir(parents=True, exist_ok=True)
+            workdir = Path(tempfile.mkdtemp(prefix='session-', dir=ISOLATION_ROOT))
+            shutil.copytree(folder, workdir, dirs_exist_ok=True,
+                            ignore=shutil.ignore_patterns('events-*.jsonl', 'stderr-*.txt'))
         with _SLOTS:
             started = time.monotonic()
             with open(events_path, 'w') as events, open(stderr_path, 'w') as errors:
-                process = subprocess.Popen(command(folder, self.model), stdin=subprocess.PIPE, stdout=events,
-                                           stderr=errors, cwd=folder, text=True, start_new_session=True)
+                process = subprocess.Popen(command(workdir, self.model), stdin=subprocess.PIPE, stdout=events,
+                                           stderr=errors, cwd=workdir, text=True, start_new_session=True)
                 try:
                     process.communicate(prompt, timeout=timeout)
                     status = 'exited'
@@ -108,6 +146,18 @@ class CodexRunner:
                     process.wait()
                     status = 'timeout'
             seconds = round(time.monotonic() - started, 1)
+        if isolate:
+            shutil.copytree(workdir, folder, dirs_exist_ok=True)
+            shutil.rmtree(workdir, ignore_errors=True)
+        violations = isolation_violations(events_path, own=workdir.name if isolate else None)
+        if violations:
+            # The session looked where it must not: whatever it wrote cannot be trusted. Its new or changed files go,
+            # so the role's checks fail and the pipeline retries or rejects it as for any failed session.
+            after = _fingerprint(folder)
+            for name, digest in after.items():
+                if before.get(name) != digest and not str(name).startswith(('events-', 'stderr-', 'prompt.txt')):
+                    (folder / name).unlink(missing_ok=True)
+            (folder / 'ISOLATION_VIOLATION.txt').write_text('\n'.join(violations))
         usage, errors = _usage(events_path)
         stderr_tail = stderr_path.read_text()[-400:]
         refused = any(marker in text for text in errors + [stderr_tail] for marker in INFRA_MARKERS)

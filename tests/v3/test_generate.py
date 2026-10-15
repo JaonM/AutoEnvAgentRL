@@ -324,3 +324,19 @@ class CodexChatTests(unittest.TestCase):
         self.assertEqual(chat.chat([{'role': 'user', 'content': 'check'}])['content'], 'answer 2')
         self.assertNotEqual(seen[0], seen[1])
         self.assertTrue(chat.model.startswith('codex:'))
+
+
+class CodexIsolationTests(unittest.TestCase):
+    def test_reads_outside_the_session_are_violations(self):
+        import tempfile
+        from env_factory_v3.authoring.codex import PROJECT, isolation_violations
+        log = Path(tempfile.mkdtemp()) / 'events.jsonl'
+        log.write_text('\n'.join([
+            '{"cmd": "python -m env_factory_v3.checks env"}',
+            '{"cmd": "cat ../oracle/verifier.py"}',
+            f'{{"cmd": "cat {PROJECT}/output/run/build/gen-001/oracle/verifier.py"}}',
+            '{"cmd": "ls /tmp/envfactory-codex/session-other1"}',
+            '{"cmd": "ls /tmp/envfactory-codex/session-mine99"}']))
+        found = isolation_violations(log, own='session-mine99')
+        self.assertEqual(len(found), 3)
+        self.assertFalse(any('checks env' in line or 'mine99' in line for line in found))
