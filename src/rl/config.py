@@ -24,6 +24,12 @@ class Config:
     # below this (0 = off; 0.9 in SPO), renormalised over those tokens; near-certain tokens (JSON, set phrases) carry
     # no credit.
     low_prob_mask: float = 0.0
+    # rollout_mode "tree": rollout_group trunks, then tree_forks fork points with tree_branches continuations each
+    # (rollout/scheduler.py); tree_advantage "segment" (value differences between fork points) or "tree_grpo".
+    rollout_mode: str = "chain"
+    tree_forks: int = 4
+    tree_branches: int = 2
+    tree_advantage: str = "segment"
     context_limit_policy: str = "finish"
     numerical_check_mode: str = "periodic"
     numerical_check_interval: int = 20
@@ -238,6 +244,10 @@ class Config:
             self.qat_scope == "full" and self.tuning != "qat"
         ):
             raise ValueError("qat_scope full requires tuning qat")
+        if self.rollout_mode not in {"chain", "tree"} or self.tree_advantage not in {"segment", "tree_grpo"}:
+            raise ValueError("rollout_mode must be chain or tree, tree_advantage segment or tree_grpo")
+        if self.tree_forks < 0 or self.tree_branches < 1:
+            raise ValueError("tree_forks must be nonnegative and tree_branches positive")
         if self.loss_aggregation not in {"sequence", "token"}:
             raise ValueError("loss_aggregation must be sequence or token")
         if not 0.0 <= self.low_prob_mask <= 1.0:

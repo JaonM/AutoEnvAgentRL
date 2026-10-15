@@ -67,6 +67,11 @@ def environment_worker(connection, sandbox, parent_pid, factory="rl.environment:
                     value = environment.step(argument)
                 elif command == 'finish':
                     value = environment.finish()
+                elif command == 'snapshot':  # tree rollouts: the exact state after this step
+                    value = environment.snapshot()
+                elif command == 'restore':  # tree rollouts: continue from a trunk's state
+                    environment.restore(argument)
+                    value = None
                 else:
                     raise ValueError(f'unknown environment RPC: {command}')
                 reply = {'value':value, 'messages':environment.messages,
@@ -127,7 +132,15 @@ def parallel_rollouts(policy, pool, config, seed, *, stop=None, notify=None, con
     notify = notify or (lambda stage: None)
     observe = observe or (lambda event, **fields: None)
     count = config['rollout_group']
+    # Tree rollouts (rollout_mode "tree"): the group's rollout_group episodes are trunks; once they have finished,
+    # tree_forks states along them (where the next action was least certain, or a tool had just failed) are restored
+    # and tree_branches continuations run from each, so a segment's credit can come from the values of the states
+    # around it (data/trajectory.py). Each trunk step records an exact environment snapshot to branch from.
+    tree = config.get('rollout_mode', 'chain') == 'tree'
+    jobs = [{'kind': 'reset', **({'role': 'trunk'} if tree else {})} for _ in range(count)]
     completed = [None] * count
+    snapshots = {}
+    branched = False
     active = {}
     next_episode = 0
     decoder = policy.batch_decoder() if hasattr(policy, 'batch_decoder') else None
@@ -136,7 +149,8 @@ def parallel_rollouts(policy, pool, config, seed, *, stop=None, notify=None, con
 
     def persist():
         if journal is not None:
-            atomic_json(journal, {'completed':completed, 'next_episode':next_episode,
+            atomic_json(journal, {'completed':completed, 'next_episode':next_episode, 'jobs':jobs,
+                'branched':branched, 'snapshots':{str(k): v for k, v in snapshots.items()},
                 'active':{str(slot):{k:v for k,v in state.items() if k != 'generator'}
                           for slot,state in active.items()}})
 
@@ -163,13 +177,32 @@ def parallel_rollouts(policy, pool, config, seed, *, stop=None, notify=None, con
 
     def start(slot):
         nonlocal next_episode
-        active[slot] = {'index':next_episode,'actions':[], 'rpc_intervals':[], 'started_at':time.time()}
+        job = jobs[next_episode]
+        active[slot] = {'index':next_episode,'actions':[], 'rpc_intervals':[], 'started_at':time.time(),
+                        'job': {k: v for k, v in job.items() if k != 'snapshot'},
+                        'prefix_steps': job.get('prefix_steps', 0), 'snapshots': []}
         next_episode += 1
-        send(slot,'reset',seed)
+        if job['kind'] == 'restore':
+            send(slot, 'restore', job['snapshot'])
+        else:
+            send(slot,'reset',seed)
+
+    def branch():
+        """Queue the continuations of the chosen fork points once every trunk has finished."""
+        nonlocal branched
+        branched = True
+        for trunk, step in choose_forks(completed[:count], snapshots, config.get('tree_forks', 4)):
+            for _ in range(config.get('tree_branches', 2)):
+                jobs.append({'kind': 'restore', 'snapshot': snapshots[trunk][step - 1], 'role': 'branch',
+                             'trunk': trunk, 'fork_step': step, 'prefix_steps': step})
+                completed.append(None)
+        persist()
 
     if journal is not None and journal.exists():
         saved = json.loads(journal.read_text())
         completed, next_episode = saved['completed'], saved['next_episode']
+        jobs, branched = saved.get('jobs', jobs), saved.get('branched', False)
+        snapshots = {int(k): v for k, v in saved.get('snapshots', {}).items()}
         active = {int(slot):state for slot,state in saved['active'].items()}
         for slot in list(active):
             state = active[slot]
@@ -180,9 +213,17 @@ def parallel_rollouts(policy, pool, config, seed, *, stop=None, notify=None, con
                 state['sequence'] -= 1
                 send(slot, operation, state['argument'])
     for slot in range(min(len(pool.workers),count)):
-        if slot not in active and next_episode < count:
+        if slot not in active and next_episode < len(jobs):
             start(slot)
-    while active:
+    while True:
+        if not active:
+            if tree and not branched and next_episode >= len(jobs):
+                branch()
+                for slot in range(len(pool.workers)):
+                    if slot not in active and next_episode < len(jobs):
+                        start(slot)
+            if not active:
+                break
         if stop is not None and stop.is_set():
             raise InterruptedError('parallel rollouts cancelled')
         progressed = False
@@ -239,22 +280,33 @@ def parallel_rollouts(policy, pool, config, seed, *, stop=None, notify=None, con
                               environment_intervals=state['rpc_intervals'])
                 if state.get('budget_admission') is not None:
                     result['budget_admission'] = state['budget_admission']
+                if tree:
+                    result['tree'] = {k: v for k, v in state['job'].items() if k not in ('kind',)}
+                    if state['job'].get('role') == 'trunk':
+                        snapshots[state['index']] = state['snapshots']
                 observe('finish', rollout_index=state['index'], step=len(state['actions']),
                         messages=reply['messages'], result=result)
                 completed[state['index']] = result
                 del active[slot]
-                if next_episode < count:
+                if next_episode < len(jobs):
                     start(slot)
                 persist()
                 continue
             if operation == 'step':
                 delta, terminal = reply['value']
                 state['actions'][-1].update(reward=delta,terminated=terminal)
+                if (tree and state['job'].get('role') == 'trunk' and not reply['terminated']
+                        and len(state['actions']) < config['max_steps']):
+                    send(slot, 'snapshot', None)  # the state after this step, to branch from later
+                    continue
+            if operation == 'snapshot':
+                state['snapshots'].append(reply['value'])
+                operation = 'step'
             observe(operation, rollout_index=state['index'], step=len(state['actions']),
                     messages=reply['messages'], seconds=reply['finished_at'] - reply['started_at'])
             tool_options = {'tools': reply['tools']} if 'tools' in reply else {}
             state['messages'], state['tool_options'] = reply['messages'], tool_options
-            if reply['terminated'] or len(state['actions']) >= config['max_steps']:
+            if reply['terminated'] or len(state['actions']) + state.get('prefix_steps', 0) >= config['max_steps']:
                 prompt = [] if reply['terminated'] else policy.encode(reply['messages'], **tool_options)
                 state['bootstrap_prompt'] = prompt
                 state['bootstrap'] = 0.0
@@ -287,6 +339,38 @@ def parallel_rollouts(policy, pool, config, seed, *, stop=None, notify=None, con
         if not progressed:
             time.sleep(.01)
     return completed
+
+
+def _failed(message):
+    content = str((message or {}).get('content') or '')
+    return (message or {}).get('role') == 'tool' and (content.startswith('Error') or '"ok": false' in content)
+
+
+def choose_forks(trunks, snapshots, forks):
+    """[(trunk index, step)]: the states after `step` actions of a trainable trunk with the least certain next action
+    (mean negative log-probability of its sampled tokens, as ARPO and TreeRL branch where the policy is unsure), a
+    tool failure just before counting one point more; one fork per trunk first, then the next best."""
+    candidates = []
+    for index, episode in enumerate(trunks):
+        if not episode or episode.get('trainable', True) is False:
+            continue
+        actions, saved = episode['actions'], snapshots.get(index, [])
+        for step in range(1, min(len(actions), len(saved) + 1)):
+            logp = actions[step].get('old_logp') or []
+            score = -sum(logp) / len(logp) if logp else 0.0
+            if _failed((saved[step - 1].get('messages') or [None])[-1]):
+                score += 1.0
+            candidates.append((score, index, step))
+    candidates.sort(key=lambda c: (-c[0], c[1], c[2]))
+    chosen, used = [], set()
+    for score, index, step in candidates:  # spread over trunks first
+        if len(chosen) < forks and index not in used:
+            chosen.append((index, step))
+            used.add(index)
+    for score, index, step in candidates:
+        if len(chosen) < forks and (index, step) not in chosen:
+            chosen.append((index, step))
+    return chosen
 
 
 def environment_overlap(groups):

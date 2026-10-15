@@ -42,6 +42,8 @@ def parse_args(argv=None):
             "zero_variance_policy": ["retry_skip", "retry_fail", "skip", "fail"],
             "advantage_std": ["group", "task"],
             "loss_aggregation": ["sequence", "token"],
+            "rollout_mode": ["chain", "tree"],
+            "tree_advantage": ["segment", "tree_grpo"],
             "context_limit_policy": ["finish", "fail"],
             "numerical_check_mode": ["strict", "periodic"],
         }.get(name)
