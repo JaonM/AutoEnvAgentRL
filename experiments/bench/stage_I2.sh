@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # I2: full-parameter SFT with the anti-forgetting defaults, two seeds, each with WiSE-FT alpha 0.5, all quick-evaluated.
-#   [EPOCHS=2] [SFT_EXTRA="--example-values 0.5 --inject-errors 0.5"] experiments/bench/stage_I2.sh SELECTED.jsonl REPLAY.jsonl OUT_DIR [SEEDS]
+#   [TUNING=lora] [EPOCHS=2] [SFT_EXTRA="--example-values 0.5 --inject-errors 0.5"] experiments/bench/stage_I2.sh SELECTED.jsonl REPLAY.jsonl OUT_DIR [SEEDS]
 # Defaults (plan, I2 and I2p-T): full fine-tuning; effective batch 16 episodes (gradient accumulation) at lr 2e-5
 # (square-root scaling from 4 episodes at 1e-5); EPOCHS (default 1; use 2 below ~1000 episodes so there are enough
 # updates); 8 validation passes per epoch; gradient norm clipped at 1.0; MLX seeded;
@@ -18,12 +18,16 @@ selected=$1; replay=$2; out=$3; seeds=${4:-"0 1"}; epochs=${EPOCHS:-1}
 mkdir -p "$out"
 name=$(basename "$out")
 port=${BENCH_PORT_BASE:-8766}
+# TUNING=lora: LoRA rank 64 at lr 2e-4 (the probe's 1e-4 at 4 episodes per update, square-root scaled to 16 like
+# full fine-tuning's 1e-5 -> 2e-5), everything else unchanged, for the LoRA vs full comparison (I2c).
+if [ "${TUNING:-full}" = lora ]; then tuning="--tuning lora --lora-rank 64 --learning-rate 2e-4"
+else tuning="--tuning full --learning-rate 2e-5"; fi
 evals=()
 for seed in $seeds; do
   run="$out/seed$seed"; mkdir -p "$run"
   if [ ! -f "$run/sft/model/config.json" ]; then
     PYTHONPATH=src .venv/bin/python -u experiments/sft_train.py --teacher "$selected" --replay "$replay" \
-      --model models/Qwen3-0.6B --output "$run/sft" --tuning full --learning-rate 2e-5 --grad-accumulation 16 \
+      --model models/Qwen3-0.6B --output "$run/sft" $tuning --grad-accumulation 16 \
       --epochs $epochs --evals-per-epoch 8 --seed $seed \
       --rename-tools 0.7 --vary-results 0.6 --greet 0.5 --relayout 0.5 --no-error-turns --max-tokens 32768 \
       --render episode ${SFT_EXTRA:-} > "$run/sft.log" 2>&1 || { echo "seed $seed training failed"; continue; }
