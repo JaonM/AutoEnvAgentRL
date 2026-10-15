@@ -161,7 +161,7 @@ class GenerateTests(unittest.TestCase):
                 if prompt.startswith('你要把一份写给开发者的业务实现规格'):
                     self.drafts += 1
                     return {'content': POLICY if self.drafts > 1 else '可以续借。'}
-                gap = '可以续借。' in prompt.split('客服政策手册：', 1)[1]
+                gap = '可以续借。' in prompt.split('\n政策手册：', 1)[1]
                 return {'content': json.dumps({'problems': ['漏了排队的书不能续借'] if gap else []}, ensure_ascii=False)}
 
         checker = Checker()

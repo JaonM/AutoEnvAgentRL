@@ -262,7 +262,9 @@ Run `{python} -m env_factory_v3.checks env`, `{python} -m env_factory_v3.checks 
 Do not read or write files outside this folder. End with a two-line summary of the fix.
 """
 
-REQUEST_AUTHOR = """You design one new business task for training customer-facing agents. Business domain:
+REQUEST_AUTHOR = """You design one new business task for training agents that act for a user under a business's
+policies, through its tools: the user may be a customer, an employee (an HR, IT, finance or procurement assistant), a
+professional (a firm's or clinic's office assistant) or a partner business (dispatch, reconciliation). Business domain:
 {domain}. {detail}
 Write request.json in this folder (assignment.json repeats the assignment):
 {{"id": "{id}", "family": "<short domain slug>", "category": "{category}", "reward_type": "{reward_type}",
@@ -357,7 +359,7 @@ Run `{python} -m env_factory_v3.checks rubric` until it prints PASS. Do not read
 outside this folder. End with one line naming the criteria.
 """
 
-OPENING_WRITER = """你是一位普通用户，正在和客服/业务助理在线聊天。根据下面的场景，写出你发的第一条消息。
+OPENING_WRITER = """你是一位用户（可能是顾客、员工、专业人士或合作方），正在和负责这项业务的客服或助理在线沟通。根据下面的场景，写出你发的第一条消息。
 
 你的处境：{situation}
 你想要的：{goal}
@@ -379,7 +381,7 @@ Run `{python} -m env_factory_v3.checks env` until it prints PASS.
 Do not read or write files outside this folder. End with a two-line summary of the fix.
 """
 
-POLICY_WRITER = """你要把一份写给开发者的业务实现规格，改写成给一线客服看的业务政策手册。客服只看这份手册办事。
+POLICY_WRITER = """你要把一份写给开发者的业务实现规格，改写成给一线客服或业务助理看的政策手册。他们只看这份手册办事。
 
 实现规格：
 {rules}
@@ -392,18 +394,18 @@ POLICY_WRITER = """你要把一份写给开发者的业务实现规格，改写�
 {feedback}
 只输出手册正文，分条列出。"""
 
-POLICY_CHECKER = """下面是一份业务实现规格，和据此改写的客服政策手册。客服只能看到手册。逐条对照：规格里任何会影响处理结果的规则（资格、计算、取整、顺序、上限、拒绝或失败后的处理、需要用户同意的操作、最后要告诉用户的内容），如果在手册里缺失、被改变、数值或边界不一致、或者说得含糊到可以有两种理解，就列出来。只看业务含义，不管措辞和实现细节。
-客服除了手册，还能看到当前时间的数值、查询工具返回的数据和最终答案的字段说明，所以手册不需要写出当前时间的具体数值、表名字段名或数据里的具体记录；这类内容不算缺失。手册里的时间单位（分钟、小时、天）与规格一致即可，不写“虚拟”二字不算问题。
+POLICY_CHECKER = """下面是一份业务实现规格，和据此改写的政策手册。客服或助理只能看到手册。逐条对照：规格里任何会影响处理结果的规则（资格、计算、取整、顺序、上限、拒绝或失败后的处理、需要用户同意的操作、最后要告诉用户的内容），如果在手册里缺失、被改变、数值或边界不一致、或者说得含糊到可以有两种理解，就列出来。只看业务含义，不管措辞和实现细节。
+客服或助理除了手册，还能看到当前时间的数值、查询工具返回的数据和最终答案的字段说明，所以手册不需要写出当前时间的具体数值、表名字段名或数据里的具体记录；这类内容不算缺失。手册里的时间单位（分钟、小时、天）与规格一致即可，不写“虚拟”二字不算问题。
 
 实现规格：
 {rules}
 
-客服政策手册：
+政策手册：
 {policy}
 
 只输出 JSON：{{"problems": ["<一句话说明一条缺失或不一致的规则>", ...]}}；没有问题时输出 {{"problems": []}}。"""
 
-OPENING_WRITER_EN = """You are an ordinary customer chatting online with a service agent. From the scene below, write
+OPENING_WRITER_EN = """You are a user (a customer, an employee, a professional or a partner business) chatting online with the agent who handles this business. From the scene below, write
 the first message you send, in English.
 
 Your situation: {situation}
@@ -418,8 +420,9 @@ words; {avoid}
 never restate rules or procedures, never dictate how the agent should confirm things with you, and never
 mention internal numbers such as "time 10" or "day 10". Output only the message itself."""
 
-WORLD_AUTHOR = """You design one complete customer-service business world for training agents: one database and
-one policy manual on which many different customer tasks will later be posed. Business domain: {domain}. {detail}
+WORLD_AUTHOR = """You design one complete business world for training agents that act for a user (a customer, an
+employee, a professional or a partner business) under its policies: one database and one policy manual on which many
+different tasks will later be posed. Business domain: {domain}. {detail}
 Write request.json in this folder:
 {{"id": "{id}", "family": "<short domain slug>", "category": "multi_step_agentic", "reward_type": "business",
   "language": "{language}", "title": "<short title in {language_name}>", "business_rules": "...",
