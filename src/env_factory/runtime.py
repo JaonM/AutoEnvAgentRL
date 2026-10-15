@@ -223,6 +223,15 @@ class Episode:
         self._advance()
         raise ToolError(entry['error']) from exc
 
+    @staticmethod
+    def _check_arguments(name, fn, args):
+        """Arguments the tool does not take (or a required one missing) are the agent's mistake, reported to it
+        like an unknown tool, not a crash of the sandbox's code (which counts toward quarantining the sandbox)."""
+        try:
+            inspect.signature(fn).bind(None, None, **args)
+        except TypeError as exc:
+            raise TypeError(f'invalid arguments for {name}: {exc}') from None
+
     def _guard(self):
         if self.finished:
             raise EpisodeFinished('episode already answered')
@@ -238,6 +247,7 @@ class Episode:
         if is_write(fn) and self.approve is not None:
             args.pop('consent', None)
             entry['args'] = copy.deepcopy(args)
+            self._check_arguments(name, fn, args)
             try:
                 agreed = self.approve(name, copy.deepcopy(args))
             except Exception:  # noqa: BLE001 - a write with no approval topic is one nobody agreed to
@@ -280,6 +290,7 @@ class Episode:
                 self._advance()
                 raise BusinessError('these arguments differ from the approved proposal; call the write with '
                                     'exactly the approved arguments, or ask for consent again')
+            self._check_arguments(name, fn, args)
             grant['used'] = True
             candidate = copy.deepcopy(self.db)
             try:
@@ -296,6 +307,7 @@ class Episode:
             entry['write'] = True
         else:
             entry['args'] = copy.deepcopy(args)
+            self._check_arguments(name, fn, args)
             try:
                 result = jsonable(copy.deepcopy(fn(copy.deepcopy(self.db), self.now, **copy.deepcopy(args))))
             except BusinessError as exc:

@@ -393,6 +393,17 @@ class ToolCrashTests(unittest.TestCase):
         self.assertTrue(json.loads(env.messages[-1]['content'])['ok'])
         self.assertEqual(env.finish()['tool_errors'], 1)
 
+    def test_wrong_arguments_are_the_agents_mistake_not_a_crash(self):
+        env = SandboxEpisode(self.bundle)
+        self.addCleanup(env.close)
+        env.reset(0)
+        for index in range(4):  # more than the crash limit: the sandbox is not quarantined
+            env.step(call('get_waitlist', {'trip_id': 'T1'}, f'c{index}'))
+            reply = json.loads(env.messages[-1]['content'])
+            self.assertEqual((reply['ok'], reply['kind']), (False, 'invalid'))
+            self.assertIn('invalid arguments for get_waitlist', reply['error'])
+        self.assertEqual(env.finish()['tool_errors'], 0)
+
     def test_repeated_crashes_quarantine_the_sandbox(self):
         from rl.errors import EnvironmentProtocolError
         os.environ['ENVFACTORY_TOOL_ERROR_LIMIT'] = '2'
