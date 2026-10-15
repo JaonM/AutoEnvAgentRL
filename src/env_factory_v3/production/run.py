@@ -75,6 +75,16 @@ def stage_domains(out, options, log):
     return chosen
 
 
+def policy_client(folder, options):
+    """Who writes and checks the agent policy manuals: the opening chat model (default: efficiency first; codex
+    sessions run at most two at a time), or codex sessions when ENVFACTORY_POLICY_WRITER=codex."""
+    import os
+    if os.environ.get('ENVFACTORY_POLICY_WRITER', 'chat') != 'codex':
+        return None
+    from env_factory_v3.authoring.codex import CodexChat
+    return CodexChat(Path(folder) / 'policy_sessions', runner=options['runner'], role='agent_policy')
+
+
 def stage_generate(out, domains_, options, log):
     from env_factory_v3.production import generate
     folder = out / 'generate'
@@ -84,7 +94,8 @@ def stage_generate(out, domains_, options, log):
         summary = generate.generate(domains_, options['count'], folder, runner=options['runner'],
                                     parallel=options['parallel'], python=options['python'],
                                     rubric_share=options['rubric_share'], opening_client=options['opening_client'],
-                                    english_share=options.get('english_share', 0.0), mix=options.get('mix'))
+                                    english_share=options.get('english_share', 0.0), mix=options.get('mix'),
+                                    policy_client=policy_client(folder, options))
         log('generate', 'done', f"{summary['kept']}/{summary['requested']} requests")
     else:
         log('generate', 'reused', f"{summary['kept']}/{summary['requested']} requests")
@@ -196,6 +207,8 @@ def stage_policy(out, statuses, options, log):
 
     def one(job):
         task, folder = job
+        from env_factory_v3.production import offpeak
+        offpeak.wait(lambda text: log('policy', 'waiting', text))  # each task plays k model-driven episodes
         try:
             return task, policy.gate(folder, options['policy_client'], k=k, user_mode=mode,
                                      user_client=options.get('user_client'))

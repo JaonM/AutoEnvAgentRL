@@ -114,3 +114,30 @@ class CodexRunner:
         status = classify(status, process.returncode, usage, refused)
         return {'status': status, 'returncode': process.returncode, 'seconds': seconds,
                 'usage': usage, 'errors': errors[-3:], 'stderr_tail': stderr_tail}
+
+
+class CodexChat:
+    """A chat-shaped client backed by one codex session per call, for low-volume writing and checking roles (the
+    agent policy manual and its coverage check): same .chat(messages) interface as core.llm.ChatClient, so a role
+    can switch providers without changing its code. Each call is an independent session in its own folder; the
+    answer is the file answer.md the session writes (its last message otherwise)."""
+
+    ANSWER = ('\n\n(Work alone in this folder: write your complete answer, exactly in the format asked above, to '
+              'answer.md, and nothing else. Do not read or write files outside this folder.)')
+
+    def __init__(self, root, *, runner=None, role='chat', timeout=900):
+        self.root, self.role, self.timeout = Path(root), role, timeout
+        self.runner = runner or CodexRunner()
+        self.model = f'codex:{MODEL}'
+        self._count, self._lock = 0, threading.Lock()
+
+    def chat(self, messages, tools=None, **parameters):
+        with self._lock:
+            self._count += 1
+            folder = self.root / f'{self.role}-{os.getpid()}-{int(time.time())}-{self._count:04d}'
+        folder.mkdir(parents=True, exist_ok=True)
+        self.runner(folder, str(messages[-1]['content']) + self.ANSWER, timeout=self.timeout, role=self.role)
+        for name in ('answer.md', 'last_message.txt'):
+            if (folder / name).exists() and (folder / name).read_text().strip():
+                return {'content': (folder / name).read_text().strip()}
+        return {'content': ''}

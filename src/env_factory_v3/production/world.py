@@ -245,7 +245,12 @@ def build_world(domain, folder, *, runner, client, python, language, index, repa
     if opening is None:
         return {'id': world_id, 'training_ready': False, 'failure_class': 'opening', 'reason': problems}
     request['user_request'] = opening
-    policy, problems = agent_policy.write(client, request)
+    import os
+    writer = client
+    if os.environ.get('ENVFACTORY_POLICY_WRITER', 'chat') == 'codex':
+        from env_factory_v3.authoring.codex import CodexChat
+        writer = CodexChat(folder / 'policy', runner=runner, role='agent_policy')
+    policy, problems = agent_policy.write(writer, request)
     if policy is None:
         return {'id': world_id, 'training_ready': False, 'failure_class': 'agent_policy', 'reason': problems[:5]}
     request['agent_policy'] = policy

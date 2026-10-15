@@ -17,6 +17,8 @@ if [ "${THINK:-0}" = 1 ]; then
   think=(--thinking --max-tokens 4096 --think-budget "${THINK_BUDGET:-1024}"); batch=${BATCH:-4}
 fi
 mkdir -p output/tau2
+# The τ² user simulator and NL judge are DeepSeek: start in off-peak hours (ENVFACTORY_OFFPEAK=0 skips the wait).
+PYTHONPATH=src .venv/bin/python -m env_factory_v3.production.offpeak --wait
 started=$(date +%s)
 pids=(); backends=()
 cache_gb=$(( 24 / servers ))

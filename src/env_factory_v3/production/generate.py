@@ -444,7 +444,7 @@ def respread(kept, client, output):
 
 
 def generate(domains, count, output, *, runner, parallel=2, timeout=600, python='python', rubric_share=0.0,
-             opening_client=None, english_share=0.0, mix=None):
+             opening_client=None, english_share=0.0, mix=None, policy_client=None):
     """Stage one: a codex session per task writes rules, tables, facts and a user scene. Stage two:
     opening_client (V3_OPENING_*, falling back to LLM_*) writes the opening from the scene alone."""
     if opening_client is None:
@@ -509,7 +509,7 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
         if opening is None:
             return {**row, 'passed': False, 'problems': opening_problems_}, None
         request['user_request'] = opening
-        policy, policy_problems = policies.write(opening_client, request)
+        policy, policy_problems = policies.write(policy_client or opening_client, request)
         if policy is None:
             return {**row, 'passed': False, 'problems': [f'agent policy: {p}' for p in policy_problems[:4]]}, None
         request['agent_policy'] = policy
@@ -535,6 +535,9 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
         futures[pool.submit(timed, item)] = item
     finished, pending = {}, set(futures)
     progress = time.monotonic()
+    # Codex sessions (at most two at a time per process) write and check the manuals: much slower than a chat API.
+    item_timeout, stall_timeout = ((6 * 3600, 3600) if str(getattr(policy_client, 'model', '')).startswith('codex')
+                                   else (TASK_TIMEOUT, TASK_TIMEOUT))
     while pending:  # a stalled provider connection must not hold the whole batch (client timeouts do not always fire)
         done, pending = concurrent.futures.wait(pending, timeout=30)
         if done:
@@ -549,8 +552,8 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
         now = time.monotonic()
         # Every worker stuck on a stalled connection leaves the queued items unstarted (no start time), so they
         # would never time out: with no progress at all for TASK_TIMEOUT, everything still pending times out.
-        stalled = now - progress > TASK_TIMEOUT
-        for future in [f for f in pending if stalled or now - started.get(futures[f][0], now) > TASK_TIMEOUT]:
+        stalled = now - progress > stall_timeout
+        for future in [f for f in pending if stalled or now - started.get(futures[f][0], now) > item_timeout]:
             index, (domain, category, shape), report = futures[future]
             finished[index] = ({'index': index, 'domain': domain['name'], 'category': category, 'shape': shape,
                                 'language': langs[index], 'passed': False,

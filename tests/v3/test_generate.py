@@ -307,3 +307,20 @@ class ClarificationScriptTests(unittest.TestCase):
         text = user_sim.script_text(script_for(['ambiguous', 'clarify']), 'zh')
         self.assertIn('我那本书', text)
         self.assertIn('能不能续', text)
+
+
+class CodexChatTests(unittest.TestCase):
+    def test_each_call_is_its_own_session_and_returns_answer_md(self):
+        import tempfile
+        from env_factory_v3.authoring.codex import CodexChat
+        seen = []
+
+        def runner(folder, prompt, *, timeout, role):
+            seen.append(Path(folder))
+            (Path(folder) / 'answer.md').write_text(f'answer {len(seen)}')
+            return {'status': 'exited'}
+        chat = CodexChat(Path(tempfile.mkdtemp()), runner=runner, role='agent_policy')
+        self.assertEqual(chat.chat([{'role': 'user', 'content': 'write'}])['content'], 'answer 1')
+        self.assertEqual(chat.chat([{'role': 'user', 'content': 'check'}])['content'], 'answer 2')
+        self.assertNotEqual(seen[0], seen[1])
+        self.assertTrue(chat.model.startswith('codex:'))

@@ -114,6 +114,8 @@ def main():
 
     def one(job):
         task, seed = job
+        from env_factory_v3.production import offpeak
+        offpeak.wait(lambda text: print(text, flush=True))  # DeepSeek's off-peak hours (ENVFACTORY_OFFPEAK=0: off)
         try:
             row = play(task, seed, client, args.max_turns, style=not args.no_style)
         except Exception as exc:  # one failed episode is recorded and skipped

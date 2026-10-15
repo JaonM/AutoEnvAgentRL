@@ -57,6 +57,8 @@ def main():
             return services[task_id]
 
     def one(row):
+        from env_factory_v3.production import offpeak
+        offpeak.wait(lambda text: print(text, flush=True))  # re-extraction calls the judge model
         svc = service(row['id'])
         names = {t['name'] for t in svc.instructions['tools']}
         # The episode's own consent protocol: a plain-dialogue episode replayed under the token protocol turns every
