@@ -191,3 +191,22 @@ class TaskCertificationTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class WorldTasksFileTests(unittest.TestCase):
+    def test_tasks_json_keeps_gated_tasks_and_splits_by_world(self):
+        out = Path(tempfile.mkdtemp())
+        rows = [{'id': 'world-00-t000', 'passed': True, 'bundle': str(out / 'a')},
+                {'id': 'world-00-t001', 'passed': True, 'bundle': str(out / 'b')},
+                {'id': 'world-01-t000', 'passed': True, 'bundle': str(out / 'c')},
+                {'id': 'world-01-t001', 'passed': False, 'stage': 'sensitivity', 'failed': ['sensitivity']}]
+        (out / 'tasks.jsonl').write_text(''.join(json.dumps(r) + '\n' for r in rows))
+        statuses = {'world-00': {'id': 'world-00', 'training_ready': True},
+                    'world-01': {'id': 'world-01', 'training_ready': True}}
+        policies = {'world-00-t000': 'passed', 'world-00-t001': 'unsolved', 'world-01-t000': 'passed'}
+        summary = world.write_tasks(out, statuses, {}, policies, eval_worlds=1)
+        tasks = json.loads((out / 'tasks.json').read_text())
+        self.assertEqual([(t['id'], t['split']) for t in tasks['tasks']],
+                         [('world-00-t000', 'train'), ('world-01-t000', 'eval')])
+        self.assertEqual({e['id'] for e in tasks['excluded']}, {'world-00-t001', 'world-01-t001'})
+        self.assertEqual((summary['train'], summary['eval']), (1, 1))

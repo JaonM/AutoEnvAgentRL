@@ -665,6 +665,10 @@ def main():
     parser.add_argument('--repairs', type=int, default=2)
     parser.add_argument('--output', required=True)
     parser.add_argument('--no-sufficiency', action='store_true', help='skip the policy sufficiency check')
+    parser.add_argument('--policy-k', type=int, default=4,
+                        help='policy gate episodes per certified task (free dialogue, off-peak); 0 skips it')
+    parser.add_argument('--eval-worlds', type=int, default=0,
+                        help='the last N worlds become the eval split as a whole (a world is never split)')
     parser.add_argument('--docker', action='store_true',
                         help='after the tasks, build one hardened image per world holding all its certified tasks, '
                              'each verified offline inside it (certify/docker.build_many)')
@@ -786,8 +790,74 @@ def main():
         rows_before = [json.loads(l) for l in rows_path.read_text().splitlines()] if rows_path.exists() else []
         print(f"{phase}: {sum(r['passed'] for r in rows)}/{len(rows)} certified so far", flush=True)
     print(f"tasks: {sum(r['passed'] for r in rows)}/{len(rows)} certified", flush=True)
-    if args.docker:
-        print(json.dumps(build_images(out, statuses)), flush=True)
+    images = build_images(out, statuses) if args.docker else {}
+    if images:
+        print(json.dumps(images), flush=True)
+    policies = policy_stage(out, args.policy_k) if args.policy_k else {}
+    print(json.dumps(write_tasks(out, statuses, images, policies, args.eval_worlds, docker=args.docker)), flush=True)
+
+
+def policy_stage(out, k):
+    """Policy gate (k free-dialogue episodes by a strong model) on every certified task, in off-peak hours; the result
+    stays next to the bundle (policy-natural.json), so a rerun skips tasks already gated."""
+    from env_factory_v3.certify import policy_gate as policy
+    from env_factory_v3.core.llm import ChatClient
+    from env_factory_v3.production import offpeak
+    rows = [json.loads(line) for line in (Path(out) / 'tasks.jsonl').read_text().splitlines()]
+    todo = [r for r in rows if r.get('passed')]
+    agent, user = ChatClient('LLM'), ChatClient('V3_USER')
+
+    def one(row):
+        saved = Path(row['bundle']) / 'policy-natural.json'
+        if saved.exists() and json.loads(saved.read_text()).get('k') == k:
+            return row['id'], json.loads(saved.read_text()).get('status')
+        offpeak.wait(lambda text: print(text, flush=True))
+        try:
+            return row['id'], policy.gate(row['bundle'], agent, k=k, user_mode='natural', user_client=user)['status']
+        except Exception as exc:  # noqa: BLE001 - a bundle the gate cannot play is not trainable
+            return row['id'], f'error: {type(exc).__name__}'
+    with concurrent.futures.ThreadPoolExecutor(6) as pool:
+        return dict(pool.map(one, todo))
+
+
+def write_tasks(out, statuses, images, policies, eval_worlds=0, docker=False):
+    """tasks.json in the production line's format: certified tasks that passed the policy gate (when it ran) and got
+    an image (when images were built), split by world; the rest under "excluded" with the reason. The policy-gate
+    dialogues' complexity (dialogue_complexity.py, plan W10) is reported next to it."""
+    rows = [json.loads(line) for line in (Path(out) / 'tasks.jsonl').read_text().splitlines()]
+    worlds = sorted(k for k, s in statuses.items() if s.get('training_ready'))
+    held = set(worlds[len(worlds) - eval_worlds:]) if eval_worlds else set()
+    key_of = {s.get('id') or k: k for k, s in statuses.items()}
+    tasks, excluded = [], []
+    for row in rows:
+        world = key_of.get(row['id'].rsplit('-t', 1)[0])
+        reason = None
+        if not row.get('passed'):
+            reason = f"{row.get('stage')}: {row.get('failed') or row.get('problems')}"[:200]
+        elif docker and (world not in images or 'error' in images.get(world, {})):
+            reason = 'no verified image'
+        elif policies and policies.get(row['id']) not in ('passed', None):
+            reason = f"policy gate {policies.get(row['id'])}"
+        if reason:
+            excluded.append({'id': row['id'], 'reason': reason})
+        else:
+            tasks.append({'id': row['id'], 'sandbox': str(Path(row['bundle']).resolve()),
+                          'split': 'eval' if world in held else 'train', 'weight': 1.0})
+    (Path(out) / 'tasks.json').write_text(json.dumps({'tasks': tasks, 'excluded': excluded}, ensure_ascii=False,
+                                                     indent=1))
+    summary = {'trainable': len(tasks), 'train': sum(t['split'] == 'train' for t in tasks),
+               'eval': sum(t['split'] == 'eval' for t in tasks), 'excluded': len(excluded)}
+    if policies:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            'dialogue_complexity', Path(__file__).resolve().parents[3] / 'experiments/v3/dialogue_complexity.py')
+        if spec and spec.loader and Path(spec.origin).exists():
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            complexity = module.report([Path(t['sandbox']) for t in tasks])
+            (Path(out) / 'complexity.json').write_text(json.dumps(complexity, indent=1))
+            summary['complexity_passed'] = complexity.get('passed')
+    return summary
 
 
 def build_images(out, statuses):
