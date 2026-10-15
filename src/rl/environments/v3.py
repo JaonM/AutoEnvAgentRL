@@ -77,6 +77,18 @@ RESTORED = ('messages', 'tools', 'terminated', 'score', 'answer', 'unknown_tool_
             'platform_tool_hallucinations')
 
 
+class FixedTemperature:
+    """A chat client whose sampling temperature is fixed whatever the caller asks for (the simulated user samples at
+    0.3 in training; evaluations compare models against the same user, as τ²-bench does at 0)."""
+
+    def __init__(self, client, temperature):
+        self.client, self.temperature = client, temperature
+        self.model = getattr(client, 'model', None)
+
+    def chat(self, messages, tools=None, **parameters):
+        return self.client.chat(messages, tools, **{**parameters, 'temperature': self.temperature})
+
+
 class V3Episode:
     transport = 'in_process'
 
@@ -122,6 +134,8 @@ class V3Episode:
         if self.user_mode == 'natural':
             from env_factory_v3.core.llm import ChatClient
             user = ChatClient('V3_USER')
+            if os.environ.get('ENVFACTORY_V3_USER_TEMPERATURE'):  # e.g. 0 for evaluation, as τ²-bench runs its user
+                user = FixedTemperature(user, float(os.environ['ENVFACTORY_V3_USER_TEMPERATURE']))
         from env_factory_v3.certify import bundle
         self.service = bundle.service(loaded, user_mode=self.user_mode, user_client=user)
         self.server = server.start(self.service, token=self.token)

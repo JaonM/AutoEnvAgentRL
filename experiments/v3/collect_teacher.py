@@ -50,7 +50,7 @@ def teacher_view(messages, style, english=False):
     return [{**messages[0], 'content': messages[0]['content'] + (STYLE_EN if english else STYLE)}, *messages[1:]]
 
 
-def play(task, seed, client, max_turns, style=True):
+def play(task, seed, client, max_turns, style=True, temperature=0.7):
     from rl.environments.v3 import V3Episode
     env = V3Episode(task['sandbox'])
     started = time.monotonic()
@@ -58,7 +58,7 @@ def play(task, seed, client, max_turns, style=True):
         env.reset(seed)
         tools, reasoning = env.tools, {}
         for _ in range(max_turns):
-            reply = client.chat(teacher_view(env.messages, style, env.language == 'en'), tools, temperature=0.7)
+            reply = client.chat(teacher_view(env.messages, style, env.language == 'en'), tools, temperature=temperature)
             message = {'role': 'assistant', 'content': reply.get('content') or ''}
             if reply.get('tool_calls'):
                 message['tool_calls'] = [
@@ -93,6 +93,7 @@ def main():
     parser.add_argument('--episodes', type=int, default=12, help='episodes (seeds) per task')
     parser.add_argument('--parallel', type=int, default=16)
     parser.add_argument('--max-turns', type=int, default=24)
+    parser.add_argument('--temperature', type=float, default=0.7, help='sampling temperature of the played model')
     parser.add_argument('--prefix', default='LLM', help='teacher model: <PREFIX>_API_KEY/_BASE_URL/_MODEL')
     parser.add_argument('--no-style', action='store_true', help='do not ask the teacher for customer-service tone')
     parser.add_argument('--output', required=True)
@@ -117,7 +118,7 @@ def main():
         from env_factory_v3.production import offpeak
         offpeak.wait(lambda text: print(text, flush=True))  # DeepSeek's off-peak hours (ENVFACTORY_OFFPEAK=0: off)
         try:
-            row = play(task, seed, client, args.max_turns, style=not args.no_style)
+            row = play(task, seed, client, args.max_turns, style=not args.no_style, temperature=args.temperature)
         except Exception as exc:  # one failed episode is recorded and skipped
             row = {'id': task['id'], 'seed': seed, 'success': False, 'error': f'{type(exc).__name__}: {exc}'[:300]}
         with lock:
