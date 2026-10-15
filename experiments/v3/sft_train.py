@@ -252,38 +252,38 @@ def main():
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         from tool_rename import augment
         rng = random.Random(args.seed + 1)
-        episodes = [augment(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if rng.random() < args.rename_tools else e
+        episodes = [augment(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if not e.get('public') and rng.random() < args.rename_tools else e
                     for e in episodes]
     if args.relayout:
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         from tool_rename import relayout
         rng = random.Random(args.seed + 4)
-        episodes = [relayout(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if rng.random() < args.relayout else e
+        episodes = [relayout(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if not e.get('public') and rng.random() < args.relayout else e
                     for e in episodes]
     if args.greet:
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         from tool_rename import greet
         rng = random.Random(args.seed + 3)
-        episodes = [greet(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if rng.random() < args.greet else e
+        episodes = [greet(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if not e.get('public') and rng.random() < args.greet else e
                     for e in episodes]
     if args.example_values or args.inject_errors:
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         from tool_rename import example_values, inject_errors
         rng = random.Random(args.seed + 5)
-        episodes = [example_values(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if rng.random() < args.example_values
+        episodes = [example_values(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if not e.get('public') and rng.random() < args.example_values
                     else e for e in episodes]
         rng = random.Random(args.seed + 6)
-        episodes = [inject_errors(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if rng.random() < args.inject_errors
+        episodes = [inject_errors(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if not e.get('public') and rng.random() < args.inject_errors
                     else e for e in episodes]
     if args.vary_results:
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         from tool_rename import vary_results
         rng = random.Random(args.seed + 2)
-        episodes = [vary_results(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if rng.random() < args.vary_results else e
+        episodes = [vary_results(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if not e.get('public') and rng.random() < args.vary_results else e
                     for e in episodes]
     if args.per_episode:
         pairs = [(e, render(tokenizer, e)) for e in episodes]
