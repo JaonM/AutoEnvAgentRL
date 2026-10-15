@@ -100,6 +100,15 @@ class RunTests(unittest.TestCase):
         self.assertNotIn('eval_split_dropped', value)
         load_tasks(manifest=str(self.root / 'run' / 'tasks.json'))
 
+    def test_a_failed_extraction_probe_excludes_only_tasks_the_policy_never_solved(self):
+        from env_factory.production.run import classify
+        status = {'training_ready': True}
+        options = {'docker': False, 'policy_k': 4}
+        solved = {'status': 'unextractable', 'successes': 3, 'played': 4}
+        never = {'status': 'unextractable', 'successes': 0, 'played': 4}
+        self.assertEqual(classify('t', status, None, solved, options), (True, None))
+        self.assertFalse(classify('t', status, None, never, options)[0])
+
     def test_unsolved_policy_gate_moves_tasks_to_excluded(self):
         self.plan_complex_only()
 

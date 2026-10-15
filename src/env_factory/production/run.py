@@ -237,8 +237,13 @@ def classify(task, status, docker_result, policy_result, options, difficulty=Non
         state = (policy_result or {}).get('status')
         if state == 'unsolved':
             return False, f"policy gate: {policy_result.get('model')} solved 0/{policy_result.get('played')}"
-        if state == 'unextractable':
+        # The probe (one model-written speech read back) only matters when no episode succeeded: a success already
+        # proves the answer can be delivered by talking and read back. Requiring the probe too excluded 29 of pool3's
+        # tasks that the policy solved (2026-10-15), mostly over paraphrases such as "Visa ending in 4821".
+        if state == 'unextractable' and not policy_result.get('successes'):
             return False, 'policy gate: the answer cannot be read back from what an agent tells the user'
+        if state == 'unextractable':
+            return True, None
         if state != 'passed':
             detail = (policy_result or {}).get('error', '')
             return False, f'policy gate not passed: {state or "not run"} {detail}'.strip()
