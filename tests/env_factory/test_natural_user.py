@@ -324,6 +324,23 @@ class ConversationEndTests(unittest.TestCase):
         self.assertEqual(verify({'loan_id': 'L2', 'active_hold_count': 3}, spec, 'L2 有 1 人排队'),
                          {'loan_id': 'L2', 'active_hold_count': None})
 
+    def test_a_date_said_in_words_survives_as_the_schemas_iso_form(self):
+        from env_factory.core.extract import verify
+        spec = {'type': 'object', 'properties': {name: {'type': 'string'} for name in ('deadline', 'arrival', 'start',
+                                                                                      'made_up', 'verb')}}
+        said = 'Recorded deadline: **May 31, 2024**. It arrives June 3; the refund starts 5月30日. You may 3 times.'
+        got = verify({'deadline': '2024-05-31T18:00', 'arrival': '2024-06-03T18:00', 'start': '2024-05-30',
+                      'made_up': '2024-06-30', 'verb': '2024-05-03'}, spec, said)
+        self.assertEqual(got, {'deadline': '2024-05-31T18:00', 'arrival': '2024-06-03T18:00', 'start': '2024-05-30',
+                               'made_up': None, 'verb': None})
+
+    def test_iso_times_compare_by_value(self):
+        from env_factory.core import answers
+        spec = {'type': 'string', 'nullable': True}
+        self.assertEqual(answers.score(spec, '2024-05-31T18:00', '2024-05-31 18:00:00'), 1.0)
+        self.assertEqual(answers.score(spec, '2024-05-31T18:00', '2024-05-31T19:00'), 0.0)
+        self.assertEqual(answers.score(spec, '2024-05-31', '2024-05-31T00:00'), 0.0)  # a day is not a time
+
     def test_a_tool_call_resets_the_idle_count(self):
         service = self.service(ScriptedUser())
         episode = service.reset(world='original')['episode']

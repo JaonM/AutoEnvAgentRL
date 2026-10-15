@@ -21,6 +21,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 
 from env_factory.core.numerals import said
 
@@ -66,6 +67,37 @@ def records_of(trace):
     return dict(list(found.items())[:MAX_RECORDS])
 
 
+MONTHS = ('january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october',
+          'november', 'december')
+ISO_DAY = re.compile(r'^(\d{4})-(\d{2})-(\d{2})(?:[T ]\d{2}:\d{2}(?::\d{2})?)?$')
+
+
+def date_said(text, value):
+    """Whether the calendar day of an ISO date or time was said in any usual form: the agent says "May 31, 2024"
+    or "5月31日" and the extractor writes the schema's "2024-05-31T18:00", which is not in the text verbatim (pool3,
+    the first calendar pool, lost every date field this way). The time of day may come from the policy (a deadline's
+    18:00 cutoff), so only the day must have been said."""
+    found = ISO_DAY.match(value.strip())
+    if not found:
+        return False
+    year, month, day = (int(x) for x in found.groups())
+    if not 1 <= month <= 12:
+        return False
+    name = MONTHS[month - 1]
+    short = (name[:3], 'sept') if name == 'september' else (name[:3],)
+    names = '(?:' + '|'.join([name] + [rf'{x}\.?' for x in short if x != name]) + ')'
+    patterns = (rf'{year}-0?{month}-0?{day}(?!\d)',
+                rf'\b{names}\s+0?{day}(?:st|nd|rd|th)?(?!\d)',
+                rf'(?<!\d)0?{day}(?:st|nd|rd|th)?\s+(?:of\s+)?{names}(?![a-z])',
+                rf'(?<![\d/])0?{month}/0?{day}(?:/(?:{year}|{year % 100:02d}))?(?![\d/])',
+                rf'(?<!\d){year}[./]0?{month}[./]0?{day}(?!\d)',
+                rf'(?<!\d)0?{month}月0?{day}[日号]')
+    if name == 'may':  # the month only when capitalised, not the verb ("you may 3 times")
+        return any(re.search(pattern.replace('may', 'May'), text) for pattern in patterns)
+    lowered = text.casefold()
+    return any(re.search(pattern, lowered) for pattern in patterns)
+
+
 def verify(value, spec, text, records=None):
     """The value with every number or free string that was not actually said replaced by None; a record id
     counts as said when one of the record's names was (see Records above)."""
@@ -75,7 +107,7 @@ def verify(value, spec, text, records=None):
     if kind in ('integer', 'number') and isinstance(value, (int, float)) and not isinstance(value, bool):
         return value if said(text, value) else None
     if kind == 'string' and isinstance(value, str) and 'enum' not in spec:
-        if value and value in text:
+        if value and (value in text or date_said(text, value)):
             return value
         lowered = text.casefold()
         named = any(name.casefold() in lowered for name in (records or {}).get(value, []))

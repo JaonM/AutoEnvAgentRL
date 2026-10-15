@@ -23,6 +23,7 @@ is not graded: an agent delivering by talking has no reason to read it out.
 from __future__ import annotations
 
 import json
+import datetime
 import re
 import unicodedata
 
@@ -164,6 +165,9 @@ def normalize(spec, value):
     if isinstance(value, str):
         if NUMERIC_TEXT.match(value.strip()):  # "12.50", "12.5" and "$12.50" are one amount
             return ('number', round(float(value.strip().lstrip('$¥￥').replace(',', '')), 9))
+        moment = iso_moment(value)
+        if moment:  # "2024-05-31T18:00", "2024-05-31 18:00" and "2024-05-31T18:00:00" are one time
+            return moment
         return ('str', text_key(value))
     if isinstance(value, list):
         item_spec = (spec or {}).get('items') or {}
@@ -176,6 +180,23 @@ def normalize(spec, value):
         return ('dict', tuple(sorted((key, normalize(properties.get(key), item)) for key, item in value.items()
                                      if (properties.get(key) or {}).get('graded', True))))
     return ('other', repr(value))
+
+
+ISO_TEXT = re.compile(r'^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?)?$')
+
+
+def iso_moment(value):
+    """('date', 'YYYY-MM-DD') or ('datetime', 'YYYY-MM-DDTHH:MM[:SS]') for an ISO calendar string, else None."""
+    text = value.strip()
+    if not ISO_TEXT.match(text):
+        return None
+    try:
+        moment = datetime.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if len(text) == 10:
+        return ('date', moment.date().isoformat())
+    return ('datetime', moment.isoformat(timespec='seconds' if moment.second else 'minutes'))
 
 
 NUMERIC_TEXT = re.compile(r'^[$¥￥]?-?\d{1,3}(,\d{3})*(\.\d+)?$|^[$¥￥]?-?\d+(\.\d+)?$')
