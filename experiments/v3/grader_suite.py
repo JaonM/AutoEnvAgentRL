@@ -9,6 +9,9 @@ serving free dialogue):
   wrong variants must score below 1  a number off by one, another enum value, another row id of the same
                                      table (or one character changed), an array missing an item
   silence must score 0               the field's structure with every leaf null (an agent that said nothing)
+With --state, the final-state comparison too: the reference's writes are replayed in reverse order (reads first,
+each write approved again); if every write is still accepted, the final state must be the same, or the same up to
+the ids the writes created (order-dependent ids: an agent doing the same job in another order fails).
 A miss is a comparison gap: a false negative teaches the student nothing (or an odd format), a false
 positive pays for a wrong answer.
 
@@ -160,10 +163,60 @@ def silence(spec, value):
     return None
 
 
+def _mask_created(state, initial):
+    """The state with ids of rows the writes created (and references to them) replaced by one placeholder."""
+    old = {r.get('id') for rows in initial.values() for r in rows if isinstance(r, dict)}
+    new = {r.get('id') for rows in state.values() for r in rows if isinstance(r, dict)} - old
+    def mask(value):
+        if isinstance(value, dict):
+            return {k: mask(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [mask(v) for v in value]
+        return '<created>' if isinstance(value, str) and value in new else value
+    return mask(state)
+
+
+def state_order_check(folder):
+    """'ok', 'dependent' (another order is refused), 'order_dependent_ids', 'order_changes_state', or 'n/a'."""
+    from env_factory_v3.certify import bundle
+    from env_factory_v3.core.worlds import state_diff
+    from env_factory_v3.runtime import BusinessError, run_policy, run_reference
+    loaded = bundle.load_bundle(folder, require_current_platform=False)
+    request, env = loaded['request'], loaded['env']
+    data, facts, start = request['tables'], request['user_facts'], request['time']['start']
+    reference = run_reference(env, data, facts, start=start)
+    trace = reference['trace']
+    writes = [e for e in trace if e.get('kind') == 'tool' and e.get('write') and e.get('status') == 'ok']
+    if len(writes) < 2:
+        return 'n/a'
+    reads = [e for e in trace if e.get('kind') == 'tool' and not e.get('write') and e.get('status') == 'ok']
+    confirms = [e for e in trace if e.get('kind') == 'confirm' and e.get('approved')]
+    key_of = lambda w: next((c['key'] for c in confirms if c['proposal']['tool'] == w['tool']
+                             and c['proposal']['args'] == w['args']), None)
+
+    def reordered(api):
+        for entry in reads:
+            api.call(entry['tool'], **entry['args'])
+        for entry in reversed(writes):
+            token = api.confirm(key_of(entry), {'tool': entry['tool'], 'args': entry['args']})
+            api.call(entry['tool'], consent=token, **entry['args'])
+        return reference['answer']
+    try:
+        result = run_policy(env, reordered, data, facts, start=start)
+    except (BusinessError, KeyError, ValueError):
+        return 'dependent'
+    if not state_diff(reference['final_state'], result['final_state']):
+        return 'ok'
+    if not state_diff(_mask_created(reference['final_state'], data), _mask_created(result['final_state'], data)):
+        return 'order_dependent_ids'
+    return 'order_changes_state'
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     parser.add_argument('bundles', nargs='+')
     parser.add_argument('--json', help='write every finding here')
+    parser.add_argument('--state', action='store_true', help='also check the final state against reordered writes')
     args = parser.parse_args()
     totals, bundles_hit, rows, broken = collections.Counter(), collections.Counter(), {}, []
     checked = 0
@@ -182,6 +235,20 @@ def main():
         for f in found:
             totals[(f['kind'], f['case'])] += 1
     print(f'{checked} bundles checked, {len(broken)} not loadable')
+    if args.state:
+        orders = collections.Counter()
+        flagged = []
+        for folder in args.bundles:
+            try:
+                verdict = state_order_check(folder)
+            except Exception as exc:  # noqa: BLE001 - reported, not fatal
+                verdict = f'error: {type(exc).__name__}'
+            orders[verdict] += 1
+            if verdict in ('order_dependent_ids', 'order_changes_state'):
+                flagged.append((folder, verdict))
+        print('  state under reordered writes:', dict(orders))
+        for folder, verdict in flagged[:10]:
+            print('   ', verdict, folder)
     for (kind, case), count in sorted(totals.items()):
         print(f'  {kind:15s} {case:45s} leaves {count:5d}  bundles {bundles_hit[(kind, case)]:4d}')
     if args.json:
