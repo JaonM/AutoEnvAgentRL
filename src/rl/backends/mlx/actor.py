@@ -236,6 +236,11 @@ class ActorTrainer:
         return output
 
     def step(self, samples, *, notify=lambda: None):
+        # Episodes left out of training (an invalid simulator turn, a quarantined environment) carry weight 0; a
+        # micro-batch made only of them had zero mass and divided by it (RL smoke run, 2026-10-15).
+        samples = [s for s in samples if s['weight'] > 0]
+        if not samples:
+            return {'skipped': 'no_trainable_samples'}
         self.check_step += 1
         self.score(samples, verify=True)
         self.score(samples, reference=True)
