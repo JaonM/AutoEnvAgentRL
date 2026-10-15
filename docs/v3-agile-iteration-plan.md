@@ -200,9 +200,9 @@ GPU 主线的顺序：I2p-E → I2p-F → I2 → I3 → I3b → I3c。工程支�
 
 ## 7. 模型分工与非高峰调度（2026-10-15）
 
-- **Codex**：环境、verifier、请求、世界、审计（含待做的 W4 逐条规则审计）。`CodexChat` 适配器可让任一低频角色改用 Codex 会话（`ENVFACTORY_POLICY_WRITER=codex`），但同时最多 2 个会话，对外手册为效率起见仍用 DeepSeek。
+- **Codex**：环境、verifier、请求、世界、审计（含待做的 W4 逐条规则审计）。实测审计单次约 0.5–0.6 分钟，只占 Codex 总时间约 13%，不慢；W4 实现后若明显拖慢世界构建再改用 DeepSeek。`CodexChat` 适配器可让任一低频角色改用 Codex 会话（`ENVFACTORY_POLICY_WRITER=codex`），但同时最多 2 个会话，对外手册为效率起见仍用 DeepSeek。
 - **DeepSeek**：模拟用户、答案抽取、模拟用户审计、教师采集、手册撰写与核对、手册充分性检查（与 Codex 不同家族，防相关错误）、τ² 评测（保持不变以与基线可比）。
-- **非高峰调度**：高峰为北京时间 9:00–12:00、14:00–18:00，其余约半价；周末是否全天非高峰尚无定论，默认按工作日处理（`OFFPEAK_WEEKENDS=1` 放开）。policy gate、教师采集、离线重判在每个任务或每局前检查，高峰时暂停；τ² 快评在开始前等待；RL 等长任务用 `experiments/v3/bench/offpeak_run.sh` 在高峰开始时停止、结束后续跑。`ENVFACTORY_OFFPEAK=0` 关闭等待。
+- **非高峰调度**：高峰为北京时间 9:00–12:00、14:00–18:00，其余约半价；周六、周日全天非高峰（用户确认）。policy gate、教师采集、离线重判在每个任务或每局前检查，高峰时暂停；τ² 快评在开始前等待；RL 等长任务用 `experiments/v3/bench/offpeak_run.sh` 在高峰开始时停止、结束后续跑。`ENVFACTORY_OFFPEAK=0` 关闭等待。
 
 ## 7a. 费用估算（deepseek-flash，高峰价；非高峰半价）
 
