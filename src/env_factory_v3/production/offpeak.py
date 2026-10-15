@@ -1,8 +1,8 @@
 """DeepSeek's off-peak hours: high-volume model work (policy gates, teacher collection, re-grading, quick evals,
 RL rollouts) waits for them, at about half the price.
 
-Peak is 09:00-12:00 and 14:00-18:00 Beijing time. Whether weekends are entirely off-peak is not settled in the
-public reports, so they count like weekdays unless OFFPEAK_WEEKENDS=1. ENVFACTORY_OFFPEAK=0 turns waiting off.
+Peak is 09:00-12:00 and 14:00-18:00 Beijing time on weekdays; Saturday and Sunday are off-peak all day.
+ENVFACTORY_OFFPEAK=0 turns waiting off.
 
     python -m env_factory_v3.production.offpeak --wait      # block until off-peak
     python -m env_factory_v3.production.offpeak --status    # "peak" or "off-peak", seconds to the next switch
@@ -24,7 +24,7 @@ def enabled():
 
 def is_peak(moment=None):
     moment = (moment or datetime.datetime.now(BEIJING)).astimezone(BEIJING)
-    if moment.weekday() >= 5 and os.environ.get('OFFPEAK_WEEKENDS') == '1':
+    if moment.weekday() >= 5:  # weekends are off-peak around the clock
         return False
     return any(start <= moment.hour < end for start, end in PEAK)
 
