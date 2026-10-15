@@ -103,6 +103,7 @@ def prepare(session: TrainingSession, group, path, replay_entry=None):
             session.config.gae_lambda,
             session.config.discount_unit,
             task_scale(session, group),
+            session.config.loss_aggregation,
         )
     )
     if reason:
@@ -307,6 +308,7 @@ def prepared_records(session: TrainingSession, *, only_untrained=False):
                     session.config.gae_lambda,
                     session.config.discount_unit,
                     task_scale(session, group, record=False),
+                    session.config.loss_aggregation,
                 ),
                 "path": record["path"],
                 "replay_entry": None,

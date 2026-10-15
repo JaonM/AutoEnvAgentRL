@@ -17,6 +17,13 @@ class Config:
     # GRPO advantage scale: "group" (std of the group) or "task" (std of the recent rewards of the same
     # task across groups, AutoForge ERPO: less noise with small groups; falls back to the group early on)
     advantage_std: str = "task"
+    # GRPO loss aggregation: "sequence" (original GRPO: each episode's tokens share the episode's weight) or "token"
+    # (DAPO: every token of a group weighs the same, so long failing loops are penalised token by token).
+    loss_aggregation: str = "sequence"
+    # SPO's probability mask: the advantage applies only to tokens the behaviour policy sampled with probability
+    # below this (0 = off; 0.9 in SPO), renormalised over those tokens; near-certain tokens (JSON, set phrases) carry
+    # no credit.
+    low_prob_mask: float = 0.0
     context_limit_policy: str = "finish"
     numerical_check_mode: str = "periodic"
     numerical_check_interval: int = 20
@@ -231,6 +238,10 @@ class Config:
             self.qat_scope == "full" and self.tuning != "qat"
         ):
             raise ValueError("qat_scope full requires tuning qat")
+        if self.loss_aggregation not in {"sequence", "token"}:
+            raise ValueError("loss_aggregation must be sequence or token")
+        if not 0.0 <= self.low_prob_mask <= 1.0:
+            raise ValueError("low_prob_mask must be in [0, 1]")
         if self.thinking_mode not in {"auto", "thinking", "no-thinking"}:
             raise ValueError("unsupported thinking mode")
         if not 0 <= self.replay_min_ess <= 1 or not 0 < self.replay_max_log_ratio <= 80:

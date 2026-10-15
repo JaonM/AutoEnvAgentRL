@@ -36,7 +36,7 @@ def trainable(episode):
     return episode.get('trainable', True) is not False
 
 
-def make_samples(group, algorithm, gamma=1.0, lam=.95, discount_unit='action', scale=None):
+def make_samples(group, algorithm, gamma=1.0, lam=.95, discount_unit='action', scale=None, aggregation='sequence'):
     if algorithm not in {'ppo', 'grpo'}:
         raise ValueError('unsupported trajectory objective')
     if discount_unit not in {'action', 'token'}:
@@ -60,6 +60,9 @@ def make_samples(group, algorithm, gamma=1.0, lam=.95, discount_unit='action', s
         for i, value in zip(kept, values):
             grouped[i] = value
     samples = []
+    # aggregation="token": every assistant token of the group's trainable episodes weighs the same (DAPO); "sequence":
+    # each trainable episode weighs the same and its tokens share it (original GRPO).
+    group_tokens = sum(sum(a.get('loss_mask', [1] * len(a['tokens']))) for i in kept for a in episodes[i]['actions'])
     for index, episode in enumerate(episodes):
         actions = episode['actions']
         if not actions or not math.isfinite(episode['final_reward']):
@@ -94,6 +97,7 @@ def make_samples(group, algorithm, gamma=1.0, lam=.95, discount_unit='action', s
                 'advantage': grouped[index] if algorithm == 'grpo' else advantages[offset:offset+n],
                 'return': returns[offset:offset+n],
                 'weight': (sum(action.get('loss_mask', [1]*n)) if index in kept else 0)
-                          / sum(sum(a.get('loss_mask', [1]*len(a['tokens']))) for a in actions) / max(1, len(kept))})
+                          / (max(1, group_tokens) if aggregation == 'token' else
+                             sum(sum(a.get('loss_mask', [1]*len(a['tokens']))) for a in actions) * max(1, len(kept)))})
             offset += n
     return samples
