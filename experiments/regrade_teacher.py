@@ -79,11 +79,15 @@ def main():
             if not message.get('tool_calls') and (message.get('content') or '').strip():
                 svc.step(episode, {'type': 'chat', 'message': message['content']})
         grade = svc.reward(episode)
+        expected = svc._get(episode)['expected']
+        chosen = ([expected] + list(expected.get('alternatives') or []))[grade.get('outcome') or 0]
         svc.release(episode)
         previous = {k: row.get(k) for k in ('reward', 'success')}
         result = {**row, 'previous': previous, 'reward': grade.get('reward'),
                   'success': grade.get('success') is True, 'state_ok': grade.get('state_ok'),
-                  'safety': grade.get('safety'), 'field_scores': grade.get('field_scores')}
+                  'safety': grade.get('safety'), 'field_scores': grade.get('field_scores'),
+                  # for mining comparison gaps: what was extracted against what was expected
+                  'extracted_answer': grade.get('answer'), 'expected_answer': chosen.get('answer')}
         with lock:
             with open(out_path, 'a') as handle:
                 handle.write(json.dumps(result, ensure_ascii=False) + '\n')
