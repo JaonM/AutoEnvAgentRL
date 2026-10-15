@@ -240,4 +240,4 @@ Issues and pull requests are welcome. Before submitting:
 
 ## License
 
-No open-source license has been chosen yet.
+This project is licensed under the [Apache License 2.0](LICENSE).

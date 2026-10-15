@@ -3,6 +3,8 @@ name = "AutoEnvAgentRL"
 version = "0.1.0"
 description = "Automatically generate certified business sandboxes and train tool-using agents with SFT and RL"
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [
     { name = "马强", email = "maqiangcsu@gmail.com" }
 ]
