@@ -19,6 +19,19 @@ fi
 mkdir -p output/tau2
 # The τ² user simulator and NL judge are DeepSeek: start in off-peak hours (ENVFACTORY_OFFPEAK=0 skips the wait).
 PYTHONPATH=src .venv/bin/python -m env_factory.production.offpeak --wait
+# At most BENCH_MAX_EVALS evaluations at once on this machine (default 2): each serves SERVERS model processes
+# with up to 24 GB of prefix cache, and ten evaluations queued for the same off-peak start next to a training
+# run would exhaust memory (the machine hung on 2026-10-15). A slot is a directory holding its owner's pid;
+# slots of dead owners are reclaimed.
+slots=output/tau2/.slots; mkdir -p "$slots"; slot=""
+while [ -z "$slot" ]; do
+  for i in $(seq 1 "${BENCH_MAX_EVALS:-2}"); do
+    if [ -d "$slots/$i" ] && ! kill -0 "$(cat "$slots/$i/pid" 2>/dev/null)" 2>/dev/null; then rm -rf "$slots/$i"; fi
+    if mkdir "$slots/$i" 2>/dev/null; then echo $$ > "$slots/$i/pid"; slot="$slots/$i"; break; fi
+  done
+  [ -z "$slot" ] && sleep 60
+done
+PYTHONPATH=src .venv/bin/python -m env_factory.production.offpeak --wait  # off-peak again after queueing
 started=$(date +%s)
 pids=(); backends=()
 cache_gb=$(( 24 / servers ))
@@ -35,7 +48,7 @@ if [ "$servers" -gt 1 ]; then
     > "output/tau2/router-q$arm.log" 2>&1 &
   pids+=($!)
 fi
-trap 'kill ${pids[*]} 2>/dev/null' EXIT
+trap 'kill ${pids[*]} 2>/dev/null; rm -rf "$slot"' EXIT
 until curl -sf "localhost:$port/health" >/dev/null 2>&1; do sleep 2; done
 runs=()
 for domain in airline retail; do
