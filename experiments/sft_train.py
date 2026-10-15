@@ -179,6 +179,29 @@ def render_turns(tokenizer, episode, think, cap, limit=0, seed=0, skip_failed=Fa
     return out
 
 
+def chunked_causal_attention(chunk):
+    """Causal attention in query chunks, each recomputed in the backward pass. MLX's fused attention materialises
+    the whole (tokens x tokens) score matrix for its gradient: 12 GB at 8k tokens and far beyond memory at 32k,
+    which swapped the machine during I2c (2026-10-15). Same result up to bfloat16 rounding."""
+    import mlx.core as mx
+
+    def attend(queries, keys, values, cache=None, scale=1.0, mask=None, **kwargs):
+        length = queries.shape[2]
+        if cache is not None or length <= chunk or not (mask is None or isinstance(mask, str)):
+            return mx.fast.scaled_dot_product_attention(queries, keys, values, scale=scale, mask=mask)
+
+        def piece(q, k, v, start):
+            allowed = mx.arange(start, start + q.shape[2])[:, None] >= mx.arange(k.shape[2])[None, :]
+            return mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=allowed)
+        outs = []
+        for start in range(0, length, chunk):
+            end = min(start + chunk, length)
+            outs.append(mx.checkpoint(lambda q, k, v, s=start: piece(q, k, v, s))(
+                queries[:, :, start:end], keys[:, :, :end], values[:, :, :end]))
+        return mx.concatenate(outs, axis=2)
+    return attend
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     parser.add_argument('--teacher', required=True, help='collect_teacher.py JSONL (only successful episodes are used)')
@@ -189,6 +212,8 @@ def main():
     parser.add_argument('--epochs', type=float, default=2.0)
     parser.add_argument('--learning-rate', type=float, default=1e-5)
     parser.add_argument('--grad-accumulation', type=int, default=4)
+    parser.add_argument('--attention-chunk', type=int, default=0,
+                        help='compute attention in query chunks of this many tokens (0: off); see chunked_causal_attention')
     parser.add_argument('--grad-clip', type=float, default=1.0,
                         help='clip the global gradient norm (0: off); one 30k-token episode can otherwise throw the run')
     parser.add_argument('--max-tokens', type=int, default=12288, help='longer episodes are skipped')
@@ -227,6 +252,7 @@ def main():
     args = parser.parse_args()
 
     import mlx.core as mx
+    import numpy as np
     import mlx.nn as nn
     import mlx.optimizers as optim
     from mlx.utils import tree_flatten, tree_map, tree_unflatten
@@ -241,6 +267,10 @@ def main():
         linear_to_lora_layers(model, len(model.layers), {'rank': args.lora_rank, 'scale': 2.0, 'dropout': 0.0,
                                                          'keys': None})
     grad_checkpoint(model.layers[0])
+    if args.attention_chunk:
+        import importlib
+        family = importlib.import_module(type(model).__module__)
+        family.scaled_dot_product_attention = chunked_causal_attention(args.attention_chunk)
 
     # Successes and the near misses sft_select chose (safe, final state right, at most one answer field wrong);
     # filtering on success alone silently dropped every near miss.
@@ -309,10 +339,15 @@ def main():
           f'{sum(sum(m) for _, m in train)} assistant tokens of {sum(len(i) for i, _ in train)}', flush=True)
 
     def loss_fn(model, ids, mask):
-        logits = model(ids[None, :-1])
-        targets, weights = ids[None, 1:], mask[None, 1:]
-        ce = nn.losses.cross_entropy(logits, targets) * weights
-        return ce.astype(mx.float32).sum() / weights.sum()
+        # Logits only where the loss is taken (assistant tokens, about a fifth of an episode): the full-vocabulary
+        # logits of every position cost ~1.5 GB per 1k tokens and made a 32k-token episode take 30+ GB. Same loss.
+        hidden = model.model(ids[None, :-1])[0]
+        keep = mx.array(np.flatnonzero(np.array(mask[1:])))
+        picked = hidden[keep]
+        head = getattr(model, 'lm_head', None)
+        logits = head(picked) if head is not None and not model.args.tie_word_embeddings \
+            else model.model.embed_tokens.as_linear(picked)
+        return nn.losses.cross_entropy(logits, ids[1:][keep]).astype(mx.float32).sum() / keep.size
 
     steps = math.ceil(len(train) * args.epochs / args.grad_accumulation)
     schedule = optim.join_schedules([optim.linear_schedule(0.0, args.learning_rate, max(1, steps // 20)),
@@ -356,6 +391,7 @@ def main():
             ids, mask = train[index]
             loss, grads = value_and_grad(model, mx.array(ids), mx.array(mask))
             accumulated = grads if accumulated is None else tree_map(lambda a, b: a + b, accumulated, grads)
+            mx.eval(accumulated, loss)  # left lazy, every micro-batch's backward graph stayed alive until the update
             losses.append(loss.item())
         averaged = tree_map(lambda g: g / args.grad_accumulation, accumulated)
         if args.grad_clip:
