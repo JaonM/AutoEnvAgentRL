@@ -145,13 +145,22 @@ class SandboxEpisode:
         self.server.shutdown()
         self.server.server_close()
 
+    @staticmethod
+    def route_timeout(route):
+        """Seconds to wait for the service. Grading a free dialogue calls the judge model (answer extraction,
+        simulator audit), which at peak hours with a full rollout group takes minutes; 120 s timed out and the
+        restarts ended an RL run."""
+        if route == '/reward':
+            return float(os.environ.get('ENVFACTORY_REWARD_TIMEOUT', '900'))
+        return float(os.environ.get('ENVFACTORY_STEP_TIMEOUT', '300'))
+
     def request(self, route, body):
         started = time.monotonic()
         request = Request(self.base_url + route, data=json.dumps(body, ensure_ascii=False).encode(),
                           method='POST', headers={'Content-Type': 'application/json',
                                                   'Authorization': f'Bearer {self.token}'})
         try:
-            with self.opener.open(request, timeout=120) as response:
+            with self.opener.open(request, timeout=self.route_timeout(route)) as response:
                 status, value = response.status, json.load(response)
         except HTTPError as error:
             status, value = error.code, json.load(error)
