@@ -153,9 +153,18 @@ def rollout_worker_main(index, config, shared_version, results, stop):
                         'dataset_index': count, 'attempt': attempt, 'task_id': task.id,
                         'policy_version': version, 'seed': seed},
                         samples=config.get('rollout_trace_samples', 1), max_chars=config.get('rollout_trace_max_chars', 16000))
+                    start = None
+                    if config.get('reverse_curriculum'):
+                        from rl.rollout.curriculum import Curriculum
+                        curriculum = Curriculum(config['reverse_curriculum'], Path(config['output']) / 'curriculum.json',
+                                                threshold=config.get('curriculum_threshold', 0.6),
+                                                seed=config['seed'] + count)
+                        start = curriculum.start(task.id)
                     try:
-                        episodes = parallel_rollouts(policy,env,config,seed,stop=stop,notify=notify,
-                                                     continuation=continuation, observe=observer)
+                        episodes = parallel_rollouts(policy,env,{**config, '_start': start},seed,stop=stop,
+                                                     notify=notify, continuation=continuation, observe=observer)
+                        if start:
+                            curriculum.record(task.id, start['level'], episodes)
                     except EnvironmentProtocolError as error:
                         task_queue.quarantine(task.id, task.identity, error)
                         logger.emit('task/quarantined', text=str(error), task_id=task.id,

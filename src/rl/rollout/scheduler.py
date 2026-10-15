@@ -138,6 +138,11 @@ def parallel_rollouts(policy, pool, config, seed, *, stop=None, notify=None, con
     # around it (data/trajectory.py). Each trunk step records an exact environment snapshot to branch from.
     tree = config.get('rollout_mode', 'chain') == 'tree'
     jobs = [{'kind': 'reset', **({'role': 'trunk'} if tree else {})} for _ in range(count)]
+    start_state = config.get('_start')  # reverse curriculum: every episode of the group starts from this snapshot
+    if start_state:
+        tree = False
+        jobs = [{'kind': 'restore', 'snapshot': start_state['snapshot'], 'prefix_steps': start_state['prefix_steps'],
+                 'role': 'curriculum', 'level': start_state['level']} for _ in range(count)]
     completed = [None] * count
     snapshots = {}
     branched = False
@@ -280,6 +285,8 @@ def parallel_rollouts(policy, pool, config, seed, *, stop=None, notify=None, con
                               environment_intervals=state['rpc_intervals'])
                 if state.get('budget_admission') is not None:
                     result['budget_admission'] = state['budget_admission']
+                if start_state:
+                    result['curriculum'] = {k: v for k, v in state['job'].items() if k in ('prefix_steps', 'level')}
                 if tree:
                     result['tree'] = {k: v for k, v in state['job'].items() if k not in ('kind',)}
                     if state['job'].get('role') == 'trunk':

@@ -30,6 +30,10 @@ class Config:
     tree_forks: int = 4
     tree_branches: int = 2
     tree_advantage: str = "segment"
+    # Reverse curriculum (rollout/curriculum.py): a start library (experiments/v3/start_states.py); its tasks start
+    # late in recorded successes and move earlier once groups succeed at curriculum_threshold.
+    reverse_curriculum: str = ""
+    curriculum_threshold: float = 0.6
     context_limit_policy: str = "finish"
     numerical_check_mode: str = "periodic"
     numerical_check_interval: int = 20
