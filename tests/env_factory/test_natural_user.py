@@ -334,6 +334,20 @@ class ConversationEndTests(unittest.TestCase):
         self.assertEqual(got, {'deadline': '2024-05-31T18:00', 'arrival': '2024-06-03T18:00', 'start': '2024-05-30',
                                'made_up': None, 'verb': None})
 
+    def test_values_said_in_other_usual_forms_survive_verification(self):
+        from env_factory.core.extract import verify
+        S, I, N = {'type': 'string'}, {'type': 'integer'}, {'type': 'number'}
+        kept = [(I, 1, 'One offer fits.'), (I, -1250, 'You owe $12.50.'), (N, 0.15, 'The fee is 15% of the fare.'),
+                (S, '原支付银行卡尾号1028', '退回您原支付银行卡尾号 1028。'), (S, 'CR-9002', 'booking cr-9002 is cancelled'),
+                (S, '2024-05-17T18:00', 'SL-C：5 月 17 日 18:00'), (S, '18:30', 'pickup at 6:30 PM'),
+                (S, '18:00', '下午6点到'), (S, '18:30', '晚上6点半')]
+        for spec, value, text in kept:
+            self.assertEqual(verify(value, spec, text), value, text)
+        dropped = [(S, 'MAN', 'stuck in Manchester'), (S, '06:00', '下午6点'), (S, '18:00', 'pickup at 6:30 PM'),
+                   (I, 4, 'You owe $12.50.')]
+        for spec, value, text in dropped:
+            self.assertIsNone(verify(value, spec, text), text)
+
     def test_iso_times_compare_by_value(self):
         from env_factory.core import answers
         spec = {'type': 'string', 'nullable': True}

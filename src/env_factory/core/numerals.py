@@ -54,8 +54,32 @@ def spoken(number):
     return forms
 
 
+ENGLISH = ('zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen '
+           'seventeen eighteen nineteen twenty').split()
+TENS = {30: 'thirty', 40: 'forty', 50: 'fifty', 60: 'sixty', 70: 'seventy', 80: 'eighty', 90: 'ninety'}
+
+
+def english(number):
+    """English words for small whole numbers ("One offer fits", "three days late")."""
+    if not (isinstance(number, int) and not isinstance(number, bool)):
+        return set()
+    if 0 <= number < len(ENGLISH):
+        return {ENGLISH[number]}
+    return {TENS[number]} if number in TENS else set()
+
+
 def said(text, number):
-    """True when `text` states `number` in one of its spoken forms, not as part of a longer number."""
+    """True when `text` states `number` in one of its spoken forms, not as part of a longer number: digits,
+    Chinese numerals, cents in 元/dollars, English words for small numbers, a share below 1 as a percentage
+    (0.15 as "15%"), and a negative amount by its magnitude (the sign is said in words: "you owe $12.50")."""
+    if isinstance(number, (int, float)) and not isinstance(number, bool) and number < 0 and said(text, -number):
+        return True
+    if isinstance(number, float) and 0 < number < 1 and re.search(
+            rf'(?<![\d.]){re.escape(f"{number * 100:g}")}\s*(?:%|percent|个百分点)', text, re.I):
+        return True
+    lowered = text.casefold()
+    if any(re.search(rf'\b{word}\b', lowered) for word in english(number)):
+        return True
     for form in spoken(number):
         digits = form[0].isdigit()
         before, after = (r'(?<![\d.])', r'(?![\d])') if digits else (r'(?<![零一二两三四五六七八九十百千万])',

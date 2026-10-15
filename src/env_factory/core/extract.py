@@ -22,6 +22,7 @@ import copy
 import hashlib
 import json
 import re
+import unicodedata
 
 from env_factory.core.numerals import said
 
@@ -91,11 +92,49 @@ def date_said(text, value):
                 rf'(?<!\d)0?{day}(?:st|nd|rd|th)?\s+(?:of\s+)?{names}(?![a-z])',
                 rf'(?<![\d/])0?{month}/0?{day}(?:/(?:{year}|{year % 100:02d}))?(?![\d/])',
                 rf'(?<!\d){year}[./]0?{month}[./]0?{day}(?!\d)',
-                rf'(?<!\d)0?{month}月0?{day}[日号]')
+                rf'(?<!\d)0?{month}\s*月\s*0?{day}\s*[日号]')
     if name == 'may':  # the month only when capitalised, not the verb ("you may 3 times")
         return any(re.search(pattern.replace('may', 'May'), text) for pattern in patterns)
     lowered = text.casefold()
     return any(re.search(pattern, lowered) for pattern in patterns)
+
+
+def text_said(text, value):
+    """A string said up to typography: case, full-width forms and spaces (Chinese text often spaces digits: the
+    agent says "尾号 1028" for "尾号1028"), but not inside a longer word ("MAN" is not said by "Manchester")."""
+    key = re.sub(r'\s+', '', unicodedata.normalize('NFKC', value).casefold())
+    if not key:
+        return False
+    body = r'\s*'.join(re.escape(ch) for ch in key)
+    before = r'(?<![a-z0-9])' if key[0].isascii() and key[0].isalnum() else ''
+    after = r'(?![a-z0-9])' if key[-1].isascii() and key[-1].isalnum() else ''
+    return bool(re.search(before + body + after, unicodedata.normalize('NFKC', text).casefold()))
+
+
+CLOCK = re.compile(r'^(\d{1,2}):(\d{2})$')
+
+
+def time_said(text, value):
+    """Whether a clock time "HH:MM" was said as "6 pm", "6:30 PM", "18点", "下午6点半" or "晚上6点30分"."""
+    found = CLOCK.match(value.strip())
+    if not found:
+        return False
+    hour, minute = int(found[1]), int(found[2])
+    if hour > 23 or minute > 59:
+        return False
+    twelve, suffix = hour % 12 or 12, ('p' if hour >= 12 else 'a')
+    lowered = text.casefold()
+    english = rf'(?<![\d:]){twelve}{"" if minute == 0 else f":{minute:02d}"}(?::00)?\s*{suffix}\.?\s*m\b'
+    if minute == 0:
+        english = rf'(?<![\d:]){twelve}(?::00)?\s*{suffix}\.?\s*m\b'
+    if re.search(english, lowered):
+        return True
+    period = '(?:下午|晚上|傍晚|中午)' if hour >= 12 else '(?:上午|早上|凌晨|早晨)'
+    minutes = '(?:整)?' if minute == 0 else ('(?:半|30分)' if minute == 30 else f'0?{minute}分')
+    # a bare hour below 12 ("6点") is the morning only when no afternoon word stands before it ("下午6点" is 18:00)
+    bare = rf'(?<!\d){hour}' if hour >= 12 else rf'(?<!下午)(?<!晚上)(?<!傍晚)(?<!中午)(?<!\d){hour}'
+    chinese = rf'(?:{bare}|{period}\s*{twelve})\s*点\s*{minutes}'
+    return bool(re.search(chinese + (r'(?!\s*\d)' if minute == 0 else ''), text))
 
 
 def verify(value, spec, text, records=None):
@@ -107,7 +146,7 @@ def verify(value, spec, text, records=None):
     if kind in ('integer', 'number') and isinstance(value, (int, float)) and not isinstance(value, bool):
         return value if said(text, value) else None
     if kind == 'string' and isinstance(value, str) and 'enum' not in spec:
-        if value and (value in text or date_said(text, value)):
+        if value and (value in text or text_said(text, value) or date_said(text, value) or time_said(text, value)):
             return value
         lowered = text.casefold()
         named = any(name.casefold() in lowered for name in (records or {}).get(value, []))
