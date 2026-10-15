@@ -2,9 +2,10 @@
 (SandboxEpisode) or from its verified hardened container (DockerSandboxEpisode).
 
 The policy sees only the public instructions (request, rules, tool specs, askable user topics,
-answer schema). Private facts, the verifier and source tables stay inside the service. bundles
-are deterministic, so a continuation snapshot is the world plus the actions taken so far and
-restore replays them.
+answer schema). Private facts, the verifier and source tables stay inside the service. Bundles
+are deterministic, so a continuation snapshot is the world plus the actions taken so far (and the
+user's recorded replies); restore replays the tools and reuses those replies, so a resumed or branched
+episode continues exactly the same conversation.
 """
 from __future__ import annotations
 
@@ -76,6 +77,18 @@ RESTORED = ('messages', 'tools', 'terminated', 'score', 'answer', 'unknown_tool_
             'platform_tool_hallucinations')
 
 
+class FixedTemperature:
+    """A chat client whose sampling temperature is fixed whatever the caller asks for (the simulated user samples at
+    0.3 in training; evaluations compare models against the same user, as τ²-bench does at 0)."""
+
+    def __init__(self, client, temperature):
+        self.client, self.temperature = client, temperature
+        self.model = getattr(client, 'model', None)
+
+    def chat(self, messages, tools=None, **parameters):
+        return self.client.chat(messages, tools, **{**parameters, 'temperature': self.temperature})
+
+
 class SandboxEpisode:
     transport = 'in_process'
 
@@ -110,7 +123,7 @@ class SandboxEpisode:
         self.category = loaded['request']['category']
         self.task = {'task': loaded['request']['user_request']}
         self.episode, self.world, self.seed = None, None, None
-        self.messages, self.tools, self.trace, self.actions = [], [], [], []
+        self.messages, self.tools, self.trace, self.actions, self.replies = [], [], [], [], []
         self.terminated, self.score, self.answer, self.call_ids = False, None, None, set()
         self._closed = False
 
@@ -121,6 +134,8 @@ class SandboxEpisode:
         if self.user_mode == 'natural':
             from env_factory.core.llm import ChatClient
             user = ChatClient('USER_SIM')
+            if os.environ.get('ENVFACTORY_USER_TEMPERATURE'):  # e.g. 0 for evaluation, as τ²-bench runs its user
+                user = FixedTemperature(user, float(os.environ['ENVFACTORY_USER_TEMPERATURE']))
         from env_factory.certify import bundle
         self.service = bundle.service(loaded, user_mode=self.user_mode, user_client=user)
         self.server = server.start(self.service, token=self.token)
@@ -153,6 +168,8 @@ class SandboxEpisode:
         status, reply = self.request('/step', {'episode': self.episode, 'action': action})
         if status != 200:
             raise InfrastructureError(f'step rejected by transport: {status}')
+        # The user's words, so a restore replays this exact conversation instead of asking the user model again.
+        self.replies.append((reply.get('result') or {}).get('reply') if action.get('type') == 'chat' else None)
         if reply.get('kind') == 'tool_error':
             # A crash of the sandbox's own tool is an observation for the agent; repeated crashes
             # mean a defective sandbox, which rl quarantines instead of retrying or training on it.
@@ -176,7 +193,7 @@ class SandboxEpisode:
         if status != 200:
             raise InfrastructureError('reset failed')
         self.episode, self.world, self.seed = response['episode'], response['world'], seed
-        self.trace, self.actions, self.tool_errors = [], [], 0
+        self.trace, self.actions, self.replies, self.tool_errors = [], [], [], 0
         self.unknown_tool_calls, self.platform_tool_hallucinations = 0, 0
         self.terminated, self.score, self.answer, self.call_ids = False, None, None, set()
         public = response['instructions']
@@ -315,7 +332,7 @@ class SandboxEpisode:
     # -- continuation (trainer-side only) -----------------------------------------
     def snapshot(self):
         return {'bundle_identity': bundle_identity(self.root), 'world': self.world, 'seed': self.seed,
-                'actions': copy.deepcopy(self.actions),
+                'actions': copy.deepcopy(self.actions), 'replies': copy.deepcopy(self.replies),
                 **{k: copy.deepcopy(getattr(self, k)) for k in RESTORED},
                 'call_ids': sorted(self.call_ids)}
 
@@ -323,11 +340,45 @@ class SandboxEpisode:
         if snapshot['bundle_identity'] != bundle_identity(self.root):
             raise ValueError('continuation bundle mismatch')
         self.reset(snapshot['seed'], world=snapshot['world'])
-        for action in snapshot['actions']:
-            self._step(action)
+        if self.user_mode == 'natural' and 'replies' in snapshot:
+            # Exact: the service replays the tools and takes each chat's recorded reply (POST /restore); a replay
+            # through /step would ask the user model again and continue a different conversation.
+            fresh = self.episode
+            status, response = self.request('/restore', {
+                'world': self.world, 'consent': self.consent,
+                'actions': [{'action': a, 'reply': r} for a, r in zip(snapshot['actions'], snapshot['replies'])]})
+            if status != 200:
+                raise InfrastructureError(f'V3 restore failed: {response}')
+            self.request('/release', {'episode': fresh})
+            self.episode = response['episode']
+            self.actions, self.replies = copy.deepcopy(snapshot['actions']), copy.deepcopy(snapshot['replies'])
+        else:
+            for action in snapshot['actions']:
+                self._step(action)
         for key in RESTORED:
             setattr(self, key, copy.deepcopy(snapshot[key]))
         self.call_ids = set(snapshot['call_ids'])
+
+    # The transport a fork shares with the episode it came from; everything else is per-episode state.
+    SHARED = frozenset({'service', 'server', 'opener', 'container', 'base_url', 'root', 'token'})
+
+    def fork(self):
+        """An exact copy of this episode at this point, for tree rollouts: the service copies its own state in
+        process (POST /fork: database, clock, consent tokens, the simulated user's conversation; no replay, no
+        model call) and this runtime's view (messages, tool naming, counters) is copied here. The fork shares
+        the transport; closing it releases only its episode."""
+        if self.episode is None or self._closed or self.terminated:
+            raise EnvironmentProtocolError('only a live episode can be forked')
+        status, response = self.request('/fork', {'episode': self.episode})
+        if status != 200:
+            raise EnvironmentProtocolError(f'fork failed: {response}')
+        forked = response['episode']
+        clone = copy.copy(self)
+        for key, value in vars(self).items():
+            if key not in self.SHARED:
+                setattr(clone, key, copy.deepcopy(value))
+        clone.episode, clone._owner, clone._closed = forked, False, False
+        return clone
 
     def _forget(self):
         # The service keeps every episode it served; release ours so long runs stay bounded.
@@ -341,7 +392,8 @@ class SandboxEpisode:
         try:
             self._forget()
         finally:
-            self._stop()
+            if getattr(self, '_owner', True):  # a fork never stops the transport it shares
+                self._stop()
 
 
 class DockerSandboxEpisode(SandboxEpisode):

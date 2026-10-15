@@ -26,11 +26,15 @@ from pathlib import Path
 # keeps the platform's own system prompt, so the student learns the tone, not this instruction.
 STYLE = ('\n\n（示范要求，仅对你生效：对用户说话时像一位耐心的真人客服，用日常口语，金额换算成“元”来说，'
          '不要提字段名、状态码、内部编号格式、以分为单位的金额或规则原文；先说结论，再用一两句话说明原因。'
-         '工具调用的参数和最终提交仍严格按工具定义填写。）')
+         '工具调用的参数和最终提交仍严格按工具定义填写。按需调用工具：每次只查当前这一步需要的信息，'
+         '结果用得上才查，不要一拿到编号就把相关工具全查一遍；编号只用用户说过或工具返回过的，'
+         '查不到就向用户核实，不要换着编号猜。）')
 STYLE_EN = ('\n\n(Demonstration requirement, for you only: talk to the user like a patient human customer service '
             'agent, in everyday English; say amounts in dollars, never in cents; never mention field names, status codes, '
             'internal id formats or rule text; give the conclusion first, then one or two sentences of reasons. Tool '
-            'arguments still follow the tool definitions exactly.)')
+            'arguments still follow the tool definitions exactly. Call tools on demand: look up only what the current '
+            'step needs and will use, never every related tool as soon as you hold an id; use only ids the user said '
+            'or a tool returned, and when a lookup finds nothing, check with the user instead of trying other ids.)')
 INTERNAL = re.compile(r'[A-Za-z]+_[A-Za-z_]+|\d+\s*分(?!钟)|\b\d+\s*cents?\b')
 
 
@@ -46,7 +50,7 @@ def teacher_view(messages, style, english=False):
     return [{**messages[0], 'content': messages[0]['content'] + (STYLE_EN if english else STYLE)}, *messages[1:]]
 
 
-def play(task, seed, client, max_turns, style=True):
+def play(task, seed, client, max_turns, style=True, temperature=0.7):
     from rl.environments.sandbox import SandboxEpisode
     env = SandboxEpisode(task['sandbox'])
     started = time.monotonic()
@@ -54,7 +58,7 @@ def play(task, seed, client, max_turns, style=True):
         env.reset(seed)
         tools, reasoning = env.tools, {}
         for _ in range(max_turns):
-            reply = client.chat(teacher_view(env.messages, style, env.language == 'en'), tools, temperature=0.7)
+            reply = client.chat(teacher_view(env.messages, style, env.language == 'en'), tools, temperature=temperature)
             message = {'role': 'assistant', 'content': reply.get('content') or ''}
             if reply.get('tool_calls'):
                 message['tool_calls'] = [
@@ -89,6 +93,7 @@ def main():
     parser.add_argument('--episodes', type=int, default=12, help='episodes (seeds) per task')
     parser.add_argument('--parallel', type=int, default=16)
     parser.add_argument('--max-turns', type=int, default=24)
+    parser.add_argument('--temperature', type=float, default=0.7, help='sampling temperature of the played model')
     parser.add_argument('--prefix', default='LLM', help='teacher model: <PREFIX>_API_KEY/_BASE_URL/_MODEL')
     parser.add_argument('--no-style', action='store_true', help='do not ask the teacher for customer-service tone')
     parser.add_argument('--output', required=True)
@@ -110,8 +115,10 @@ def main():
 
     def one(job):
         task, seed = job
+        from env_factory.production import offpeak
+        offpeak.wait(lambda text: print(text, flush=True))  # DeepSeek's off-peak hours (ENVFACTORY_OFFPEAK=0: off)
         try:
-            row = play(task, seed, client, args.max_turns, style=not args.no_style)
+            row = play(task, seed, client, args.max_turns, style=not args.no_style, temperature=args.temperature)
         except Exception as exc:  # one failed episode is recorded and skipped
             row = {'id': task['id'], 'seed': seed, 'success': False, 'error': f'{type(exc).__name__}: {exc}'[:300]}
         with lock:

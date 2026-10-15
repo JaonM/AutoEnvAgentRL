@@ -69,8 +69,8 @@ def main(argv=None):
     p = sub.add_parser('verify')
     p.add_argument('bundle')
     p.add_argument('--resign', action='store_true', help='on success, re-sign the bundle for this platform')
-    p = sub.add_parser('container-check', help='inside the image: every gate on the bundle, JSON evidence')
-    p.add_argument('bundle')
+    p = sub.add_parser('container-check', help='inside the image: every gate on each bundle, JSON evidence')
+    p.add_argument('bundle', nargs='+')
     p = sub.add_parser('policy', help='policy gate: an independent model plays k episodes')
     p.add_argument('bundle')
     p.add_argument('--k', type=int, default=4)
@@ -93,6 +93,8 @@ def main(argv=None):
     p.add_argument('--exclude', nargs='*', default=[], help='domains.json files whose names must not recur')
     p.add_argument('--splits', default='experiments/graph_splits.json',
                    help='persisted node -> split map (created and extended on use)')
+    p.add_argument('--world', action='store_true',
+                   help='propose domain worlds (6-10 processes each) for production/world.py instead of task domains')
     p = sub.add_parser(
         'run', help='end to end: domains -> requests -> sandboxes -> images -> policy gate -> tasks.json',
         description='Run (or resume) the whole production line into one folder. Writes tasks.json '
@@ -180,12 +182,16 @@ def main(argv=None):
         print(json.dumps({g: report[g]['passed'] for g in gates.gate_names(report)} | {'passed': report['passed']}))
         return 0 if report['passed'] else 1
     if args.command == 'container-check':
-        loaded = bundle.load_bundle(args.bundle)
-        report = bundle.qualify_loaded(loaded, judge=None)  # offline: no judge model in the container
-        print(json.dumps({'passed': report['passed'], 'platform_identity': bundle.platform_identity(),
-                          'files': loaded['manifest']['files'],
-                          'gates': {g: report[g]['passed'] for g in gates.gate_names(report)}}))
-        return 0 if report['passed'] else 1
+        evidence = {}
+        for path in args.bundle:
+            loaded = bundle.load_bundle(path)
+            report = bundle.qualify_loaded(loaded, judge=None)  # offline: no judge model in the container
+            evidence[path] = {'passed': report['passed'], 'platform_identity': bundle.platform_identity(),
+                              'files': loaded['manifest']['files'],
+                              'gates': {g: report[g]['passed'] for g in gates.gate_names(report)}}
+        passed = all(e['passed'] for e in evidence.values())
+        print(json.dumps(evidence[args.bundle[0]] if len(args.bundle) == 1 else {'passed': passed, 'bundles': evidence}))
+        return 0 if passed else 1
     if args.command == 'policy':
         from env_factory.certify import policy_gate as policy
         policy.load_env_file()
@@ -210,8 +216,9 @@ def main(argv=None):
                                               os.environ.get('NEO4J_USER', 'neo4j'), os.environ['NEO4J_PASSWORD'],
                                               os.environ.get('NEO4J_DATABASE', 'neo4j'), splits_path=args.splits)
         exclude = [d['name'] for path in args.exclude for d in json.loads(Path(path).read_text())]
-        report = domains.propose(graph, ChatClient('DOMAIN'), args.count, split=args.split, seed=args.seed,
-                                 hops=args.hops, exclude=exclude)
+        propose = domains.propose_worlds if args.world else domains.propose
+        report = propose(graph, ChatClient('DOMAIN'), args.count, split=args.split, seed=args.seed,
+                         hops=max(args.hops, 4) if args.world else args.hops, exclude=exclude)
         Path(args.output).write_text(json.dumps(report['accepted'], ensure_ascii=False, indent=1))
         Path(args.output).with_suffix('.report.json').write_text(json.dumps(report, ensure_ascii=False, indent=1))
         print(json.dumps({'split': args.split, 'accepted': len(report['accepted']),

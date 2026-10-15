@@ -62,7 +62,8 @@ def prepare(session: TrainingSession, group, path, replay_entry=None):
     from rl.rollout.admission import zero_variance_kind
 
     attach_contract(group)
-    if len(group["episodes"]) != session.config.rollout_group:
+    trunks = sum((e.get("tree") or {}).get("role", "trunk") == "trunk" for e in group["episodes"])
+    if trunks != session.config.rollout_group:  # a tree group adds its branches to the rollout_group trunks
         raise ValueError("rollout group size does not match configured rollout_group")
     lag = session.state.updates - group["policy_version"]
     age = session.state.updates - replay_entry["age_origin"] if replay_entry else lag
@@ -103,6 +104,8 @@ def prepare(session: TrainingSession, group, path, replay_entry=None):
             session.config.gae_lambda,
             session.config.discount_unit,
             task_scale(session, group),
+            session.config.loss_aggregation,
+            session.config.tree_advantage,
         )
     )
     if reason:
@@ -307,6 +310,8 @@ def prepared_records(session: TrainingSession, *, only_untrained=False):
                     session.config.gae_lambda,
                     session.config.discount_unit,
                     task_scale(session, group, record=False),
+                    session.config.loss_aggregation,
+                    session.config.tree_advantage,
                 ),
                 "path": record["path"],
                 "replay_entry": None,

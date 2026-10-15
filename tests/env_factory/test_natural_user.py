@@ -96,8 +96,8 @@ class NaturalUserTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             server.Service(missing, verifier, schema, self.request, user_mode='natural', user_client=self.user)
         report = gates.qualify(missing, verifier, schema, self.request, perturbed=5)
-        self.assertTrue(report['passed'])
         self.assertFalse(report['natural']['passed'])
+        self.assertFalse(report['passed'])  # an unservable bundle is not certified
 
     def test_approval_key_must_match_the_reference(self):
         self.assertEqual(gates.approval_problems(self.env, self.request), [])

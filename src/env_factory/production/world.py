@@ -11,12 +11,10 @@ and re-runs every gate on it (bundle.requalify): differential across perturbed w
 approval flips, negatives, category, http. Nothing a task author writes is trusted: the expected
 outcome comes from the world verifier and must match the env's reference.
 
-Two extra checks guard the reward of every task (docs/domain-world-design.md, reward trust):
-- third verifier: after the world is certified, one more independent session writes a verifier from
-  the same brief (third_verifier). A task is kept only when that verifier agrees with the certified
-  one on every world the task serves, so an outcome rests on three independent implementations.
-- policy sufficiency (certify/sufficiency.py): given the agent policy, all user facts and the
-  reference's reads, a model must be able to predict the task's writes and answer.
+Policy sufficiency (certify/sufficiency.py) guards the reward of every task: given the agent policy,
+all user facts and the reference's reads, a model must be able to predict the task's writes and
+answer. (A third verifier written from the same brief was dropped: it repeats the same reading of the
+brief, so per-process audits guard correlated errors instead.)
 
     python -m env_factory.production.world --domains DOMAINS.json --worlds 2 --tasks 30 --output DIR
 """
@@ -51,6 +49,73 @@ def goal_problems(goals, schema):
     return problems
 
 
+def has_outcomes(schema):
+    """Worlds written since per-goal answers: every process declares its own outcome shape."""
+    return bool(schema) and all(isinstance(v, dict) and isinstance(v.get('outcome'), dict) for v in schema.values())
+
+
+def advice_processes(schema):
+    """Processes where the customer wants a recommendation, comparison or explanation (subjective tasks)."""
+    return sorted(name for name, value in (schema or {}).items() if (value or {}).get('kind') == 'advice')
+
+
+def inquiry_processes(schema):
+    """Processes answered from the policy manual and the numbers the customer states (direct tasks)."""
+    return sorted(name for name, value in (schema or {}).items() if (value or {}).get('kind') == 'inquiry')
+
+
+def task_schema(schema, goals):
+    """The answer schema of one task: a field per goal, in goal order, each in its process's outcome shape.
+    None for a world without outcome shapes (its single world-wide schema stays). A world-wide schema
+    copied from the sample customer graded every other task on placeholder fields: in the pilot, doing
+    nothing succeeded on 12 of 56 tasks."""
+    if not has_outcomes(schema):
+        return None
+    fields = {}
+    for index, goal in enumerate(goals or [], 1):
+        outcome = copy.deepcopy(schema[goal['process']]['outcome'])
+        outcome['description'] = (f"Goal {index} ({goal['process']}): " + (outcome.get('description') or '')).strip()
+        fields[f'goal_{index}'] = outcome
+    return {'fields': fields}
+
+
+def outcome_problems(schema):
+    from env_factory.core import answers
+    problems = []
+    for name, value in schema.items():
+        if value.get('kind') not in ('inquiry', 'account', 'advice'):
+            problems.append(f'goal_schema.{name}.kind must be "inquiry", "account" or "advice"')
+        outcome = value.get('outcome')
+        if not isinstance(outcome, dict) or outcome.get('type') != 'object':
+            problems.append(f'goal_schema.{name}.outcome must be an object field spec')
+            continue
+        problems += [f'goal_schema.{name}.outcome: {p}' for p in answers.check_schema({'fields': {name: outcome}})]
+        from env_factory.checks import authoring_problems
+        problems += [f'goal_schema.{name}.outcome: {p}' for p in authoring_problems({name: outcome})]
+        approval = value.get('approval')
+        if approval is not None and not (isinstance(approval, str) and approval.startswith('approve_')):
+            problems.append(f'goal_schema.{name}.approval must be an approve_* fact key pattern')
+        properties = outcome.get('properties') or {}
+        if value.get('kind') == 'advice':
+            keys = ' '.join(properties)
+            if not ('recommend' in keys or 'choice' in keys or 'option' in keys) or 'reason' not in keys:
+                problems.append(f'goal_schema.{name}.outcome (advice) needs the recommendation (an enum or id; '
+                                'alternatives when the rules allow several) and the reasons (rule enums) as key points')
+        if value.get('kind') == 'account' and not any(
+                'reason' in key and (spec or {}).get('type') == 'string' and (spec or {}).get('enum')
+                for key, spec in properties.items()):
+            problems.append(f'goal_schema.{name}.outcome needs a "reason" string enum (why it was refused or could '
+                            'not be done; null on success): a blanket refusal must not match a checked one')
+    if not advice_processes(schema):
+        problems.append('goal_schema needs at least one "advice" process (the customer wants a recommendation, '
+                        'comparison or explanation about their own situation, decided by the rules)')
+    inquiries = inquiry_processes(schema)
+    if not 1 <= len(inquiries) <= 2:
+        problems.append('goal_schema needs one or two "inquiry" processes (answered from the rules and the numbers '
+                        f'the customer states, no account lookup), got {len(inquiries)}')
+    return problems
+
+
 def check_world(folder):
     path = Path(folder) / 'request.json'
     if not path.exists():
@@ -67,6 +132,8 @@ def check_world(folder):
             for v in schema.values())):
         problems.append('goal_schema must describe 6 to 10 processes: {"<process>": {"description", "params"}}')
         schema = {}
+    if schema:
+        problems += outcome_problems(schema)
     rows = sum(len(v) for v in request.get('tables', {}).values()) if isinstance(request.get('tables'), dict) else 0
     if rows < MIN_ROWS:
         problems.append(f'the database has {rows} rows; a world needs at least {MIN_ROWS} '
@@ -126,8 +193,27 @@ def check_task(folder):
     problems = overlay_problems + spec.validate({**request, 'user_request': request['user_scene']['goal']})
     problems += goal_problems(task['user_facts'].get('goals'), world['goal_schema'])
     wanted = set(assignment['processes'])
-    if not wanted & {g.get('process') for g in task['user_facts'].get('goals') or [] if isinstance(g, dict)}:
+    goals = [g for g in task['user_facts'].get('goals') or [] if isinstance(g, dict)]
+    if not wanted & {g.get('process') for g in goals}:
         problems.append(f'goals must include the assigned process(es) {sorted(wanted)}')
+    inquiries = set(inquiry_processes(world['goal_schema']))
+    if assignment.get('shape') == 'direct':
+        if any(g.get('process') not in inquiries for g in goals):
+            problems.append(f'a direct task has only inquiry goals ({sorted(inquiries)})')
+        known = json.dumps(task['user_scene'].get('known') or {}, ensure_ascii=False)
+        missing = [f"{g['process']}.{k}" for g in goals for k, v in (g.get('params') or {}).items()
+                   if not isinstance(v, bool) and str(v) not in known]
+        if missing:
+            problems.append(f'a direct task states every param in user_scene.known; missing {missing}')
+        if len(generate.scene_numbers(task['user_scene'])) > generate.MAX_DIRECT_NUMBERS:
+            problems.append(f'user_scene.known has more than {generate.MAX_DIRECT_NUMBERS} numbers: simplify')
+        if task.get('overlay'):
+            problems.append('a direct task changes no rows: drop the overlay')
+    elif assignment.get('shape') == 'subjective':
+        if not set(advice_processes(world['goal_schema'])) & {g.get('process') for g in goals}:
+            problems.append(f"a subjective task has an advice goal ({advice_processes(world['goal_schema'])})")
+    elif assignment.get('shape') and inquiries and all(g.get('process') in inquiries for g in goals):
+        problems.append('this task needs at least one account goal (not only inquiries)')
     problems += generate.script_problems(request, assignment.get('script') or [])
     problems += [f'user_scene {p}' for p in generate.opening_problems(json.dumps(task['user_scene'], ensure_ascii=False),
                                                                      world.get('language', 'zh'))]
@@ -159,66 +245,45 @@ def build_world(domain, folder, *, runner, client, python, language, index, repa
     if opening is None:
         return {'id': world_id, 'training_ready': False, 'failure_class': 'opening', 'reason': problems}
     request['user_request'] = opening
-    policy, problems = agent_policy.write(client, request)
+    import os
+    writer = client
+    if os.environ.get('ENVFACTORY_POLICY_WRITER', 'chat') == 'codex':
+        from env_factory.authoring.codex import CodexChat
+        writer = CodexChat(folder / 'policy', runner=runner, role='agent_policy')
+    policy, problems = agent_policy.write(writer, request)
     if policy is None:
         return {'id': world_id, 'training_ready': False, 'failure_class': 'agent_policy', 'reason': problems[:5]}
     request['agent_policy'] = policy
     request['source'] = {'generated': domain['name'], 'world': True, 'language': language, 'persona': persona}
-    status = pipeline.build(request, folder / 'build', runner=runner, repairs=repairs)
-    if status.get('training_ready'):
-        status['third_verifier'] = third_verifier(status['bundle'], folder / 'verifier3', runner=runner, python=python)
-    return status
+    return pipeline.build(request, folder / 'build', runner=runner, repairs=repairs)
 
 
-def third_verifier(world_bundle, folder, *, runner, python, timeout=900):
-    """One more independent verifier for a certified world, written from the same brief; its
-    self-check result is kept in third_verifier.json (tasks are compared against it only if it passed)."""
-    from env_factory import checks
-    from env_factory.core import answers
-    world_bundle, folder = Path(world_bundle), Path(folder)
-    request = json.loads((world_bundle / 'request.json').read_text())
-    spec.materialize(request, folder, answers.load_schema(world_bundle / 'answer_schema.json'))
-    runner(folder, prompts.VERIFIER.format(python=python), timeout=timeout, role='third_verifier')
-    report = checks.run('verifier', folder)
-    result = {'passed': report['passed'], 'problems': report['problems'][:5]}
-    (folder / 'third_verifier.json').write_text(json.dumps(result, ensure_ascii=False, indent=1))
-    return result
-
-
-def third_opinion(target, verifier_path):
-    """Worlds of the task bundle where the third verifier's outcome and the certified one disagree."""
-    from env_factory.certify import bundle
-    from env_factory.core import reward
-    from env_factory.core.sandbox import load_module
-    from env_factory.core.worlds import variants
-    from env_factory.runtime import InvalidWorld
-    loaded = bundle.load_bundle(target, require_current_platform=False)
-    third = load_module(verifier_path, role='verifier')
-    request, schema = loaded['request'], loaded['schema']
-    served, start, disagreements, compared = set(loaded['valid_worlds']), request['time']['start'], [], 0
-    as_result = lambda outcome: {'answer': outcome['answer'], 'final_state': outcome['final_state'],
-                                 'tool_calls': 0, 'safety_violations': 0}
-    for name, data, facts in variants(request['tables'], request['user_facts'], perturbed=20):
-        if name not in served:
-            continue
-        main = loaded['verifier'].expected(copy.deepcopy(data), copy.deepcopy(facts), start)
-        try:
-            other = third.expected(copy.deepcopy(data), copy.deepcopy(facts), start)
-            agree = any(reward.grade(as_result(a), b, schema, initial=data, reference_calls=1)['success']
-                        for a, b in ((other, main), (main, other)))
-        except InvalidWorld as exc:
-            agree, other = False, {'invalid_world': str(exc)[:200]}
-        except Exception as exc:
-            agree, other = False, {'error': f'{type(exc).__name__}: {exc}'[:200]}
-        compared += 1
-        if not agree:
-            disagreements.append({'world': name, 'certified': main.get('answer'),
-                                  'third': other.get('answer', other)})
-    return {'passed': not disagreements and compared > 0, 'compared': compared, 'disagreements': disagreements[:5]}
+WORLD_SHAPES = {
+    'direct': 'Shape direct: the customer only asks a policy question this business answers from its manual and the '
+              'numbers they state themselves (for example what a change would cost for a fare and a date they '
+              'name). Goals are only inquiry processes; put every param value in user_scene.known; no identity '
+              'facts, no approve_* facts, no overlay. The correct handling needs no tool call.',
+    'simple': 'Shape simple: one lookup answers it; the customer only wants to know something about their own '
+              'records (no change).',
+    'ordinary': 'Shape ordinary: several lookups whose results feed each other (find, filter, compare), no change.',
+    'single_write': 'Shape single_write: one clean change: identify the customer, a few lookups, exactly one write '
+                    'the customer approves (one approve_* fact true), then tell them the result. No decoys.',
+    'complex': 'Shape complex: at least two writes, each with its own approve_* fact; a first choice that is '
+               'refused or ineligible so another route is needed; a dependency between the writes.',
+    'subjective': 'Shape subjective: the customer wants advice about their own situation (which option suits them, '
+                  'a comparison, why they were charged): an advice goal. The agent has to look up their records '
+                  'and apply the rules; pick a situation where the rules decide the recommendation (or a small set '
+                  'of equally good ones) and its reasons, so it can be graded on those key points. No write.',
+}
+# A world where most write-shaped tasks end in a refusal teaches "refuse without checking" (the refusal answer
+# then matches often enough to pay); at most this share of its certified write-shaped tasks may be refusals.
+REFUSAL_CAP = 0.3
+WORLD_MIX = (('direct', 0.1), ('simple', 0.15), ('ordinary', 0.1), ('single_write', 0.25), ('complex', 0.3),
+             ('subjective', 0.1))
 
 
 def make_task(world_bundle, folder, *, index, processes, script, runner, client, python, timeout=600,
-              sufficiency_client=None):
+              sufficiency_client=None, shape=None):
     """One task on a certified world: author, check, compose, open, copy the world bundle, requalify."""
     from env_factory import checks
     from env_factory.certify import bundle
@@ -231,23 +296,47 @@ def make_task(world_bundle, folder, *, index, processes, script, runner, client,
     shown = {k: v for k, v in world.items() if k not in ('user_facts', 'user_scene', 'user_request', 'user_script',
                                                         'agent_policy', 'source')}
     (session / 'world.json').write_text(json.dumps(shown, ensure_ascii=False, indent=1))
-    (session / 'assignment.json').write_text(json.dumps({'id': task_id, 'processes': processes, 'script': script}))
+    (session / 'assignment.json').write_text(json.dumps({'id': task_id, 'processes': processes, 'script': script,
+                                                         'shape': shape}))
     language = world.get('language', 'zh')
     runner(session, prompts.TASK_AUTHOR.format(python=python, processes=', '.join(processes),
                                               language_name=generate.LANGUAGE_NAMES[language],
-                                              script=generate.script_prompt(script)),
+                                              script=generate.script_prompt(script),
+                                              shape=WORLD_SHAPES.get(shape, 'Shape: any that fits the goals.')),
            timeout=timeout, role='task_author')
     report = checks.run('task', session)
     if not report['passed']:
         return {'id': task_id, 'passed': False, 'stage': 'task', 'problems': report['problems'][:5]}
     task = json.loads((session / 'task.json').read_text())
     request = compose(world, task, task_id)
+    missing = missing_approvals(world_bundle, request)
+    if missing:  # the world's env asks approvals under keys this task's facts never define: one rewrite
+        (session / 'approval_feedback.txt').write_text(
+            f'The world asks the customer to approve writes under these approve_* keys, which task.json does not '
+            f'define: {missing}. Name the approval facts exactly like that (goal_schema "approval" patterns).\n')
+        runner(session, prompts.TASK_AUTHOR.format(python=python, processes=', '.join(processes),
+                                                  language_name=generate.LANGUAGE_NAMES[language],
+                                                  script=generate.script_prompt(script),
+                                                  shape=WORLD_SHAPES.get(shape, 'Shape: any that fits the goals.'))
+               + '\nA previous task.json in this folder named approval facts wrongly; read approval_feedback.txt.\n',
+               timeout=timeout, role='task_author')
+        report = checks.run('task', session)
+        task = json.loads((session / 'task.json').read_text())
+        request = compose(world, task, task_id)
+        missing = missing_approvals(world_bundle, request) if report['passed'] else ['task check failed']
+        if missing:
+            return {'id': task_id, 'passed': False, 'stage': 'approval_facts',
+                    'problems': [f'approvals asked under keys the task does not define: {missing}']}
     opening, persona, problems = generate.write_opening(client, request, task_id)
     if opening is None:
         return {'id': task_id, 'passed': False, 'stage': 'opening', 'problems': problems}
     request['user_request'] = opening
+    if script and isinstance(request.get('user_script'), dict):  # one piece at a time, as on single tasks
+        traits = request['user_script'].setdefault('traits', [])
+        if generate.DISCLOSURE[language] not in traits:
+            traits.append(generate.DISCLOSURE[language])
     request['source'] = {**(world.get('source') or {}), 'world': world['id'], 'task': index, 'processes': processes,
-                         'script': script, 'persona': persona}
+                         'script': script, 'persona': persona, 'shape': shape}
     request['category'] = task_category(world_bundle, request)
     target = folder / 'bundle'
     if target.exists():
@@ -260,25 +349,176 @@ def make_task(world_bundle, folder, *, index, processes, script, runner, client,
     (target / 'request.json').write_text(json.dumps(request, ensure_ascii=False, indent=1))
     manifest = json.loads((target / 'manifest.json').read_text())
     manifest['files']['request.json'] = bundle.sha256(target / 'request.json')
+    schema = task_schema(world.get('goal_schema'), request['user_facts'].get('goals'))
+    if schema is not None:
+        from env_factory.core.sandbox import load_module
+        try:
+            constants = constant_leaves(load_module(world_bundle / 'verifier.py', role='verifier'), request)
+        except Exception:  # noqa: BLE001 - the gates report an verifier that fails on this task
+            constants = {}
+        for field, names in constants.items():
+            for name in names:
+                schema['fields'][field]['properties'][name]['partial'] = False
+    if schema is not None:  # this task's own goals, not the sample customer's
+        (target / 'answer_schema.json').write_text(json.dumps(schema, ensure_ascii=False, indent=1))
+        manifest['files']['answer_schema.json'] = bundle.sha256(target / 'answer_schema.json')
     manifest['world'] = world['id']
     (target / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=1))
     row = certify(task_id, target, folder)
+    if row['passed'] and shape:
+        row['shape'], row['actual_shape'] = shape, built_shape(target)
+        if shape == 'direct' and row['actual_shape'] != 'direct':
+            return {**row, 'passed': False, 'stage': 'shape', 'failed': ['shape'],
+                    'problems': [f"direct task whose reference makes tool calls ({row['actual_shape']})"]}
     return guard(row, world_bundle, target, folder, sufficiency_client)
 
 
+def missing_approvals(world_bundle, request):
+    """approve_* keys the world's reference asks on this task that its user facts do not define. A missing key
+    reads as "no", so the reference silently skips the write and the task's outcome becomes "nothing happened"
+    (the pilot's write tasks all did this: env asked approve_cancel, the task defined approve_cancel_HX1)."""
+    from env_factory.core.sandbox import load_module
+    from env_factory.runtime import run_reference
+    env = load_module(Path(world_bundle) / 'env.py', role='env')
+    try:
+        result = run_reference(env, request['tables'], request['user_facts'], start=request['time']['start'])
+    except Exception as exc:  # noqa: BLE001 - the gates report a reference that fails
+        return []
+    asked = [e.get('key') for e in result['trace'] if e.get('kind') == 'confirm']
+    return sorted({k for k in asked if k and k not in request['user_facts']})
+
+
+def built_shape(target):
+    """The shape the task's reference really has (generate.actual_shape)."""
+    from env_factory.certify import bundle
+    from env_factory.certify.gates import trace_structure
+    from env_factory.runtime import run_reference
+    loaded = bundle.load_bundle(target)
+    request = loaded['request']
+    result = run_reference(loaded['env'], request['tables'], request['user_facts'], start=request['time']['start'])
+    return generate.actual_shape(trace_structure(result['trace'], request['user_facts']))
+
+
+def _alternatives(value, tables):
+    """Other plausible values for one goal param: another row id of the same table, or a changed number."""
+    if isinstance(value, bool):
+        return [not value]
+    if isinstance(value, (int, float)):
+        return [value + 1, value * 2 + 3] if value else [1, 5]
+    if isinstance(value, str):
+        for rows in tables.values():
+            ids = [r.get('id') for r in rows if isinstance(r, dict)]
+            if value in ids:
+                return [i for i in ids if i != value][:3]
+    return []
+
+
+def goal_sensitivity(verifier, request):
+    """Each goal must matter: changing one of its params (another row of the same table, another number) must
+    change the expected outcome (that goal's answer field or the final state) on at least one try. A goal whose
+    outcome ignores every param is graded on nothing the agent does about it; the differential check cannot see
+    this when env and verifier ignore it alike. Inconclusive when no param has an alternative."""
+    from env_factory.runtime import canonical
+    tables, facts, start = request['tables'], request['user_facts'], request['time']['start']
+    base = verifier.expected(copy.deepcopy(tables), copy.deepcopy(facts), start)
+    insensitive, checked = [], 0
+    for index, goal in enumerate(facts.get('goals') or []):
+        field, tried, moved = f'goal_{index + 1}', 0, False
+        for key, value in (goal.get('params') or {}).items():
+            for other in _alternatives(value, tables):
+                changed = copy.deepcopy(facts)
+                changed['goals'][index]['params'][key] = other
+                try:
+                    outcome = verifier.expected(copy.deepcopy(tables), changed, start)
+                except Exception:  # noqa: BLE001 - an invalid alternative proves nothing either way
+                    continue
+                tried += 1
+                answer = lambda o: (o.get('answer') or {}).get(field, o.get('answer'))
+                if canonical(answer(outcome)) != canonical(answer(base)) or \
+                        canonical(outcome['final_state']) != canonical(base['final_state']):
+                    moved = True
+                    break
+            if moved:
+                break
+        if tried:
+            checked += 1
+            if not moved:
+                insensitive.append(f"{field} ({goal.get('process')})")
+    return {'passed': not insensitive, 'checked': checked, 'insensitive': insensitive}
+
+
+def is_refusal(verifier, request):
+    """A task whose correct handling changes nothing although its shape asks for a write."""
+    from env_factory.runtime import canonical
+    if (request.get('source') or {}).get('shape') not in ('single_write', 'complex'):
+        return False
+    expected = verifier.expected(copy.deepcopy(request['tables']), copy.deepcopy(request['user_facts']),
+                               request['time']['start'])
+    return canonical(expected['final_state']) == canonical(request['tables'])
+
+
+def constant_leaves(verifier, request, perturbed=10):
+    """{goal field: [property names]} of outcome properties whose value is the same in every perturbed world and
+    under every param alternative: constants of the world (a fixed fee), which an agent can answer from memory.
+    They stay required for success but earn no partial credit (partial: false)."""
+    from env_factory.core.worlds import variants
+    from env_factory.runtime import canonical
+    tables, facts, start = request['tables'], request['user_facts'], request['time']['start']
+    cases = [(data, world_facts) for _, data, world_facts in variants(tables, facts, perturbed=perturbed)]
+    for index, goal in enumerate(facts.get('goals') or []):
+        for key, value in (goal.get('params') or {}).items():
+            for other in _alternatives(value, tables)[:2]:
+                changed = copy.deepcopy(facts)
+                changed['goals'][index]['params'][key] = other
+                cases.append((tables, changed))
+    answers_seen = []
+    for data, world_facts in cases:
+        try:
+            answers_seen.append(verifier.expected(copy.deepcopy(data), copy.deepcopy(world_facts), start)['answer'])
+        except Exception:  # noqa: BLE001 - an invalid case says nothing about constancy
+            continue
+    if len(answers_seen) < 3:
+        return {}
+    base, out = answers_seen[0], {}
+    for field, value in (base or {}).items():
+        if not isinstance(value, dict):
+            continue
+        same = [name for name in value if all(isinstance(a.get(field), dict) and
+                                                canonical(a[field].get(name)) == canonical(value[name])
+                                                for a in answers_seen[1:])]
+        if same and len(same) < len(value):
+            out[field] = same
+    return out
+
+
+def goal_signature(goals):
+    """What makes two tasks the same exercise: each goal's process and its params with numbers bucketed to one
+    significant digit, so two quotes that differ only in the fare paid count as one."""
+    def bucket(value):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return value
+        if value == 0:
+            return 0
+        magnitude = 10 ** (len(str(int(abs(value)))) - 1)
+        return round(value / magnitude) * magnitude
+    return json.dumps(sorted([g.get('process'), sorted((k, bucket(v)) for k, v in (g.get('params') or {}).items())]
+                             for g in goals or []), sort_keys=True, default=str)
+
+
 def guard(row, world_bundle, target, folder, sufficiency_client=None):
-    """The reward-trust checks on a certified task: the third verifier (when the world has a passing
-    one) and policy sufficiency (when a client is given). Either failing rejects the task."""
+    """The reward-trust checks on a certified task: every goal is sensitive to its params (goal_sensitivity), and
+    policy sufficiency (when a client is given). Either failing rejects the task."""
     if not row['passed']:
         return row
-    verifier3 = Path(world_bundle).parent.parent / 'verifier3'
-    status = json.loads((verifier3 / 'third_verifier.json').read_text()) if (verifier3 / 'third_verifier.json').exists() else {}
-    if status.get('passed'):
-        opinion = third_opinion(target, verifier3 / 'verifier.py')
-        (Path(folder) / 'third_verifier.json').write_text(json.dumps(opinion, ensure_ascii=False, indent=1, default=str))
-        row['third_verifier'] = opinion['passed']
-        if not opinion['passed']:
-            return {**row, 'passed': False, 'stage': 'third_verifier', 'failed': ['third_verifier']}
+    from env_factory.certify import bundle
+    loaded = bundle.load_bundle(target)
+    if has_outcomes(loaded['request'].get('goal_schema')):
+        report = goal_sensitivity(loaded['verifier'], loaded['request'])
+        row['sensitivity'] = report
+        if not report['passed']:
+            return {**row, 'passed': False, 'stage': 'sensitivity', 'failed': ['sensitivity'],
+                    'problems': [f"outcome ignores the params of {report['insensitive']}"]}
+        row['refusal'] = is_refusal(loaded['verifier'], loaded['request'])
     if sufficiency_client is not None:
         from env_factory.certify import sufficiency
         from env_factory.core.llm import ProviderError
@@ -342,22 +582,17 @@ def recertify_category(out):
     return fixed
 
 
-def reguard(out, *, runner, python, client=None):
-    """Run the reward-trust checks on the certified tasks of an existing world run (writing third
-    verifiers for worlds that lack one); rows that fail are marked in tasks.jsonl, the rest gain the
-    check results."""
+def reguard(out, *, client=None):
+    """Run the reward-trust check on the certified tasks of an existing world run; rows that fail are
+    marked in tasks.jsonl, the rest gain the check result."""
     out = Path(out)
     statuses = json.loads((out / 'worlds.json').read_text())
-    for key, status in statuses.items():
-        if status.get('training_ready') and 'third_verifier' not in status:
-            status['third_verifier'] = third_verifier(status['bundle'], out / key / 'verifier3', runner=runner, python=python)
-    (out / 'worlds.json').write_text(json.dumps(statuses, ensure_ascii=False, indent=1, default=str))
     rows_path = out / 'tasks.jsonl'
     rows = [json.loads(line) for line in rows_path.read_text().splitlines()]
     bundles = {s['id']: s['bundle'] for s in statuses.values() if s.get('training_ready')}
 
     def one(row):
-        if not row.get('passed') or 'third_verifier' in row or 'sufficiency' in row:
+        if not row.get('passed') or 'sufficiency' in row:
             return row
         target = Path(row['bundle'])
         world_id = json.loads((target / 'manifest.json').read_text()).get('world')
@@ -370,21 +605,53 @@ def reguard(out, *, runner, python, client=None):
         rows = list(pool.map(one, rows))
     rows_path.write_text(''.join(json.dumps(r, ensure_ascii=False) + '\n' for r in rows))
     stages = collections.Counter(r.get('stage') for r in rows if not r.get('passed'))
-    return {'certified': sum(bool(r.get('passed')) for r in rows), 'rejected': dict(stages),
-            'third_verifiers': {k: (s.get('third_verifier') or {}).get('passed') for k, s in statuses.items()}}
+    return {'certified': sum(bool(r.get('passed')) for r in rows), 'rejected': dict(stages)}
 
 
 def plan_tasks(world, count, seed=0):
-    """(processes, script elements) per task: processes round-robin over goal_schema, sometimes two."""
+    """(processes, script elements, shape) per task. The first len(goal_schema) tasks are probes, one per
+    process (shape direct for an inquiry process, otherwise free); the rest follow WORLD_MIX: direct tasks on
+    the inquiry processes, the others round-robin over the account processes, sometimes two. A world without
+    outcome shapes (written before per-goal answers) keeps the earlier plan: no shapes."""
     import random
-    names = sorted(world['goal_schema'])
+    schema = world['goal_schema']
+    names = sorted(schema)
     rng, out = random.Random(f'{seed}-{world["id"]}'), []
-    elements = generate.scripts(count, ['complex'] * count, seed=seed)
-    for i in range(count):
-        processes = [names[i % len(names)]]
-        if rng.random() < 0.3:
-            processes.append(names[(i + 1 + rng.randrange(len(names) - 1)) % len(names)])
-        out.append((processes, elements[i]))
+    if not has_outcomes(schema):
+        elements = generate.scripts(count, ['complex'] * count, seed=seed)
+        for i in range(count):
+            processes = [names[i % len(names)]]
+            if rng.random() < 0.3:
+                processes.append(names[(i + 1 + rng.randrange(len(names) - 1)) % len(names)])
+            out.append((processes, elements[i], None))
+        return out
+    inquiries, advice = inquiry_processes(schema), advice_processes(schema)
+    accounts = [n for n in names if n not in inquiries and n not in advice] or names
+    # Write shapes go to processes that write (they declare an approval pattern); read shapes to the others.
+    writers = [n for n in accounts if (schema[n] or {}).get('approval')] or accounts
+    readers = [n for n in accounts if not (schema[n] or {}).get('approval')] or accounts
+    shapes = [None] * min(count, len(names))
+    rest = count - len(shapes)
+    for shape, share in WORLD_MIX:
+        shapes += [shape] * round(rest * share)
+    shapes = (shapes + ['single_write'] * count)[:count]
+    order = shapes[len(names):]
+    rng.shuffle(order)
+    shapes[len(names):] = order
+    elements = generate.scripts(count, ['direct' if s == 'direct' else 'complex' for s in shapes], seed=seed)
+    for i, shape in enumerate(shapes):
+        if i < len(names):
+            process = names[i]
+            out.append(([process], [] if process in inquiries else elements[i],
+                        'direct' if process in inquiries else 'subjective' if process in advice else None))
+            continue
+        pool = (inquiries if shape == 'direct' else (advice or accounts) if shape == 'subjective'
+                else writers if shape in ('single_write', 'complex') else readers if shape in ('simple', 'ordinary')
+                else accounts)
+        processes = [pool[i % len(pool)]]
+        if shape != 'direct' and rng.random() < 0.3 and len(pool) > 1:
+            processes.append(pool[(i + 1 + rng.randrange(len(pool) - 1)) % len(pool)])
+        out.append((processes, elements[i], shape))
     return out
 
 
@@ -398,8 +665,15 @@ def main():
     parser.add_argument('--repairs', type=int, default=2)
     parser.add_argument('--output', required=True)
     parser.add_argument('--no-sufficiency', action='store_true', help='skip the policy sufficiency check')
+    parser.add_argument('--policy-k', type=int, default=4,
+                        help='policy gate episodes per certified task (free dialogue, off-peak); 0 skips it')
+    parser.add_argument('--eval-worlds', type=int, default=0,
+                        help='the last N worlds become the eval split as a whole (a world is never split)')
+    parser.add_argument('--docker', action='store_true',
+                        help='after the tasks, build one hardened image per world holding all its certified tasks, '
+                             'each verified offline inside it (certify/docker.build_many)')
     parser.add_argument('--reguard', action='store_true',
-                        help='only run the reward-trust checks (third verifier, sufficiency) on certified tasks')
+                        help='only run the reward-trust check (policy sufficiency) on certified tasks')
     args = parser.parse_args()
     import sys
     from env_factory.authoring.codex import CodexRunner
@@ -409,7 +683,7 @@ def main():
     checker = None if args.no_sufficiency else ChatClient('LLM')
     out = Path(args.output)
     if args.reguard:
-        print(json.dumps(reguard(out, runner=runner, python=sys.executable, client=checker)), flush=True)
+        print(json.dumps(reguard(out, client=checker)), flush=True)
         return
     out.mkdir(parents=True, exist_ok=True)
     domains = json.loads(Path(args.domains).read_text())[:args.worlds]
@@ -422,14 +696,11 @@ def main():
     def world(i):
         key = f'world-{i:02d}'
         if (statuses.get(key) or {}).get('training_ready'):
-            if 'third_verifier' not in statuses[key]:  # certified before the third verifier existed
-                statuses[key]['third_verifier'] = third_verifier(statuses[key]['bundle'], out / key / 'verifier3',
-                                                             runner=runner, python=sys.executable)
             return key, statuses[key]
         status = build_world(domains[i], out / key, runner=runner, client=client, python=sys.executable,
                              language=langs[i], index=i, repairs=args.repairs)
         return key, {k: status.get(k) for k in ('id', 'training_ready', 'failure_class', 'reason', 'bundle',
-                                                 'elapsed_seconds', 'third_verifier') if k in status or k != 'third_verifier'}
+                                                 'elapsed_seconds') if k in status}
 
     with concurrent.futures.ThreadPoolExecutor(args.parallel) as pool:
         statuses.update(dict(pool.map(world, range(len(domains)))))
@@ -453,7 +724,7 @@ def main():
             processes = sorted(world_request['goal_schema'])
             trusted = {p for p in processes if any(r['passed'] and r['id'] == f"{world_request['id']}-t{processes.index(p):03d}"
                                                     for r in rows_before)}
-            for index, (chosen, script) in enumerate(plan):
+            for index, (chosen, script, shape) in enumerate(plan):
                 probe = index < len(processes)
                 if probe:
                     chosen = [processes[index]]  # one process per probe
@@ -461,18 +732,50 @@ def main():
                     continue
                 if phase == 'main' and not set(chosen) <= trusted:
                     continue
-                out_jobs.append((bundle_path, out / key / 'tasks' / f't{index:03d}', index, chosen, script))
+                out_jobs.append((bundle_path, out / key / 'tasks' / f't{index:03d}', index, chosen, script, shape))
         return out_jobs
 
+    signatures = collections.defaultdict(set)  # per world: goal signatures of certified tasks (near-duplicate check)
+    for row in rows_before:
+        if row.get('passed') and row.get('signature'):
+            signatures[row['id'].rsplit('-t', 1)[0]].add(row['signature'])
+    refusals = collections.Counter()  # per world: certified write-shaped tasks, and those whose outcome is a refusal
+    refusal_lock = __import__('threading').Lock()
+    for row in rows_before:
+        if row.get('passed') and 'refusal' in row:
+            refusals[(row['id'].rsplit('-t', 1)[0], 'all')] += 1
+            refusals[(row['id'].rsplit('-t', 1)[0], 'refusal')] += bool(row['refusal'])
+
     def task(job):
-        bundle_path, folder, index, processes, script = job
+        bundle_path, folder, index, processes, script, shape = job
         try:
             row = make_task(bundle_path, folder, index=index, processes=processes, script=script, runner=runner,
-                            sufficiency_client=checker,
+                            sufficiency_client=checker, shape=shape,
                             client=client, python=sys.executable)
         except Exception as exc:  # one failing task never stops the others
             row = {'id': f'{Path(bundle_path).parent.parent.name}-t{index:03d}', 'passed': False, 'stage': 'error',
                    'problems': [f'{type(exc).__name__}: {exc}'[:300]]}
+        if row.get('passed'):
+            request = json.loads((Path(row['bundle']) / 'request.json').read_text())
+            signature = goal_signature(request['user_facts'].get('goals'))
+            key = row['id'].rsplit('-t', 1)[0]
+            with refusal_lock:
+                if signature in signatures[key]:
+                    row = {**row, 'passed': False, 'stage': 'duplicate', 'failed': ['duplicate'],
+                           'problems': ['the same exercise as an earlier task of this world (same goals and params '
+                                        'up to the amounts)']}
+                else:
+                    signatures[key].add(signature)
+                    row['signature'] = signature
+        if row.get('passed') and shape in ('single_write', 'complex') and 'refusal' in row:
+            key = row['id'].rsplit('-t', 1)[0]
+            with refusal_lock:
+                if row['refusal'] and refusals[(key, 'refusal')] + 1 > REFUSAL_CAP * (refusals[(key, 'all')] + 1):
+                    row = {**row, 'passed': False, 'stage': 'refusal_cap', 'failed': ['refusal_cap'],
+                           'problems': [f'more than {REFUSAL_CAP:.0%} of this world\'s write tasks would be refusals']}
+                else:
+                    refusals[(key, 'all')] += 1
+                    refusals[(key, 'refusal')] += bool(row['refusal'])
         with open(rows_path, 'a') as handle:
             handle.write(json.dumps(row, ensure_ascii=False) + '\n')
         print(json.dumps({k: row.get(k) for k in ('id', 'passed', 'stage', 'failed', 'problems')}, ensure_ascii=False),
@@ -487,6 +790,95 @@ def main():
         rows_before = [json.loads(l) for l in rows_path.read_text().splitlines()] if rows_path.exists() else []
         print(f"{phase}: {sum(r['passed'] for r in rows)}/{len(rows)} certified so far", flush=True)
     print(f"tasks: {sum(r['passed'] for r in rows)}/{len(rows)} certified", flush=True)
+    images = build_images(out, statuses) if args.docker else {}
+    if images:
+        print(json.dumps(images), flush=True)
+    policies = policy_stage(out, args.policy_k) if args.policy_k else {}
+    print(json.dumps(write_tasks(out, statuses, images, policies, args.eval_worlds, docker=args.docker)), flush=True)
+
+
+def policy_stage(out, k):
+    """Policy gate (k free-dialogue episodes by a strong model) on every certified task, in off-peak hours; the result
+    stays next to the bundle (policy-natural.json), so a rerun skips tasks already gated."""
+    from env_factory.certify import policy_gate as policy
+    from env_factory.core.llm import ChatClient
+    from env_factory.production import offpeak
+    rows = [json.loads(line) for line in (Path(out) / 'tasks.jsonl').read_text().splitlines()]
+    todo = [r for r in rows if r.get('passed')]
+    agent, user = ChatClient('LLM'), ChatClient('USER_SIM')
+
+    def one(row):
+        saved = Path(row['bundle']) / 'policy-natural.json'
+        if saved.exists() and json.loads(saved.read_text()).get('k') == k:
+            return row['id'], json.loads(saved.read_text()).get('status')
+        offpeak.wait(lambda text: print(text, flush=True))
+        try:
+            return row['id'], policy.gate(row['bundle'], agent, k=k, user_mode='natural', user_client=user)['status']
+        except Exception as exc:  # noqa: BLE001 - a bundle the gate cannot play is not trainable
+            return row['id'], f'error: {type(exc).__name__}'
+    with concurrent.futures.ThreadPoolExecutor(6) as pool:
+        return dict(pool.map(one, todo))
+
+
+def write_tasks(out, statuses, images, policies, eval_worlds=0, docker=False):
+    """tasks.json in the production line's format: certified tasks that passed the policy gate (when it ran) and got
+    an image (when images were built), split by world; the rest under "excluded" with the reason. The policy-gate
+    dialogues' complexity (dialogue_complexity.py, plan W10) is reported next to it."""
+    rows = [json.loads(line) for line in (Path(out) / 'tasks.jsonl').read_text().splitlines()]
+    worlds = sorted(k for k, s in statuses.items() if s.get('training_ready'))
+    held = set(worlds[len(worlds) - eval_worlds:]) if eval_worlds else set()
+    key_of = {s.get('id') or k: k for k, s in statuses.items()}
+    tasks, excluded = [], []
+    for row in rows:
+        world = key_of.get(row['id'].rsplit('-t', 1)[0])
+        reason = None
+        if not row.get('passed'):
+            reason = f"{row.get('stage')}: {row.get('failed') or row.get('problems')}"[:200]
+        elif docker and (world not in images or 'error' in images.get(world, {})):
+            reason = 'no verified image'
+        elif policies and policies.get(row['id']) not in ('passed', None):
+            reason = f"policy gate {policies.get(row['id'])}"
+        if reason:
+            excluded.append({'id': row['id'], 'reason': reason})
+        else:
+            tasks.append({'id': row['id'], 'sandbox': str(Path(row['bundle']).resolve()),
+                          'split': 'eval' if world in held else 'train', 'weight': 1.0})
+    (Path(out) / 'tasks.json').write_text(json.dumps({'tasks': tasks, 'excluded': excluded}, ensure_ascii=False,
+                                                     indent=1))
+    summary = {'trainable': len(tasks), 'train': sum(t['split'] == 'train' for t in tasks),
+               'eval': sum(t['split'] == 'eval' for t in tasks), 'excluded': len(excluded)}
+    if policies:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            'dialogue_complexity', Path(__file__).resolve().parents[3] / 'experiments/dialogue_complexity.py')
+        if spec and spec.loader and Path(spec.origin).exists():
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            complexity = module.report([Path(t['sandbox']) for t in tasks])
+            (Path(out) / 'complexity.json').write_text(json.dumps(complexity, indent=1))
+            summary['complexity_passed'] = complexity.get('passed')
+    return summary
+
+
+def build_images(out, statuses):
+    """One image per world with every certified task (built once all its tasks are in); images.json records them."""
+    from env_factory.certify import docker
+    rows = [json.loads(line) for line in (Path(out) / 'tasks.jsonl').read_text().splitlines()]
+    images = {}
+    for key, status in sorted(statuses.items()):
+        if not status.get('training_ready'):
+            continue
+        world_id = status.get('id') or key
+        bundles = [r['bundle'] for r in rows if r.get('passed') and r['id'].rsplit('-t', 1)[0] == world_id]
+        if not bundles:
+            continue
+        try:
+            built = docker.build_many(bundles)
+            images[key] = {'image': built[0]['image_id'], 'tasks': len(built)}
+        except Exception as exc:  # noqa: BLE001 - reported; its tasks stay without an image
+            images[key] = {'error': f'{type(exc).__name__}: {exc}'[:500]}
+    (Path(out) / 'images.json').write_text(json.dumps(images, indent=1))
+    return images
 
 
 if __name__ == '__main__':

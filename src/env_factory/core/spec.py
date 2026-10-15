@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from pathlib import Path
 
 CATEGORIES = ('direct_response', 'simple_agentic', 'multi_step_agentic')
@@ -32,6 +33,21 @@ REQUIRED = ('id', 'family', 'category', 'title', 'user_request', 'business_rules
 
 class RequestError(ValueError):
     pass
+
+
+CALENDAR = re.compile(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$')
+
+
+def is_calendar(value):
+    """A calendar time (ISO 'YYYY-MM-DDTHH:MM'): the fixed now of a calendar-clock task, compared as a datetime."""
+    import datetime
+    if not (isinstance(value, str) and CALENDAR.match(value)):
+        return False
+    try:
+        datetime.datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
 
 
 def validate(request):
@@ -54,8 +70,12 @@ def validate(request):
     if not isinstance(request['user_facts'], dict):
         problems.append('user_facts must be an object')
     time = request.get('time', {'start': 0, 'tick': 0})
-    if not (isinstance(time, dict) and isinstance(time.get('start'), int) and time.get('tick') == 0):
-        problems.append('time must be {"start": int, "tick": 0}; the clock advances only by explicit waits')
+    calendar = isinstance(time, dict) and isinstance(time.get('start'), str) and is_calendar(time['start'])
+    if not (isinstance(time, dict) and (isinstance(time.get('start'), int) or calendar) and time.get('tick') == 0):
+        problems.append('time must be {"start": int or "YYYY-MM-DDTHH:MM", "tick": 0}; the clock advances only by '
+                        'explicit waits')
+    if calendar and isinstance(request.get('tables'), dict) and request['tables'].get('scheduled_events'):
+        problems.append('a calendar clock (ISO start) is fixed: no scheduled_events')
     for text in ('user_request', 'business_rules', 'title'):
         if not isinstance(request.get(text), str) or not request[text].strip():
             problems.append(f'{text} must be nonempty text')

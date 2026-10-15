@@ -14,7 +14,8 @@ def run(*arguments):
 def command(*arguments):
     result = run('--dry-run', *arguments)
     assert result.returncode == 0, result.stderr
-    return shlex.split(result.stdout)
+    args = shlex.split(result.stdout)
+    return args[2:] if args[:2] == ['uv', 'run'] else args  # the script prefers uv when it is installed
 
 
 def value(args, flag):

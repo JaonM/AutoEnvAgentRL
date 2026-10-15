@@ -16,7 +16,24 @@ class Config:
     zero_variance_policy: str = "retry_skip"
     # GRPO advantage scale: "group" (std of the group) or "task" (std of the recent rewards of the same
     # task across groups, AutoForge ERPO: less noise with small groups; falls back to the group early on)
-    advantage_std: str = "group"
+    advantage_std: str = "task"
+    # GRPO loss aggregation: "sequence" (original GRPO: each episode's tokens share the episode's weight) or "token"
+    # (DAPO: every token of a group weighs the same, so long failing loops are penalised token by token).
+    loss_aggregation: str = "sequence"
+    # SPO's probability mask: the advantage applies only to tokens the behaviour policy sampled with probability
+    # below this (0 = off; 0.9 in SPO), renormalised over those tokens; near-certain tokens (JSON, set phrases) carry
+    # no credit.
+    low_prob_mask: float = 0.0
+    # rollout_mode "tree": rollout_group trunks, then tree_forks fork points with tree_branches continuations each
+    # (rollout/scheduler.py); tree_advantage "segment" (value differences between fork points) or "tree_grpo".
+    rollout_mode: str = "chain"
+    tree_forks: int = 4
+    tree_branches: int = 2
+    tree_advantage: str = "segment"
+    # Reverse curriculum (rollout/curriculum.py): a start library (experiments/start_states.py); its tasks start
+    # late in recorded successes and move earlier once groups succeed at curriculum_threshold.
+    reverse_curriculum: str = ""
+    curriculum_threshold: float = 0.6
     context_limit_policy: str = "finish"
     numerical_check_mode: str = "periodic"
     numerical_check_interval: int = 20
@@ -35,8 +52,8 @@ class Config:
     replay_max_uses: int = 4
     replay_max_age: int = 32
     replay_batches_per_batch: int = 0
-    tuning: str = "qat"
-    thinking_mode: str = "auto"
+    tuning: str = "full"
+    thinking_mode: str = "no-thinking"
     qat_scope: str = "projections"
     lora_targets: str = "self_attn.q_proj,self_attn.v_proj"
     lora_scale: float = 16.0
@@ -53,24 +70,24 @@ class Config:
     policy_publish_interval_steps: int = 1
     updates: int = 0
     rollout_workers: int = 1
-    rollout_concurrency: int = 2
+    rollout_concurrency: int = 8
     watchdog_interval: float = 1.0
     micro_batch_size: int = 4
-    max_tokens_per_micro_batch: int = 8192
+    max_tokens_per_micro_batch: int = 32768
     batch_logp_tolerance: float = 0.01
     sandbox_backend: str = "local"
     environment_factory: str = "rl.environment:SandboxEpisode"
-    rollout_group: int = 4
+    rollout_group: int = 8
     over_sampling_batch_size: int = 0
     rollout_max_attempts: int = 3
-    batch_size: int = 1
-    mini_batch_size: int = 1
+    batch_size: int = 8
+    mini_batch_size: int = 8
     queue_size: int = 2
     max_policy_lag: int = 1
     max_groups: int = 0
-    max_steps: int = 6
-    max_tokens: int = 256
-    max_context: int = 4096
+    max_steps: int = 30
+    max_tokens: int = 1024
+    max_context: int = 32768
     layers: int = 1
     rank: int = 8
     bits: int = 4
@@ -219,6 +236,14 @@ class Config:
             self.qat_scope == "full" and self.tuning != "qat"
         ):
             raise ValueError("qat_scope full requires tuning qat")
+        if self.rollout_mode not in {"chain", "tree"} or self.tree_advantage not in {"segment", "tree_grpo"}:
+            raise ValueError("rollout_mode must be chain or tree, tree_advantage segment or tree_grpo")
+        if self.tree_forks < 0 or self.tree_branches < 1:
+            raise ValueError("tree_forks must be nonnegative and tree_branches positive")
+        if self.loss_aggregation not in {"sequence", "token"}:
+            raise ValueError("loss_aggregation must be sequence or token")
+        if not 0.0 <= self.low_prob_mask <= 1.0:
+            raise ValueError("low_prob_mask must be in [0, 1]")
         if self.thinking_mode not in {"auto", "thinking", "no-thinking"}:
             raise ValueError("unsupported thinking mode")
         if not 0 <= self.replay_min_ess <= 1 or not 0 < self.replay_max_log_ratio <= 80:

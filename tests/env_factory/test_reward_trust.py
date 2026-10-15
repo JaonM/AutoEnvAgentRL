@@ -1,5 +1,5 @@
 """Reward trust: acceptable alternatives, simulator audit, untrainable episodes, disagreement mining,
-policy sufficiency and the third verifier. No model calls."""
+policy sufficiency. No model calls."""
 from __future__ import annotations
 
 import copy
@@ -81,8 +81,49 @@ class AnswerComparisonTests(unittest.TestCase):
         from env_factory.core import answers
         want = {'refund': {'return_id': 'R-77', 'amount_cents': 4300, 'destination': 'Visa 4821', 'status': 'done'}}
         got = {'refund': {**want['refund'], 'amount_cents': 4000}}
-        self.assertEqual(answers.scores(self.OBJ, want, got)['refund'], 0.75)
+        self.assertAlmostEqual(answers.scores(self.OBJ, want, got)['refund'], 2 / 3)  # the status earns no share
         self.assertFalse(answers.compare(self.OBJ, want, got)['refund'])
+
+    def test_a_status_or_a_null_alone_earns_nothing(self):
+        from env_factory.core import answers
+        want = {'refund': {'return_id': 'R-77', 'amount_cents': 4300, 'destination': None, 'status': 'done'}}
+        only_status = {'refund': {'return_id': None, 'amount_cents': None, 'destination': None, 'status': 'done'}}
+        self.assertEqual(answers.scores(self.OBJ, want, only_status)['refund'], 0.0)
+        wrong_status = {'refund': {**want['refund'], 'status': 'refused'}}
+        self.assertEqual(answers.scores(self.OBJ, want, wrong_status)['refund'], 0.5)
+
+    def test_amount_strings_compare_as_numbers(self):
+        from env_factory.core import answers
+        schema = {'fields': {'total': {'type': 'string', 'description': 't'}}}
+        for said in ('12.5', '$12.50', '12.50'):
+            self.assertTrue(answers.compare(schema, {'total': '12.50'}, {'total': said})['total'], said)
+        self.assertFalse(answers.compare(schema, {'total': '12.50'}, {'total': '12.51'})['total'])
+
+    def test_naming_another_record_is_wrong_even_for_an_internal_id(self):
+        from env_factory.core import answers
+        schema = {'fields': {'plan': {'type': 'string', 'description': 'p'}}}
+        known = ['I want the cheapest plan']
+        self.assertTrue(answers.compare(schema, {'plan': 'plan-basic'}, {'plan': None}, known)['plan'])
+        self.assertFalse(answers.compare(schema, {'plan': 'plan-basic'}, {'plan': 'plan-pro'}, known)['plan'])
+
+    def test_another_name_of_the_expected_record_is_right(self):
+        from env_factory.core import answers
+        tables = {'gift_cards': [{'id': 'gc-new', 'code': 'GIFT-88', 'status': 'active'},
+                                 {'id': 'gc-old', 'code': 'GIFT-12', 'status': 'active'}]}
+        aliases = answers.aliases_of(tables)
+        spec = {'type': 'string'}
+        self.assertEqual(answers.score(spec, 'gc-new', 'GIFT-88', ['x'], aliases), 1.0)  # the card's own number
+        self.assertEqual(answers.score(spec, 'gc-new', 'GIFT-12', ['x'], aliases), 0.0)  # another card
+        self.assertNotIn('active', aliases)  # a value shared by several rows names none of them
+
+    def test_a_named_record_counts_as_said(self):
+        from env_factory.core import extract
+        trace = [{'kind': 'tool', 'status': 'ok', 'result': [{'id': 'plan-basic', 'name': 'Basic Saver'},
+                                                             {'id': 'plan-pro', 'name': 'Pro Unlimited'}]}]
+        records = extract.records_of(trace)
+        spec = {'type': 'string'}
+        self.assertEqual(extract.verify('plan-basic', spec, 'I recommend the Basic Saver plan.', records), 'plan-basic')
+        self.assertIsNone(extract.verify('plan-pro', spec, 'I recommend the Basic Saver plan.', records))
 
     def test_internal_ids_the_user_never_saw_are_not_graded(self):
         from env_factory.core import answers
@@ -228,28 +269,6 @@ class FuzzTests(unittest.TestCase):
         report = fuzz.fuzz(Broken(), request['tables'], 10, calls=5, walks=2)
         self.assertFalse(report['passed'])
         self.assertTrue(report['tools']['lookup']['hidden_state'] or report['tools']['lookup']['crash'])
-
-
-class ThirdVerifierTests(LibraryBundle):
-    def test_a_disagreeing_third_verifier_rejects_the_task(self):
-        folder = Path(tempfile.mkdtemp())
-        shutil.copy(LIBRARY / 'verifier.py', folder / 'verifier.py')
-        self.assertTrue(world.third_opinion(self.bundle, folder / 'verifier.py')['passed'])
-        source = (LIBRARY / 'verifier.py').read_text().replace("loan['due_day'] += book['renewal_days']",
-                                                              "loan['due_day'] += book['renewal_days'] + 1")
-        (folder / 'verifier.py').write_text(source)
-        opinion = world.third_opinion(self.bundle, folder / 'verifier.py')
-        self.assertFalse(opinion['passed'])
-        self.assertTrue(opinion['disagreements'])
-        # guard: a world folder layout <world>/build/bundle with <world>/verifier3
-        world_dir = Path(tempfile.mkdtemp())
-        (world_dir / 'build').mkdir()
-        shutil.copytree(self.bundle, world_dir / 'build' / 'bundle')
-        (world_dir / 'verifier3').mkdir()
-        (world_dir / 'verifier3' / 'verifier.py').write_text(source)
-        (world_dir / 'verifier3' / 'third_verifier.json').write_text('{"passed": true}')
-        row = world.guard({'id': 't', 'passed': True}, world_dir / 'build' / 'bundle', self.bundle, Path(tempfile.mkdtemp()))
-        self.assertEqual((row['passed'], row['stage']), (False, 'third_verifier'))
 
 
 if __name__ == '__main__':

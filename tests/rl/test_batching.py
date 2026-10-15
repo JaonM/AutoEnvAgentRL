@@ -6,7 +6,7 @@ from rl.train import Config
 def test_defaults_and_independent_sandbox_batch_sizes():
     config = Config(sandbox='x', output='y')
     config.validate()
-    assert config.batch_size == config.mini_batch_size == 1
+    assert config.batch_size == config.mini_batch_size == 8  # 8 tasks per update (defaults sized 2026-10-15)
     config = Config(sandbox='x', output='y', rollout_group=4, batch_size=5, mini_batch_size=2)
     config.validate()  # Sandbox counts need not be multiples of the rollout count.
     assert config.rollout_group == 4 and config.epochs == 2

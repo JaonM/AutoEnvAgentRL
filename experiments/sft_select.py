@@ -14,6 +14,8 @@ nothing. This keeps successful episodes only, then
 - prints a diversity report against the targets (≥2000 episodes, ≥500 tasks, no domain above the cap,
   every skill at --skill-min episodes) and exits with status 3 when a target is missed, so an
   undersized set is never trained by accident (--allow-short overrides),
+- drops episodes calling with an identifier that never appeared earlier (--max-invented), prefers per task the
+  episodes whose lookups were all used (call_profile), and reports the unused-lookup share,
 - drops episodes whose speech leaks internal field names or cents, and episodes with more than
   --max-failed failed tool results (turns that failed are kept as context but not trained, see
   sft_train.py --no-error-turns).
@@ -27,6 +29,7 @@ import argparse
 import collections
 import json
 import random
+import re
 import sys
 from pathlib import Path
 
@@ -41,6 +44,48 @@ def is_failure(content):
     except ValueError:
         return False
     return isinstance(value, dict) and value.get('ok') is False
+
+
+ID_KEY = re.compile(r'(^|_)(id|ids|ref|reference|number|no|code)$', re.IGNORECASE)
+TOKEN = re.compile(r'[A-Za-z0-9#][A-Za-z0-9#_.:-]{2,}')
+
+
+def call_profile(messages, write_names=(), tools=()):
+    """(lookups, unused lookups, invented identifiers) of one episode. A lookup is unused when no value it
+    returned (an id, a number, a status) shows up in anything the agent said or called afterwards; an identifier
+    argument (a value with a digit; codes listed in a tool description are allowed values) is invented when it
+    never appeared earlier in the conversation or the tool list. The teacher's habit of
+    calling every read once it holds an id cost nothing on our small tool sets and taught the student to fire
+    batches of calls with guessed ids."""
+    results = {m.get('tool_call_id'): m.get('content') or '' for m in messages if m.get('role') == 'tool'}
+    lookups = unused = invented = 0
+    described = json.dumps(list(tools), ensure_ascii=False)
+    for index, message in enumerate(messages):
+        if message.get('role') != 'assistant':
+            continue
+        seen = json.dumps([{k: m.get(k) for k in ('content', 'tool_calls')} for m in messages[:index]
+                           if m.get('role') != 'assistant'], ensure_ascii=False)
+        later = json.dumps([{k: m.get(k) for k in ('content', 'tool_calls')} for m in messages[index + 1:]
+                            if m.get('role') == 'assistant'], ensure_ascii=False)
+        for call in message.get('tool_calls') or []:
+            arguments = call['function'].get('arguments') or '{}'
+            try:
+                values = json.loads(arguments) if isinstance(arguments, str) else arguments
+            except ValueError:
+                values = {}
+            for key, value in (values if isinstance(values, dict) else {}).items():
+                if ID_KEY.search(key) and isinstance(value, str) and any(ch.isdigit() for ch in value) \
+                        and value not in seen and value not in described:
+                    invented += 1
+            result = results.get(call.get('id'), '')
+            if call['function']['name'] in write_names or is_failure(result):
+                continue
+            lookups += 1
+            tokens = {t for t in TOKEN.findall(result) if t not in arguments and not t.isalpha()
+                      and t not in ('true', 'false', 'null')}
+            if tokens and not any(t in later for t in tokens):
+                unused += 1
+    return lookups, unused, invented
 
 
 def failed_results(messages):
@@ -125,6 +170,9 @@ def main():
     parser.add_argument('--english-share', type=float, default=0.7)
     parser.add_argument('--domain-share', type=float, default=0.05)
     parser.add_argument('--max-failed', type=int, default=3)
+    parser.add_argument('--max-invented', type=int, default=0,
+                        help='drop episodes with more identifier arguments that never appeared earlier in the '
+                             'conversation (the student copies guessing)')
     parser.add_argument('--min-episodes', type=int, default=2000)
     parser.add_argument('--min-tasks', type=int, default=500)
     parser.add_argument('--skill-min', type=int, default=100)
@@ -169,6 +217,9 @@ def main():
     episodes = [r for path in args.teacher for r in map(json.loads, Path(path).read_text().splitlines())
                 if r.get('success') and r.get('messages') and r['id'] in meta
                 and not r.get('speech_leaks') and failed_results(r['messages']) <= args.max_failed]
+    invented_dropped = len(episodes)
+    episodes = [r for r in episodes if call_profile(r['messages'], write_tools[r['id']], r.get('tools') or ())[2] <= args.max_invented]
+    invented_dropped -= len(episodes)
     near = []
     if args.near_miss_share:
         for path in args.teacher:
@@ -195,8 +246,9 @@ def main():
             unique.append(episode)
         # plain-dialogue consent first (τ²-style), refusal (flip) worlds next, then the rest
         replies = lambda e: sum(1 for m in e['messages'][1:] if m['role'] == 'user')
+        wasted = lambda e: call_profile(e['messages'], write_tools[e['id']])[1]
         unique.sort(key=lambda e: (e.get('consent') != 'plain', not str(e.get('world') or '').startswith('flip'),
-                                   -replies(e)))  # longer dialogues first among equals
+                                   wasted(e), -replies(e)))  # targeted lookups, then longer dialogues first
         seen, picked = set(), []
         for episode in unique:  # distinct worlds first, then the rest
             if episode.get('world') not in seen:
@@ -234,6 +286,7 @@ def main():
             per_domain[domain] += 1
             capped.append(episode)
     selected = capped
+    profiles = [call_profile(e['messages'], write_tools[e['id']]) for e in selected]
     count = lambda index: dict(collections.Counter(meta[e['id']][index] for e in selected).most_common())
     skill_counts = collections.Counter(k for e in selected for k in skills(e, requests[e['id']], write_tools[e['id']]))
     sequences = collections.Counter(signature(e)[0] for e in selected)
@@ -245,6 +298,9 @@ def main():
               'distinct_tool_sequences': round(len(sequences) / max(1, len(selected)), 3),
               'consent_protocol': dict(collections.Counter(e.get('consent') or 'token' for e in selected)),
               'near_misses': sum(bool(e.get('near_miss')) for e in selected),
+              'invented_id_episodes_dropped': invented_dropped,
+              'unused_lookup_share': round(sum(p[1] for p in profiles) / max(1, sum(p[0] for p in profiles)), 3),
+              'wide_turn_episodes': sum(any(len(m.get('tool_calls') or []) > 3 for m in e['messages']) for e in selected),
               'user_replies': dict(sorted(collections.Counter(
                   min(sum(1 for m in e['messages'][2:] if m['role'] == 'user'), 10) for e in selected).items())),
               'turns': dict(collections.Counter(

@@ -44,6 +44,26 @@ def api_problems(tools, request):
     return problems
 
 
+def write_argument_problems(tools):
+    """A write takes business parameters (ids, enums, amounts, short lists of ids), never an object copied from an
+    earlier result (a "quoted_terms" blob): an agent cannot reproduce such a blob exactly, so the task would grade
+    copying, not the business decision. Amounts the agent worked out (reads return facts, not verdicts) come as
+    separate integer arguments, which can be predicted exactly."""
+    import inspect
+    from env_factory.runtime import is_write
+    problems = []
+    for name, fn in sorted(tools.items()):
+        if not is_write(fn):
+            continue
+        for argument, parameter in inspect.signature(fn).parameters.items():
+            annotation = parameter.annotation
+            text = annotation if isinstance(annotation, str) else getattr(annotation, '__name__', repr(annotation))
+            if argument not in ('db', 'now') and (annotation is dict or str(text).startswith('dict')):
+                problems.append(f'write tool {name}: argument {argument} is an object; take business parameters '
+                                '(ids, enums, amounts): each amount the agent must confirm as its own integer argument')
+    return problems
+
+
 def shape_problems(initial, final):
     problems = []
     if set(final) != set(initial):
@@ -58,6 +78,30 @@ def shape_problems(initial, final):
     return problems
 
 
+MONEY_WORDS = ('cents', 'dollar', 'amount', 'fee', 'price', 'refund', 'total', 'cost', 'charge', 'balance', 'credit',
+               'yuan', 'fen')
+
+
+def authoring_problems(fields, path=''):
+    """Stricter rules for newly written answer contracts (old bundles still load): amounts are integers, never
+    strings ("12.50" vs "$12.50" compared as text); every array says whether its order matters."""
+    problems = []
+    for name, spec in (fields or {}).items():
+        if not isinstance(spec, dict) or spec.get('graded', True) is False:
+            continue
+        where = f'{path}{name}'
+        if spec.get('type') == 'string' and 'enum' not in spec and any(w in name.lower() for w in MONEY_WORDS):
+            problems.append(f'{where}: an amount must be an integer (in the smallest unit), not a string')
+        if spec.get('type') == 'array' and spec.get('order') not in ('any', 'exact'):
+            problems.append(f'{where}: an array must set "order": "any" (set semantics) or "exact" (a ranking)')
+        if spec.get('type') == 'array' and isinstance(spec.get('items'), dict):
+            items = spec['items']
+            problems += authoring_problems(items.get('properties') if items.get('type') == 'object' else {}, f'{where}[].')
+        if spec.get('type') == 'object':
+            problems += authoring_problems(spec.get('properties'), f'{where}.')
+    return problems
+
+
 def check_schema(folder):
     path = folder / 'answer_schema.json'
     if not path.exists():
@@ -66,7 +110,10 @@ def check_schema(folder):
         schema = json.loads(path.read_text())
     except json.JSONDecodeError as exc:
         return [f'answer_schema.json is not JSON: {exc}'], []
-    return answers.check_schema(schema), [f'fields: {sorted(schema.get("fields", {}))}']
+    problems = answers.check_schema(schema)
+    if not problems:
+        problems = authoring_problems(schema.get('fields'))
+    return problems, [f'fields: {sorted(schema.get("fields", {}))}']
 
 
 def check_env(folder):
@@ -79,6 +126,7 @@ def check_env(folder):
         return ['make_tools() must return a non-empty dict'], notes
     problems += tool_spec_problems(tools)
     problems += api_problems(tools, request)
+    problems += write_argument_problems(tools)
     problems += gates.approval_problems(env, request)
     start = request['time']['start']
     for name, data, facts in variants(request['tables'], request['user_facts'], perturbed=PERTURBED):

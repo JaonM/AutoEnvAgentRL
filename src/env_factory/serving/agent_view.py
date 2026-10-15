@@ -230,6 +230,22 @@ def with_clock(tools_, instructions):
     return [*tools_[:-1], wait, tools_[-1]]
 
 
+WEEKDAYS = {'en': ('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'),
+            'zh': ('星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日')}
+
+
+def clock_text(text, start, lang):
+    """'Current time: 2024-05-15 15:00 (Wednesday)' for a calendar clock, the virtual number otherwise."""
+    from env_factory.core.spec import is_calendar
+    if is_calendar(start):
+        import datetime
+        moment = datetime.datetime.fromisoformat(start)
+        stamp = f"{moment:%Y-%m-%d %H:%M}"
+        return (f'当前时间：{stamp}（{WEEKDAYS["zh"][moment.weekday()]}）' if lang == 'zh'
+                else f'Current time: {stamp} ({WEEKDAYS["en"][moment.weekday()]})')
+    return text['clock'].format(start=start)
+
+
 def messages(instructions, names=None, answer_tool=True):
     swap = (lambda text: _swap(text, names)) if names else (lambda text: text)
     if instructions.get('user_mode') == 'natural':
@@ -237,7 +253,8 @@ def messages(instructions, names=None, answer_tool=True):
         # format lives in the answer tool's parameters only, not here a second time.
         writes = any(t.get('kind') == 'write' for t in instructions['tools'])
         text, time = TEXT[language(instructions)], instructions['time']
-        clock = text['clock'].format(start=time['start']) + (text['advancing'] if time.get('advancing') else text['fixed'])
+        clock = clock_text(text, time['start'], language(instructions)) + \
+            (text['advancing'] if time.get('advancing') else text['fixed'])
         sep = '' if language(instructions) == 'zh' else ' '
         writes_text = text['writes_plain'] if instructions.get('consent_mode') == 'plain' else text['writes']
         system = sep.join([text['natural']] + ([writes_text] if writes else []) +

@@ -26,7 +26,7 @@ def physical_batches(samples, max_sequences, max_tokens):
         yield pending
 
 
-def collate(samples, *, normalize=1.):
+def collate(samples, *, normalize=1., low_prob_mask=0.):
     prompts = [len(s['prompt']) for s in samples]
     responses = [len(s['tokens']) for s in samples]
     length, width = max(p + r for p, r in zip(prompts, responses)), max(responses)
@@ -42,6 +42,12 @@ def collate(samples, *, normalize=1.):
         mask = sample.get('loss_mask', [1] * n)
         if len(mask) != n or not sum(mask):
             raise ValueError('empty or unaligned assistant loss mask')
+        if low_prob_mask:
+            # SPO: credit goes to the tokens the policy was unsure about; an action it was sure of throughout keeps
+            # its plain mask so its weight is not lost.
+            uncertain = [m if math.exp(lp) < low_prob_mask else 0 for m, lp in zip(mask, sample['old_logp'])]
+            if sum(uncertain):
+                mask = uncertain
         old_logp.append(row(sample['old_logp'], n))
         ref_logp.append(row(sample.get('_ref_logp', [0.] * n), n))
         advantages.append(row(sample.get('advantage', 0.), n))
@@ -238,7 +244,7 @@ class ActorTrainer:
         for rows in self.chunks(samples):
             notify()
             with self.times.measure('actor_forward_backward'):
-                batch = collate(rows, normalize=normalizer)
+                batch = collate(rows, normalize=normalizer, low_prob_mask=self.config.low_prob_mask)
                 batch['cached_fallback'] = self.shape_key(rows) in self.fallback_shapes
                 if batch['cached_fallback']:
                     self.cached_gradient_microbatches += 1

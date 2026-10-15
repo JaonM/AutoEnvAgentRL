@@ -125,7 +125,7 @@ class RubricUnitTests(unittest.TestCase):
     def test_generator_plans_subjective_tasks(self):
         shapes = [s for _, _, s in generate.plan([{'name': 'x'}], 30, rubric_share=0.2)]
         self.assertEqual(shapes.count('subjective'), 6)
-        self.assertEqual(shapes.count('direct'), 6)
+        self.assertEqual(shapes.count('direct'), 3)
 
 
 class RubricRunner:

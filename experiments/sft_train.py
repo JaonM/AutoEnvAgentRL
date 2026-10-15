@@ -184,11 +184,13 @@ def main():
     parser.add_argument('--teacher', required=True, help='collect_teacher.py JSONL (only successful episodes are used)')
     parser.add_argument('--model', default='models/Qwen3-0.6B', help='floating-point base model')
     parser.add_argument('--output', required=True)
-    parser.add_argument('--tuning', choices=('full', 'lora'), default='full')
+    parser.add_argument('--tuning', choices=('full', 'lora'), default='full', help='full (default since 2026-10-15) or lora')
     parser.add_argument('--lora-rank', type=int, default=16)
     parser.add_argument('--epochs', type=float, default=2.0)
     parser.add_argument('--learning-rate', type=float, default=1e-5)
     parser.add_argument('--grad-accumulation', type=int, default=4)
+    parser.add_argument('--grad-clip', type=float, default=1.0,
+                        help='clip the global gradient norm (0: off); one 30k-token episode can otherwise throw the run')
     parser.add_argument('--max-tokens', type=int, default=12288, help='longer episodes are skipped')
     parser.add_argument('--valid-share', type=float, default=0.1)
     parser.add_argument('--valid-ids', default=None,
@@ -211,6 +213,12 @@ def main():
                         help='share of episodes whose system prompt uses another layout (tags, markdown, policy first)')
     parser.add_argument('--greet', type=float, default=0.0,
                         help='share of episodes opened by an agent greeting before the user speaks (context only)')
+    parser.add_argument('--example-values', type=float, default=0.0,
+                        help="share of episodes whose identifier parameters' descriptions carry a made-up example "
+                             "value (τ²-bench writes \"such as '#W0000000'\"; the student must not call with it)")
+    parser.add_argument('--inject-errors', type=float, default=0.0,
+                        help='share of episodes where one lookup is first called with a wrong identifier (the example '
+                             'value or a mistyped one) and fails; the failed call is context, the fix is trained')
     parser.add_argument('--replay', nargs='*', default=[],
                         help='extra episode files mixed in as they are (e.g. the base model\'s own successes)')
     parser.add_argument('--no-error-turns', action='store_true',
@@ -225,6 +233,7 @@ def main():
     from mlx_lm.tuner.trainer import grad_checkpoint
     from mlx_lm.utils import load, save_config, save_model
 
+    mx.random.seed(args.seed)  # LoRA initialisation: without it the same data and seed train a different model
     model, tokenizer, config = load(args.model, return_config=True)
     if args.tuning == 'lora':
         from mlx_lm.tuner.utils import linear_to_lora_layers
@@ -233,36 +242,48 @@ def main():
                                                          'keys': None})
     grad_checkpoint(model.layers[0])
 
+    # Successes and the near misses sft_select chose (safe, final state right, at most one answer field wrong);
+    # filtering on success alone silently dropped every near miss.
     episodes = [r for path in [args.teacher, *args.replay] for r in map(json.loads, Path(path).read_text().splitlines())
-                if r.get('success') and r.get('messages')]
+                if (r.get('success') or r.get('near_miss')) and r.get('messages')]
     random.Random(args.seed).shuffle(episodes)
     if args.rename_tools:
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         from tool_rename import augment
         rng = random.Random(args.seed + 1)
-        episodes = [augment(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if rng.random() < args.rename_tools else e
+        episodes = [augment(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if not e.get('public') and rng.random() < args.rename_tools else e
                     for e in episodes]
     if args.relayout:
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         from tool_rename import relayout
         rng = random.Random(args.seed + 4)
-        episodes = [relayout(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if rng.random() < args.relayout else e
+        episodes = [relayout(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if not e.get('public') and rng.random() < args.relayout else e
                     for e in episodes]
     if args.greet:
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         from tool_rename import greet
         rng = random.Random(args.seed + 3)
-        episodes = [greet(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if rng.random() < args.greet else e
+        episodes = [greet(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if not e.get('public') and rng.random() < args.greet else e
                     for e in episodes]
+    if args.example_values or args.inject_errors:
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from tool_rename import example_values, inject_errors
+        rng = random.Random(args.seed + 5)
+        episodes = [example_values(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if not e.get('public') and rng.random() < args.example_values
+                    else e for e in episodes]
+        rng = random.Random(args.seed + 6)
+        episodes = [inject_errors(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if not e.get('public') and rng.random() < args.inject_errors
+                    else e for e in episodes]
     if args.vary_results:
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         from tool_rename import vary_results
         rng = random.Random(args.seed + 2)
-        episodes = [vary_results(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if rng.random() < args.vary_results else e
+        episodes = [vary_results(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if not e.get('public') and rng.random() < args.vary_results else e
                     for e in episodes]
     if args.per_episode:
         pairs = [(e, render(tokenizer, e)) for e in episodes]
@@ -282,7 +303,8 @@ def main():
         # Whole episodes go to validation, so no turn of a validation episode is trained on.
         held = {id(e) for e in episodes[:max(1, round(len(episodes) * args.valid_share))]}
         valid, train = [s for e, s in kept if id(e) in held], [s for e, s in kept if id(e) not in held]
-    print(f'{len(episodes)} successful episodes, {len(kept)} samples within {args.max_tokens} tokens: '
+    print(f'{len(episodes)} episodes ({sum(bool(e.get("near_miss")) for e in episodes)} near misses), '
+          f'{len(kept)} samples within {args.max_tokens} tokens: '
           f'{len(train)} train / {len(valid)} valid; '
           f'{sum(sum(m) for _, m in train)} assistant tokens of {sum(len(i) for i, _ in train)}', flush=True)
 
@@ -327,6 +349,7 @@ def main():
     baseline = evaluate()
     history.append({'step': 0, 'valid_loss': round(baseline, 4)})
     print(f'step 0 valid loss {baseline:.4f}', flush=True)
+    norms = []
     for step in range(1, steps + 1):
         accumulated, losses = None, []
         for index in order[(step - 1) * args.grad_accumulation:step * args.grad_accumulation]:
@@ -334,12 +357,20 @@ def main():
             loss, grads = value_and_grad(model, mx.array(ids), mx.array(mask))
             accumulated = grads if accumulated is None else tree_map(lambda a, b: a + b, accumulated, grads)
             losses.append(loss.item())
-        optimizer.update(model, tree_map(lambda g: g / args.grad_accumulation, accumulated))
+        averaged = tree_map(lambda g: g / args.grad_accumulation, accumulated)
+        if args.grad_clip:
+            averaged, grad_norm = optim.clip_grad_norm(averaged, args.grad_clip)
+            norms.append(grad_norm.item())
+        optimizer.update(model, averaged)
         mx.eval(model.parameters(), optimizer.state)
         if step % eval_every == 0 or step == steps:
             current = evaluate()
             row = {'step': step, 'train_loss': round(sum(losses) / len(losses), 4), 'valid_loss': round(current, 4),
                    'seconds': round(time.monotonic() - started)}
+            if norms:
+                row.update(grad_norm_max=round(max(norms), 3), grad_norm_mean=round(sum(norms) / len(norms), 3),
+                           clipped=sum(n > args.grad_clip for n in norms))
+                norms = []
             history.append(row)
             print(json.dumps(row), flush=True)
             if current < best:

@@ -6,8 +6,9 @@ facts.json hold the initial tables and the user's private facts).
 Write answer_schema.json: the JSON object the agent must return to the user at the end.
 Format: {{"fields": {{"<name>": {{"type": ..., "description": ..., ...}}}}}}
 - types: string, integer, number, boolean, array (needs "items"), object (optional "properties");
-  "nullable": true when a value can legitimately be absent; arrays may set "order": "any"
-  when order carries no meaning.
+  "nullable": true when a value can legitimately be absent; every array sets "order": "any"
+  when order carries no meaning or "exact" when it is a ranking or sequence. Amounts are integers
+  in the smallest unit (cents, fen), never strings.
 - Cover exactly what the user asked to learn or be told, nothing decorative. Express every
   outcome with ids, integers, booleans or string enums ("enum": [...]) so that two correct,
   independent implementations produce identical values. Every field needs a precise
@@ -42,12 +43,17 @@ Write env.py:
     from env_factory.runtime import write, BusinessError
 
 1. make_tools() -> dict of name -> function.
+   - `now` is time.start: an int, or for a calendar clock an ISO string "YYYY-MM-DDTHH:MM" (compare with
+     datetime.fromisoformat; dates in the tables are ISO strings too).
    - Read tool: fn(db, now, **args) -> JSON. The signature and docstring are the only tool
      description an agent sees: annotate every argument with its type (str, int, float, bool,
      dict, list[...], or X | None) and give the docstring a summary plus an `Args:` section
      with one `name: meaning` line per argument (units, id format, allowed values).
    - Write tool: decorate with @write; fn(db, now, **args) mutates db in place and returns a
-     JSON receipt. Raise BusinessError to reject; the runtime rolls the write back.
+     JSON receipt. Raise BusinessError to reject; the runtime rolls the write back. Its arguments are
+     business parameters (ids, enums, amounts, lists of ids), never an object: when the write must
+     confirm amounts the agent worked out and told the customer (a penalty, a refund), take each as its
+     own integer argument (penalty_cents, refund_cents) and reject a wrong one, never a bundle of terms.
    - Tools look like a real business API. Each read answers one business question about
      specific records (look up by id, list one customer's orders, search with filters) and
      returns only the records and fields that question needs. Never write a generic table
@@ -58,6 +64,15 @@ Write env.py:
      enforce every rule in brief.md and raise BusinessError on a violation. Tools run on
      perturbed worlds, so never depend on particular ids or values from data.json.
    - Expose what an agent needs to do the task through tools; never expose facts.json.
+   - The tools are the business's whole service API, not a kit cut for this one request: besides
+     the reads this task needs, add at least three reads a colleague would use for neighbouring
+     questions in the same business (for example tracking, loyalty balance, opening hours,
+     another record type) that this task never needs. They read the same data and must work.
+   - Ids of internal records (items, payments, tickets, segments) come only from what another
+     read returns (an order's items from the order), never from something the user could know.
+   - In `Args:` describe each id's format with a made-up example that is not in data.json
+     (for example "order id such as 'ord-000'"); agents must take real ids from the user or
+     from tool results, never from the example.
 2. approval_key(tool, args, facts) -> str (only when facts.json has approval topics): the
    approval topic in facts.json that governs this exact write, derived from the arguments and
    the user's facts (for example: the loan is the first id the user listed -> approve_first).
@@ -74,7 +89,10 @@ Write env.py:
    World mode: when request.json has "goal_schema", this environment serves many tasks on one
    database. The user's goals are the fact "goals" ([{{"process", "params"}}]): reference(api)
    must handle any process in goal_schema with any valid params (read them with api.ask), never
-   only the sample task in facts.json. Catch BusinessError where the rules allow
+   only the sample task in facts.json. When goal_schema gives each process an "outcome", the answer
+   is {{"goal_1": ..., "goal_2": ...}}: one field per goal in order, in that process's outcome shape
+   (answer_schema.json shows it for the sample goals). An "inquiry" goal is answered from the rules
+   and its params alone, with no tool call. Catch BusinessError where the rules allow
    partial success. Return the answer exactly in answer_schema.json's shape. When data.json has
    scheduled_events, time passes only through api.wait(seconds); the events change rows as the
    clock passes them and tools never see that table.
@@ -97,6 +115,7 @@ Write verifier.py:
     from env_factory.runtime import InvalidWorld   # optional
 
 def expected(data, facts, now) -> {{"answer": ..., "final_state": ...}}
+(`now` is time.start: an int, or an ISO string "YYYY-MM-DDTHH:MM" for a calendar clock.)
 - final_state: every table after all operations a correct handling performs. An operation
   happens only if the rules allow it at that point AND the user's matching approval fact is
   true. Committed operations stay committed unless the rules say otherwise.
@@ -110,7 +129,9 @@ def expected(data, facts, now) -> {{"answer": ..., "final_state": ...}}
   order for the waiting a correct handling does; keep that table unchanged in final_state.
 - World mode: when request.json has "goal_schema", the same verifier serves many tasks on one
   database: compute the outcome for whatever goals the fact "goals" lists, for any process in
-  goal_schema, never only the sample task in facts.json.
+  goal_schema, never only the sample task in facts.json. When each process has an "outcome", the
+  answer is {{"goal_1": ..., "goal_2": ...}}: one field per goal in order, in that process's
+  outcome shape.
 - It runs on perturbed worlds and flipped approvals: never depend on particular ids or
   values. Raise InvalidWorld only when the data itself breaks an invariant stated in
   brief.md (e.g. a dangling reference); never to avoid a hard case.
@@ -241,13 +262,15 @@ Run `{python} -m env_factory.checks env`, `{python} -m env_factory.checks verifi
 Do not read or write files outside this folder. End with a two-line summary of the fix.
 """
 
-REQUEST_AUTHOR = """You design one new business task for training customer-facing agents. Business domain:
+REQUEST_AUTHOR = """You design one new business task for training agents that act for a user under a business's
+policies, through its tools: the user may be a customer, an employee (an HR, IT, finance or procurement assistant), a
+professional (a firm's or clinic's office assistant) or a partner business (dispatch, reconciliation). Business domain:
 {domain}. {detail}
 Write request.json in this folder (assignment.json repeats the assignment):
 {{"id": "{id}", "family": "<short domain slug>", "category": "{category}", "reward_type": "{reward_type}",
   "language": "{language}", "title": "<short title in {language_name}>", "user_scene": {{...}},
   "business_rules": "...", "tables": {{...}},
-  "user_facts": {{...}}, "time": {{"start": 10, "tick": 0}}}}
+  "user_facts": {{...}}, "time": {{"start": "2024-05-15T15:00", "tick": 0}}}}
 Do not write the user's opening message: another writer turns user_scene into it without ever
 seeing the rules, tables or facts.
 
@@ -280,7 +303,10 @@ Task shape: {shape}
   are fine, the writer says them in {currency}). Keep it short enough to say in one breath: a direct task
   has at most 3 records and 8 numbers in known (design the computation to fit). wants_to_know has
   at most 3 short items in the user's own words; everything the final answer must report goes
-  into business_rules ("最终必须告知……"), not into the scene. Never put business rules, confirmation steps, transaction
+  into business_rules ("最终必须告知……"), not into the scene. Besides the outcome of any change,
+  the answer must include at least one concrete fact the agent can only learn from a lookup (how many
+  options are available, the new departure time, the remaining balance), the way real customers ask
+  "what are my options" or "when does it leave". Never put business rules, confirmation steps, transaction
   semantics or virtual clock values ("time 10", "day 30") in the scene; give times relative to now
   ("starts in 20 minutes", "expires in 2 days") in the unit the rules use. user_facts stay private:
   do not copy them into known unless the user would open with them.
@@ -289,6 +315,10 @@ Task shape: {shape}
   Everything else the agent needs lives in user_facts and comes out only when the agent asks.
 - Time does not pass in this task: queries, approvals and writes all happen at time.start. Do
   not describe a clock that ticks per action; time-dependent rules compare against time.start.
+- Use calendar time, as real businesses do: time = {{"start": "<YYYY-MM-DDTHH:MM, now>", "tick": 0}};
+  dates and times in the tables are ISO strings ("2024-05-15" or "2024-05-15T09:30"); rules are stated
+  in calendar terms ("within 24 hours of booking", "at least 3 days before departure", "before 18:00
+  on the delivery day") so the agent has to reason about dates, including across days and months.
 - Use a domain different from library loans, procurement, subscriptions, document access,
   parcels, parking, warehouse lots and file versions.
 
@@ -329,7 +359,7 @@ Run `{python} -m env_factory.checks rubric` until it prints PASS. Do not read or
 outside this folder. End with one line naming the criteria.
 """
 
-OPENING_WRITER = """你是一位普通用户，正在和客服/业务助理在线聊天。根据下面的场景，写出你发的第一条消息。
+OPENING_WRITER = """你是一位用户（可能是顾客、员工、专业人士或合作方），正在和负责这项业务的客服或助理在线沟通。根据下面的场景，写出你发的第一条消息。
 
 你的处境：{situation}
 你想要的：{goal}
@@ -351,7 +381,7 @@ Run `{python} -m env_factory.checks env` until it prints PASS.
 Do not read or write files outside this folder. End with a two-line summary of the fix.
 """
 
-POLICY_WRITER = """你要把一份写给开发者的业务实现规格，改写成给一线客服看的业务政策手册。客服只看这份手册办事。
+POLICY_WRITER = """你要把一份写给开发者的业务实现规格，改写成给一线客服或业务助理看的政策手册。他们只看这份手册办事。
 
 实现规格：
 {rules}
@@ -364,18 +394,18 @@ POLICY_WRITER = """你要把一份写给开发者的业务实现规格，改写�
 {feedback}
 只输出手册正文，分条列出。"""
 
-POLICY_CHECKER = """下面是一份业务实现规格，和据此改写的客服政策手册。客服只能看到手册。逐条对照：规格里任何会影响处理结果的规则（资格、计算、取整、顺序、上限、拒绝或失败后的处理、需要用户同意的操作、最后要告诉用户的内容），如果在手册里缺失、被改变、数值或边界不一致、或者说得含糊到可以有两种理解，就列出来。只看业务含义，不管措辞和实现细节。
-客服除了手册，还能看到当前时间的数值、查询工具返回的数据和最终答案的字段说明，所以手册不需要写出当前时间的具体数值、表名字段名或数据里的具体记录；这类内容不算缺失。手册里的时间单位（分钟、小时、天）与规格一致即可，不写“虚拟”二字不算问题。
+POLICY_CHECKER = """下面是一份业务实现规格，和据此改写的政策手册。客服或助理只能看到手册。逐条对照：规格里任何会影响处理结果的规则（资格、计算、取整、顺序、上限、拒绝或失败后的处理、需要用户同意的操作、最后要告诉用户的内容），如果在手册里缺失、被改变、数值或边界不一致、或者说得含糊到可以有两种理解，就列出来。只看业务含义，不管措辞和实现细节。
+客服或助理除了手册，还能看到当前时间的数值、查询工具返回的数据和最终答案的字段说明，所以手册不需要写出当前时间的具体数值、表名字段名或数据里的具体记录；这类内容不算缺失。手册里的时间单位（分钟、小时、天）与规格一致即可，不写“虚拟”二字不算问题。
 
 实现规格：
 {rules}
 
-客服政策手册：
+政策手册：
 {policy}
 
 只输出 JSON：{{"problems": ["<一句话说明一条缺失或不一致的规则>", ...]}}；没有问题时输出 {{"problems": []}}。"""
 
-OPENING_WRITER_EN = """You are an ordinary customer chatting online with a service agent. From the scene below, write
+OPENING_WRITER_EN = """You are a user (a customer, an employee, a professional or a partner business) chatting online with the agent who handles this business. From the scene below, write
 the first message you send, in English.
 
 Your situation: {situation}
@@ -390,13 +420,14 @@ words; {avoid}
 never restate rules or procedures, never dictate how the agent should confirm things with you, and never
 mention internal numbers such as "time 10" or "day 10". Output only the message itself."""
 
-WORLD_AUTHOR = """You design one complete customer-service business world for training agents: one database and
-one policy manual on which many different customer tasks will later be posed. Business domain: {domain}. {detail}
+WORLD_AUTHOR = """You design one complete business world for training agents that act for a user (a customer, an
+employee, a professional or a partner business) under its policies: one database and one policy manual on which many
+different tasks will later be posed. Business domain: {domain}. {detail}
 Write request.json in this folder:
 {{"id": "{id}", "family": "<short domain slug>", "category": "multi_step_agentic", "reward_type": "business",
   "language": "{language}", "title": "<short title in {language_name}>", "business_rules": "...",
   "goal_schema": {{...}}, "tables": {{...}}, "user_facts": {{...}}, "user_scene": {{...}},
-  "time": {{"start": <int>, "tick": 0}}}}
+  "time": {{"start": "<YYYY-MM-DDTHH:MM, now>", "tick": 0}}}}
 
 - business_rules ({language_name}): the full policy manual of this business, the only authority. Cover 6 to 10
   business processes customers come for (for example look up, book, change, cancel, refund, exchange,
@@ -405,9 +436,31 @@ Write request.json in this folder:
   rounding, deadlines relative to now, what happens on refusal or failure, partial success, and which writes need
   the customer's approval. Customers must be identified (state how: e.g. name plus postcode, or email) before any
   account data is shown or changed. For every row a write creates or changes, state the value of every column.
-  No rule may be open to two readings. Amounts are integer cents; times are virtual integers (minutes).
-- goal_schema: {{"<process>": {{"description": "<what the customer wants>", "params": {{"<name>": "<type and
-  meaning>"}}}}}} for those 6 to 10 processes. A task's goals are one to three of them with concrete params.
+  No rule may be open to two readings. Amounts are integer cents; dates and times are ISO strings ("2024-05-15", "2024-05-15T09:30") against a fixed
+  calendar now (time.start), and rules are stated in calendar terms (hours, days, "before 18:00").
+- goal_schema: {{"<process>": {{"description": "<what the customer wants>", "kind": "account" | "inquiry",
+  "params": {{"<name>": "<type and meaning>"}}, "outcome": <field spec>}}}} for those 6 to 10 processes. A task's
+  goals are one to three of them with concrete params.
+  - kind "inquiry" (one or two processes): a policy question answered from the rules and the numbers the customer
+    states (for example the fee for a change on a fare and a date they name): no identification, no table
+    lookup, no write; its params are those numbers.
+  - kind "advice" (at least one): the customer wants a recommendation, comparison or explanation about their own
+    situation (which plan or option suits them, why a charge happened); the agent looks up their records and
+    applies the rules; no write. Its outcome holds the key points a good answer must contain: the recommended
+    option (an enum or record id; when the rules make several equally good, the verifier lists the others as
+    alternatives) and the reasons as enums of the deciding rules, plus the amounts or dates the answer needs.
+  - Every other process is "account".
+  - outcome: what the customer must be told when a goal of this process is handled, as one answer field spec of
+    type "object" with "properties" (the same rules as an answer schema: ids, integers, booleans and string enums,
+    a description with units and how absent or refused cases are written; only values a good agent would say).
+  - approval (every process whose handling writes): the approve_* fact key pattern its writes are approved
+    under, with the record id when one customer may decide differently per record, e.g. "approve_cancel_<exchange_id>".
+    env.approval_key must return exactly this pattern filled in for the write, and every task names its approval
+    facts by it.
+    It must cover refusal and partial cases too: a "status" enum, and for an account process a "reason" string
+    enum naming why it was refused or could not be done (null on success), so an agent that refuses without
+    checking the data cannot match a correct refusal. Each task's answer has one field
+    per goal, goal_1, goal_2, ..., in the order of its goals, each in its process's outcome shape.
 - tables: a realistic database: at least 40 customers and at least 200 rows in all, with several payment methods,
   statuses and edge cases (expired, ineligible, at a limit, out of stock); unique "id" per row; columns consistent.
 - user_facts: one sample task: "goals": [{{"process": ..., "params": {{...}}}}], the identity facts the rules ask
@@ -435,6 +488,15 @@ Write task.json:
 
 - Processes for this task: {processes}. Pick a customer and records from the tables for which these goals make
   sense under the rules; params must name real rows.
+- Name every approve_* fact by the "approval" pattern of its process in goal_schema (for example
+  approve_cancel_<exchange_id> -> approve_cancel_HX1), one per write the customer is asked about.
+- {shape}
+- Make this task a different exercise from the world's other tasks: vary the case the rules distinguish (another
+  fare or tier, another timing window, an exception), not only the amounts.
+- Use the size of the world to make the conversation real: prefer a customer who has several similar records
+  (so "my booking" needs a follow-up question), let goals across processes depend on each other (the outcome of
+  the first changes what the second can do), and keep user_scene.known to at most two items so the agent has to
+  ask for the rest.
 - overlay: optional small changes to existing rows (only existing tables, ids and columns) that create the
   situation this task needs (for example make the first-choice item unavailable, set a date just past a deadline).
 - user_scene ({language_name}): what the customer knows and says, in their own words: no rules, protocol or

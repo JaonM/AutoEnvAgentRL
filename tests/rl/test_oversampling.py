@@ -7,7 +7,7 @@ from rl.tasks import TaskSpec
 
 
 def test_oversampling_defaults_and_bounds():
-    config = Config(sandbox='unused', output='unused', batch_size=4)
+    config = Config(sandbox='unused', output='unused', batch_size=4, mini_batch_size=4)
     config.validate()
     assert config.sampling_pool_size == 8
     config.over_sampling_batch_size = 3

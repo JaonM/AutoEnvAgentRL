@@ -38,20 +38,37 @@ BLOCKED = ('通灵', '灵媒', '占卜', '算命', '风水', '法事', '招魂',
 RESERVED_FOR_EVAL = ('航空', '机票', '航班', '登机', '值机', '托运', '电信', '话费', '手机套餐', '流量', '运营商',
                      '宽带', '携号转网', 'SIM')
 
-PROPOSER = """你在为训练客服/业务助理 agent 设计业务领域。请把下面的素材组合成一个具体、真实存在的面向用户的业务领域。
+PROPOSER = """你在为训练业务助理 agent 设计业务领域：agent 按一套政策、通过工具替一位用户办事。agent 的服务对象可以是消费者（客服）、企业员工（HR、IT、财务、采购等内部助理）、专业人士（律所、诊所、研究机构的事务助理）、合作企业（物流调度、供应商对账等 B2B 业务）或个人（日程、家庭事务助理），不限于面向消费者的客服。请把下面的素材组合成一个具体、真实存在的业务领域。
 
 场景素材（来自知识图谱的一条相关概念路径）：{path}
 业务环节：{process}
 需要体现的机制：{mechanisms}
 
 要求：
-- 领域必须是现实中用户会找客服或助理办理的业务，场景素材要实质用上（至少一个概念决定了业务内容），不是贴标签；
+- 领域必须是现实中会有人请助理或客服代为办理的业务，场景素材要实质用上（至少一个概念决定了业务内容），不是贴标签；
 - detail 用一句中文写清这个领域里有哪些业务对象、规则要点，以及上面的机制怎么出现；
-- 只接受常见、合法、面向普通用户或企业的正规服务（如出行、住宿、零售、金融保险、公共事业、教育、医疗挂号、政务、
-  物流仓储、文旅票务）；玄学迷信、宗教法事、博彩、成人、违法或灰色业务一律拒绝；
-- 如果这些素材实在组合不出合理的客服业务（比如纯自然或纯历史概念配理赔），就拒绝，不要硬凑。
+- 只接受常见、合法的正规业务（如出行、住宿、零售、金融保险、公共事业、教育、医疗挂号、政务、物流仓储、文旅票务，
+  以及企业内部的人事、IT、财务、采购，专业机构的事务管理，B2B 的调度与对账）；玄学迷信、宗教法事、博彩、成人、违法或灰色业务一律拒绝；
+- 如果这些素材实在组合不出合理的业务（比如纯自然或纯历史概念配理赔），就拒绝，不要硬凑。
 
 只输出 JSON：{{"accept": true/false, "name": "<领域名，10 字以内>", "detail": "<一句话>", "reason": "<拒绝原因，接受时为空>"}}"""
+
+
+WORLD_PROPOSER = """你在为训练业务助理 agent 设计一个完整的业务世界：一个数据库加一本政策手册，之后会在上面出几十道不同的任务。
+agent 按政策、通过工具替一位用户办事；agent 的服务对象可以是消费者（客服）、企业员工（HR、IT、财务、采购等内部助理）、专业人士（律所、诊所、研究机构的事务助理）、合作企业（物流调度、供应商对账等 B2B 业务）或个人（日程、家庭事务助理），不限于面向消费者的客服。
+请把下面的素材组合成一个具体、真实存在的业务（一家机构或一类服务）。
+
+场景素材（来自知识图谱同一事件分量的一条概念路径）：{path}
+可参考的业务环节：{processes}
+需要体现的机制：{mechanisms}
+
+要求：
+- 业务必须是现实中会有人请助理或客服代为办理的正规业务，场景素材要实质用上；
+- 列出 6 到 10 个用户会来办理的业务流程（查询、预订、变更、取消、退款、补偿、升级、投诉……），其中至少一个是只需要按政策回答的咨询，至少一个是需要查账户后给建议的咨询；
+- detail 用一段中文写清：业务对象有哪些，身份核验方式，主要规则（资格、时限、费用与取整、限额、需要用户同意的操作），上面的机制如何出现，哪些请求超出范围；
+- 只接受常见、合法的正规业务；玄学迷信、宗教法事、博彩、成人、违法或灰色业务一律拒绝；组合不出合理业务就拒绝。
+
+只输出 JSON：{{"accept": true/false, "name": "<业务名，12 字以内>", "detail": "<一段话>", "processes": ["<流程>", ...], "reason": "<拒绝原因，接受时为空>"}}"""
 
 
 def grams(text):
@@ -156,6 +173,63 @@ def _exists(path):
     return os.path.exists(path)
 
 
+def screen(verdict, taken, accepted):
+    """Why a proposal is rejected (None when it is kept): not accepted, a grey or occult business, a benchmark's
+    domain, or a near-duplicate of a development family, an excluded domain or an accepted one."""
+    if not verdict.get('accept') or not verdict.get('name') or not verdict.get('detail'):
+        return verdict.get('reason') or 'rejected'
+    blocked = [term for term in BLOCKED if term in verdict['name'] + verdict['detail']]
+    if blocked:
+        return f'not a mainstream legitimate service: {blocked}'
+    reserved = [term for term in RESERVED_FOR_EVAL if term in verdict['name'] + verdict['detail']]
+    if reserved:
+        return f'reserved for evaluation: {reserved}'
+    twin = next((name for name in taken if similarity(verdict['name'], name) >= SIMILAR), None) or next(
+        (d['name'] for d in accepted if similarity(verdict['detail'], d['detail']) >= SIMILAR), None)
+    if twin:
+        return f'near-duplicate of {twin}'
+    return None
+
+
+def propose_worlds(graph, client, count, *, split, seed=0, hops=4, exclude=(), max_attempts=None):
+    """Up to `count` domain worlds (production/world.py) for `split`: a longer walk inside one same-event component
+    and several mechanisms become one whole business where an agent acts for a user with 6 to 10 processes. A world, like a
+    family, never crosses splits, so a held-out split stays unseen as a whole."""
+    rng = random.Random(seed)
+    accepted, rejected = [], []
+    taken = [*DEVELOPMENT_FAMILIES, *exclude]
+    for attempt in range(max_attempts or count * 4):
+        if len(accepted) >= count:
+            break
+        walk = graph.path(rng, split, rng.randint(2, hops))
+        processes = rng.sample(PROCESSES, 4)
+        mechanisms = rng.sample(MECHANISMS, rng.randint(3, 4))
+        path = [graph.names[node] for node in walk]
+        prompt = WORLD_PROPOSER.format(path=' → '.join(path), processes='、'.join(processes),
+                                       mechanisms='、'.join(mechanisms))
+        try:
+            text = client.chat([{'role': 'user', 'content': prompt}], temperature=0.7).get('content') or ''
+            verdict = json.loads(text[text.index('{'):text.rindex('}') + 1])
+        except (ValueError, KeyError):
+            rejected.append({'path': path, 'reason': 'unparseable proposal'})
+            continue
+        provenance = {'scene_path': path, 'mechanisms': mechanisms, 'component': str(graph.component[walk[0]]),
+                      'split': split}
+        reason = screen(verdict, taken, accepted)
+        listed = verdict.get('processes') if isinstance(verdict.get('processes'), list) else []
+        if reason is None and not 6 <= len(listed) <= 10:
+            reason = f'a world needs 6 to 10 processes, got {len(listed)}'
+        if reason:
+            rejected.append({**provenance, 'reason': reason})
+            continue
+        taken.append(verdict['name'])
+        detail = f"{verdict['detail']} 业务流程：{'、'.join(map(str, listed))}。"
+        accepted.append({'name': verdict['name'], 'detail': detail, 'processes': listed, 'mechanisms': mechanisms,
+                         'family': f"{split}:world:{provenance['component']}", 'world': True,
+                         'provenance': provenance})
+    return {'split': split, 'accepted': accepted, 'rejected': rejected, 'proposer': getattr(client, 'model', None)}
+
+
 def propose(graph, client, count, *, split, seed=0, hops=2, exclude=(), max_attempts=None):
     """Up to `count` accepted domains for `split`, with provenance and every rejection."""
     rng = random.Random(seed)
@@ -177,21 +251,9 @@ def propose(graph, client, count, *, split, seed=0, hops=2, exclude=(), max_atte
             continue
         provenance = {'scene_path': path, 'process': process, 'mechanisms': mechanisms,
                       'component': str(graph.component[walk[0]]), 'split': split}
-        if not verdict.get('accept') or not verdict.get('name') or not verdict.get('detail'):
-            rejected.append({**provenance, 'reason': verdict.get('reason') or 'rejected'})
-            continue
-        blocked = [term for term in BLOCKED if term in verdict['name'] + verdict['detail']]
-        if blocked:
-            rejected.append({**provenance, 'reason': f'not a mainstream legitimate service: {blocked}'})
-            continue
-        reserved = [term for term in RESERVED_FOR_EVAL if term in verdict['name'] + verdict['detail']]
-        if reserved:
-            rejected.append({**provenance, 'reason': f'reserved for evaluation: {reserved}'})
-            continue
-        twin = next((name for name in taken if similarity(verdict['name'], name) >= SIMILAR), None) or next(
-            (d['name'] for d in accepted if similarity(verdict['detail'], d['detail']) >= SIMILAR), None)
-        if twin:
-            rejected.append({**provenance, 'reason': f'near-duplicate of {twin}'})
+        reason = screen(verdict, taken, accepted)
+        if reason:
+            rejected.append({**provenance, 'reason': reason})
             continue
         taken.append(verdict['name'])
         accepted.append({'name': verdict['name'], 'detail': verdict['detail'], 'mechanisms': mechanisms,

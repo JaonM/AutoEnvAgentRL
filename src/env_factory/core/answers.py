@@ -48,7 +48,7 @@ def check_schema(schema):
         out = []
         if top and not (isinstance(spec.get('description'), str) and spec['description'].strip()):
             out.append(f'{path}: description required')
-        allowed = {'type', 'description', 'nullable', 'items', 'properties', 'order', 'enum'} | \
+        allowed = {'type', 'description', 'nullable', 'items', 'properties', 'order', 'enum', 'partial'} | \
             ({'graded'} if named else set())
         extra = set(spec) - allowed
         if extra:
@@ -56,6 +56,8 @@ def check_schema(schema):
         if 'enum' in spec and (spec['type'] != 'string' or not isinstance(spec['enum'], list) or not spec['enum']
                                or not all(isinstance(v, str) for v in spec['enum'])):
             out.append(f'{path}: enum must be a nonempty list of strings on a string field')
+        if 'partial' in spec and spec['partial'] is not False:
+            out.append(f'{path}: partial may only be set to false')
         if named and 'graded' in spec and spec['graded'] is not False:
             out.append(f'{path}: graded may only be set to false')
         name = path.rsplit('.', 1)[-1].lower()
@@ -160,6 +162,8 @@ def normalize(spec, value):
     if isinstance(value, bool):
         return ('bool', value)
     if isinstance(value, str):
+        if NUMERIC_TEXT.match(value.strip()):  # "12.50", "12.5" and "$12.50" are one amount
+            return ('number', round(float(value.strip().lstrip('$¥￥').replace(',', '')), 9))
         return ('str', text_key(value))
     if isinstance(value, list):
         item_spec = (spec or {}).get('items') or {}
@@ -172,6 +176,9 @@ def normalize(spec, value):
         return ('dict', tuple(sorted((key, normalize(properties.get(key), item)) for key, item in value.items()
                                      if (properties.get(key) or {}).get('graded', True))))
     return ('other', repr(value))
+
+
+NUMERIC_TEXT = re.compile(r'^[$¥￥]?-?\d{1,3}(,\d{3})*(\.\d+)?$|^[$¥￥]?-?\d+(\.\d+)?$')
 
 
 def text_key(value):
@@ -188,18 +195,59 @@ def internal(spec, value, known):
     return bool(MACHINE_ID.match(value)) and not any(value in text for text in known)
 
 
-def score(spec, expected, actual, known=None):
-    """Share of graded leaves of `expected` that `actual` matches (1.0 when nothing is graded)."""
+def aliases_of(*states):
+    """{text key of a row's string value: row id} for values naming exactly one row (a card number, an order
+    reference): an agent says "gift card GIFT-88" for row gc-new, and that is the same record."""
+    seen = {}
+    for state in states:
+        for rows in (state or {}).values():
+            for row in rows if isinstance(rows, list) else []:
+                if not (isinstance(row, dict) and isinstance(row.get('id'), str)):
+                    continue
+                for key, value in row.items():
+                    if key != 'id' and isinstance(value, str) and len(value) >= 3:
+                        seen.setdefault(text_key(value), set()).add(row['id'])
+    return {key: next(iter(ids)) for key, ids in seen.items() if len(ids) == 1}
+
+
+def same_record(expected, actual, aliases):
+    return bool(aliases) and isinstance(expected, str) and isinstance(actual, str) and \
+        aliases.get(text_key(actual)) == expected
+
+
+def score(spec, expected, actual, known=None, aliases=None):
+    """Share of graded leaves of `expected` that `actual` matches (1.0 when nothing is graded). `aliases`
+    (aliases_of the tables) accepts another name of the expected record."""
     spec = spec or {}
-    if internal(spec, expected, known):
+    if same_record(expected, actual, aliases):
         return 1.0
+    if internal(spec, expected, known) and actual in (None, ''):
+        return 1.0  # an internal id the agent did not state is not required; naming another record is wrong
     if isinstance(expected, dict) and isinstance(actual, dict) and spec.get('properties'):
-        parts = [score(child, expected.get(name), actual.get(name), known)
-                 for name, child in spec['properties'].items() if child.get('graded', True)]
-        return sum(parts) / len(parts) if parts else 1.0
+        graded = [(name, child) for name, child in spec['properties'].items() if child.get('graded', True)]
+        parts = {name: score(child, expected.get(name), actual.get(name), known, aliases) for name, child in graded}
+        if not parts:
+            return 1.0
+        if all(value == 1.0 for value in parts.values()):
+            return 1.0
+        # Partial credit only for substance: an expected null (nothing to report) and an enum (a status, a
+        # decision) earn nothing on their own, so saying "refused" or nothing at all does not collect half
+        # an object; both are still required for the full score.
+        # decisions (enums, booleans) and constants of the world (partial: false) are required, never partial credit
+        enums = {name for name, child in graded if child.get('enum') or child.get('type') == 'boolean'
+                 or child.get('partial') is False}
+        # An exempt internal id the agent did not state is neither credit nor penalty.
+        exempt = {name for name, child in graded if internal(child, expected.get(name), known)
+                  and actual.get(name) in (None, '')}
+        substance = [value for name, value in parts.items()
+                     if name not in enums and name not in exempt and expected.get(name) is not None]
+        if not substance:
+            return 0.5 * sum(parts.values()) / len(parts) if all(parts[name] == 1.0 for name in enums) else 0.0
+        share = sum(substance) / len(substance)
+        return share if all(parts[name] == 1.0 for name in enums) else 0.5 * share
     if (isinstance(expected, list) and isinstance(actual, list) and spec.get('order', 'exact') == 'exact'
             and len(expected) == len(actual) and expected):
-        return sum(score(spec.get('items'), e, a, known) for e, a in zip(expected, actual)) / len(expected)
+        return sum(score(spec.get('items'), e, a, known, aliases) for e, a in zip(expected, actual)) / len(expected)
     if known is not None and isinstance(expected, (dict, list)):
         if normalize(spec, expected) == normalize(spec, actual):
             return 1.0
@@ -208,7 +256,7 @@ def score(spec, expected, actual, known=None):
             # multiset: each expected item matched by a distinct actual item, internal ids ignored
             left = list(actual)
             for item in expected:
-                hit = next((a for a in left if score(spec.get('items'), item, a, known) == 1.0), None)
+                hit = next((a for a in left if score(spec.get('items'), item, a, known, aliases) == 1.0), None)
                 if hit is None:
                     return 0.0
                 left.remove(hit)
@@ -225,23 +273,37 @@ def graded_fields(schema):
     return {name: spec for name, spec in schema['fields'].items() if spec.get('graded', True)}
 
 
-def scores(schema, expected, actual, known=None):
+def scores(schema, expected, actual, known=None, aliases=None):
     """{graded field: share of its graded leaves matched}. A non-object answer scores 0 everywhere."""
     fields = graded_fields(schema)
     if not isinstance(actual, dict):
         return {name: 0.0 for name in fields}
-    return {name: (score(spec, expected[name], actual[name], known) if name in actual and name in expected else 0.0)
-            for name, spec in fields.items()}
+    return {name: (score(spec, expected[name], actual[name], known, aliases) if name in actual and name in expected
+                   else 0.0) for name, spec in fields.items()}
 
 
-def compare(schema, expected, actual, known=None):
+def compare(schema, expected, actual, known=None, aliases=None):
     """{graded field: bool}: True when the field's score is 1. A non-object answer fails every field."""
-    return {name: value == 1.0 for name, value in scores(schema, expected, actual, known).items()}
+    return {name: value == 1.0 for name, value in scores(schema, expected, actual, known, aliases).items()}
+
+
+def referable_ids(tables):
+    """Ids of rows a person can name (a field with a name-like string: spaces or capitals, e.g. "Basic Saver"):
+    the agent can say the name and the extractor resolves it to the id, so such an id is graded, not exempt."""
+    out = []
+    for rows in (tables or {}).values():
+        for row in rows if isinstance(rows, list) else []:
+            if isinstance(row, dict) and isinstance(row.get('id'), str) and any(
+                    isinstance(v, str) and k != 'id' and len(v) >= 3 and (' ' in v.strip() or any(c.isupper() for c in v))
+                    and not v.replace('-', '').replace('_', '').isdigit() for k, v in row.items()):
+                out.append(row['id'])
+    return out
 
 
 def known_strings(request, facts=None):
-    """What the user knows: the opening request and every string among their facts."""
-    out = [request.get('user_request') or '']
+    """What the user knows or can be told by name: the opening request, every string among their facts, and the
+    ids of rows a person can name (referable_ids)."""
+    out = [request.get('user_request') or ''] + referable_ids(request.get('tables'))
 
     def walk(value):
         if isinstance(value, str):

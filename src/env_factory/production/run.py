@@ -75,6 +75,16 @@ def stage_domains(out, options, log):
     return chosen
 
 
+def policy_client(folder, options):
+    """Who writes and checks the agent policy manuals: the opening chat model (default: efficiency first; codex
+    sessions run at most two at a time), or codex sessions when ENVFACTORY_POLICY_WRITER=codex."""
+    import os
+    if os.environ.get('ENVFACTORY_POLICY_WRITER', 'chat') != 'codex':
+        return None
+    from env_factory.authoring.codex import CodexChat
+    return CodexChat(Path(folder) / 'policy_sessions', runner=options['runner'], role='agent_policy')
+
+
 def stage_generate(out, domains_, options, log):
     from env_factory.production import generate
     folder = out / 'generate'
@@ -84,7 +94,8 @@ def stage_generate(out, domains_, options, log):
         summary = generate.generate(domains_, options['count'], folder, runner=options['runner'],
                                     parallel=options['parallel'], python=options['python'],
                                     rubric_share=options['rubric_share'], opening_client=options['opening_client'],
-                                    english_share=options.get('english_share', 0.0), mix=options.get('mix'))
+                                    english_share=options.get('english_share', 0.0), mix=options.get('mix'),
+                                    policy_client=policy_client(folder, options))
         log('generate', 'done', f"{summary['kept']}/{summary['requested']} requests")
     else:
         log('generate', 'reused', f"{summary['kept']}/{summary['requested']} requests")
@@ -129,7 +140,9 @@ def stage_build(out, options, log):
 def stage_difficulty(out, statuses, options, log):
     """Difficulty floor (generate.MIN_REFERENCE_CALLS): a training-ready bundle whose reference solution
     needs fewer public tool calls than its shape's floor is too easy to teach anything; it gets no image
-    and no policy gate."""
+    and no policy gate. Each result also records the shape the reference really has (actual_shape), so the
+    report shows the mix that was built, not only the one that was asked for."""
+    from env_factory.certify.gates import trace_structure
     from env_factory.production import generate
     from env_factory.runtime import run_reference
     floors = options.get('min_reference_calls', generate.MIN_REFERENCE_CALLS)
@@ -141,13 +154,19 @@ def stage_difficulty(out, statuses, options, log):
             loaded = bundle.load_bundle(Path(status['bundle']))
             request = loaded['request']
             floor = floors.get((request.get('source') or {}).get('shape'), 0)
-            calls = run_reference(loaded['env'], request['tables'], request['user_facts'],
-                                  start=request['time']['start'])['tool_calls']
+            result = run_reference(loaded['env'], request['tables'], request['user_facts'],
+                                   start=request['time']['start'])
+            calls, actual = result['tool_calls'], generate.actual_shape(trace_structure(result['trace'],
+                                                                                      request['user_facts']))
         except Exception as exc:  # later stages report the broken bundle
             results[task] = {'passed': True, 'error': f'{type(exc).__name__}: {exc}'[:300]}
             continue
-        results[task] = {'passed': calls >= floor, 'reference_calls': calls, 'floor': floor}
-    log('difficulty', 'done', f"{sum(r['passed'] for r in results.values())}/{len(results)} above the floor")
+        results[task] = {'passed': calls >= floor, 'reference_calls': calls, 'floor': floor,
+                         'shape': (request.get('source') or {}).get('shape'), 'actual_shape': actual}
+    import collections
+    shapes = collections.Counter(r.get('actual_shape') for r in results.values() if r.get('actual_shape'))
+    log('difficulty', 'done', f"{sum(r['passed'] for r in results.values())}/{len(results)} above the floor; "
+                              f"built shapes {dict(shapes)}")
     return results
 
 
@@ -159,7 +178,7 @@ def stage_docker(out, statuses, options, log):
             continue
         folder = Path(status['bundle'])
         try:
-            results[task] = {'image': docker.image_for(folder), 'reused': True}
+            results[task] = {'image': docker.image_for(folder)[0], 'reused': True}
         except ValueError:
             try:
                 metadata = docker.build(folder)
@@ -188,6 +207,8 @@ def stage_policy(out, statuses, options, log):
 
     def one(job):
         task, folder = job
+        from env_factory.production import offpeak
+        offpeak.wait(lambda text: log('policy', 'waiting', text))  # each task plays k model-driven episodes
         try:
             return task, policy.gate(folder, options['policy_client'], k=k, user_mode=mode,
                                      user_client=options.get('user_client'))

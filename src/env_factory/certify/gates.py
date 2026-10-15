@@ -141,6 +141,18 @@ def negatives(env, verifier, schema, request, worlds):
         checks[name] = {'applicable': True, 'passed': passed, 'reward': grade['reward'], 'success': grade['success']}
 
     judge('null_policy', lambda api: {}, data, facts, expected, must_be_zero=True)  # doing nothing earns 0
+    # Blanket refusal: no lookups, no writes, and the answer the task has when the user approves nothing.
+    # Where that is not the right outcome it must not succeed (a refusal answer that matched anyway would
+    # pay an agent that refuses without checking).
+    denied = {k: (False if k.startswith('approve') and isinstance(v, bool) else v) for k, v in facts.items()}
+    try:
+        refusal = _expected(verifier, data, denied, start)
+    except Exception:  # noqa: BLE001 - no refusal outcome to imitate
+        refusal = None
+    if refusal is not None and canonical(refusal['answer']) != canonical(expected['answer']):
+        judge('blanket_refusal', lambda api: copy.deepcopy(refusal['answer']), data, facts, expected)
+    else:
+        checks['blanket_refusal'] = {'applicable': False, 'note': 'refusing is the expected answer or has none'}
     stale = [w for w in worlds if w['world'].startswith('perturb') and w['status'] == 'agree'
              and canonical(w['expected_answer']) != canonical(expected['answer'])][:5]
     if stale:
@@ -261,8 +273,10 @@ def qualify(env, verifier, schema, request, *, perturbed=20, http=True, excluded
     return report
 
 
-BUSINESS_GATES = ('static', 'differential', 'negatives', 'category', 'http')
-RUBRIC_GATES = ('static', 'rubric', 'negatives', 'category', 'http')
+# natural: env.approval_key maps every write to its approval topic; without it the free-dialogue service
+# refuses the bundle, so a task that passed every other gate would still be unservable.
+BUSINESS_GATES = ('static', 'natural', 'differential', 'negatives', 'category', 'http')
+RUBRIC_GATES = ('static', 'natural', 'rubric', 'negatives', 'category', 'http')
 EMPTY_REPLY, GENERIC_REPLY = '', '好的，已经帮您处理好了，还有其他需要吗？'
 
 

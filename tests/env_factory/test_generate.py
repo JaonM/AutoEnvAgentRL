@@ -111,9 +111,10 @@ class GenerateTests(unittest.TestCase):
                                            writer, output)[:1], ['gen-001'])
         self.assertIn('不要使用这些已被其他用户用滥的说法', writer.prompts[0])
 
-    def test_plan_follows_the_v2_mix(self):
+    def test_plan_follows_the_default_mix(self):
         shapes = [shape for _, _, shape in generate.plan(DOMAINS, 30)]
-        self.assertEqual([shapes.count(s) for s in ('direct', 'simple', 'ordinary', 'complex')], [6, 6, 6, 12])
+        self.assertEqual([shapes.count(s) for s in ('direct', 'simple', 'ordinary', 'single_write', 'complex')],
+                         [3, 6, 4, 8, 9])
 
     def test_request_check_rejects_bad_scenes_and_bad_approvals(self):
         folder = Path(tempfile.mkdtemp())
@@ -160,7 +161,7 @@ class GenerateTests(unittest.TestCase):
                 if prompt.startswith('你要把一份写给开发者的业务实现规格'):
                     self.drafts += 1
                     return {'content': POLICY if self.drafts > 1 else '可以续借。'}
-                gap = '可以续借。' in prompt.split('客服政策手册：', 1)[1]
+                gap = '可以续借。' in prompt.split('\n政策手册：', 1)[1]
                 return {'content': json.dumps({'problems': ['漏了排队的书不能续借'] if gap else []}, ensure_ascii=False)}
 
         checker = Checker()
@@ -306,3 +307,36 @@ class ClarificationScriptTests(unittest.TestCase):
         text = user_sim.script_text(script_for(['ambiguous', 'clarify']), 'zh')
         self.assertIn('我那本书', text)
         self.assertIn('能不能续', text)
+
+
+class CodexChatTests(unittest.TestCase):
+    def test_each_call_is_its_own_session_and_returns_answer_md(self):
+        import tempfile
+        from env_factory.authoring.codex import CodexChat
+        seen = []
+
+        def runner(folder, prompt, *, timeout, role):
+            seen.append(Path(folder))
+            (Path(folder) / 'answer.md').write_text(f'answer {len(seen)}')
+            return {'status': 'exited'}
+        chat = CodexChat(Path(tempfile.mkdtemp()), runner=runner, role='agent_policy')
+        self.assertEqual(chat.chat([{'role': 'user', 'content': 'write'}])['content'], 'answer 1')
+        self.assertEqual(chat.chat([{'role': 'user', 'content': 'check'}])['content'], 'answer 2')
+        self.assertNotEqual(seen[0], seen[1])
+        self.assertTrue(chat.model.startswith('codex:'))
+
+
+class CodexIsolationTests(unittest.TestCase):
+    def test_reads_outside_the_session_are_violations(self):
+        import tempfile
+        from env_factory.authoring.codex import PROJECT, isolation_violations
+        log = Path(tempfile.mkdtemp()) / 'events.jsonl'
+        log.write_text('\n'.join([
+            '{"cmd": "python -m env_factory.checks env"}',
+            '{"cmd": "cat ../verifier/verifier.py"}',
+            f'{{"cmd": "cat {PROJECT}/output/run/build/gen-001/verifier/verifier.py"}}',
+            '{"cmd": "ls /tmp/envfactory-codex/session-other1"}',
+            '{"cmd": "ls /tmp/envfactory-codex/session-mine99"}']))
+        found = isolation_violations(log, own='session-mine99')
+        self.assertEqual(len(found), 3)
+        self.assertFalse(any('checks env' in line or 'mine99' in line for line in found))

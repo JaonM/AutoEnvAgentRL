@@ -93,7 +93,12 @@ class Build:
         if self.request.get('reward_type') == 'rubric':
             return self._run_rubric()
         folder = self.workdir('schema')
-        self.call(folder, prompts.SCHEMA, 'schema')
+        from env_factory.production.world import task_schema
+        composed = task_schema(self.request.get('goal_schema'), self.request['user_facts'].get('goals'))
+        if composed is not None:  # a world: the answer contract comes from its processes' outcome shapes
+            (folder / 'answer_schema.json').write_text(json.dumps(composed, ensure_ascii=False, indent=1))
+        else:
+            self.call(folder, prompts.SCHEMA, 'schema')
         report = checks.run('schema', folder)
         self.stage('schema', passed=report['passed'], problems=report['problems'][:5])
         if not report['passed']:
@@ -173,6 +178,12 @@ class Build:
         (folder / 'branches.json').write_text(json.dumps(found, ensure_ascii=False, indent=1))
         self.call(folder, prompts.AUDITOR, 'audit')
         verdict = branches.verdict(folder, found, self.request)
+        if not verdict['valid']:  # one retry: an invalid verdict (e.g. a quote not verbatim) is the auditor's slip
+            (folder / 'audit_feedback.txt').write_text(f"Your verdict was rejected: {verdict['reason']}\n"
+                                                       'Quote brief.md word for word (copy the exact text).\n')
+            self.call(folder, prompts.AUDITOR + '\nA previous verdict in this folder was rejected; read '
+                      'audit_feedback.txt and write the verdict again.\n', 'audit')
+            verdict = branches.verdict(folder, found, self.request)
         self.stage('branch_audit', **verdict)
         if not verdict['valid']:
             return self.fail('audit_invalid', verdict['reason'])
@@ -210,6 +221,12 @@ class Build:
         (folder / 'perturbations.json').write_text(json.dumps(found, ensure_ascii=False, indent=1, default=str))
         self.call(folder, prompts.PERTURBATION_AUDITOR, 'perturbation_audit')
         verdict = perturbations.verdict(folder, found, self.request)
+        if not verdict['valid']:  # one retry: an invalid verdict (e.g. a quote not verbatim) is the auditor's slip
+            (folder / 'audit_feedback.txt').write_text(f"Your verdict was rejected: {verdict['reason']}\n"
+                                                       'Quote brief.md word for word (copy the exact text).\n')
+            self.call(folder, prompts.PERTURBATION_AUDITOR + '\nA previous verdict in this folder was rejected; read '
+                      'audit_feedback.txt and write the verdict again.\n', 'perturbation_audit')
+            verdict = perturbations.verdict(folder, found, self.request)
         self.stage('perturbation_audit', **verdict)
         if not verdict['valid']:
             return self.fail('audit_invalid', verdict['reason'])
