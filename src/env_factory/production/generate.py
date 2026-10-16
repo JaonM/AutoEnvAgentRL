@@ -64,11 +64,59 @@ SHAPES = {
 # out_of_scope, wrong_first (recovering from a failed lookup) and change_of_mind were raised for pool4 (2026-10-16):
 # the SFT set had 49 out-of-scope, 74 error-recovery and 12 refusal episodes against a target of 100 each.
 SCRIPT_ELEMENTS = {'multi_goal': 0.5, 'fallback': 0.35, 'inquisitive': 0.35, 'pushback': 0.3, 'wrong_first': 0.35,
-                   'change_of_mind': 0.3, 'ambiguous': 0.2, 'clarify': 0.2, 'forgotten': 0.2, 'out_of_scope': 0.3}
+                   'change_of_mind': 0.3, 'ambiguous': 0.2, 'clarify': 0.2, 'forgotten': 0.5, 'out_of_scope': 0.3,
+                   'transfer': 0.1}
+# forgotten (the user cannot give the primary identifier, so the agent must switch to the fallback lookup) was raised
+# to 0.5 for pool5: 57% of τ²-bench scenarios have a user who does not know an identifier, our corpus exercised it 0
+# times; transfer is new (τ² users ask for a human after a refusal in 7% of scenarios).
 MIN_ELEMENTS, MAX_ELEMENTS = 2, 4  # interactive tasks: richer scripts make longer, more realistic dialogues
 # Appended to every interactive task's user_script.traits: customers answer what they are asked, one
 # piece at a time, so the agent has to elicit the details (dialogues in the first pools ended after a
 # median of 3 user replies).
+# User style, drawn apart from the script elements (pool5): τ²-bench users write a median of 258 characters per
+# message, stating requests, reasons, conditions and preferences together; ours wrote 70 (one item per message).
+VERBOSE_SHARE, PERSONA_SHARE = 0.5, 0.3
+VERBOSE = {'zh': '说话像真实的客户：一条消息里会把诉求、原因、条件或偏好一起说出来，但不主动报出对方还没问的身份信息和编号',
+           'en': 'talks like a real customer: one message states the request together with reasons, conditions or '
+                 'preferences, but does not volunteer identifiers or reference numbers until asked'}
+PERSONAS = {'zh': ['有点不耐烦，希望尽快办完', '因为之前的经历有些生气，说话比较冲', '比较焦虑，会反复确认', '非常客气', '说话简短直接'],
+            'en': ['a bit impatient and wants this done quickly', 'annoyed after a bad earlier experience, a little blunt',
+                   'anxious and double-checks things', 'very polite', 'curt and to the point']}
+# Business mechanics a write task exercises (pool5): τ²-bench write tasks choose a payment method (85%), pass a list of
+# ids (67%) or of objects (17%), pick a product variant by its attributes (25%) or use a calculator (9%); our corpus
+# had 20%, 9%, 1%, none measured and 0%.
+MECHANICS = {'payment_choice': 0.6, 'id_list': 0.5, 'object_list': 0.2, 'variant_choice': 0.3, 'calculator': 0.15}
+MECHANICS_TEXT = {
+    'payment_choice': ('Payment choice: the customer has two to four payment methods on file (cards, a gift card with a '
+                       'balance, store credit or certificates with limits); the write takes the payment method id, and '
+                       'the rules decide which methods are allowed (original method only, gift card balance must cover '
+                       'it, certificates only for flights, at most one of a kind).'),
+    'id_list': ('Several items at once: the write takes a list of ids (the items to return, exchange or cancel in one '
+                'call), and the rules say they must all be done in one call.'),
+    'object_list': ('Structured list argument: the write takes a list of small objects (flight segments with number and '
+                    'date, passengers with name and date of birth), each built from lookups and the user\'s answers.'),
+    'variant_choice': ('Variant choice: the product has several variants differing by attributes (colour, size, '
+                       'material, capacity); the user describes the one they want in words, and the agent must look up '
+                       'the variants and pick the matching variant id (only available ones).'),
+    'calculator': ('Arithmetic: the business offers a calculate tool (evaluates an arithmetic expression), and the outcome '
+                   'needs a sum or difference of several amounts that the agent should compute with it.'),
+}
+
+
+def mechanics(count, shapes, seed=0):
+    """Business mechanics per task index: write shapes draw them (at least one), other shapes none."""
+    import random
+    out = []
+    for index, shape in enumerate(shapes):
+        if shape not in ('single_write', 'complex'):
+            out.append([])
+            continue
+        rng = random.Random(f'{seed}-mechanics-{index}')
+        chosen = [name for name, share in MECHANICS.items() if rng.random() < share]
+        out.append(chosen or [rng.choices(list(MECHANICS), weights=list(MECHANICS.values()))[0]])
+    return out
+
+
 DISCLOSURE = {'zh': '只回答对方明确问到的那一项信息，一次只说一项，不主动补充其他细节',
               'en': 'answers only exactly what is asked, one piece of information at a time, never volunteering other details'}
 # Customer identification is a norm of customer service, not a script element: most interactive
@@ -118,14 +166,23 @@ SCRIPT_TEXT = {
                 'proposal to the action it names. Set user_script.clarify = {"options": ["<action in the user\'s '
                 'words>", ...], "decides_by": "<what the user needs to hear before choosing>"}. The user only chooses '
                 'after the agent explains the options; the agent must not act before asking.'),
-    'identity': ('Identify the customer: the business rules require the agent to identify the customer (an account '
-                 'id, email, phone or name plus postcode) before any account-specific lookup or change, and the tools '
-                 'need that identifier. Put the identifier in user_facts, not in user_scene.known, so the opening '
-                 'does not volunteer it and the agent has to ask.'),
-    'forgotten': ('Forgotten information: the user does not remember one identifier an agent would normally ask for '
-                  '(an order id, an email). Leave it out of user_facts and user_scene.known, list its name in '
-                  'user_script.forgotten, and give the user another way to be identified or found (for example name '
-                  'plus postcode) that the business rules and tools support.'),
+    'identity': ('Identify the customer: the business rules require the agent to identify the customer before any '
+                 'account-specific lookup or change, through two routes as real businesses do: a primary identifier '
+                 '(an email, or an account or order reference) looked up by one tool, and full name plus postcode '
+                 'looked up by another tool, used only when the customer cannot give the primary one. The rules say to '
+                 'ask for the primary identifier first. Put the identifiers in user_facts, not in user_scene.known, so '
+                 'the opening does not volunteer them and the agent has to ask.'),
+    'forgotten': ('Forgotten information: the user cannot give the primary identifier (see Identify the customer: the '
+                  'email or the account/order reference) because they do not remember it or do not have it at hand. '
+                  'Leave it out of user_facts and user_scene.known, list its name in user_script.forgotten, and put the '
+                  'fallback identifiers (full name and postcode) in user_facts. The agent asks for the primary one '
+                  'first, as the rules say; the user says they do not know it; the agent then finds them through the '
+                  'fallback lookup tool.'),
+    'transfer': ('Transfer request: after a refusal or a step the rules leave to a human, the user asks to be passed '
+                 'to a human agent. The rules say exactly when a handover is allowed (and the tool that records it, '
+                 'with the reason as an enum) and when the agent must decline and continue instead; this task\'s '
+                 'data decides which. Set user_script.transfer = {"after": "<what triggers the request>", "accepted": '
+                 'true|false} matching what the rules decide.'),
 }
 SIMILAR = 0.6
 MAX_DIRECT_NUMBERS, MAX_WANTS = 8, 3  # what a user says in one opening message
@@ -180,6 +237,13 @@ def script_prompt(elements):
     return ('User script (write "user_script" in request.json): {"traits": ["<one or two traits of the user>"], ...} '
             'plus these elements:\n' + '\n'.join(f'- {SCRIPT_TEXT[e]}' for e in elements))
 
+
+
+def mechanics_prompt(chosen):
+    if not chosen:
+        return ''
+    return ('\n\nBusiness mechanics this task must exercise (design the tables, rules and the write accordingly; the '
+            'reference solution must use them):\n' + '\n'.join(f'- {MECHANICS_TEXT[m]}' for m in chosen))
 
 def script_problems(request, elements):
     """The user_script promised by the assignment, consistent with the facts."""
@@ -247,6 +311,10 @@ def script_problems(request, elements):
                        and str(v) not in known]
         if not identifiers:
             problems.append('identity: user_facts needs a customer identifier that user_scene.known does not reveal')
+    transfer = script.get('transfer')
+    if 'transfer' in elements and not (isinstance(transfer, dict) and isinstance(transfer.get('after'), str)
+                                       and transfer['after'].strip() and isinstance(transfer.get('accepted'), bool)):
+        problems.append('transfer: user_script.transfer needs {"after": str, "accepted": true|false}')
     forgotten = script.get('forgotten')
     if 'forgotten' in elements:
         known = (request.get('user_scene') or {}).get('known') or {}
@@ -458,6 +526,12 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
     assignments = plan(domains, count, rubric_share, **({'mix': mix} if mix else {}))
     langs = languages(count, english_share)
     elements = scripts(count, [shape for _, _, shape in assignments])
+    mechanics_of = mechanics(count, [shape for _, _, shape in assignments])
+    import random as _random
+    styles = []  # (verbose, persona index or None) per task index, drawn apart from the script elements
+    for index in range(count):
+        rng = _random.Random(f'style-{index}')
+        styles.append((rng.random() < VERBOSE_SHARE, rng.randrange(5) if rng.random() < PERSONA_SHARE else None))
 
     def one(index, assignment):
         domain, category, shape = assignment
@@ -481,7 +555,8 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
                                                        shape=SHAPES[shape], id=f'gen-{index:03d}',
                                                        reward_type='rubric' if shape == 'subjective' else 'business',
                                                        language=language, language_name=LANGUAGE_NAMES[language],
-                                                       script=script_prompt(elements[index]),
+                                                       script=script_prompt(elements[index])
+                                                       + mechanics_prompt(mechanics_of[index]),
                                                        currency=CURRENCY[language]),
                    timeout=timeout, role='request_author')
         except InfrastructureError as exc:  # codex at capacity or offline: this request waits for a rerun
@@ -517,10 +592,16 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
         request['agent_policy'] = policy
         if elements[index] and isinstance(request.get('user_script'), dict):
             traits = request['user_script'].setdefault('traits', [])
-            if DISCLOSURE[langs[index]] not in traits:
-                traits.append(DISCLOSURE[langs[index]])
+            verbose, persona = styles[index]
+            style = VERBOSE[langs[index]] if verbose else DISCLOSURE[langs[index]]
+            if style not in traits:
+                traits.append(style)
+            if persona is not None and PERSONAS[langs[index]][persona] not in traits:
+                traits.append(PERSONAS[langs[index]][persona])
         request['source'] = {'generated': domain['name'], 'family': domain.get('family'), 'shape': shape,
                              'persona': persona_name, 'language': langs[index], 'script': elements[index],
+                             'mechanics': mechanics_of[index], 'verbose_user': styles[index][0],
+                             'user_persona': styles[index][1],
                              'opening_writer': getattr(opening_client, 'model', None)}
         return row, request
 

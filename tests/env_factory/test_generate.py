@@ -206,7 +206,7 @@ class GenerateTests(unittest.TestCase):
         self.assertTrue(all(not a for a, s in zip(assigned, shapes) if s == 'direct'))
         elements = lambda a: [e for e in a if e != 'identity']  # identification is a norm, not counted
         self.assertTrue(all(2 <= len(elements(a)) <= 4 for a, s in zip(assigned, shapes) if s != 'direct'))
-        self.assertGreater(sum('fallback' in a for a in assigned), sum('forgotten' in a for a in assigned))
+        self.assertGreater(sum('forgotten' in a for a in assigned), sum('ambiguous' in a for a in assigned))
         request = library_request()
         self.assertTrue(generate.script_problems(request, ['pushback']))  # missing user_script
         everything = ['fallback', 'pushback', 'multi_goal', 'forgotten', 'out_of_scope']
@@ -215,6 +215,18 @@ class GenerateTests(unittest.TestCase):
         request['user_script']['forgotten'] = ['reader_id']  # still in user_facts
         self.assertTrue(generate.script_problems(request, ['forgotten']))
         self.assertIn('Pushback', generate.script_prompt(['pushback']))
+        self.assertTrue(generate.script_problems(request, ['transfer']))
+        request['user_script']['transfer'] = {'after': 'the refund is refused', 'accepted': False}
+        self.assertEqual(generate.script_problems(request, ['transfer']), [])
+
+    def test_write_shapes_draw_business_mechanics(self):
+        shapes = ['direct', 'simple', 'single_write', 'complex'] * 25
+        drawn = generate.mechanics(len(shapes), shapes)
+        self.assertTrue(all(not m for m, s in zip(drawn, shapes) if s in ('direct', 'simple')))
+        self.assertTrue(all(m for m, s in zip(drawn, shapes) if s in ('single_write', 'complex')))
+        counts = {name: sum(name in m for m in drawn) for name in generate.MECHANICS}
+        self.assertGreater(counts['payment_choice'], counts['calculator'])
+        self.assertIn('Payment choice', generate.mechanics_prompt(['payment_choice']))
 
     def test_numbers_said_in_chinese_count_as_said(self):
         scene = {'known': {'身份': '芭蕾舞者', '所需次数': 2, '课时': 12, '单价': 18000, '押金': 350, '人数': 10}}
