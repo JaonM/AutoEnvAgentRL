@@ -212,6 +212,9 @@ def main():
     parser.add_argument('--epochs', type=float, default=2.0)
     parser.add_argument('--learning-rate', type=float, default=1e-5)
     parser.add_argument('--grad-accumulation', type=int, default=4)
+    parser.add_argument('--context-only-announcements', action='store_true',
+                        help='text-only assistant turns that announce a lookup ("let me check") without making it stay '
+                             'as context, not trained: students announced lookups and never made them')
     parser.add_argument('--context-only-reports', type=int, default=0, metavar='CHARS',
                         help='assistant text turns longer than this, with no tool call, stay as context but are not '
                              'trained (0: off): the student imitated the teacher\'s long outcome reports instead of acting')
@@ -318,6 +321,16 @@ def main():
         rng = random.Random(args.seed + 2)
         episodes = [vary_results(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if not e.get('public') and rng.random() < args.vary_results else e
                     for e in episodes]
+    if args.context_only_announcements:
+        announce = re.compile(r"\b(let me (check|look|get|find|verify|pull|see)|i'll (check|look|get|find|pull)|"
+                              r"i will (check|look|get|find))\b|我(来|先)?(查|看|核实)一下|稍等", re.I)
+        announced = 0
+        for e in episodes:
+            for m in e['messages']:
+                if m.get('role') == 'assistant' and not m.get('tool_calls') and announce.search(m.get('content') or ''):
+                    m['context_only'] = True
+                    announced += 1
+        print(f'{announced} announcing turns (no tool call) kept as context only', flush=True)
     if args.context_only_reports:
         reports = 0
         for e in episodes:
