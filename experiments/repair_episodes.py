@@ -51,7 +51,18 @@ The reply to shorten:
 The user's next message (it must still make sense after your rewrite; empty if the conversation ends):
 {after}
 
-Answer with one JSON object: {{"reply": "<the shortened reply>", "next_still_follows": true|false}}"""
+Answer with one JSON object: {{"reply": "<the shortened reply>"}}"""
+
+FOLLOWS = """An agent said this to a customer:
+{reply}
+
+The customer answered:
+{after}
+
+Does the customer's answer refer to anything the agent's message does not contain (a number, an item, an option, a
+question it did not ask)? Answer with one JSON object: {{"refers_to_missing": true|false}}"""
+
+TOKEN = re.compile(r'[A-Za-z]*\d[\w.-]*|\$\d[\d,.]*')
 
 CJK = re.compile(r'[一-鿿]')
 
@@ -111,9 +122,22 @@ def repair(row, bundle_dir, kept, client, service_for):
             result = json.loads(answer[answer.index('{'):answer.rindex('}') + 1])
         except ValueError:
             return None, 'rewrite unparseable'
-        if not result.get('next_still_follows'):
-            return None, 'next user message no longer follows'
-        message['content'] = result['reply'].strip()
+        shorter = (result.get('reply') or '').strip()
+        if not shorter:
+            return None, 'rewrite empty'
+        if after:
+            # a number or id the customer repeats must not have been cut from the reply they answered
+            lost = [t for t in set(TOKEN.findall(after)) if t in text and t not in shorter]
+            if lost:
+                return None, 'next user message refers to cut details'
+            check = client.chat([{'role': 'user', 'content': FOLLOWS.format(reply=shorter, after=after[:1500])}],
+                                temperature=0).get('content') or ''
+            try:
+                if json.loads(check[check.index('{'):check.rindex('}') + 1]).get('refers_to_missing'):
+                    return None, 'next user message no longer follows'
+            except ValueError:
+                return None, 'continuity check unparseable'
+        message['content'] = shorter
         rewritten += 1
     repaired = {**row, 'messages': messages, 'repaired': {'repeated_reads_dropped': repeats, 'announcements_masked':
                                                           announced, 'replies_rewritten': rewritten, 'kept': list(kept)}}

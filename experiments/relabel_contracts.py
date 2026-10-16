@@ -34,6 +34,8 @@ decide it: what happened (done or refused, the new status, the final amount the 
 factor a wrong reading of the rules would change (why it was refused, which fee tier applied, the one date that matters).
 Drop lookups, restated rules, intermediate numbers and confirmations of what did not change. A field whose value is the
 same in every world ("constant") cannot be a deciding factor. With several goals, keep each goal's outcome.
+Prefer a summary value (a total, a count, an overall status) over a per-item list when the summary decides what the
+user gets; keep a per-item list only when the user needs each item's result separately.
 At most 5 graded fields and 8 graded values in all (an object or array of objects counts each property).
 
 User request: {request}
