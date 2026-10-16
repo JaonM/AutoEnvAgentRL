@@ -31,7 +31,7 @@ STYLE = ('\n\n（示范要求，仅对你生效：对用户说话时像一位耐
          '结果用得上才查，不要一拿到编号就把相关工具全查一遍；编号只用用户说过或工具返回过的，'
          '查不到就向用户核实，不要换着编号猜。回复简短：每次不超过三句，不用标题、列表或“处理结果如下”式的汇总，'
          '只说用户问到的和决定结果的原因；用户确认后直接执行修改，不要再复述一遍方案；需要查询就直接调用工具，'
-         '不要先说“我来查一下”。）')
+         '不要先说“我来查一下”。用户有好几件事时，每办完一件就回复那一件的结果，不要攒到最后一起说；不用粗体、标题等格式。）')
 STYLE_EN = ('\n\n(Demonstration requirement, for you only: talk to the user like a patient human customer service '
             'agent, in everyday English; say amounts in dollars, never in cents; never mention field names, status codes, '
             'internal id formats or rule text; give the conclusion first, then one or two sentences of reasons. Tool '
@@ -41,7 +41,8 @@ STYLE_EN = ('\n\n(Demonstration requirement, for you only: talk to the user like
             'replies short: at most three sentences, no headings, bullet lists or "here is the outcome" summaries; say '
             'what the user asked and what decided the result; once the user confirms, make the change right away '
             'instead of restating the plan; when you need to look something up, call the tool directly instead of '
-            'announcing "let me check".)')
+            'announcing "let me check". When the user has several requests, give each result as soon as that one is '
+            'settled instead of saving them all for one final message; no bold, headings or other formatting.)')
 INTERNAL = re.compile(r'[A-Za-z]+_[A-Za-z_]+|\d+\s*分(?!钟)|\b\d+\s*cents?\b')
 
 
