@@ -420,3 +420,39 @@ class ServiceAndClarificationTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class BundlingUserTests(unittest.TestCase):
+    """About half the users (fixed per task) agree and bring up the next request or a condition in one message."""
+
+    class Capture:
+        def __init__(self):
+            self.seen = []
+
+        def chat(self, messages, **parameters):
+            self.seen.append(messages[-1]['content'])
+            return {'content': '好的'}
+
+    def make(self, request_id, language='zh'):
+        from env_factory.serving.user_sim import UserSimulator
+        request = {'id': request_id, 'user_request': '我想改订单', 'language': language,
+                   'user_script': {'goals': ['改地址', '退一件商品']}}
+        client = self.Capture()
+        return UserSimulator(client, request, {'order_id': 'O1'}, {'approve_change'}), client
+
+    def test_about_half_the_tasks_bundle_and_the_choice_is_stable(self):
+        flags = [self.make(f't{i}')[0].bundles for i in range(200)]
+        self.assertTrue(60 < sum(flags) < 140)
+        self.assertEqual([self.make(f't{i}')[0].bundles for i in range(20)], flags[:20])
+
+    def test_a_bundling_user_is_told_so_and_agrees_with_room_to_add(self):
+        from env_factory.serving import user_sim
+        bundler = next(s for s in (self.make(f't{i}') for i in range(50)) if s[0].bundles)
+        terse = next(s for s in (self.make(f't{i}') for i in range(50)) if not s[0].bundles)
+        self.assertIn(user_sim.BUNDLE['zh'], bundler[0].messages[0]['content'])
+        self.assertNotIn(user_sim.BUNDLE['zh'], terse[0].messages[0]['content'])
+        bundler[0].reply('可以帮您改地址，确认吗？', decision=True)
+        terse[0].reply('可以帮您改地址，确认吗？', decision=True)
+        self.assertIn(user_sim.DECISION_BUNDLED[True], bundler[1].seen[-1])
+        self.assertIn(user_sim.DECISION[True], terse[1].seen[-1])
+        self.assertIn('顺带提出下一件', bundler[0].messages[0]['content'])

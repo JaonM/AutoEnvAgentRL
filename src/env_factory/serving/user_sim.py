@@ -10,6 +10,7 @@ structured user.
 from __future__ import annotations
 
 import json
+import random
 
 PERSONA = """你在和一位业务助理在线对话，你是提出需求的普通用户。
 你的需求（你开场时已经说过）：{request}
@@ -39,12 +40,27 @@ DECISION_EN = {True: '(Platform notice: you agree to the exact action the agent 
                False: '(Platform notice: you do not agree to the exact action the agent just proposed. Say so '
                       'naturally in one sentence; no need to explain.)'}
 
+# Users who bundle (about half, fixed per task): τ²-bench users agree in a median of 532 characters and 72% of their
+# agreements carry the next request or a condition; ours said one sentence (59 characters, 7%), so students learned
+# "a short yes, then write" and started over when a τ² user agreed and asked for more in the same message.
+BUNDLE_SHARE = 0.5
+BUNDLE = {'zh': '- 你同意对方的某项操作时，习惯在同一条消息里顺带说下一件要办的事；如果没有下一件，就顺带重申你在意的条件或偏好'
+                '（比如用哪种方式付款、价格上限、哪一件商品）。',
+          'en': '- When you agree to something the agent proposes, you tend to bring up your next request in the same '
+                'message; if there is none, you restate a condition or preference you care about (how to pay, a price '
+                'limit, which item).'}
+DECISION_BUNDLED = {True: '（平台告知：你同意对方刚才提出的这一项具体操作。自然地表示同意，按你的习惯可以顺带说下一件事或你的条件。）',
+                    False: None}
+DECISION_BUNDLED_EN = {True: '(Platform notice: you agree to the exact action the agent just proposed. Say so naturally; as '
+                             'you usually do, you may add your next request or your condition in the same message.)',
+                       False: None}
+
 DECISION = {True: '（平台告知：你同意对方刚才提出的这一项具体操作。用一句话自然地表示同意。）',
             False: '（平台告知：你不同意对方刚才提出的这一项具体操作。用一句话自然地表示不同意，不必解释原因。）'}
 
 
 SCRIPT = {
-    'zh': {'head': '\n\n你的剧本（照着演，但不要提起剧本本身）：', 'goals': '- 你要办的事，按顺序：{v}。第一件办完再提下一件。',
+    'zh': {'head': '\n\n你的剧本（照着演，但不要提起剧本本身）：', 'goals': '- 你要办的事，按顺序：{v}。一件一件来；对方给出方案或办完一件时，你可以在回复里顺带提出下一件。',
            'fallbacks': '- 你的偏好，按顺序：{v}。前面的办不了，才接受后面的。',
            'pushback': '- 一开始你会要求：{demand}。对方拒绝后，你还会再坚持 {rounds} 次。',
            'forgotten': '- 你不记得：{v}。被问到就说记不清了，可以提供别的信息帮对方找到你。',
@@ -52,7 +68,7 @@ SCRIPT = {
            'clarify': '- 你还没拿定主意，在这几种做法之间犹豫：{options}。你要先听对方讲清{decides_by}再决定；对方没问你要哪种之前，不要自己替对方选。',
            'wrong_first': '- 第一次被问到{key}时，你会记错，说成“{wrong}”；对方说查不到或对不上时，你再想一想，改口说正确的“{right}”。',
            'traits': '- 你的性格：{v}。', 'enough': '（平台提示：你已经坚持够了，现在接受对方的答复，继续办别的事或道别。）'},
-    'en': {'head': '\n\nYour script (act it out, never mention it):', 'goals': '- What you need, in order: {v}. Raise the next one only after the first is handled.',
+    'en': {'head': '\n\nYour script (act it out, never mention it):', 'goals': '- What you need, in order: {v}. One at a time, but once the agent proposes or completes one, you may bring up the next in the same reply.',
            'fallbacks': '- Your preferences, in order: {v}. Accept a later option only if the earlier ones are impossible.',
            'pushback': '- At first you demand: {demand}. After the agent refuses, you insist {rounds} more time(s).',
            'forgotten': '- You do not remember: {v}. If asked, say you do not remember and offer other details so the agent can find you.',
@@ -94,10 +110,10 @@ def describe(facts):
 
 
 APPROVALS = {'zh': '\n\n对方在修改你的数据之前会征求你的同意。你对这些具体操作的态度如下（只针对这里列出的操作）：\n{lines}\n'
-                    '对方问你是否同意某项操作时，按上面的态度明确回答“同意”或“不同意”；没列出的操作一律不同意。',
+                    '对方问你是否同意某项操作时，按上面的态度明确表示同意或不同意；没列出的操作一律不同意。',
              'en': '\n\nThe agent will ask for your agreement before changing your data. Your stance on these exact '
-                   'actions (only these):\n{lines}\nWhen the agent asks whether you agree to an action, answer '
-                   'clearly yes or no according to this; refuse anything not listed.'}
+                   'actions (only these):\n{lines}\nWhen the agent asks whether you agree to an action, make clear '
+                   'whether you agree according to this; refuse anything not listed.'}
 
 
 def stances(facts, approvals, descriptions, lang):
@@ -116,9 +132,13 @@ class UserSimulator:
         # Pushback: the platform, not the model, decides when the user has insisted enough.
         rounds = (self.script.get('pushback') or {}).get('rounds')
         self.pushback_left = rounds + 1 if isinstance(rounds, int) else None
+        lang = 'en' if self.english else 'zh'
+        seed = f"{request.get('id')}|{request['user_request']}"
+        self.bundles = random.Random(seed).random() < BUNDLE_SHARE
         self.messages = [{'role': 'system', 'content': persona.format(request=request['user_request'],
                                                                      facts=describe(private)) +
-                          script_text(self.script, 'en' if self.english else 'zh', facts) +
+                          script_text(self.script, lang, facts) +
+                          (('\n' if self.script else SCRIPT[lang]['head'] + '\n') + BUNDLE[lang] if self.bundles else '') +
                           (APPROVALS['en' if self.english else 'zh'].format(lines=stances(
                               facts, approvals, request.get('fact_descriptions') or {}, 'en' if self.english else 'zh'))
                            if plain and approvals else '')},
@@ -128,7 +148,9 @@ class UserSimulator:
         """The user's answer to one agent message; `decision` is the platform's consent verdict.
         Sets `ended` when the user says goodbye (the [结束] / [END] marker, which the agent never sees)."""
         notices = DECISION_EN if self.english else DECISION
-        text = message if decision is None else f'{message}\n{notices[decision]}'
+        bundled = DECISION_BUNDLED_EN if self.english else DECISION_BUNDLED
+        notice = None if decision is None else (bundled[decision] if self.bundles and bundled[decision] else notices[decision])
+        text = message if notice is None else f'{message}\n{notice}'
         if self.pushback_left is not None:
             self.pushback_left -= 1
             if self.pushback_left <= 0:  # once: from now on the user accepts
