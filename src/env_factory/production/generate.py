@@ -61,8 +61,10 @@ SHAPES = {
 }
 # User script elements (docs/domain-world-design.md §3): each interactive task gets one to three,
 # drawn with these probabilities; direct tasks get none.
-SCRIPT_ELEMENTS = {'multi_goal': 0.5, 'fallback': 0.35, 'inquisitive': 0.35, 'pushback': 0.3, 'wrong_first': 0.25,
-                   'change_of_mind': 0.2, 'ambiguous': 0.2, 'clarify': 0.2, 'forgotten': 0.2, 'out_of_scope': 0.1}
+# out_of_scope, wrong_first (recovering from a failed lookup) and change_of_mind were raised for pool4 (2026-10-16):
+# the SFT set had 49 out-of-scope, 74 error-recovery and 12 refusal episodes against a target of 100 each.
+SCRIPT_ELEMENTS = {'multi_goal': 0.5, 'fallback': 0.35, 'inquisitive': 0.35, 'pushback': 0.3, 'wrong_first': 0.35,
+                   'change_of_mind': 0.3, 'ambiguous': 0.2, 'clarify': 0.2, 'forgotten': 0.2, 'out_of_scope': 0.3}
 MIN_ELEMENTS, MAX_ELEMENTS = 2, 4  # interactive tasks: richer scripts make longer, more realistic dialogues
 # Appended to every interactive task's user_script.traits: customers answer what they are asked, one
 # piece at a time, so the agent has to elicit the details (dialogues in the first pools ended after a
