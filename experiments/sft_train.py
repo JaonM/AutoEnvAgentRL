@@ -212,6 +212,9 @@ def main():
     parser.add_argument('--epochs', type=float, default=2.0)
     parser.add_argument('--learning-rate', type=float, default=1e-5)
     parser.add_argument('--grad-accumulation', type=int, default=4)
+    parser.add_argument('--context-only-reports', type=int, default=0, metavar='CHARS',
+                        help='assistant text turns longer than this, with no tool call, stay as context but are not '
+                             'trained (0: off): the student imitated the teacher\'s long outcome reports instead of acting')
     parser.add_argument('--attention-chunk', type=int, default=0,
                         help='compute attention in query chunks of this many tokens (0: off); see chunked_causal_attention')
     parser.add_argument('--grad-clip', type=float, default=1.0,
@@ -315,6 +318,15 @@ def main():
         rng = random.Random(args.seed + 2)
         episodes = [vary_results(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if not e.get('public') and rng.random() < args.vary_results else e
                     for e in episodes]
+    if args.context_only_reports:
+        reports = 0
+        for e in episodes:
+            for m in e['messages']:
+                if (m.get('role') == 'assistant' and not m.get('tool_calls')
+                        and len(m.get('content') or '') > args.context_only_reports):
+                    m['context_only'] = True
+                    reports += 1
+        print(f'{reports} report turns (> {args.context_only_reports} chars, no tool call) kept as context only', flush=True)
     if args.per_episode:
         pairs = [(e, render(tokenizer, e)) for e in episodes]
     elif args.render == 'episode':
