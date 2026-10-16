@@ -95,6 +95,11 @@ def task_verdict(rows):
     """(play the remaining seeds?, reason) from a task's pilot episodes."""
     if rows and all(r.get('error') for r in rows):
         return False, 'every pilot episode raised'
+    if len(rows) >= 2:
+        # a style habit every pilot shows belongs to the task (its rules ask for it), not to the teacher
+        shared = set.intersection(*[set(r.get('review') or flags(r)) for r in rows]) & set(STYLE)
+        if shared:
+            return False, f'every pilot episode is flagged {sorted(shared)}'
     failed = [r for r in rows if not r.get('success') and not r.get('error')]
     if len(rows) >= 2 and len(failed) == len(rows):
         wrong = [frozenset(f for f, v in (r.get('field_scores') or {}).items() if v < 1) for r in failed]

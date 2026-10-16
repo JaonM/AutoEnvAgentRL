@@ -171,7 +171,9 @@ def main():
         go, reason = task_verdict(rows)
         if not go:
             stopped[task['id']] = reason
-    rest = [(t, s) for t in tasks if t['id'] not in stopped for s in range(args.pilot, args.episodes)
+    # Seed-major: one seed of every task, then the next, so one task's habit is spread over the breaker's window
+    # (task-major order put a task's six identical reports side by side and tripped pool4's breaker at 8% overall).
+    rest = [(t, s) for s in range(args.pilot, args.episodes) for t in tasks if t['id'] not in stopped
             if (t['id'], s) not in done]
     print(f'pilot done: {len(stopped)} tasks stopped for review, {len(rest)} more episodes to play', flush=True)
     if not state['tripped']:
