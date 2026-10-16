@@ -35,7 +35,7 @@ for seed in $seeds; do
   # Only the trained model is evaluated: WiSE interpolation (alpha 0.5) was dropped on 2026-10-16 — its scores came
   # from the no-write tasks while tool calling collapsed (48-100% of simulations without a single call).
   if [ ! -f "output/tau2/q${name}-s$seed-full-airline.log" ]; then  # not started (or finished) already
-    BENCH_PORT=$port experiments/v3/bench/quick_eval.sh "${name}-s$seed-full" "$run/sft/model" 1 &
+    BENCH_PORT=$port experiments/bench/quick_eval.sh "${name}-s$seed-full" "$run/sft/model" 1 &
     evals+=($!)
   fi
   port=$((port + 34))
