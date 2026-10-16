@@ -127,7 +127,8 @@ def relabel_once(task, out_root, client, negative_feedback=''):
     source = Path(task['sandbox'])
     target = out_root / task['id'] / 'bundle'
     report = {'id': task['id'], 'source': str(source)}
-    loaded = bundle.load_bundle(source)
+    # the source may carry an older platform identity; the copy is re-certified with every gate below
+    loaded = bundle.load_bundle(source, require_current_platform=False)
     schema, request = loaded['schema'], loaded['request']
     if not size_problems(schema['fields']):
         report['status'] = 'already small'
