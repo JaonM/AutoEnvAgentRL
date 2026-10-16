@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# I2: full-parameter SFT with the anti-forgetting defaults, two seeds, each with WiSE-FT alpha 0.5, all quick-evaluated.
+# I2: full-parameter SFT with the anti-forgetting defaults, two seeds, each quick-evaluated (no WiSE: see below).
 #   [TUNING=lora] [EPOCHS=2] [SFT_EXTRA="--example-values 0.5 --inject-errors 0.5"] experiments/bench/stage_I2.sh SELECTED.jsonl REPLAY.jsonl OUT_DIR [SEEDS]
 # Defaults (plan, I2 and I2p-T): full fine-tuning; effective batch 16 episodes (gradient accumulation) at lr 2e-5
 # (square-root scaling from 4 episodes at 1e-5); EPOCHS (default 1; use 2 below ~1000 episodes so there are enough
@@ -32,16 +32,13 @@ for seed in $seeds; do
       --rename-tools 0.7 --vary-results 0.6 --greet 0.5 --relayout 0.5 --no-error-turns --max-tokens 32768 \
       --render episode ${SFT_EXTRA:-} > "$run/sft.log" 2>&1 || { echo "seed $seed training failed"; continue; }
   fi
-  [ -f "$run/wise-0.5/config.json" ] || PYTHONPATH=src .venv/bin/python experiments/interpolate.py \
-    --base models/Qwen3-0.6B --tuned "$run/sft/model" --alpha 0.5 --output "$run/wise-0.5" >> "$run/sft.log" 2>&1
-  for variant in full w0.5; do
-    model="$run/sft/model"; [ $variant = w0.5 ] && model="$run/wise-0.5"
-    if [ ! -f "output/tau2/q${name}-s$seed-$variant-airline.log" ]; then  # not started (or finished) already
-      BENCH_PORT=$port experiments/bench/quick_eval.sh "${name}-s$seed-$variant" "$model" 1 &
-      evals+=($!)
-    fi
-    port=$((port + 34))
-  done
+  # Only the trained model is evaluated: WiSE interpolation (alpha 0.5) was dropped on 2026-10-16 — its scores came
+  # from the no-write tasks while tool calling collapsed (48-100% of simulations without a single call).
+  if [ ! -f "output/tau2/q${name}-s$seed-full-airline.log" ]; then  # not started (or finished) already
+    BENCH_PORT=$port experiments/v3/bench/quick_eval.sh "${name}-s$seed-full" "$run/sft/model" 1 &
+    evals+=($!)
+  fi
+  port=$((port + 34))
 done
 for job in "${evals[@]}"; do wait $job; done
 echo done > "$out/stage.done"
