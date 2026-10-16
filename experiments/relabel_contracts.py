@@ -74,7 +74,29 @@ def field_variation(loaded):
     return seen, len(loaded['valid_worlds'] or service.order)
 
 
+NEGATIVE_HINTS = {
+    'stale_answer': 'the answer of the original world also succeeds in perturbed worlds: keep a field whose value changes '
+                    'across worlds (see "distinct values")',
+    'blanket_refusal': 'refusing without checking gets the kept fields right: keep a field that tells the real outcome '
+                       'apart from a refusal',
+    'null_policy': 'doing nothing scores: keep a field whose expected value is not null or empty',
+    'partial': 'doing only some of the writes passes: keep a field that reports every write\'s outcome',
+}
+
+
 def relabel(task, out_root, client):
+    feedback, report = '', None
+    for _ in range(2):
+        report = relabel_once(task, out_root, client, feedback)
+        failed = report.get('failed_negatives') or []
+        if report.get('status') != 'gates failed' or not failed:
+            return report
+        feedback = ('\n\nA previous choice ' + json.dumps(report.get('kept')) + ' failed the negative checks: '
+                    + '; '.join(NEGATIVE_HINTS.get(name, name) for name in failed) + '. Choose again.')
+    return report
+
+
+def relabel_once(task, out_root, client, negative_feedback=''):
     from env_factory.certify import bundle
     from env_factory.checks import size_problems
     source = Path(task['sandbox'])
@@ -90,7 +112,7 @@ def relabel(task, out_root, client):
                        for name, spec in schema['fields'].items() if spec.get('graded', True))
     policy = request.get('agent_policy') or request['business_rules']
     found = CLAUSE.search(policy)
-    feedback, choice = '', None
+    feedback, choice = negative_feedback, None
     for attempt in range(3):
         prompt = PROMPT.format(request=request.get('user_request', '')[:600],
                                goals=json.dumps((request.get('user_script') or {}).get('goals', []), ensure_ascii=False),
@@ -141,6 +163,9 @@ def relabel(task, out_root, client):
         (target / stale).unlink(missing_ok=True)
     gates = bundle.requalify(target)
     graded_before = sum(1 for s in schema['fields'].values() if s.get('graded', True))
+    negative_checks = (gates.get('negatives') or {}).get('checks') or {}
+    report['failed_negatives'] = [name for name, check in negative_checks.items()
+                                  if isinstance(check, dict) and check.get('applicable') and not check.get('passed')]
     return {**report, 'status': 'passed' if gates['passed'] else 'gates failed', 'bundle': str(target),
             'graded_before': graded_before, 'kept': keep, 'clause_replaced': bool(clause.get('original')),
             'failed_gates': [g for g, r in gates.items() if isinstance(r, dict) and r.get('passed') is False]}
