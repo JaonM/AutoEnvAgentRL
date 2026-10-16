@@ -29,6 +29,9 @@ PY
     echo "[$(date '+%F %T')] $count ready bundles: collecting"
     PYTHONPATH=src .venv/bin/python experiments/collect_teacher.py --tasks "$tasks" --episodes "$episodes" \
       --output "$output" >> "${output%.jsonl}.log" 2>&1
+    if [ $? = 4 ]; then  # the per-episode review tripped its breaker: stop until the cause is fixed
+      echo "[$(date '+%F %T')] review breaker tripped, see $output.alert.json: collection stopped"; exit 4
+    fi
     last=$count
   elif [ $finished = 1 ]; then
     echo "[$(date '+%F %T')] pool finished and nothing new: done"; break
