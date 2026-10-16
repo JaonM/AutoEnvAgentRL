@@ -179,6 +179,8 @@
 
 合并后对所有沙箱执行 `verify --resign`。实验分支切换到 main 布局（`env_factory` 包）也放在这个窗口。
 
+**实验切到 main（2026-10-16）**：pool1/pool3 的 324 个沙箱按 main 的平台身份 resign（旧 oracle.py 迁为 verifier.py）；评测脚本改用 `experiments/bench/*`（与旧版只差路径）；用 main 重评基线（qA3m）核对评测链路并量化评测噪声；主 checkout 在 I2m 评测结束后切到 main。旧池子的 policy 结果和 Docker 镜像绑定旧身份，不再重做（这些池子已结束，RL 用 local 后端）；新的 pool4 在 main 上按“计分项＝结果加决定因素，≤5 个字段/8 个值”生成。`v3-bench-validation` 不再使用。
+
 **代码迁移（2026-10-15）**：v3-integration 的全部提交已迁到 main 的新布局（包 `env_factory`、`experiments/`、`rl.environments.sandbox`、`ENVFACTORY_*`/`USER_SIM_`/`JUDGE_` 前缀、oracle→verifier）。此后新开发在 main 上进行；`v3-bench-validation` 冻结，只接紧急修复。实验切到 main 的条件：pool3 构建完、I2r 出结果；步骤：对 pool1/pool2/pool3 全部沙箱 `verify --resign`，脚本改用 `experiments/bench/*`。
 
 ## 5. 依赖关系与顺序
