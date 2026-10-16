@@ -37,6 +37,8 @@ same in every world ("constant") cannot be a deciding factor. With several goals
 Prefer a summary value (a total, a count, an overall status) over a per-item list when the summary decides what the
 user gets; keep a per-item list only when the user needs each item's result separately.
 At most 5 graded fields and 8 graded values in all (an object or array of objects counts each property).
+For an object or a list of objects you may keep only some of its properties: name them as "field.property" (the other
+properties are then not graded); naming the field alone keeps all its properties.
 
 User request: {request}
 User goals: {goals}
@@ -59,6 +61,29 @@ def graded_values(spec):
     from env_factory.checks import graded_values as count
     return count(spec)
 
+
+
+def trimmed(schema, keep):
+    """The schema with only `keep` graded: "field" keeps a whole field, "field.property" keeps that property of an
+    object (or of the objects in a list) and leaves the field's other properties ungraded."""
+    out = copy.deepcopy(schema)
+    whole = {k for k in keep if '.' not in k}
+    parts = {}
+    for k in keep:
+        if '.' in k:
+            field, prop = k.split('.', 1)
+            parts.setdefault(field, set()).add(prop)
+    for name, spec in out['fields'].items():
+        if name in whole:
+            continue
+        if name not in parts:
+            spec['graded'] = False
+            continue
+        props = spec.get('properties') or (spec.get('items') or {}).get('properties') or {}
+        for prop, child in props.items():
+            if prop not in parts[name]:
+                child['graded'] = False
+    return out
 
 def field_variation(loaded):
     from env_factory.certify import bundle
@@ -107,8 +132,12 @@ def relabel_once(task, out_root, client, negative_feedback=''):
     if not size_problems(schema['fields']):
         report['status'] = 'already small'
     variation, worlds = field_variation(loaded)
+    def properties(spec):
+        return spec.get('properties') or (spec.get('items') or {}).get('properties') or {}
     fields = '\n'.join(f"- {name}: {spec.get('description', '')[:200]} | {len(set(variation.get(name, [])))} | "
                        f"{(variation.get(name) or ['?'])[0][:80]}"
+                       + ''.join(f"\n    - {name}.{prop}: {(child.get('description') or '')[:120]}"
+                                 for prop, child in properties(spec).items() if child.get('graded', True))
                        for name, spec in schema['fields'].items() if spec.get('graded', True))
     policy = request.get('agent_policy') or request['business_rules']
     found = CLAUSE.search(policy)
@@ -123,9 +152,16 @@ def relabel_once(task, out_root, client, negative_feedback=''):
         except ValueError:
             feedback = '\n\nYour last answer was not one JSON object.'
             continue
-        keep = [k for k in choice.get('keep', []) if k in schema['fields']]
-        trial = {k: v for k, v in schema['fields'].items() if k in keep}
+        keep = [k for k in choice.get('keep', []) if k.split('.')[0] in schema['fields']]
+        trial = {k: v for k, v in trimmed(schema, keep)['fields'].items() if v.get('graded', True)}
         problems = size_problems(trial) + ([] if keep else ['keep at least one field'])
+        for item in keep:
+            if '.' in item:
+                field, prop = item.split('.', 1)
+                spec = schema['fields'][field]
+                props = spec.get('properties') or (spec.get('items') or {}).get('properties') or {}
+                if prop not in props:
+                    problems.append(f'{item}: {field} has no property {prop}')
         original = (choice.get('clause') or {}).get('original') or ''
         if original and original not in policy:
             if attempt == 2:  # last try: keep the trimmed fields, leave the policy text as it is
@@ -139,14 +175,11 @@ def relabel_once(task, out_root, client, negative_feedback=''):
         choice = None
     if choice is None:
         return {**report, 'status': 'no valid choice'}
-    keep = [k for k in choice['keep'] if k in schema['fields']]
+    keep = [k for k in choice['keep'] if k.split('.')[0] in schema['fields']]
     if target.parent.exists():
         shutil.rmtree(target.parent)
     shutil.copytree(source, target)
-    new_schema = copy.deepcopy(schema)
-    for name, spec in new_schema['fields'].items():
-        if name not in keep:
-            spec['graded'] = False
+    new_schema = trimmed(schema, keep)
     (target / 'answer_schema.json').write_text(json.dumps(new_schema, ensure_ascii=False, indent=1))
     clause = choice.get('clause') or {}
     new_request = copy.deepcopy(request)
