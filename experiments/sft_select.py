@@ -160,6 +160,17 @@ SKILLS = ('asks_consent', 'handles_refusal', 'writes', 'verifies_identity', 'mul
           'recovers_from_error', 'refusal_world')
 
 
+
+REPORT = re.compile(r"(here'?s (the|a|your) (outcome|summary|picture|result|breakdown|overview)|处理结果如下|结果如下|"
+                    r"^\s*#{1,4} |\n\s*\*\*[^*\n]{2,40}\*\*\s*\n\s*[-•])", re.I | re.M)
+
+
+def reports(messages, limit):
+    """Text-only assistant replies that are long or shaped as an outcome report: the student copied them on τ²-bench
+    (report-style replies in 28-76% of its simulations, 1% for the base model) instead of acting."""
+    return sum(1 for m in messages if m.get('role') == 'assistant' and not m.get('tool_calls')
+               and (len(m.get('content') or '') > limit or REPORT.search(m.get('content') or '')))
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     parser.add_argument('--teacher', nargs='+', required=True)
@@ -170,6 +181,9 @@ def main():
     parser.add_argument('--english-share', type=float, default=0.7)
     parser.add_argument('--domain-share', type=float, default=0.05)
     parser.add_argument('--max-failed', type=int, default=3)
+    parser.add_argument('--max-reply-chars', type=int, default=0,
+                        help='drop episodes with a text-only assistant reply longer than this or in report form '
+                             '(headings, "here is the outcome" summaries); 0: keep them')
     parser.add_argument('--max-invented', type=int, default=0,
                         help='drop episodes with more identifier arguments that never appeared earlier in the '
                              'conversation (the student copies guessing)')
@@ -217,6 +231,10 @@ def main():
     episodes = [r for path in args.teacher for r in map(json.loads, Path(path).read_text().splitlines())
                 if r.get('success') and r.get('messages') and r['id'] in meta
                 and not r.get('speech_leaks') and failed_results(r['messages']) <= args.max_failed]
+    reports_dropped = len(episodes)
+    if args.max_reply_chars:
+        episodes = [r for r in episodes if not reports(r['messages'], args.max_reply_chars)]
+    reports_dropped -= len(episodes)
     invented_dropped = len(episodes)
     episodes = [r for r in episodes if call_profile(r['messages'], write_tools[r['id']], r.get('tools') or ())[2] <= args.max_invented]
     invented_dropped -= len(episodes)
@@ -228,7 +246,8 @@ def main():
                 wrong = sum(1 for v in scores.values() if v < 1)
                 if (not r.get('success') and r.get('messages') and r['id'] in meta and r.get('state_ok')
                         and r.get('safety') is not False and (r.get('reward') or 0) >= 0.85 and wrong <= 1
-                        and not r.get('speech_leaks')):
+                        and not r.get('speech_leaks')
+                        and not (args.max_reply_chars and reports(r['messages'], args.max_reply_chars))):
                     near.append({**r, 'near_miss': True})
     by_task = collections.defaultdict(list)
     for episode in episodes:
@@ -298,7 +317,7 @@ def main():
               'distinct_tool_sequences': round(len(sequences) / max(1, len(selected)), 3),
               'consent_protocol': dict(collections.Counter(e.get('consent') or 'token' for e in selected)),
               'near_misses': sum(bool(e.get('near_miss')) for e in selected),
-              'invented_id_episodes_dropped': invented_dropped,
+              'invented_id_episodes_dropped': invented_dropped, 'report_episodes_dropped': reports_dropped,
               'unused_lookup_share': round(sum(p[1] for p in profiles) / max(1, sum(p[0] for p in profiles)), 3),
               'wide_turn_episodes': sum(any(len(m.get('tool_calls') or []) > 3 for m in e['messages']) for e in selected),
               'user_replies': dict(sorted(collections.Counter(

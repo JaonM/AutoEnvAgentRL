@@ -28,13 +28,17 @@ STYLE = ('\n\n（示范要求，仅对你生效：对用户说话时像一位耐
          '不要提字段名、状态码、内部编号格式、以分为单位的金额或规则原文；先说结论，再用一两句话说明原因。'
          '工具调用的参数和最终提交仍严格按工具定义填写。按需调用工具：每次只查当前这一步需要的信息，'
          '结果用得上才查，不要一拿到编号就把相关工具全查一遍；编号只用用户说过或工具返回过的，'
-         '查不到就向用户核实，不要换着编号猜。）')
+         '查不到就向用户核实，不要换着编号猜。回复简短：每次不超过三句，不用标题、列表或“处理结果如下”式的汇总，'
+         '只说用户问到的和决定结果的原因；用户确认后直接执行修改，不要再复述一遍方案。）')
 STYLE_EN = ('\n\n(Demonstration requirement, for you only: talk to the user like a patient human customer service '
             'agent, in everyday English; say amounts in dollars, never in cents; never mention field names, status codes, '
             'internal id formats or rule text; give the conclusion first, then one or two sentences of reasons. Tool '
             'arguments still follow the tool definitions exactly. Call tools on demand: look up only what the current '
             'step needs and will use, never every related tool as soon as you hold an id; use only ids the user said '
-            'or a tool returned, and when a lookup finds nothing, check with the user instead of trying other ids.)')
+            'or a tool returned, and when a lookup finds nothing, check with the user instead of trying other ids. Keep '
+            'replies short: at most three sentences, no headings, bullet lists or "here is the outcome" summaries; say '
+            'what the user asked and what decided the result; once the user confirms, make the change right away '
+            'instead of restating the plan.)')
 INTERNAL = re.compile(r'[A-Za-z]+_[A-Za-z_]+|\d+\s*分(?!钟)|\b\d+\s*cents?\b')
 
 

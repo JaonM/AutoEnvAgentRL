@@ -82,10 +82,40 @@ MONEY_WORDS = ('cents', 'dollar', 'amount', 'fee', 'price', 'refund', 'total', '
                'yuan', 'fen')
 
 
+MAX_GRADED_FIELDS, MAX_GRADED_VALUES = 5, 8
+
+
+def graded_values(spec):
+    """Graded values a field asks for: a scalar or an array of scalars is one, an object or an array of objects
+    counts each graded property."""
+    if not isinstance(spec, dict) or spec.get('graded', True) is False:
+        return 0
+    if spec.get('type') == 'object' and spec.get('properties'):
+        return sum(graded_values(child) for child in spec['properties'].values())
+    if spec.get('type') == 'array' and isinstance(spec.get('items'), dict) and spec['items'].get('type') == 'object':
+        return max(1, graded_values(spec['items']))
+    return 1
+
+
+def size_problems(fields):
+    """Graded fields are the outcome and the factors that decide it: pool3's contracts had a median of 13 fields
+    (up to 35), the teacher recited them as long reports, and the student learned reports instead of actions."""
+    graded = [name for name, spec in (fields or {}).items() if isinstance(spec, dict) and spec.get('graded', True)]
+    values = sum(graded_values(spec) for spec in (fields or {}).values())
+    problems = []
+    if len(graded) > MAX_GRADED_FIELDS:
+        problems.append(f'{len(graded)} graded fields; keep at most {MAX_GRADED_FIELDS}: the outcome and the factors '
+                        'that decide it (lookups, restated rules and intermediate numbers are not fields)')
+    if values > MAX_GRADED_VALUES:
+        problems.append(f'{values} graded values in all; keep at most {MAX_GRADED_VALUES}')
+    return problems
+
+
 def authoring_problems(fields, path=''):
     """Stricter rules for newly written answer contracts (old bundles still load): amounts are integers, never
-    strings ("12.50" vs "$12.50" compared as text); every array says whether its order matters."""
-    problems = []
+    strings ("12.50" vs "$12.50" compared as text); every array says whether its order matters; at the top level,
+    only the outcome and its deciding factors are graded (size_problems)."""
+    problems = [] if path else size_problems(fields)
     for name, spec in (fields or {}).items():
         if not isinstance(spec, dict) or spec.get('graded', True) is False:
             continue

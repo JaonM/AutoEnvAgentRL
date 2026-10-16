@@ -30,7 +30,7 @@ TEXT = {
         'finish': ('确认结果后，调用 `v3_answer` 记录处理结果，并用平实的话把结果告诉用户；'
                    '用户表示没有其他问题时，对话结束。'),
         # Without an answer tool the agent delivers by talking; the result is read from what it said.
-        'tell': '确认结果后，用平实的话把处理结果完整告诉用户；用户表示没有其他问题时，对话结束。',
+        'tell': '确认结果后，用一两句平实的话告诉用户结果和决定结果的原因，回答用户问到的内容，不必复述过程；用户表示没有其他问题时，对话结束。',
         'rules': '业务规则：',
         'clock': '当前时间：{start}（单位与业务规则一致）',
         'advancing': '；时间会推进，需要时用 `v3_wait` 等待。',
@@ -65,8 +65,9 @@ TEXT = {
                          'confirm; make the change only after they agree.'),
         'finish': ('Once the outcome is settled, record it with `v3_answer` and tell the user the result in plain '
                    'words; the conversation ends when the user has nothing more to ask.'),
-        'tell': ('Once the outcome is settled, tell the user the complete result in plain words; the conversation '
-                 'ends when the user has nothing more to ask.'),
+        'tell': ('Once the outcome is settled, tell the user the result and what decided it in a sentence or two of '
+                 'plain words, and answer what they ask, without recounting the process; the conversation ends when '
+                 'the user has nothing more to ask.'),
         'rules': 'Policy:',
         'clock': 'Current time: {start} (in the units the policy uses)',
         'advancing': '; time moves on: wait with `v3_wait` when needed.',

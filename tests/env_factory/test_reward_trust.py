@@ -309,3 +309,19 @@ class PlainConsentTests(unittest.TestCase):
         self.assertEqual(refused['kind'], 'business')
         self.assertEqual(record['episode'].safety_violations, 1)
         self.assertNotEqual(facts.get('approve_second'), record['facts'].get('approve_second'))  # the flipped world
+
+
+class ContractSizeTests(unittest.TestCase):
+    """Graded fields are the outcome and the factors that decide it (checks.size_problems)."""
+
+    def test_a_contract_grades_at_most_five_fields_and_eight_values(self):
+        from env_factory.checks import authoring_problems
+        scalar = {'type': 'integer', 'description': 'x'}
+        small = {'status': {'type': 'string', 'enum': ['done', 'refused'], 'description': 'x'},
+                 'refund_cents': scalar, 'reason': {'type': 'string', 'enum': ['late', 'ineligible'], 'description': 'x'},
+                 'note': {'type': 'string', 'description': 'x', 'graded': False}}
+        self.assertEqual(authoring_problems(small), [])
+        wide = {f'f{i}': scalar for i in range(6)}
+        self.assertTrue(any('graded fields' in p for p in authoring_problems(wide)))
+        deep = {'quote': {'type': 'object', 'description': 'x', 'properties': {f'p{i}': scalar for i in range(9)}}}
+        self.assertTrue(any('graded values' in p for p in authoring_problems(deep)))

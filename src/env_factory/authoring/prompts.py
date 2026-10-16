@@ -9,10 +9,16 @@ Format: {{"fields": {{"<name>": {{"type": ..., "description": ..., ...}}}}}}
   "nullable": true when a value can legitimately be absent; every array sets "order": "any"
   when order carries no meaning or "exact" when it is a ranking or sequence. Amounts are integers
   in the smallest unit (cents, fen), never strings.
-- Cover exactly what the user asked to learn or be told, nothing decorative. Express every
-  outcome with ids, integers, booleans or string enums ("enum": [...]) so that two correct,
-  independent implementations produce identical values. Every field needs a precise
-  description, including units and how absent/failed cases are reported.
+- Graded fields are the outcome and the few factors that decide it, nothing else: what happened (done or
+  refused, the new status, the final amount the user pays or gets back) and the deciding factor a wrong
+  reading of the rules would change (why it was refused, which fee tier applied, the one date that matters).
+  Things looked up along the way, restated rules, intermediate numbers and confirmations of what did not
+  change are not fields at all — a write's effect is checked on the final database state, not by asking the
+  agent to recite it. At most 5 graded fields and 8 graded values in all (an object
+  or array of objects counts each graded property); a task with several goals spends them on each goal's
+  outcome. Express every outcome with ids, integers, booleans or string enums ("enum": [...]) so that two
+  correct, independent implementations produce identical values. Every field needs a precise description,
+  including units and how absent/failed cases are reported.
 - Free text (an explanation, reason or message) can never be compared exactly. Avoid it; if
   the user must get one, add at most one such field with "graded": false and put the actual
   outcome in a graded field (for example a "failure" enum next to it). The same applies to
@@ -22,8 +28,8 @@ Format: {{"fields": {{"<name>": {{"type": ..., "description": ..., ...}}}}}}
   say: amounts, dates, counts, outcomes, and ids the user knows or needs (a booking reference, a
   new confirmation number). Never ask for system-internal row ids or keys the user never sees
   ("i1", "s2", "item-row-7"), internal clock ticks or day indexes (give relative or human units
-  instead), or odd formats ("dollars 42.50"). Keep objects small and flat; fewer, meaningful
-  fields beat exhaustive dumps of the database.
+  instead), or odd formats ("dollars 42.50"). Keep objects small and flat: an agent that must recite a long
+  checklist learns to write reports instead of doing the work.
 - Do not decide the business outcome here; only its shape. Descriptions define meaning, units
   and how an absent value is written; they must not prescribe control flow (what happens after a
   refusal or failure, whether later steps still run, which rule wins) beyond what brief.md says.
