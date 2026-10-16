@@ -89,7 +89,7 @@ def relabel(task, out_root, client):
     policy = request.get('agent_policy') or request['business_rules']
     found = CLAUSE.search(policy)
     feedback, choice = '', None
-    for _ in range(2):
+    for attempt in range(3):
         prompt = PROMPT.format(request=request.get('user_request', '')[:600],
                                goals=json.dumps((request.get('user_script') or {}).get('goals', []), ensure_ascii=False),
                                worlds=worlds, fields=fields, clause=found.group(1)[:3000] if found else '(none)') + feedback
@@ -104,7 +104,11 @@ def relabel(task, out_root, client):
         problems = size_problems(trial) + ([] if keep else ['keep at least one field'])
         original = (choice.get('clause') or {}).get('original') or ''
         if original and original not in policy:
-            problems.append('the clause "original" is not verbatim text of the policy')
+            if attempt == 2:  # last try: keep the trimmed fields, leave the policy text as it is
+                choice['clause'] = {}
+            else:
+                problems.append('the clause "original" is not verbatim text of the policy; copy it exactly, or leave '
+                                'it empty')
         if not problems:
             break
         feedback = f'\n\nYour last answer had problems: {"; ".join(problems)}. Answer again.'
