@@ -32,6 +32,7 @@ IDLE_EXIT = 900  # seconds without a request before a serving container stops (a
 DOCKERFILE = f"""FROM {{base}}
 WORKDIR /app
 COPY env_factory /app/env_factory
+COPY env_factory_v3 /app/env_factory_v3
 COPY bundle /bundle
 ENV PYTHONPATH=/app PYTHONDONTWRITEBYTECODE=1
 USER {USER}
@@ -76,6 +77,10 @@ def build_many(folders, *, base_image=BASE_IMAGE, timeout=1800):
                 target = package / path.relative_to(bundle.PACKAGE_ROOT)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(path, target)
+        # the alias package: sandboxes built before the rename import env_factory_v3.runtime
+        alias = bundle.PACKAGE_ROOT.parent / 'env_factory_v3' / '__init__.py'
+        (context / 'env_factory_v3').mkdir()
+        shutil.copyfile(alias, context / 'env_factory_v3' / '__init__.py')
         for path, folder in zip(paths, folders):
             target = context / path.lstrip('/')
             target.mkdir(parents=True)
