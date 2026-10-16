@@ -528,6 +528,10 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
     # near-duplicates in index order (deterministic whatever the completion order).
     pool = concurrent.futures.ThreadPoolExecutor(max(parallel, 8))
     started, futures = {}, {}
+    # Every thread's Python stack every 10 minutes while this phase runs, to see where a stall sits.
+    import faulthandler
+    stacks = open(Path(output) / 'openings_stacks.log', 'w')
+    faulthandler.dump_traceback_later(600, repeat=True, file=stacks)
 
     def timed(item):
         started[item[0]] = time.monotonic()
@@ -552,6 +556,12 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
                 finished[index] = ({'index': index, 'domain': domain['name'], 'category': category, 'shape': shape,
                                     'language': langs[index], 'passed': False, 'problems': [repr(exc)[:300]]}, None)
         now = time.monotonic()
+        # Progress lives in memory only; write it out so a stalled phase is visible from outside (pool4 sat 1.5 h
+        # with eight connections silent and nothing to show where it was).
+        (Path(output) / 'openings_progress.json').write_text(json.dumps(
+            {'finished': len(finished), 'pending': len(pending), 'running': sum(1 for f in pending if f.running()),
+             'seconds_since_progress': round(now - progress), 'stall_timeout': stall_timeout,
+             'item_timeout': item_timeout}))
         # Every worker stuck on a stalled connection leaves the queued items unstarted (no start time), so they
         # would never time out: with no progress at all for TASK_TIMEOUT, everything still pending times out.
         stalled = now - progress > stall_timeout
@@ -563,6 +573,8 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
                                None)
             pending.discard(future)
     pool.shutdown(wait=False, cancel_futures=True)
+    faulthandler.cancel_dump_traceback_later()
+    stacks.close()
     finished = [finished[index] for index, _, _ in results]
     kept, rows = [], []
     for row, request in finished:
