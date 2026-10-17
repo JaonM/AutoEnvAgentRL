@@ -231,6 +231,10 @@ def main():
     episodes = [r for path in args.teacher for r in map(json.loads, Path(path).read_text().splitlines())
                 if r.get('success') and r.get('messages') and r['id'] in meta
                 and not r.get('speech_leaks') and failed_results(r['messages']) <= args.max_failed]
+    STYLE_FLAGS = {'report', 'announce', 'repeat', 'leak', 'language'}  # teacher_review.STYLE
+    flagged = len(episodes)
+    episodes = [r for r in episodes if not set(r.get('review') or []) & STYLE_FLAGS]
+    flagged -= len(episodes)
     reports_dropped = len(episodes)
     if args.max_reply_chars:
         episodes = [r for r in episodes if not reports(r['messages'], args.max_reply_chars)]
@@ -317,7 +321,7 @@ def main():
               'distinct_tool_sequences': round(len(sequences) / max(1, len(selected)), 3),
               'consent_protocol': dict(collections.Counter(e.get('consent') or 'token' for e in selected)),
               'near_misses': sum(bool(e.get('near_miss')) for e in selected),
-              'invented_id_episodes_dropped': invented_dropped, 'report_episodes_dropped': reports_dropped,
+              'invented_id_episodes_dropped': invented_dropped, 'report_episodes_dropped': reports_dropped, 'review_flagged_dropped': flagged,
               'unused_lookup_share': round(sum(p[1] for p in profiles) / max(1, sum(p[0] for p in profiles)), 3),
               'wide_turn_episodes': sum(any(len(m.get('tool_calls') or []) > 3 for m in e['messages']) for e in selected),
               'user_replies': dict(sorted(collections.Counter(
