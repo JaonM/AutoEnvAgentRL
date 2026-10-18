@@ -1,0 +1,27 @@
+{
+  "retail": {
+    "get_order_details": [
+      {"path":"status"},
+      {"path":"items","transform":"length"},
+      {"path":"items.*.options"},
+      {"path":"payment_history.*.transaction_type"},
+      {"path":"exchange_items","transform":"length"},
+      {"path":"return_items","transform":"length"}
+    ],
+    "get_product_details": [{"path":"variants.*.available"}]
+  },
+  "airline": {
+    "get_user_details": [{"path":"membership"}],
+    "get_reservation_details": [
+      {"path":"cabin"},
+      {"path":"insurance"},
+      {"path":"flight_type"},
+      {"path":"status"},
+      {"path":"passengers","transform":"length"},
+      {"path":"flights","transform":"length"},
+      {"path":"total_baggages"},
+      {"path":"nonfree_baggages"},
+      {"path":"created_at","transform":"age_hours_bucket","threshold":24}
+    ]
+  }
+}
