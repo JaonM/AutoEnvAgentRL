@@ -5,6 +5,8 @@
 # (default 100; τ²'s 200 only lets failing loops run on: the longest passing baseline dialogue had 36
 # messages). Compare arms only with each other (same settings); the full evaluation stays eval_arm.sh.
 #   experiments/bench/quick_eval.sh ARM MODEL_PATH [TRIALS]
+# AGENT_TEMPERATURE defaults to 0.0. For pass@8 use 8 trials and a nonzero temperature.
+# TASK_IDS_FILE optionally fixes a subset as {"airline": [ids...], "retail": [ids...]}.
 # THINK=1 serves the thinking template (reasoning before every reply, THINK_BUDGET tokens, default 1024,
 # then </think> is forced; 4096-token budget per call). BATCH decodes that many requests together
 # (continuous batching with the prefix cache): default 4 with THINK=1, where decoding dominates, and 0
@@ -26,7 +28,8 @@ PYTHONPATH=src .venv/bin/python -m env_factory.production.offpeak --wait
 slots=output/tau2/.slots; mkdir -p "$slots"; slot=""
 while [ -z "$slot" ]; do
   for i in $(seq 1 "${BENCH_MAX_EVALS:-2}"); do
-    if [ -d "$slots/$i" ] && ! kill -0 "$(cat "$slots/$i/pid" 2>/dev/null)" 2>/dev/null; then rm -rf "$slots/$i"; fi
+    # A new owner may have made the directory but not yet written its PID.
+    if [ -s "$slots/$i/pid" ] && ! kill -0 "$(cat "$slots/$i/pid" 2>/dev/null)" 2>/dev/null; then rm -rf "$slots/$i"; fi
     if mkdir "$slots/$i" 2>/dev/null; then echo $$ > "$slots/$i/pid"; slot="$slots/$i"; break; fi
   done
   [ -z "$slot" ] && sleep 60
@@ -52,12 +55,27 @@ trap 'kill ${pids[*]} 2>/dev/null; rm -rf "$slot"' EXIT
 until curl -sf "localhost:$port/health" >/dev/null 2>&1; do sleep 2; done
 runs=()
 for domain in airline retail; do
+  task_args=()
+  if [ -n "${TASK_IDS_FILE:-}" ]; then
+    ids=$(.venv/bin/python -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1]))[sys.argv[2]]))' "$TASK_IDS_FILE" "$domain") || exit 1
+    [ -n "$ids" ] || { echo "empty task subset: $domain"; exit 1; }
+    read -r -a selected_ids <<< "$ids"
+    task_args=(--task-ids "${selected_ids[@]}")
+  fi
   rm -rf ".bench/tau2-repo/data/simulations/v3bench/q$arm-$domain"  # tau2 saves under its data directory
   BENCH_PORT=$port experiments/bench/run_tau2.sh "q$arm" "$domain" --num-trials "$trials" --max-concurrency 14 \
-    --seed 300 --max-steps "${MAX_STEPS:-100}" > "output/tau2/q$arm-$domain.log" 2>&1 < /dev/null &
+    --seed 300 --max-steps "${MAX_STEPS:-100}" ${task_args[@]+"${task_args[@]}"} > "output/tau2/q$arm-$domain.log" 2>&1 < /dev/null &
   runs+=($!)
 done
-wait "${runs[@]}"
-echo "{\"arm\": \"$arm\", \"model\": \"$model\", \"trials\": $trials, \"think\": ${THINK:-0}, \"servers\": $servers, \"batch\": $batch, \"max_steps\": ${MAX_STEPS:-100}, \"seconds\": $(( $(date +%s) - started ))}" \
+status=0
+for job in "${runs[@]}"; do wait "$job" || status=1; done
+[ "$status" = 0 ] || { echo 'evaluation process failed'; exit 1; }
+if [ "$trials" -ge 8 ]; then
+  report_args=()
+  [ -z "${TASK_IDS_FILE:-}" ] || report_args=(--task-ids "$TASK_IDS_FILE")
+  .venv/bin/python experiments/bench/pass_k.py "q$arm" --trials "$trials" ${report_args[@]+"${report_args[@]}"} \
+    --output "output/tau2/q$arm-pass_k.json" || exit 1
+fi
+echo "{\"arm\": \"$arm\", \"model\": \"$model\", \"trials\": $trials, \"temperature\": ${AGENT_TEMPERATURE:-0.0}, \"think\": ${THINK:-0}, \"servers\": $servers, \"batch\": $batch, \"max_steps\": ${MAX_STEPS:-100}, \"seconds\": $(( $(date +%s) - started ))}" \
   > "output/tau2/q$arm.done"
 cat "output/tau2/q$arm.done"

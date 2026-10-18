@@ -14,11 +14,31 @@ cache can differ in rare numerical ties; compare arms served the same way.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+def sampling_seed(seed, prompt):
+    """Stable per-turn seed, independent of worker assignment and request order."""
+    payload = json.dumps([int(seed), list(prompt)], separators=(',', ':')).encode()
+    return int.from_bytes(hashlib.sha256(payload).digest()[:4], 'big')
+
+
+def seeded_sampler(temperature, seed):
+    """Per-request RNG: concurrent conversations must not share MLX's global RNG."""
+    import mlx.core as mx
+    key = mx.random.key(seed)
+
+    def sample(logprobs):
+        nonlocal key
+        key, draw = mx.random.split(key)
+        return mx.random.categorical(logprobs / temperature, key=draw)
+
+    return sample
 
 
 class PrefixCache:
@@ -219,7 +239,8 @@ def main():
         if len(prompt) + budget > args.max_context:
             raise ValueError(f'context budget exceeded: {len(prompt)} prompt tokens')
         temperature = float(body.get('temperature') if body.get('temperature') is not None else 0.0)
-        sampler = make_sampler(temp=temperature)
+        request_seed = sampling_seed(body['seed'], prompt) if temperature > 0 and body.get('seed') is not None else None
+        sampler = seeded_sampler(temperature, request_seed) if request_seed is not None else make_sampler(temp=temperature)
         tokens = []
         if batcher is not None:
             tokens = batcher.generate(prompt, budget, sampler, args.thinking)
@@ -269,6 +290,7 @@ def main():
             'stop' if tokens and tokens[-1] in tokenizer.eos_token_ids else 'length')
         if log:
             log.write(json.dumps({'time': time.time(), 'prompt_tokens': len(prompt), 'completion_tokens': len(tokens),
+                                  'temperature': temperature, 'request_seed': request_seed,
                                   'message': message}, ensure_ascii=False) + '\n')
             log.flush()
         return {'id': f'chatcmpl-{uuid.uuid4().hex}', 'object': 'chat.completion', 'created': int(time.time()),
