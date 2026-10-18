@@ -579,6 +579,7 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
         if not report['passed']:
             return row, None
         request = json.loads((output / 'sessions' / f'{index:03d}' / 'request.json').read_text())
+        request['request_kind'] = 'task'
         request.setdefault('time', {'start': 10, 'tick': 0})
         request['language'] = langs[index]
         opening, persona_name, opening_problems_ = write_opening(opening_client, request, f'gen-{index:03d}')

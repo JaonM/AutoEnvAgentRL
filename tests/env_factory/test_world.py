@@ -51,11 +51,13 @@ class WorldCheckTests(unittest.TestCase):
         self.assertTrue(any('goal_schema' in p for p in problems))
         self.assertTrue(any('rows' in p for p in problems))
 
-    def test_a_world_declares_outcomes_and_one_or_two_inquiries(self):
+    def test_a_world_declares_valid_outcomes_without_inventing_service_kinds(self):
         folder = Path(tempfile.mkdtemp())
         no_advice = {k: {**v, 'kind': 'inquiry' if k == 'p5' else 'account', 'outcome': OUTCOME} for k, v in SHAPED.items()}
-        for goals, wanted in ((GOALS, 'kind'), ({k: {**v, 'kind': 'account'} for k, v in no_advice.items()}, 'inquiry'),
-                              (no_advice, 'advice'),
+        for goals in (no_advice, {k: {**v, 'kind': 'account'} for k, v in no_advice.items()}):
+            (folder / 'request.json').write_text(json.dumps(world_request(goals)))
+            self.assertEqual(world.check_world(folder)[0], [])
+        for goals, wanted in ((GOALS, 'kind'),
                               ({**SHAPED, 'p4': {**SHAPED['p4'], 'outcome': OUTCOME}}, 'key points'),
                               ({**SHAPED, 'p0': {**SHAPED['p0'], 'outcome': {'type': 'string'}}}, 'outcome')):
             (folder / 'request.json').write_text(json.dumps(world_request(goals), ensure_ascii=False))
@@ -67,6 +69,45 @@ class WorldCheckTests(unittest.TestCase):
         self.assertEqual(list(schema['fields']), ['goal_1', 'goal_2', 'goal_3'])
         self.assertTrue(schema['fields']['goal_3']['description'].startswith('Goal 3 (p5)'))
         self.assertIsNone(world.task_schema(GOALS, goals))  # a world written before outcomes keeps its schema
+
+    def test_task_plan_never_invents_absent_kinds_or_writes(self):
+        for kind in ('account', 'inquiry', 'advice'):
+            schema = {n: {**v, 'kind': kind, 'outcome': ADVICE if kind == 'advice' else OUTCOME}
+                      for n, v in GOALS.items()}
+            plan = world.plan_tasks({'id': 'kind-only', 'goal_schema': schema}, 40)
+            self.assertEqual(len(plan), 40)
+            shapes = {shape for _, _, shape in plan[len(schema):]}
+            self.assertEqual(shapes, {'direct'} if kind == 'inquiry' else {'subjective'} if kind == 'advice'
+                             else {'simple', 'ordinary'})
+            self.assertTrue(all(processes for processes, _, _ in plan))
+
+        schema = {n: {**v, 'kind': 'account', 'approval': 'approve_' + n, 'outcome': OUTCOME}
+                  for n, v in GOALS.items()}
+        shapes = {s for _, _, s in world.plan_tasks({'id': 'writes-only', 'goal_schema': schema}, 40)[len(schema):]}
+        self.assertEqual(shapes, {'single_write', 'complex'})
+
+    def test_composed_answer_budget_is_checked_for_world_and_task(self):
+        shaped = copy.deepcopy(SHAPED)
+        for name in ('p0', 'p1'):
+            shaped[name]['outcome']['properties'].update({
+                'record_id': {'type': 'string'}, 'amount_cents': {'type': 'integer'},
+                'count': {'type': 'integer'}})
+        request = world_request(shaped)
+        goals = [{'process': p, 'params': {'loan_id': 'L1'}} for p in ('p0', 'p1')]
+        self.assertEqual(world.composed_answer_problems(shaped, goals[:1]), [])
+        request['user_facts']['goals'] = goals
+        folder = Path(tempfile.mkdtemp())
+        (folder / 'request.json').write_text(json.dumps(request))
+        self.assertTrue(any('composed answer' in p for p in world.check_world(folder)[0]))
+        (folder / 'world.json').write_text(json.dumps(request))
+        (folder / 'assignment.json').write_text(json.dumps({'id': 'qa', 'processes': ['p0'], 'script': []}))
+        (folder / 'task.json').write_text(json.dumps({'title': 'qa', 'user_facts': request['user_facts'],
+                                                     'user_scene': SCENE}))
+        self.assertTrue(any('composed answer' in p for p in world.check_task(folder)[0]))
+        plan = world.plan_tasks({'id': 'w', 'goal_schema': shaped}, 100)
+        for processes, _, _ in plan:
+            self.assertEqual(world.composed_answer_problems(shaped, [
+                {'process': p, 'params': {}} for p in processes]), [])
 
     def test_a_direct_task_asks_only_inquiries_with_every_number_said(self):
         folder = Path(tempfile.mkdtemp())
@@ -173,7 +214,9 @@ class TaskCertificationTests(unittest.TestCase):
         self.assertTrue(all(2 <= len([e for e in script if e != 'identity']) <= 4 for _, script, _ in plan))
 
     def test_task_plan_follows_the_shape_mix(self):
-        plan = world.plan_tasks({'id': 'w', 'goal_schema': SHAPED}, 46)
+        shaped = copy.deepcopy(SHAPED)
+        shaped['p0']['approval'] = 'approve_p0'
+        plan = world.plan_tasks({'id': 'w', 'goal_schema': shaped}, 46)
         probes, rest = plan[:len(SHAPED)], plan[len(SHAPED):]
         self.assertEqual([p for p, _, _ in probes], [[name] for name in sorted(SHAPED)])
         self.assertEqual((probes[4][2], probes[5][2]), ('subjective', 'direct'))  # the advice and inquiry probes

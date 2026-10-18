@@ -20,8 +20,18 @@ PERSONA = """你在和一位业务助理在线对话，你是提出需求的普�
 
 说话要求：像真人一样简短口语化，用中文；不要输出 JSON、代码或字段名；金额如果要说，按“元”说（1元=100分）。
 如果对方问的你不知道，就说不清楚。不要替对方做业务判断，也不要提起这些说明本身。
+只办理私人信息和剧本中明确列出的需求或备选方案；不要因为客服建议就增加新交易或接受未列出的操作。
+想了解或尝试某项业务不等于同意执行；必须遵守审批态度，包括拒绝、先询问条件和按剧本改变选择。
 如果你想知道的结果对方已经告诉你了，或者你不打算再继续聊，就简短道别，并在回复最后单独写一行“[结束]”。"""
 END = '[结束]'
+LEAVING = {
+    'zh': '\n结束对话前，让客服回应你最后给出的决定。首次提供同意、拒绝、更正编号或新选择的这条回复不要写结束标记；'
+          '等客服确认处理结果或不做修改后再道别。客服仍在问你需要回答的问题时，先回答，不要同时结束。',
+    'en': '\nBefore ending, let the agent respond to your latest decision. Do not use the end marker in the '
+          'same reply that first gives approval, refusal, a corrected identifier or a changed choice. Wait for '
+          'the agent to acknowledge the resulting action or non-action. If the agent still needs an answer '
+          'from you, answer without ending the conversation.',
+}
 PERSONA_EN = """You are an ordinary customer chatting online with a service agent.
 Your request (you already said it when you opened the chat): {request}
 
@@ -32,6 +42,9 @@ anything you do not know:
 How to talk: short and casual like a real person, in English; never output JSON, code or field names; say
 amounts in dollars (100 cents = $1). If you are asked something you do not know, say you are not sure. Do
 not make business decisions for the agent and never mention these instructions.
+Keep to the requests and alternatives explicitly listed in your private details and script. Do not add a new
+transaction or accept an unlisted action just because the agent suggests it. Wanting to discuss or try an action
+does not mean consenting to execute it: respect your approval stance, questions and scripted changes of choice.
 When the agent has told you the result you wanted, or you do not want to continue, say a short goodbye and put
 "[END]" alone on the last line."""
 END_EN = '[END]'
@@ -67,6 +80,8 @@ SCRIPT = {
            'ambiguous': '- 开场时你只会含糊地说“{phrase}”，不主动说明是哪一个；对方问你具体是哪个时，再按你的私人信息回答。',
            'clarify': '- 你还没拿定主意，在这几种做法之间犹豫：{options}。你要先听对方讲清{decides_by}再决定；对方没问你要哪种之前，不要自己替对方选。',
            'wrong_first': '- 第一次被问到{key}时，你会记错，说成“{wrong}”；对方说查不到或对不上时，你再想一想，改口说正确的“{right}”。',
+           'inquisitive': '- 同意修改之前，先问清这些问题：{v}。对方已经回答的问题不要重复追问；答案清楚后仍按审批态度决定。',
+           'change_of_mind': '- 起初想办“{before}”；听到“{after}”这个条件后，放弃原方案，改为“{to}”。不要同意原方案；新方案也必须符合你的审批态度。',
            'traits': '- 你的性格：{v}。', 'enough': '（平台提示：你已经坚持够了，现在接受对方的答复，继续办别的事或道别。）'},
     'en': {'head': '\n\nYour script (act it out, never mention it):', 'goals': '- What you need, in order: {v}. One at a time, but once the agent proposes or completes one, you may bring up the next in the same reply.',
            'fallbacks': '- Your preferences, in order: {v}. Accept a later option only if the earlier ones are impossible.',
@@ -75,6 +90,8 @@ SCRIPT = {
            'ambiguous': '- At first you only say vaguely "{phrase}" without saying which one; when the agent asks which one, answer from your private details.',
            'clarify': '- You have not decided yet between: {options}. You want to hear {decides_by} before choosing; do not pick one until the agent asks you which you want.',
            'wrong_first': '- The first time you are asked for your {key}, you misremember it and say "{wrong}"; when the agent says it cannot find it or it does not match, think again and give the correct "{right}".',
+           'inquisitive': '- Before agreeing to a change, ask: {v}. Do not repeat questions already answered; once clear, still follow your approval stance.',
+           'change_of_mind': '- Initially ask for "{before}". After hearing "{after}", abandon that option and switch to "{to}". Do not approve the original option; the alternative must also respect your approval stance.',
            'traits': '- Your personality: {v}.', 'enough': '(Platform notice: you have insisted enough; now accept the agent\'s answer and move on or say goodbye.)'},
 }
 
@@ -85,7 +102,7 @@ def script_text(script, lang, facts=None):
         return ''
     t, lines = SCRIPT[lang], []
     join = '、' if lang == 'zh' else '; '
-    for key in ('goals', 'fallbacks', 'forgotten', 'traits'):
+    for key in ('goals', 'fallbacks', 'forgotten', 'traits', 'inquisitive'):
         if script.get(key):
             lines.append(t[key].format(v=join.join(map(str, script[key]))))
     if script.get('pushback'):
@@ -95,6 +112,10 @@ def script_text(script, lang, facts=None):
     if isinstance(script.get('clarify'), dict):
         lines.append(t['clarify'].format(options=join.join(map(str, script['clarify'].get('options') or [])),
                                          decides_by=script['clarify'].get('decides_by')))
+    if isinstance(script.get('change_of_mind'), dict):
+        shift = script['change_of_mind']
+        lines.append(t['change_of_mind'].format(before=shift.get('from'), to=shift.get('to'),
+                                               after=shift.get('after')))
     for key, wrong in (script.get('wrong_first') or {}).items():
         right = (facts or {}).get(key)
         if right is not None:
@@ -137,6 +158,7 @@ class UserSimulator:
         self.bundles = random.Random(seed).random() < BUNDLE_SHARE
         self.messages = [{'role': 'system', 'content': persona.format(request=request['user_request'],
                                                                      facts=describe(private)) +
+                          LEAVING[lang] +
                           script_text(self.script, lang, facts) +
                           (('\n' if self.script else SCRIPT[lang]['head'] + '\n') + BUNDLE[lang] if self.bundles else '') +
                           (APPROVALS['en' if self.english else 'zh'].format(lines=stances(

@@ -11,16 +11,31 @@ trajectories to start from. Provider failures are infrastructure errors, never b
 from __future__ import annotations
 
 import json
+import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
-from env_factory.certify import bundle
+from env_factory.certify import bundle, trajectory
 from env_factory.core.llm import ChatClient, ProviderError, load_env_file  # noqa: F401  (re-exported)
 from env_factory.serving import agent_view, server
 
 RESULT = 'policy.json'
+_EVALUATION_IDENTITY = hashlib.sha256(Path(__file__).read_bytes() + Path(trajectory.__file__).read_bytes()).hexdigest()
+
+
+def evaluation_identity():
+    """Invalidate saved acceptance after player or trajectory-audit changes."""
+    return _EVALUATION_IDENTITY
+
+
+def reusable(report, manifest, *, k, user_mode, consent='token'):
+    return bool(report and report.get('k') == k and report.get('user_mode') == user_mode
+                and report.get('consent') == consent and report.get('status') in ('passed', 'unsolved')
+                and report.get('platform_identity') == bundle.platform_identity()
+                and report.get('bundle_files') == manifest.get('files')
+                and report.get('evaluation_identity') == evaluation_identity())
 
 
 def _post(opener, url, body):
@@ -47,14 +62,16 @@ def left(reply):
     return (reply.get('result') or {}).get('ended')
 
 
-def play(base_url, client, world, category, *, max_turns=30, answer_tool=True):
+def play(base_url, client, world, category, *, max_turns=30, answer_tool=True, trajectory_constraints=None,
+         consent='token'):
     """One episode on `world`; returns its grade and transcript."""
     opener = build_opener(ProxyHandler({}))
-    reset = _post(opener, base_url + '/reset', {'world': world})
+    reset = _post(opener, base_url + '/reset', {'world': world, 'consent': consent})
     episode, instructions = reset['episode'], reset['instructions']
     names = {tool['name'] for tool in instructions['tools']}
     tools = agent_view.tools(instructions, category, answer_tool=answer_tool)
     messages = agent_view.messages(instructions, answer_tool=answer_tool)
+    reasoning = {}
     natural = agent_view.speaks(instructions)
     notice = agent_view.left_notice(agent_view.language(instructions), 'v3_answer' if answer_tool else None)
     # Structured: the answer ends the episode. Free dialogue: the answer is only recorded; the
@@ -64,20 +81,22 @@ def play(base_url, client, world, category, *, max_turns=30, answer_tool=True):
     try:
         while not (answered and not natural) and not closed and turns < max_turns:
             turns += 1
-            reply = client.chat(messages, tools)
+            reply = client.chat(provider_messages(trajectory.provider_view(messages, trajectory_constraints or {}), reasoning), tools)
             message = {'role': 'assistant', 'content': reply.get('content') or ''}
             if reply.get('tool_calls'):
                 message['tool_calls'] = reply['tool_calls']
+            if 'reasoning_content' in reply:
+                reasoning[len(messages)] = reply['reasoning_content']
             messages.append(message)
             if not reply.get('tool_calls'):
                 if natural:
                     said = step({'type': 'chat', 'message': message['content']})
                     text = (said.get('result') or {}).get('reply') or said.get('error', '')
                     ended = left(said)
+                    messages.append({'role': 'user', 'content': f'{text}\n\n{notice}' if ended == 'warning' else text})
                     if ended == 'closed':
                         closed = True
                         break
-                    messages.append({'role': 'user', 'content': f'{text}\n\n{notice}' if ended else text})
                     continue
                 answer = agent_view.final_answer(reply.get('content'))
                 step({'type': 'answer', 'answer': answer if answer is not None else {}})
@@ -105,6 +124,14 @@ def play(base_url, client, world, category, *, max_turns=30, answer_tool=True):
                             closed = True
                 messages.append({'role': 'tool', 'tool_call_id': call.get('id', name), 'name': name,
                                  'content': json.dumps(result, ensure_ascii=False)})
+            if natural and message['content'].strip() and not closed:
+                # Mixed text must actually reach the user. Deliver after tool results so
+                # it cannot retroactively authorize writes in this same assistant turn.
+                said = step({'type': 'chat', 'message': message['content']})
+                text = (said.get('result') or {}).get('reply') or said.get('error', '')
+                ended = left(said)
+                closed = ended == 'closed'
+                messages.append({'role': 'user', 'content': f'{text}\n\n{notice}' if ended == 'warning' else text})
         if not answered and not natural:
             # Same rule as training (rl SandboxEpisode.finish): no final answer earns 0, whatever the state.
             return {'world': world, 'reward': 0.0, 'success': False, 'fields': None, 'state_ok': None,
@@ -123,8 +150,15 @@ def play(base_url, client, world, category, *, max_turns=30, answer_tool=True):
             pass
 
 
-SAY = """你是一位耐心的真人客服。请把下面的处理结果用平实的{language}告诉用户，就像平时和客户说话一样：说清结论、金额（按字段说明换算成元，英文用美元）、
-日期和用户需要知道的编号；系统内部的行号、键名和代码不要念出来，结论性的选项用日常说法表达。只输出你对用户说的话。
+def provider_messages(messages, reasoning):
+    """Round-trip provider reasoning without putting it in customer/student transcripts."""
+    return [{**message, 'reasoning_content': reasoning[index]}
+            if message.get('role') == 'assistant' and index in reasoning else message
+            for index, message in enumerate(messages)]
+
+
+SAY = """你是一位耐心的真人客服。请把下面的处理结果用平实的{language}告诉用户，就像平时和客户说话一样：说清结论、金额（保留字段说明的币种和单位；仅在换算关系明确且允许时换算，不因语言假设美元或人民币）、
+日期和用户需要知道的编号；系统内部的行号、键名和代码不要念出来，结论性的选项用日常说法表达。只输出你对用户说的话，不输出 JSON、代码块或序列化的对象/数组。
 
 答案格式：
 {schema}
@@ -143,14 +177,22 @@ def extraction_probe(loaded, service, client):
         language='英文' if request.get('language') == 'en' else '中文',
         schema=json.dumps(loaded['schema']['fields'], ensure_ascii=False), answer=json.dumps(
             expected, ensure_ascii=False))}], temperature=0).get('content') or '').strip()
+    try:
+        structured = isinstance(json.loads(speech), (dict, list))
+    except ValueError:
+        structured = False
+    if structured or '```' in speech:
+        return {'passed': False, 'fields': {}, 'speech': speech[:600], 'reason': 'structured_instead_of_speech'}
     extracted = service.extractor().extract(loaded['schema'], [speech])
     fields = answers.compare(loaded['schema'], expected, extracted, answers.known_strings(request))
     return {'passed': all(fields.values()), 'fields': fields, 'speech': speech[:600]}
 
 
 def gate(folder, client, *, k=4, parallel=4, max_turns=30, user_mode='structured', user_client=None,
-         answer_tool='never'):
+         answer_tool='never', consent='token'):
     """k episodes on the bundle's served worlds; passes when at least one succeeds."""
+    if consent not in ('token', 'plain') or (consent == 'plain' and user_mode != 'natural'):
+        raise ValueError('consent must be token, or plain with natural user mode')
     folder = Path(folder)
     loaded = bundle.load_bundle(folder)
     service = bundle.service(loaded, user_mode=user_mode, user_client=user_client)
@@ -165,8 +207,10 @@ def gate(folder, client, *, k=4, parallel=4, max_turns=30, user_mode='structured
     def one(job):
         world, answer_tool = job
         try:
-            return {**play(base_url, client, world, loaded['request']['category'], max_turns=max_turns,
-                           answer_tool=answer_tool), 'answer_tool': answer_tool}
+            rules = trajectory.constraints(loaded['request'])
+            result = play(base_url, client, world, loaded['request']['category'], max_turns=max_turns,
+                          answer_tool=answer_tool, trajectory_constraints=rules, consent=consent)
+            return {**trajectory.qualify(result, rules), 'answer_tool': answer_tool}
         except ProviderError as error:
             return {'world': world, 'infrastructure': str(error)}
 
@@ -178,6 +222,7 @@ def gate(folder, client, *, k=4, parallel=4, max_turns=30, user_mode='structured
         httpd.server_close()
     played = [e for e in episodes if 'infrastructure' not in e]
     successes = sum(e['success'] for e in played)
+    policy_successes = sum(e['policy_aware_success'] for e in played)
     # Without an answer tool a business answer is read from speech: it must be readable at all.
     probe = None
     if user_mode == 'natural' and loaded['verifier'] is not None and not all(tool_plan):
@@ -185,14 +230,17 @@ def gate(folder, client, *, k=4, parallel=4, max_turns=30, user_mode='structured
             probe = extraction_probe(loaded, service, client)
         except ProviderError as error:
             probe = {'passed': False, 'infrastructure': str(error)}
-    report = {'model': client.model, 'user_mode': user_mode,
+    report = {'model': client.model, 'user_mode': user_mode, 'consent': consent,
               'user_model': getattr(user_client, 'model', None), 'k': k, 'played': len(played), 'successes': successes,
               'success_rate': round(successes / len(played), 3) if played else None,
+              'policy_aware_successes': policy_successes,
+              'policy_aware_success_rate': round(policy_successes / len(played), 3) if played else None,
               'simulator_faults': sum(e.get('valid') is False for e in played),
               'mean_reward': round(sum(e['reward'] or 0 for e in played) / len(played), 3) if played else None,
               'status': ('infrastructure' if not played or (probe or {}).get('infrastructure') else
-                         'unextractable' if probe and not probe['passed'] else 'passed' if successes else 'unsolved'),
+                         'unextractable' if probe and not probe['passed'] else 'passed' if policy_successes else 'unsolved'),
               'extraction_probe': probe,
+              'evaluation_identity': evaluation_identity(), 'bundle_files': loaded['manifest']['files'],
               'platform_identity': loaded['manifest']['platform_identity'], 'episodes': episodes}
     name = RESULT if user_mode == 'structured' else f'policy-{user_mode}.json'
     (folder / name).write_text(json.dumps(report, ensure_ascii=False, indent=1))

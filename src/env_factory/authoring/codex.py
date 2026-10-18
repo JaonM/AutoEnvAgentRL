@@ -39,11 +39,13 @@ class InfrastructureError(RuntimeError):
 
 
 def _transport_args():
-    try:
-        from env_factory.generation.codex_transport import transport_args
-        return transport_args()
-    except Exception:
+    transport = os.environ.get('ENVFACTORY_CODEX_TRANSPORT', 'auto')
+    if transport == 'auto':
         return []
+    # This CLI rejects overrides of its built-in openai provider. Keep its native
+    # transport fallback instead of emitting a configuration that cannot start.
+    raise ValueError('This Codex CLI supports only ENVFACTORY_CODEX_TRANSPORT=auto; '
+                     'overriding the built-in provider to force HTTP is unsupported')
 
 
 def command(folder, model=MODEL):

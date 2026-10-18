@@ -308,6 +308,13 @@ class SandboxEpisode:
                           else self._dispatch(name, params))
                 self.messages.append({'role': 'tool', 'tool_call_id': identifier, 'name': name,
                                       'content': render_result(result, self.result_style)})
+            if self.user_mode == 'natural' and (message.get('content') or '').strip() and not self.terminated:
+                # Preserve user-visible mixed speech; same-turn speech does not grant
+                # prior consent for any of the tool calls already executed above.
+                said = self._step({'type': 'chat', 'message': message['content']})
+                notice = self._after_chat(said)
+                text = (said.get('result') or {}).get('reply') or said.get('error', '')
+                self.messages.append({'role': 'user', 'content': f'{text}\n\n{notice}' if notice else text})
         elif self.user_mode == 'natural':
             # Free dialogue: a plain message is speech to the user; their reply is the next user turn.
             said = self._step({'type': 'chat', 'message': message.get('content') or ''})

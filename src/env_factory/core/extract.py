@@ -4,7 +4,8 @@ In free dialogue the agent need not call the answer tool. When the conversation 
 recorded answer, a model (JUDGE_*, falling back to LLM_*; temperature 0; cached by content)
 reads everything the agent said to the user (the whole conversation, in order; when it states a
 result more than once the last statement counts, and restated inputs or rules are not results)
-and fills the answer schema; it never sees tool
+and fills the answer schema. Public user replies may disambiguate the meaning of an explicit report,
+but cannot supply its values. The extractor never sees raw tool
 results, so nothing the agent did not say can be credited. Every extracted number, id or other
 free string must then appear in that speech (numerals.said for numbers, so 36000 fen said as
 "360 元" counts); a value that does not is replaced by null. Enums and booleans are taken as the
@@ -41,6 +42,33 @@ PROMPT = """下面是客服在一次服务中对用户说过的全部话。请�
 def speech_of(trace):
     """What the agent said to the user, in order (plain messages and approval requests)."""
     return [e['message'] for e in trace if e.get('kind') == 'chat' and isinstance(e.get('message'), str)]
+
+
+def conversation_of(trace, opening=''):
+    """Public chat context, including the closing user reply; never tools or private facts."""
+    messages = [{'role': 'user', 'content': opening}] if opening else []
+    for entry in trace:
+        if entry.get('kind') != 'chat':
+            continue
+        for role, key in (('assistant', 'message'), ('user', 'reply')):
+            if isinstance(entry.get(key), str) and entry[key].strip():
+                messages.append({'role': role, 'content': entry[key]})
+    return messages
+
+
+def context_prompt(dialogue):
+    """Context disambiguates an explicit report; it is never a source of answer values."""
+    if not dialogue:
+        return ''
+    public = [{'role': m['role'], 'content': m['content']} for m in dialogue
+              if m.get('role') in ('user', 'assistant') and isinstance(m.get('content'), str)]
+    return ('\n\nAdditional conversational context, for resolving the meaning of the agent\'s explicit '
+            'reported result only:\n' + json.dumps(public, ensure_ascii=False) +
+            '\nUse this context only to resolve references or distinguish the reason for an explicitly '
+            'reported result (e.g. an agent acknowledges leaving a record unchanged in response to a '
+            'user refusal). Never treat a customer\'s statement, request, number or identifier as an '
+            'agent-reported result. Do not fill any outcome the assistant did not report. Private facts, '
+            'reference answers and database state are not provided. Keep every other extraction rule.')
 
 
 MAX_RECORDS, NAMES_PER_RECORD = 120, 3
@@ -162,7 +190,7 @@ class Extractor:
     def __init__(self, client):
         self.client, self.cache = client, {}
 
-    def extract(self, schema, speech, records=None):
+    def extract(self, schema, speech, records=None, *, dialogue=None):
         """{field: value} for the schema's fields (None when not stated), or None without speech. `records`
         (records_of the episode's trace) lets the model fill ids of records the agent named."""
         text = '\n'.join(m for m in speech if m.strip())
@@ -171,7 +199,8 @@ class Extractor:
         fields = schema['fields']
         listing = ('客服查到的记录（客服用名称或描述指代某条记录时，相应字段填这里的 id；没指代就不要填）：\n'
                    + json.dumps(records, ensure_ascii=False) + '\n\n') if records else ''
-        prompt = PROMPT.format(schema=json.dumps(fields, ensure_ascii=False, indent=1), speech=text, records=listing)
+        prompt = PROMPT.format(schema=json.dumps(fields, ensure_ascii=False, indent=1), speech=text,
+                               records=listing) + context_prompt(dialogue)
         key = hashlib.sha256(prompt.encode()).hexdigest()
         if key not in self.cache:
             from env_factory.core.llm import ProviderError

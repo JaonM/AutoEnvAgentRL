@@ -1,19 +1,19 @@
 """How real users open a conversation: deterministic red flags and speaking personas.
 
 Shared by the request generator (checks request) and the opening rewriter. A red flag is wording
-a real user would not say: amounts in 分, transaction semantics or rule restatements, dictating
+a real user would not say: transaction semantics or rule restatements, dictating
 the platform's confirmation protocol (the platform asks before every write anyway), and virtual
-clock values ("当前时间是10", "第10天").
+clock values ("当前时间是10", "第10天"). Currency and quotation units come from the
+business scene, not its language: cents, fen and other stated units are not style errors.
 """
 from __future__ import annotations
 
 import hashlib
 import re
 
-PHRASES = ('多少分', '别影响', '不影响已', '原子', '回滚', '都别扣', '一批都别', '一次办好', '有冲突的别',
+PHRASES = ('别影响', '不影响已', '原子', '回滚', '都别扣', '一批都别', '一次办好', '有冲突的别',
            '有冲突的就不', '指定的', '操作前', '分别让我确认')
 PATTERNS = (
-    (r'\d+\s*分(?![钟之])', '金额用“分”（用户说“元”）'),
     (r'先(告诉|跟|给|让|发)我.{0,12}(确认|看|过目)', '交代确认流程'),
     (r'等我(确认|点头|同意|回复)', '交代确认流程'),
     (r'我(确认|点头|同意)(了|后|之后|完)(你)?再', '交代确认流程'),
@@ -25,7 +25,6 @@ PATTERNS = (
 )
 
 PATTERNS_EN = (
-    (r'\b\d+\s*cents?\b', 'amount in cents (users say dollars)'),
     (r'\b(confirm|check) with me (first|before)|\bwait for my (ok|approval|confirmation)', 'dictates the confirmation protocol'),
     (r'\bbefore (each|every) (step|item|one)\b', 'dictates the confirmation protocol'),
     (r'\b(current )?time (is )?\d+\b|\bday \d+\b|\bvirtual\b|time\.start', 'virtual clock'),

@@ -42,6 +42,8 @@ def spoken(number):
     """Ways a user may say a number: as is, in Chinese numerals (两, 十二), or (cents) in 元 such as
     1.8 / 1块8 / 一块八."""
     forms = {f'{number:g}'}
+    if isinstance(number, float):
+        forms |= {str(number), f'{number:,}'}
     if isinstance(number, int) and not isinstance(number, bool):
         forms |= chinese(number)
         yuan = number / 100
@@ -82,8 +84,15 @@ def said(text, number):
         return True
     for form in spoken(number):
         digits = form[0].isdigit()
-        before, after = (r'(?<![\d.])', r'(?![\d])') if digits else (r'(?<![零一二两三四五六七八九十百千万])',
+        before, after = (r'(?<![\d.])', r'(?!\d|\.\d)') if digits else (r'(?<![零一二两三四五六七八九十百千万])',
                                                                           r'(?![零一二两三四五六七八九十百千万])')
-        if re.search(before + re.escape(form) + after, text):
+        pattern = re.escape(form)
+        if re.fullmatch(r'\d[\d,]*(?:\.\d+)?', form):
+            whole, _, fraction = form.partition('.')
+            fraction = fraction.rstrip('0')
+            # Decimal spelling is not numeric value: 4.5, 4.50 and 4.500
+            # state the same amount. Never accept a prefix of 4.51 or 4.5001.
+            pattern = re.escape(whole) + (r'\.' + re.escape(fraction) + '0*' if fraction else r'(?:\.0+)?')
+        if re.search(before + pattern + after, text):
             return True
     return False

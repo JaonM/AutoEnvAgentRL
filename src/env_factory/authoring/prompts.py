@@ -7,8 +7,9 @@ Write answer_schema.json: the JSON object the agent must return to the user at t
 Format: {{"fields": {{"<name>": {{"type": ..., "description": ..., ...}}}}}}
 - types: string, integer, number, boolean, array (needs "items"), object (optional "properties");
   "nullable": true when a value can legitimately be absent; every array sets "order": "any"
-  when order carries no meaning or "exact" when it is a ranking or sequence. Amounts are integers
-  in the smallest unit (cents, fen), never strings.
+  when order carries no meaning or "exact" when it is a ranking or sequence. Amounts preserve the
+  declared source units and precision: integer for integer units, number for decimal quotations,
+  never strings. Do not invent a conversion to minor units or infer a currency from language.
 - Graded fields are the outcome and the few factors that decide it, nothing else: what happened (done or
   refused, the new status, the final amount the user pays or gets back) and the deciding factor a wrong
   reading of the rules would change (why it was refused, which fee tier applied, the one date that matters).
@@ -19,6 +20,10 @@ Format: {{"fields": {{"<name>": {{"type": ..., "description": ..., ...}}}}}}
   outcome. Express every outcome with ids, integers, booleans or string enums ("enum": [...]) so that two
   correct, independent implementations produce identical values. Every field needs a precise description,
   including units and how absent/failed cases are reported.
+- Distinguish zero from not applicable. A refused, deferred or transferred operation may have no completed
+  financial result; use null for an inapplicable result rather than inventing a requirement to announce zero.
+  Keep zero when the user actually asks for a zero-valued quantity. Final-state and action-evidence checks
+  still verify that no unauthorized effect occurred; nullable reports must never waive those checks.
 - Free text (an explanation, reason or message) can never be compared exactly. Avoid it; if
   the user must get one, add at most one such field with "graded": false and put the actual
   outcome in a graded field (for example a "failure" enum next to it). The same applies to
@@ -44,6 +49,14 @@ AUTHOR = """You build an executable business environment for agent RL training, 
 Folder: brief.md (business rules and user request; the only authority), data.json (initial
 tables), facts.json (the user's private facts; an agent learns them only by asking),
 answer_schema.json (the required final answer), request.json (all of the above).
+
+When request.json contains public_contract, its supplied public policy and exact API are
+authoritative constraints included in business_rules. Preserve public tool names, requiredness,
+argument types and monetary units. Do not add quote, revision, context or calculated-amount
+arguments absent from that API. Document enum values and nested object fields in Args.
+Implement the stated tool effects and validation boundary: policy conditions assigned to the
+agent are enforced by reference and verifier, not silently added to the tool. Do not invent
+neighbouring tools when the supplied contract defines the complete service API.
 
 Write env.py:
     from env_factory.runtime import write, BusinessError
@@ -273,7 +286,7 @@ policies, through its tools: the user may be a customer, an employee (an HR, IT,
 professional (a firm's or clinic's office assistant) or a partner business (dispatch, reconciliation). Business domain:
 {domain}. {detail}
 Write request.json in this folder (assignment.json repeats the assignment):
-{{"id": "{id}", "family": "<short domain slug>", "category": "{category}", "reward_type": "{reward_type}",
+{{"id": "{id}", "request_kind": "task", "family": "<short domain slug>", "category": "{category}", "reward_type": "{reward_type}",
   "language": "{language}", "title": "<short title in {language_name}>", "user_scene": {{...}},
   "business_rules": "...", "tables": {{...}},
   "user_facts": {{...}}, "time": {{"start": "2024-05-15T15:00", "tick": 0}}}}
@@ -339,7 +352,8 @@ request needs through the tools (and the user), then return {{"reply": "<the mes
 assistant would send>"}}: built from the tool results and the user's facts (so it changes with
 the data), in the user's language, addressing everything the user asked for, and stating only
 what the tools and the user actually said. Write it the way a good customer-service agent
-talks: plain words, amounts in the user's currency (元 in Chinese, dollars in English), no internal field names, table ids, status codes, raw cents,
+talks: plain words, amounts in the currency and units declared by the business (never inferred from language),
+no internal field names, table ids, status codes,
 virtual clock values or quoted rule text, a few short paragraphs at most.
 """
 
@@ -373,7 +387,7 @@ OPENING_WRITER = """你是一位用户（可能是顾客、员工、专业人士
 你希望最后被告知：{wants}
 你的说话风格：{persona}（{persona_hint}）
 {feedback}
-要求：一到三句口语，像真人；已知信息里的每个数字都要说到（金额按元说，1元=100分，如180分说“1.8元”）；
+要求：一到三句口语，像真人；已知信息里的每个数字都要说到；金额保留场景给定的币种、报价单位和精度，不因中文表达就改成人民币，也不擅自换算单位；
 想被告知的内容简单带过即可，不必逐项列出，用你自己的说法收尾（也可以不专门收尾）；{avoid}
 不要复述任何规则或办理流程，不要说“先告诉我……等我确认再……”，不要出现“当前时间是10”“第10天”这类编号；
 不要总以“帮我”“麻烦”开头。只输出这条消息本身。"""
@@ -401,6 +415,7 @@ POLICY_WRITER = """你要把一份写给开发者的业务实现规格，改写�
 只输出手册正文，分条列出。"""
 
 POLICY_CHECKER = """下面是一份业务实现规格，和据此改写的政策手册。客服或助理只能看到手册。逐条对照：规格里任何会影响处理结果的规则（资格、计算、取整、顺序、上限、拒绝或失败后的处理、需要用户同意的操作、最后要告诉用户的内容），如果在手册里缺失、被改变、数值或边界不一致、或者说得含糊到可以有两种理解，就列出来。只看业务含义，不管措辞和实现细节。
+单独核对币种、金额单位、报价精度、每项费用和舍入规则。语言不决定币种；cents也不一定是美元。未经规格允许，把整数最小货币单位改成小数报价、换币种或改变对外报价单位，均属业务规则不一致，即使算术换算相等也要报告。
 客服或助理除了手册，还能看到当前时间的数值、查询工具返回的数据和最终答案的字段说明，所以手册不需要写出当前时间的具体数值、表名字段名或数据里的具体记录；这类内容不算缺失。手册里的时间单位（分钟、小时、天）与规格一致即可，不写“虚拟”二字不算问题。
 
 实现规格：
@@ -420,8 +435,9 @@ What you know and will mention when you start: {known}
 What you want to be told in the end: {wants}
 Your speaking style: {persona} ({persona_hint})
 {feedback}
-Requirements: one to three casual sentences, like a real person; mention every number you know (say
-amounts in dollars: 180 cents is "$1.80"); mention what you want to be told only briefly, in your own
+Requirements: one to three casual sentences, like a real person; mention every number you know. Preserve
+the scene's currency, quotation units and precision; English does not imply dollars, and do not convert
+units without permission in the scene. Mention what you want to be told only briefly, in your own
 words; {avoid}
 never restate rules or procedures, never dictate how the agent should confirm things with you, and never
 mention internal numbers such as "time 10" or "day 10". Output only the message itself."""
@@ -430,10 +446,12 @@ WORLD_AUTHOR = """You design one complete business world for training agents tha
 employee, a professional or a partner business) under its policies: one database and one policy manual on which many
 different tasks will later be posed. Business domain: {domain}. {detail}
 Write request.json in this folder:
-{{"id": "{id}", "family": "<short domain slug>", "category": "multi_step_agentic", "reward_type": "business",
+{{"id": "{id}", "request_kind": "world", "family": "<short domain slug>", "category": "multi_step_agentic", "reward_type": "business",
   "language": "{language}", "title": "<short title in {language_name}>", "business_rules": "...",
   "goal_schema": {{...}}, "tables": {{...}}, "user_facts": {{...}}, "user_scene": {{...}},
   "time": {{"start": "<YYYY-MM-DDTHH:MM, now>", "tick": 0}}}}
+This is a reusable world specification. user_facts and user_scene describe only its build-check sample;
+later task requests will be marked request_kind="task" and carry world_id referencing this world's id.
 
 - business_rules ({language_name}): the full policy manual of this business, the only authority. Cover 6 to 10
   business processes customers come for (for example look up, book, change, cancel, refund, exchange,
@@ -442,27 +460,35 @@ Write request.json in this folder:
   rounding, deadlines relative to now, what happens on refusal or failure, partial success, and which writes need
   the customer's approval. Customers must be identified (state how: e.g. name plus postcode, or email) before any
   account data is shown or changed. For every row a write creates or changes, state the value of every column.
-  No rule may be open to two readings. Amounts are integer cents; dates and times are ISO strings ("2024-05-15", "2024-05-15T09:30") against a fixed
+  No rule may be open to two readings. Preserve explicitly supplied monetary units and precision;
+  otherwise choose and document exact units (prefer integer minor units). Never infer currency from language.
+  Dates and times are ISO strings ("2024-05-15", "2024-05-15T09:30") against a fixed
   calendar now (time.start), and rules are stated in calendar terms (hours, days, "before 18:00").
 - goal_schema: {{"<process>": {{"description": "<what the customer wants>", "kind": "account" | "inquiry",
   "params": {{"<name>": "<type and meaning>"}}, "outcome": <field spec>}}}} for those 6 to 10 processes. A task's
   goals are one to three of them with concrete params.
-  - kind "inquiry" (one or two processes): a policy question answered from the rules and the numbers the customer
+  - kind "inquiry" (only when this business offers it): a policy question answered from the rules and the numbers the customer
     states (for example the fee for a change on a fare and a date they name): no identification, no table
     lookup, no write; its params are those numbers.
-  - kind "advice" (at least one): the customer wants a recommendation, comparison or explanation about their own
+  - kind "advice" (only when the policy allows this service): the customer wants a recommendation, comparison or explanation about their own
     situation (which plan or option suits them, why a charge happened); the agent looks up their records and
     applies the rules; no write. Its outcome holds the key points a good answer must contain: the recommended
     option (an enum or record id; when the rules make several equally good, the verifier lists the others as
     alternatives) and the reasons as enums of the deciding rules, plus the amounts or dates the answer needs.
-  - Every other process is "account".
+  - Every other process is "account". Do not invent inquiry or advice services just to fill a category.
   - outcome: what the customer must be told when a goal of this process is handled, as one answer field spec of
     type "object" with "properties" (the same rules as an answer schema: ids, integers, booleans and string enums,
     a description with units and how absent or refused cases are written; only values a good agent would say).
+    Declare conditional absence explicitly: a result that is inapplicable after refusal, deferral or transfer
+    is nullable, not a fabricated zero-valued result the agent must recite. This never removes final-state,
+    consent or actual-action verification. Preserve a real requested zero-valued result when applicable.
   - approval (every process whose handling writes): the approve_* fact key pattern its writes are approved
     under, with the record id when one customer may decide differently per record, e.g. "approve_cancel_<exchange_id>".
     env.approval_key must return exactly this pattern filled in for the write, and every task names its approval
     facts by it.
+  - Keep final reports concise: the composed answer for the sample's one to three goals must fit the
+    existing answer-schema budget (at most 8 graded scalar values in total, including nested properties).
+    Do not disable grading on required outcomes. Full database/ledger/inventory effects remain verified.
     It must cover refusal and partial cases too: a "status" enum, and for an account process a "reason" string
     enum naming why it was refused or could not be done (null on success), so an agent that refuses without
     checking the data cannot match a correct refusal. Each task's answer has one field
@@ -493,7 +519,13 @@ Write task.json:
   "overlay": [{{"table": "<table>", "id": "<row id>", "set": {{"<column>": <value>}}}}]}}
 
 - Processes for this task: {processes}. Pick a customer and records from the tables for which these goals make
-  sense under the rules; params must name real rows.
+  sense under the rules; cover EVERY assigned process, not just one. Params must name real rows.
+- assignment.json may contain requirements: required successful tool calls/writes, state effects and goal
+  counts. They are caller-owned and will be checked on the actual reference execution, not on your claims.
+  Failed calls and no-op writes do not establish a successful state change. Keep user preferences realistic;
+  do not disclose these internal difficulty requirements, expected answers or reference actions to the user.
+- The composed answer must fit at most 8 graded values across all goals. Use the world's existing outcome
+  shapes; do not add goals that exceed the budget, change the shapes, or weaken state verification.
 - Name every approve_* fact by the "approval" pattern of its process in goal_schema (for example
   approve_cancel_<exchange_id> -> approve_cancel_HX1), one per write the customer is asked about.
 - {shape}

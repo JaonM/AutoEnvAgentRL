@@ -221,6 +221,9 @@ class ExtractionProbeTests(unittest.TestCase):
         self.assertTrue(policy_gate.extraction_probe(loaded, good, Speaker())['passed'])
         bad = bundle.service(loaded, extractor=Extractor(Reader({k: None for k in expected})))
         self.assertFalse(policy_gate.extraction_probe(loaded, bad, Speaker())['passed'])
+        probe = policy_gate.extraction_probe(loaded, good, Reader(expected))
+        self.assertFalse(probe['passed'])
+        self.assertEqual(probe['reason'], 'structured_instead_of_speech')
 
 
 class ContainerLifetimeTests(unittest.TestCase):

@@ -200,6 +200,24 @@ class GenerateTests(unittest.TestCase):
                                        request)
         self.assertEqual(sorted(p.split(':')[0] for p in problems), ['tool dump_holds', 'tool read_table'])
 
+    def test_dispatcher_argument_collision_is_rejected_before_execution(self):
+        from env_factory import checks
+        from env_factory.runtime import Episode
+
+        def rename_person(db, now, name: str):
+            return name
+
+        def corrected(db, now, traveler_name: str):
+            return traveler_name
+
+        # This failed in a generated world's non-sample process despite its sample passing.
+        episode = Episode({'rename_person': rename_person}, {}, {})
+        with self.assertRaises(TypeError):
+            episode.call('rename_person', name='Maya')
+        self.assertTrue(any('collide' in p for p in checks.api_problems(
+            {'rename_person': rename_person}, library_request())))
+        self.assertEqual(checks.api_problems({'rename_person': corrected}, library_request()), [])
+
     def test_script_elements_are_assigned_and_checked(self):
         shapes = ['direct', 'simple', 'complex', 'complex'] * 25
         assigned = generate.scripts(len(shapes), shapes)

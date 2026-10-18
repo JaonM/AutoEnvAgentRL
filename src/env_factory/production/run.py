@@ -199,8 +199,7 @@ def stage_policy(out, statuses, options, log):
             continue
         folder = Path(status['bundle'])
         saved = _read(folder / name)
-        if saved and saved.get('k') == k and saved.get('status') in ('passed', 'unsolved') and saved.get(
-                'platform_identity') == bundle.platform_identity():
+        if policy.reusable(saved, _read(folder / 'manifest.json') or {}, k=k, user_mode=mode):
             results[task] = saved
             continue
         todo.append((task, folder))

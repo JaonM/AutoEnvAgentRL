@@ -44,6 +44,9 @@ def load_tasks(*, sandbox='', manifest=''):
         from rl.environments.sandbox import bundle_identity, is_sandbox_bundle
         if not is_sandbox_bundle(candidate):
             raise ValueError(f'not a certified sandbox bundle: {candidate}')
+        request_path = candidate / 'request.json'
+        if request_path.is_file() and json.loads(request_path.read_text()).get('request_kind') == 'world':
+            raise ValueError(f'world bundle is not a training task: {candidate}; compose a task from this world first')
         root, identity = candidate, bundle_identity(candidate)
         if identity in identities:
             raise ValueError(f'duplicate sandbox identity: {identifier} and {identities[identity]}')

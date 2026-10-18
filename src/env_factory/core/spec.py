@@ -1,6 +1,9 @@
 """Build requests: the single input of the pipeline, and the brief shown to models.
 
 request.json
+    request_kind  "world" (reusable world plus a build-check sample) or "task" (one episode specification).
+                  Missing means legacy/unspecified; never infer it from goal_schema, which both kinds share.
+    world_id      optional on tasks: id of the world/template from which this task was composed
     id, family, category (direct_response | simple_agentic | multi_step_agentic), title,
     user_request   what the user says to the agent (public)
     business_rules implementation spec: the only semantic authority for env, verifier, arbiter and gates
@@ -28,6 +31,7 @@ CATEGORIES = ('direct_response', 'simple_agentic', 'multi_step_agentic')
 # business: one correct outcome, graded exactly against the verifier; rubric: subjective, graded by criteria.
 REWARD_TYPES = ('business', 'rubric')
 LANGUAGES = ('zh', 'en')
+REQUEST_KINDS = ('world', 'task')
 REQUIRED = ('id', 'family', 'category', 'title', 'user_request', 'business_rules', 'tables', 'user_facts')
 
 
@@ -54,6 +58,15 @@ def validate(request):
     problems = [f'missing {key}' for key in REQUIRED if key not in request]
     if problems:
         return problems
+    if 'request_kind' in request and request['request_kind'] not in REQUEST_KINDS:
+        problems.append(f'request_kind must be one of {REQUEST_KINDS}')
+    if 'world_id' in request:
+        if not isinstance(request['world_id'], str) or not request['world_id'].strip():
+            problems.append('world_id must be a nonempty string')
+        if request.get('request_kind') != 'task':
+            problems.append('world_id requires request_kind="task"; a world uses its own id')
+    if request.get('request_kind') == 'world' and not isinstance(request.get('goal_schema'), dict):
+        problems.append('a world request requires goal_schema')
     if request['category'] not in CATEGORIES:
         problems.append(f'category must be one of {CATEGORIES}')
     tables = request['tables']
@@ -154,6 +167,9 @@ def brief(request, schema=None):
     text = f"""# {request['title']}
 
 Category: {request['category']}
+Request kind: {request.get('request_kind', 'legacy/unspecified')}
+World/template id: {request.get('world_id', request['id'] if request.get('request_kind') == 'world' else 'not specified')}
+{('The user request and private facts below are a build-check sample, not the scope of the world.' if request.get('request_kind') == 'world' else '')}
 
 ## User request (what the user says to the agent)
 {request['user_request']}

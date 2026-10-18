@@ -26,6 +26,9 @@ PROMPT = """你在审核一次客服对话里的“模拟用户”是否演错�
 用户剧本（其中“不记得”的信息，用户说记不清是正确的）：
 {script}
 
+用户开场（也是用户已经给出的信息，不是后续编造）：
+{opening}
+
 对话（“平台告知”是平台替用户做出的同意或拒绝决定，用户的话必须与之一致）：
 {dialogue}
 
@@ -35,6 +38,9 @@ PROMPT = """你在审核一次客服对话里的“模拟用户”是否演错�
 - invented：用户提出了私人信息和需求里都没有、并且会改变正确处理方式的新要求或新情况。
 - decision：用户的表态与平台告知的决定相反。
 口语化的说法、单位换算（如“360元”对应 36000 分）、只说一部分信息都不算错。没把握就不要列。
+需求和 goals 表示想咨询或尝试的事项，不等于无条件同意执行。审批事实为 false 时拒绝该操作是正确的，
+不能仅因拒绝与 goals 的字面描述不同而报错。按 wrong_first 剧本先报错再纠正、按 change_of_mind
+剧本改变选择，以及询问 inquisitive 中的问题，都不算编造或矛盾；超出私人信息与明确剧本的新增交易仍算错误。
 
 只输出一个 JSON 对象：{{"faults": [{{"kind": "withheld|contradicted|invented|decision", "fact": "<相关私人信息的键名，invented 可为空>", "quote": "<用户原话，逐字摘录>", "reason": "<一句话>"}}]}}；没有错误时 faults 为空列表。"""
 
@@ -63,13 +69,14 @@ class Auditor:
     def __init__(self, client):
         self.client, self.cache = client, {}
 
-    def audit(self, facts, script, trace):
+    def audit(self, facts, script, trace, *, opening=''):
         """{"faults": [...], "valid": bool}; faults that do not quote the user or name a fact are dropped."""
         turns = dialogue_of(trace)
         if not turns:
             return {'faults': [], 'valid': True}
         prompt = PROMPT.format(facts=json.dumps(facts, ensure_ascii=False, indent=1),
-                               script=json.dumps(script or {}, ensure_ascii=False), dialogue=render(turns))
+                               script=json.dumps(script or {}, ensure_ascii=False), opening=opening,
+                               dialogue=render(turns))
         key = hashlib.sha256(prompt.encode()).hexdigest()
         if key not in self.cache:
             from env_factory.core.llm import ProviderError

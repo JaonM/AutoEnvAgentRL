@@ -59,6 +59,7 @@ def main(argv=None):
         p.add_argument('--repairs', type=int, default=2)
         p.add_argument('--perturbed', type=int, default=20)
         p.add_argument('--model', default='gpt-6.1-sol')
+        p.add_argument('--acceptance-suite', help='caller-owned frozen external checker suite with bounded env repair')
         if name == 'build':
             p.add_argument('--request', required=True)
         else:
@@ -76,6 +77,8 @@ def main(argv=None):
     p.add_argument('--k', type=int, default=4)
     p.add_argument('--prefix', default='LLM', help='<PREFIX>_API_KEY / _BASE_URL / _MODEL')
     p.add_argument('--user-mode', choices=('structured', 'natural'), default='structured')
+    p.add_argument('--consent', choices=('token', 'plain'), default='token',
+                   help='plain uses natural-language confirmation without injected consent arguments (natural mode only)')
     p = sub.add_parser('generate', help='new build requests for new business domains')
     p.add_argument('--domains', required=True, help='JSON list of {"name", "detail"} domains')
     p.add_argument('--count', type=int, required=True)
@@ -161,7 +164,7 @@ def main(argv=None):
         return 0
     if args.command == 'build':
         status = pipeline.build(spec.load(args.request), args.output, runner=_runner(args),
-                                repairs=args.repairs, perturbed=args.perturbed)
+                                repairs=args.repairs, perturbed=args.perturbed, acceptance_suite=args.acceptance_suite)
         print(json.dumps({k: status.get(k) for k in ('id', 'training_ready', 'failure_class', 'reason',
                                                        'elapsed_seconds')}, ensure_ascii=False))
         return 0 if status['training_ready'] else 1
@@ -171,7 +174,7 @@ def main(argv=None):
         else:
             requests = [spec.from_frozen(args.frozen, int(s)) for s in args.samples.split(',') if s]
         summary = pipeline.batch(requests, args.output, runner=_runner(args), parallel=args.parallel,
-                                 repairs=args.repairs, perturbed=args.perturbed)
+                                 repairs=args.repairs, perturbed=args.perturbed, acceptance_suite=args.acceptance_suite)
         print(json.dumps(summary, ensure_ascii=False, indent=1))
         return 0
     if args.command == 'verify':
@@ -197,7 +200,7 @@ def main(argv=None):
         policy.load_env_file()
         user = policy.ChatClient('USER_SIM') if args.user_mode == 'natural' else None
         report = policy.gate(args.bundle, policy.ChatClient(args.prefix), k=args.k, user_mode=args.user_mode,
-                             user_client=user)
+                             user_client=user, consent=args.consent)
         print(json.dumps({k: report[k] for k in ('model', 'user_mode', 'k', 'played', 'successes', 'success_rate',
                                                  'mean_reward', 'status')}))
         return 0 if report['status'] == 'passed' else 1

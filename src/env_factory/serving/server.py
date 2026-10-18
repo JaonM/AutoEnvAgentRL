@@ -289,9 +289,10 @@ class Service:
             result, source = episode.result(), 'recorded'
             if self.user_mode == 'natural' and result['answer'] is None:
                 # Delivered by talking: the answer is what the agent told the user (extract.py).
-                from env_factory.core.extract import records_of, speech_of
+                from env_factory.core.extract import conversation_of, records_of, speech_of
                 result, source = {**result, 'answer': self.extractor().extract(self.schema, speech_of(
-                    result['trace']), records_of(result['trace']))}, 'extracted'
+                    result['trace']), records_of(result['trace']),
+                    dialogue=conversation_of(result['trace'], self.request['user_request']))}, 'extracted'
             from env_factory.core import answers
             grade = reward.grade(result, record['expected'], self.schema, initial=record['data'],
                                  reference_calls=reference_calls,
@@ -307,10 +308,10 @@ class Service:
         may explain the failure (rl then leaves the episode out of training)."""
         from env_factory.core.llm import ProviderError
         if 'audit' not in record:
-            private = {k: v for k, v in record['facts'].items() if k not in self.approvals}
             try:
-                record['audit'] = self.auditor().audit(private, self.request.get('user_script'),
-                                                       record['episode'].trace)
+                record['audit'] = self.auditor().audit(record['facts'], self.request.get('user_script'),
+                                                       record['episode'].trace,
+                                                       opening=self.request['user_request'])
             except ProviderError as error:  # an unavailable auditor never blocks grading
                 record['audit'] = {'faults': [], 'valid': True, 'error': str(error)[:200]}
         return {'simulator_audit': record['audit'], 'valid': record['audit']['valid']}

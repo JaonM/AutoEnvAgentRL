@@ -18,9 +18,12 @@ from env_factory.authoring import prompts
 STEPS = re.compile(r'首先|第一步|第二步|然后调用|随后调用|先调用|\bstep \d\b|\bfirst,? (call|query|look up|check)\b'
                    r'|\bthen call\b', re.I)
 LANGUAGE_RULES = {
-    'zh': '手册用中文写，金额用“元”表述，精确到分（规格里的“分”除以 100 换算成元）。',
-    'en': '手册用英文写（write the manual in English），金额用美元（$）表述，精确到分（规格里以“分”/cents 计的金额除以 100'
-          '换算成美元）。',
+    'zh': '手册用中文写。保留规格规定的币种、金额精度和报价单位，不因语言改变币种，不默认换成人民币或美元。'
+          '只有规格允许且换算关系明确时，才把最小货币单位换成常用单位展示；不得改变费用或舍入规则。',
+    'en': 'Write the manual in English. Preserve the currency, monetary precision and quotation units specified '
+          'in the rules; do not assume dollars or change the currency to match the language. Convert minor '
+          'units for display only when the rules permit it and the conversion is defined. Preserve all fees '
+          'and rounding rules exactly.',
 }
 
 

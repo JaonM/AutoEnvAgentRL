@@ -28,7 +28,8 @@ DEFAULT_TIMEOUTS = {'schema': 240, 'author': 720, 'verifier': 600, 'rubric_autho
 
 
 class Build:
-    def __init__(self, request, output, *, runner, repairs=2, perturbed=20, timeouts=None, python=None, judge=None):
+    def __init__(self, request, output, *, runner, repairs=2, perturbed=20, timeouts=None, python=None, judge=None,
+                 acceptance_suite=None):
         self.request, self.output = request, Path(output).resolve()
         self.runner, self.budget, self.perturbed = runner, repairs, perturbed
         self.timeouts = {**DEFAULT_TIMEOUTS, **(timeouts or {})}
@@ -38,6 +39,9 @@ class Build:
         self.started = time.monotonic()
         self.excluded = []
         self._judge = judge  # rubric tasks only; created from JUDGE_* / LLM_* when needed
+        from env_factory.production.acceptance import Suite
+        self.acceptance_suite = (acceptance_suite if isinstance(acceptance_suite, Suite) else Suite(acceptance_suite)) \
+            if acceptance_suite is not None else None
 
     # -- helpers ------------------------------------------------------------------
     def save(self):
@@ -66,6 +70,10 @@ class Build:
         self.save()
         return self.status
 
+    def refund(self):
+        self.budget += 1
+        self.status['repairs_used'] -= 1
+
     def workdir(self, name, schema=None, copy_from=()):
         folder = self.output / name
         spec.materialize(self.request, folder, schema)
@@ -91,6 +99,8 @@ class Build:
 
     def _run(self):
         if self.request.get('reward_type') == 'rubric':
+            if self.acceptance_suite is not None:
+                return self.fail('unsupported_acceptance', 'external implementation acceptance requires a business verifier')
             return self._run_rubric()
         folder = self.workdir('schema')
         from env_factory.production.world import task_schema
@@ -160,6 +170,21 @@ class Build:
         if not report['passed']:
             failed = [g for g in gates.gate_names(report) if not report[g]['passed']]
             return self.fail('gates', f'failed gates: {failed}')
+        if self.acceptance_suite is not None:
+            from env_factory.production.acceptance import repair_bundle
+            accepted = repair_bundle(arbiter, self.output / 'external_acceptance', runner=self.runner,
+                                     suite=self.acceptance_suite, repairs=self.budget, spend=self.spend, refund=self.refund,
+                                     timeout=self.timeouts['repair'])
+            self.stage('external_acceptance', accepted=accepted['accepted'],
+                       repairs_used=accepted['repairs_used'], failure_class=accepted['failure_class'])
+            if not accepted['accepted']:
+                return self.fail('external_' + accepted['failure_class'],
+                                 'external acceptance failed; see external_acceptance/acceptance.json')
+            selected = bundle.load_bundle(accepted['bundle'])
+            self.status.update(training_ready=True, bundle=accepted['bundle'],
+                               bundle_files=selected['manifest']['files'], failure_class=None)
+            self.save()
+            return self.status
         manifest = bundle.export(arbiter, self.output / 'request.json', report, self.output / 'bundle',
                                  status={'training_ready': True, 'policy_gate': 'not_run'})
         self.status.update(training_ready=True, bundle=str(self.output / 'bundle'),

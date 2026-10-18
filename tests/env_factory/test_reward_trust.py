@@ -8,6 +8,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -233,6 +234,21 @@ class DisagreementTests(LibraryBundle):
 
 
 class SufficiencyTests(LibraryBundle):
+    def test_post_write_reads_are_not_presented_as_initial_state(self):
+        loaded = bundle.load_bundle(self.bundle)
+        events = [
+            {'kind': 'tool', 'tool': 'lookup', 'status': 'ok', 'result': {'value': 'before'}},
+            {'kind': 'tool', 'tool': 'update', 'status': 'error', 'write': True},
+            {'kind': 'tool', 'tool': 'lookup', 'status': 'ok', 'result': {'value': 'before'}},
+            {'kind': 'tool', 'tool': 'update', 'status': 'ok', 'write': True, 'args': {'value': 'after'}},
+            {'kind': 'tool', 'tool': 'lookup', 'status': 'ok', 'result': {'value': 'after'}},
+        ]
+        with patch.object(sufficiency, 'run_reference', return_value={'trace': events, 'answer': {}}):
+            reads, _, _ = sufficiency.reference_view(loaded)
+        self.assertEqual([r['phase'] for r in reads], ['initial', 'initial', 'after_write'])
+        self.assertEqual([r['trace_index'] for r in reads], [0, 2, 4])
+        self.assertEqual([r['result']['value'] for r in reads], ['before', 'before', 'after'])
+
     def test_a_prediction_equal_to_the_reference_passes(self):
         loaded = bundle.load_bundle(self.bundle)
         _, writes, answer = sufficiency.reference_view(loaded)

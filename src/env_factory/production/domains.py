@@ -22,10 +22,40 @@ import json
 import random
 import re
 
-PROCESSES = ('预约排期', '计费结算', '资格核验', '退款售后', '库存配额', '权限授权', '理赔审批', '会员积分',
-             '改签变更', '投诉处理')
-MECHANISMS = ('预算上限', '容量名额', '多笔独立授权', '部分成功', '阶梯计价', '时间边界', '优先级排序', '互斥条件',
-              '累计额度', '押金冻结与释放')
+# Processes describe what a user wants done; mechanisms describe the rules that
+# change eligibility, choices or effects. They are proposal ingredients: a world
+# selects the ones that fit its business, rather than implementing this whole list.
+# Keep the original entries first; expanding the pools changes seeded proposals.
+PROCESSES = (
+    '预约排期', '计费结算', '资格核验', '退款售后', '库存配额', '权限授权', '理赔审批', '会员积分',
+    '改签变更', '投诉处理',
+    # Information and advice.
+    '政策咨询', '账户查询', '方案比较', '报价试算', '进度跟踪',
+    # Account and record lifecycle.
+    '开户登记', '资料变更', '账户合并', '账户注销', '凭证补发',
+    # Applications and review.
+    '需求澄清', '材料补交', '多级审批', '委托代办', '申诉复核',
+    # Finance and reconciliation.
+    '支付收款', '发票开具', '对账核销', '报销申请', '欠款催缴',
+    # Orders, fulfillment and supply.
+    '订单创建', '订单拆分', '订单合并', '履约交付', '调拨补货',
+    # Ongoing service and recovery.
+    '候补递补', '续期续约', '服务暂停恢复', '维修派单', '工单转交',
+)
+MECHANISMS = (
+    '预算上限', '容量名额', '多笔独立授权', '部分成功', '阶梯计价', '时间边界', '优先级排序', '互斥条件',
+    '累计额度', '押金冻结与释放',
+    # Identity, evidence and eligibility.
+    '身份与记录归属', '必备材料齐全', '替代凭证核验', '代理授权范围', '等级权益差异', '多条件资格组合',
+    # Pricing, payment and refunds.
+    '费用差额补退', '优惠叠加规则', '最低起付与封顶', '金额取整规则', '多支付渠道分摊', '退款原路限制',
+    # Calendar and scheduling constraints.
+    '工作日计算', '有效期与宽限期', '取消违约费用', '候补递补顺序', '时段冲突检查', '分期到期计划',
+    # Dependencies and state changes.
+    '前置流程依赖', '状态迁移限制', '一次性变更限制', '资源占用与释放', '跨记录一致性', '失败回滚',
+    # Exceptions and approval boundaries.
+    '缺货替代方案', '失败后继续或终止', '重复申请去重', '批量操作合并确认', '审批额度分级', '证据冲突复核',
+)
 DEVELOPMENT_FAMILIES = ('图书借阅续借与预约', '供应商采购与分批履约', '订阅按天计费与退款', '文档权限继承与授权',
                         '包裹计费与承运', '停车预约与充电车位', '仓储批次先到期先出', '文件版本保留与清理')
 SPLITS = ('dev', 'holdout-1', 'holdout-2', 'holdout-3', 'holdout-4', 'holdout-5')

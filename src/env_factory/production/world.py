@@ -73,16 +73,38 @@ def task_schema(schema, goals):
         return None
     fields = {}
     for index, goal in enumerate(goals or [], 1):
-        outcome = copy.deepcopy(schema[goal['process']]['outcome'])
+        process = schema[goal['process']]
+        outcome = copy.deepcopy(process['outcome'])
         outcome['description'] = (f"Goal {index} ({goal['process']}): " + (outcome.get('description') or '')).strip()
+        # Only caller-declared public selection metadata belongs in the answer schema.
+        # Never include every goal parameter: those can contain private facts the agent must elicit.
+        scope = {key: goal['params'][key] for key in process.get('outcome_scope_params', [])
+                 if key in (goal.get('params') or {})}
+        if scope:
+            outcome['description'] += (' Requested outcome scope (selection metadata, not answer evidence): '
+                                       + json.dumps(scope, ensure_ascii=False)
+                                       + '. Extract only requested result facts within this scope; ignore additional '
+                                       'facts outside it. Values must still be supported by assistant speech.')
         fields[f'goal_{index}'] = outcome
     return {'fields': fields}
+
+
+def composed_answer_problems(schema, goals):
+    """Catch unusable multi-goal answer contracts before authoring tools or a task bundle."""
+    if not has_outcomes(schema) or goal_problems(goals, schema):
+        return []  # missing/invalid goals are reported by their own check
+    from env_factory.checks import authoring_problems
+    return [f'composed answer: {p}' for p in authoring_problems(task_schema(schema, goals)['fields'])]
 
 
 def outcome_problems(schema):
     from env_factory.core import answers
     problems = []
     for name, value in schema.items():
+        scope = value.get('outcome_scope_params', [])
+        if not isinstance(scope, list) or any(not isinstance(key, str) or key not in (value.get('params') or {})
+                                             for key in scope):
+            problems.append(f'goal_schema.{name}.outcome_scope_params must list declared public selection parameters')
         if value.get('kind') not in ('inquiry', 'account', 'advice'):
             problems.append(f'goal_schema.{name}.kind must be "inquiry", "account" or "advice"')
         outcome = value.get('outcome')
@@ -106,13 +128,6 @@ def outcome_problems(schema):
                 for key, spec in properties.items()):
             problems.append(f'goal_schema.{name}.outcome needs a "reason" string enum (why it was refused or could '
                             'not be done; null on success): a blanket refusal must not match a checked one')
-    if not advice_processes(schema):
-        problems.append('goal_schema needs at least one "advice" process (the customer wants a recommendation, '
-                        'comparison or explanation about their own situation, decided by the rules)')
-    inquiries = inquiry_processes(schema)
-    if not 1 <= len(inquiries) <= 2:
-        problems.append('goal_schema needs one or two "inquiry" processes (answered from the rules and the numbers '
-                        f'the customer states, no account lookup), got {len(inquiries)}')
     return problems
 
 
@@ -121,11 +136,19 @@ def check_world(folder):
     if not path.exists():
         return ['request.json is missing'], []
     request = json.loads(path.read_text())
+    if request.get('request_kind') not in (None, 'world'):
+        return ['world check requires request_kind="world", not a task request'], []
     request.setdefault('time', {'start': 10, 'tick': 0})
     problems = generate.scene_issues(request.get('user_scene'))
     if problems:
         return problems, []
     problems = spec.validate({**request, 'user_request': request.get('user_request') or request['user_scene']['goal']})
+    from env_factory.production import contracts
+    contract = request.get('public_contract')
+    if contract is None and (Path(folder) / 'public_contract.json').exists():
+        contract = json.loads((Path(folder) / 'public_contract.json').read_text())
+    if contract is not None:
+        problems += contracts.specification_problems(request, contract)
     schema = request.get('goal_schema')
     if not (isinstance(schema, dict) and 6 <= len(schema) <= 10 and all(
             isinstance(v, dict) and isinstance(v.get('description'), str) and isinstance(v.get('params'), dict)
@@ -141,6 +164,7 @@ def check_world(folder):
     facts = request.get('user_facts') or {}
     if schema:
         problems += goal_problems(facts.get('goals'), schema)
+        problems += composed_answer_problems(schema, facts.get('goals'))
     problems += [f'approval fact {k} must be a boolean' for k in facts if k.startswith('approve')
                  and not isinstance(facts[k], bool)]
     return problems, [f"world: {request.get('title')}; {len(schema)} processes; {rows} rows"]
@@ -167,7 +191,8 @@ def compose(world, task, task_id):
     """The build request of one task on a world (the opening is written afterwards)."""
     request = copy.deepcopy(world)
     tables, _ = apply_overlay(world['tables'], task.get('overlay'))
-    request.update(id=task_id, title=task.get('title') or world['title'], tables=tables,
+    request.update(id=task_id, request_kind='task', world_id=world['id'],
+                   title=task.get('title') or world['title'], tables=tables,
                    user_facts=task['user_facts'], user_scene=task['user_scene'])
     request['user_script'] = task.get('user_script') or None
     if request['user_script'] is None:
@@ -192,9 +217,10 @@ def check_task(folder):
     request = compose(world, task, assignment['id'])
     problems = overlay_problems + spec.validate({**request, 'user_request': request['user_scene']['goal']})
     problems += goal_problems(task['user_facts'].get('goals'), world['goal_schema'])
+    problems += composed_answer_problems(world['goal_schema'], task['user_facts'].get('goals'))
     wanted = set(assignment['processes'])
     goals = [g for g in task['user_facts'].get('goals') or [] if isinstance(g, dict)]
-    if not wanted & {g.get('process') for g in goals}:
+    if not wanted <= {g.get('process') for g in goals}:
         problems.append(f'goals must include the assigned process(es) {sorted(wanted)}')
     inquiries = set(inquiry_processes(world['goal_schema']))
     if assignment.get('shape') == 'direct':
@@ -227,20 +253,74 @@ def build_world(domain, folder, *, runner, client, python, language, index, repa
     """Author, check, open, write the policy and build one world; returns its build status."""
     from env_factory import checks
     from env_factory.authoring import pipeline
+    from env_factory.production.acceptance import Suite
+    acceptance_suite = Suite(domain['acceptance_suite']) if domain.get('acceptance_suite') is not None else None
     folder = Path(folder)
     session = folder / 'author'
     session.mkdir(parents=True, exist_ok=True)
     world_id = f'world-{index:02d}'
-    runner(session, prompts.WORLD_AUTHOR.format(python=python, domain=domain['name'], detail=domain.get('detail', ''),
+    from env_factory.production import contracts
+    contract = domain.get('public_contract')
+    detail = domain.get('detail', '')
+    if contract is not None:
+        errors = contracts.problems(contract)
+        if errors:
+            return {'id': world_id, 'training_ready': False, 'failure_class': 'public_contract', 'reason': errors}
+        (session / 'public_contract.json').write_text(json.dumps(contract, ensure_ascii=False, indent=1))
+        detail += ('\nRead public_contract.json: caller-supplied public policy, exact business API and implementation '
+                   'notes. Preserve them, including currency units, identity rules, tool names and parameters. '
+                   'They override generic authoring suggestions, never safety or validation gates. Invent all '
+                   'customer data and tasks independently. Include these rules/effects in business_rules; do not '
+                   'add fees, deadlines, eligibility conditions, advice services or API arguments absent from the '
+                   'contract. Report ambiguity rather than inventing a rule to pass. Platform consent stays '
+                   'transport metadata. Do not copy evaluation tasks or reference trajectories.')
+    runner(session, prompts.WORLD_AUTHOR.format(python=python, domain=domain['name'], detail=detail,
                                                id=world_id, language=language,
                                                language_name=generate.LANGUAGE_NAMES[language]),
            timeout=timeout, role='world_author')
-    report = checks.run('world', session)
-    if not report['passed']:
-        return {'id': world_id, 'training_ready': False, 'failure_class': 'world_request', 'reason': report['problems'][:5]}
-    request = json.loads((session / 'request.json').read_text())
-    request.setdefault('time', {'start': 10, 'tick': 0})
-    request['language'] = language
+    spec_repairs = 0
+    while True:
+        evidence = folder / 'specification_attempts' / f'{spec_repairs:02d}'
+        evidence.mkdir(parents=True)
+        if (session / 'request.json').exists():
+            shutil.copyfile(session / 'request.json', evidence / 'request.json')
+        if contract is not None:
+            try:
+                intact = json.loads((session / 'public_contract.json').read_text()) == contract
+            except (OSError, ValueError):
+                intact = False
+            if not intact:
+                return {'id': world_id, 'training_ready': False, 'failure_class': 'public_contract_modified',
+                        'reason': ['author modified caller-owned contract'], 'spec_repairs_used': spec_repairs}
+        report = checks.run('world', session)
+        failure_class = 'world_request'
+        if report['passed']:
+            request = json.loads((session / 'request.json').read_text())
+            request['request_kind'] = 'world'
+            request.setdefault('time', {'start': 10, 'tick': 0})
+            request['language'] = language
+            if contract is not None:
+                review = contracts.review(client, request, contract)
+                (folder / 'contract_review.json').write_text(json.dumps(review, ensure_ascii=False, indent=1))
+                report = review
+                failure_class = 'public_contract_drift'
+        (evidence / 'verdict.json').write_text(json.dumps(report, ensure_ascii=False, indent=1))
+        if report['passed']:
+            break
+        # A malformed reviewer answer is not evidence of a bad specification.
+        if report.get('stage') == 'audit_invalid' or spec_repairs >= repairs:
+            return {'id': world_id, 'training_ready': False,
+                    'failure_class': report.get('stage') if report.get('stage') == 'audit_invalid' else failure_class,
+                    'reason': report['problems'], 'spec_repairs_used': spec_repairs}
+        (session / 'world_repair_feedback.json').write_text(json.dumps(report, ensure_ascii=False, indent=1))
+        runner(session, 'Repair request.json using world_repair_feedback.json. Preserve the caller-owned '
+               'public_contract.json and its public policy/API exactly; do not modify acceptance files or source '
+               'code. Fix the generated specification or its V3 format, not the reference contract. Keep original '
+               'synthetic business data unless the finding requires correcting it. Do not add unsupported business '
+               'rules or fabricate a resolution for a source ambiguity. Run the world self-check after editing. '
+               'If unresolved, explain in repair_notes.txt; the host will independently recheck everything.',
+               timeout=timeout, role='world_repair')
+        spec_repairs += 1
     opening, persona, problems = generate.write_opening(client, request, world_id)
     if opening is None:
         return {'id': world_id, 'training_ready': False, 'failure_class': 'opening', 'reason': problems}
@@ -250,12 +330,21 @@ def build_world(domain, folder, *, runner, client, python, language, index, repa
     if os.environ.get('ENVFACTORY_POLICY_WRITER', 'chat') == 'codex':
         from env_factory.authoring.codex import CodexChat
         writer = CodexChat(folder / 'policy', runner=runner, role='agent_policy')
-    policy, problems = agent_policy.write(writer, request)
+    if contract is not None:
+        contracts.attach(request, contract)
+        policy, problems = contract['policy'], []
+    else:
+        policy, problems = agent_policy.write(writer, request)
     if policy is None:
         return {'id': world_id, 'training_ready': False, 'failure_class': 'agent_policy', 'reason': problems[:5]}
     request['agent_policy'] = policy
     request['source'] = {'generated': domain['name'], 'world': True, 'language': language, 'persona': persona}
-    return pipeline.build(request, folder / 'build', runner=runner, repairs=repairs)
+    status = pipeline.build(request, folder / 'build', runner=runner, repairs=max(0, repairs - spec_repairs),
+                            acceptance_suite=acceptance_suite)
+    status['spec_repairs_used'] = spec_repairs
+    status['total_repairs_used'] = spec_repairs + status.get('repairs_used', 0)
+    (folder / 'world_status.json').write_text(json.dumps(status, ensure_ascii=False, indent=1))
+    return status
 
 
 WORLD_SHAPES = {
@@ -283,7 +372,70 @@ WORLD_MIX = (('direct', 0.1), ('simple', 0.15), ('ordinary', 0.1), ('single_writ
 
 
 def make_task(world_bundle, folder, *, index, processes, script, runner, client, python, timeout=600,
-              sufficiency_client=None, shape=None):
+              sufficiency_client=None, shape=None, requirements=None, repairs=2):
+    """Bounded task-only repair. World code, verifier and assignment stay immutable.
+
+    A world/gate/sufficiency defect is not fixed by silently choosing an easier task.
+    All original candidates and verdicts are retained in separate attempt folders.
+    """
+    from env_factory.authoring.codex import InfrastructureError
+    from env_factory.certify import bundle
+    from env_factory.production import task_requirements
+    requirements = task_requirements.validate(requirements or {})
+    if type(repairs) is not int or repairs < 0:
+        raise ValueError('task repairs must be a nonnegative integer')
+    folder, world_bundle = Path(folder), Path(world_bundle)
+    world_id = json.loads((world_bundle / 'request.json').read_text())['id']
+    frozen = {p: bundle.sha256(world_bundle / p) for p in
+              ('manifest.json', 'request.json', 'env.py', 'verifier.py', 'answer_schema.json')}
+    history, previous = [], None
+    for attempt in range(repairs + 1):
+        candidate = folder / f'attempt-{attempt:02d}'
+        def author(session, prompt, **options):
+            fixed = {name: (session / name).read_bytes() for name in ('world.json', 'assignment.json')}
+            if previous is not None:
+                if (previous / 'author/task.json').exists():
+                    shutil.copyfile(previous / 'author/task.json', session / 'task.json')
+                (session / 'task_feedback.json').write_text(json.dumps(history[-1], ensure_ascii=False, indent=1))
+                options['role'] = 'task_repair'
+                prompt += ('\nRepair only task.json using task_feedback.json. Preserve world.json and assignment.json '
+                           'exactly. Do not change business rules, environment, verifier, difficulty requirements or '
+                           'test answers. Fix the task facts/scene/overlay so it satisfies the original assignment. '
+                           'If impossible under this world, explain it; do not pretend to meet it.\n')
+            response = runner(session, prompt, **options)
+            if any(not (session / n).is_file() or (session / n).read_bytes() != contents
+                   for n, contents in fixed.items()):
+                raise ValueError('task author modified immutable world or assignment')
+            return response
+        try:
+            row = _make_task(world_bundle, candidate, index=index, processes=processes, script=script,
+                             runner=author, client=client, python=python, timeout=timeout,
+                             sufficiency_client=sufficiency_client, shape=shape, requirements=requirements)
+        except InfrastructureError as exc:
+            row = {'passed': False, 'stage': 'infrastructure', 'problems': [str(exc)[:300]]}
+        except ValueError as exc:
+            row = {'passed': False, 'stage': 'task_author_error', 'problems': [str(exc)[:300]]}
+        if any(not (world_bundle / n).is_file() or bundle.sha256(world_bundle / n) != digest
+               for n, digest in frozen.items()):
+            row = {'passed': False, 'stage': 'world_modified', 'problems': ['world changed during task generation']}
+        row.setdefault('id', world_id + f'-t{index:03d}')
+        # Keep feedback free of host paths into sibling candidate implementations.
+        history.append({k: v for k, v in row.items() if k != 'bundle'})
+        candidate.mkdir(parents=True, exist_ok=True)
+        (candidate / 'task_result.json').write_text(json.dumps(row, ensure_ascii=False, indent=1))
+        previous = candidate
+        if row['passed'] or row['stage'] not in ('task', 'approval_facts', 'task_requirements', 'shape'):
+            break
+    row.update(task_repairs_used=max(0, len(history) - 1 - (row['stage'] == 'infrastructure')),
+               task_attempts=len(history), requested_shape=shape, requirements=requirements,
+               assigned_processes=processes)
+    (folder / 'task_generation.json').write_text(json.dumps({'result': row, 'attempts': history},
+                                                         ensure_ascii=False, indent=1))
+    return row
+
+
+def _make_task(world_bundle, folder, *, index, processes, script, runner, client, python, timeout=600,
+               sufficiency_client=None, shape=None, requirements=None):
     """One task on a certified world: author, check, compose, open, copy the world bundle, requalify."""
     from env_factory import checks
     from env_factory.certify import bundle
@@ -297,7 +449,7 @@ def make_task(world_bundle, folder, *, index, processes, script, runner, client,
                                                         'agent_policy', 'source')}
     (session / 'world.json').write_text(json.dumps(shown, ensure_ascii=False, indent=1))
     (session / 'assignment.json').write_text(json.dumps({'id': task_id, 'processes': processes, 'script': script,
-                                                         'shape': shape}))
+                                                         'shape': shape, 'requirements': requirements or {}}))
     language = world.get('language', 'zh')
     runner(session, prompts.TASK_AUTHOR.format(python=python, processes=', '.join(processes),
                                               language_name=generate.LANGUAGE_NAMES[language],
@@ -310,23 +462,9 @@ def make_task(world_bundle, folder, *, index, processes, script, runner, client,
     task = json.loads((session / 'task.json').read_text())
     request = compose(world, task, task_id)
     missing = missing_approvals(world_bundle, request)
-    if missing:  # the world's env asks approvals under keys this task's facts never define: one rewrite
-        (session / 'approval_feedback.txt').write_text(
-            f'The world asks the customer to approve writes under these approve_* keys, which task.json does not '
-            f'define: {missing}. Name the approval facts exactly like that (goal_schema "approval" patterns).\n')
-        runner(session, prompts.TASK_AUTHOR.format(python=python, processes=', '.join(processes),
-                                                  language_name=generate.LANGUAGE_NAMES[language],
-                                                  script=generate.script_prompt(script),
-                                                  shape=WORLD_SHAPES.get(shape, 'Shape: any that fits the goals.'))
-               + '\nA previous task.json in this folder named approval facts wrongly; read approval_feedback.txt.\n',
-               timeout=timeout, role='task_author')
-        report = checks.run('task', session)
-        task = json.loads((session / 'task.json').read_text())
-        request = compose(world, task, task_id)
-        missing = missing_approvals(world_bundle, request) if report['passed'] else ['task check failed']
-        if missing:
-            return {'id': task_id, 'passed': False, 'stage': 'approval_facts',
-                    'problems': [f'approvals asked under keys the task does not define: {missing}']}
+    if missing:
+        return {'id': task_id, 'passed': False, 'stage': 'approval_facts',
+                'problems': [f'approvals asked under keys the task does not define: {missing}']}
     opening, persona, problems = generate.write_opening(client, request, task_id)
     if opening is None:
         return {'id': task_id, 'passed': False, 'stage': 'opening', 'problems': problems}
@@ -370,6 +508,14 @@ def make_task(world_bundle, folder, *, index, processes, script, runner, client,
         if shape == 'direct' and row['actual_shape'] != 'direct':
             return {**row, 'passed': False, 'stage': 'shape', 'failed': ['shape'],
                     'problems': [f"direct task whose reference makes tool calls ({row['actual_shape']})"]}
+    if row['passed']:
+        from env_factory.production import task_requirements
+        loaded = bundle.load_bundle(target)
+        quality = task_requirements.evaluate(loaded['env'], loaded['request'], requirements or {})
+        row['task_quality'] = quality
+        (folder / 'task_quality.json').write_text(json.dumps(quality, ensure_ascii=False, indent=1))
+        if not quality['passed']:
+            return {**row, 'passed': False, 'stage': 'task_requirements', 'problems': quality['problems']}
     return guard(row, world_bundle, target, folder, sufficiency_client)
 
 
@@ -526,7 +672,8 @@ def guard(row, world_bundle, target, folder, sufficiency_client=None):
             report = sufficiency.run(target, sufficiency_client)
         except ProviderError as exc:  # an unavailable model is not a verdict on the task
             row['sufficiency'] = f'not_run: {exc}'[:200]
-            return row
+            return {**row, 'passed': False, 'stage': 'sufficiency_infrastructure',
+                    'problems': ['required policy sufficiency check did not run']}
         row['sufficiency'] = report['passed']
         if not report['passed']:
             return {**row, 'passed': False, 'stage': 'sufficiency', 'failed': ['sufficiency'],
@@ -626,15 +773,20 @@ def plan_tasks(world, count, seed=0):
             out.append((processes, elements[i], None))
         return out
     inquiries, advice = inquiry_processes(schema), advice_processes(schema)
-    accounts = [n for n in names if n not in inquiries and n not in advice] or names
+    accounts = [n for n in names if n not in inquiries and n not in advice]
     # Write shapes go to processes that write (they declare an approval pattern); read shapes to the others.
-    writers = [n for n in accounts if (schema[n] or {}).get('approval')] or accounts
-    readers = [n for n in accounts if not (schema[n] or {}).get('approval')] or accounts
+    writers = [n for n in accounts if (schema[n] or {}).get('approval')]
+    readers = [n for n in accounts if not (schema[n] or {}).get('approval')]
     shapes = [None] * min(count, len(names))
     rest = count - len(shapes)
-    for shape, share in WORLD_MIX:
-        shapes += [shape] * round(rest * share)
-    shapes = (shapes + ['single_write'] * count)[:count]
+    pools = {'direct': inquiries, 'subjective': advice, 'single_write': writers, 'complex': writers,
+             'simple': readers, 'ordinary': readers}
+    available = [(shape, share) for shape, share in WORLD_MIX if pools[shape]]
+    total = sum(share for _, share in available)
+    for shape, share in available:
+        shapes += [shape] * round(rest * share / total)
+    fallback = 'single_write' if writers else available[0][0]
+    shapes = (shapes + [fallback] * count)[:count]
     order = shapes[len(names):]
     rng.shuffle(order)
     shapes[len(names):] = order
@@ -645,12 +797,13 @@ def plan_tasks(world, count, seed=0):
             out.append(([process], [] if process in inquiries else elements[i],
                         'direct' if process in inquiries else 'subjective' if process in advice else None))
             continue
-        pool = (inquiries if shape == 'direct' else (advice or accounts) if shape == 'subjective'
-                else writers if shape in ('single_write', 'complex') else readers if shape in ('simple', 'ordinary')
-                else accounts)
+        pool = pools[shape]
         processes = [pool[i % len(pool)]]
         if shape != 'direct' and rng.random() < 0.3 and len(pool) > 1:
-            processes.append(pool[(i + 1 + rng.randrange(len(pool) - 1)) % len(pool)])
+            candidate = processes + [pool[(i + 1 + rng.randrange(len(pool) - 1)) % len(pool)]]
+            goals = [{'process': p, 'params': {}} for p in candidate]
+            if not composed_answer_problems(schema, goals):
+                processes = candidate
         out.append((processes, elements[i], shape))
     return out
 
@@ -663,10 +816,13 @@ def main():
     parser.add_argument('--english-share', type=float, default=1.0)
     parser.add_argument('--parallel', type=int, default=3)
     parser.add_argument('--repairs', type=int, default=2)
+    parser.add_argument('--task-repairs', type=int, default=2, help='bounded task-only repairs per assignment')
+    parser.add_argument('--task-profile', help='caller-owned JSON with default/by_shape execution requirements')
     parser.add_argument('--output', required=True)
     parser.add_argument('--no-sufficiency', action='store_true', help='skip the policy sufficiency check')
     parser.add_argument('--policy-k', type=int, default=4,
                         help='policy gate episodes per certified task (free dialogue, off-peak); 0 skips it')
+    parser.add_argument('--policy-consent', choices=('token', 'plain'), default='token')
     parser.add_argument('--eval-worlds', type=int, default=0,
                         help='the last N worlds become the eval split as a whole (a world is never split)')
     parser.add_argument('--docker', action='store_true',
@@ -675,6 +831,16 @@ def main():
     parser.add_argument('--reguard', action='store_true',
                         help='only run the reward-trust check (policy sufficiency) on certified tasks')
     args = parser.parse_args()
+    from env_factory.production import task_requirements
+    profile = task_requirements.profile(json.loads(Path(args.task_profile).read_text()) if args.task_profile else {})
+    profile_path = Path(args.output) / 'task_profile.json'
+    if not args.reguard:
+        if profile_path.exists() and json.loads(profile_path.read_text()) != profile:
+            parser.error('task profile differs from this run; use a new output directory')
+        if profile and not profile_path.exists() and (Path(args.output) / 'tasks.jsonl').exists():
+            parser.error('cannot apply a new profile to cached tasks; use a new output directory')
+        profile_path.parent.mkdir(parents=True, exist_ok=True)
+        profile_path.write_text(json.dumps(profile, ensure_ascii=False, indent=1))
     import sys
     from env_factory.authoring.codex import CodexRunner
     from env_factory.core.llm import ChatClient, load_env_file
@@ -751,7 +917,8 @@ def main():
         try:
             row = make_task(bundle_path, folder, index=index, processes=processes, script=script, runner=runner,
                             sufficiency_client=checker, shape=shape,
-                            client=client, python=sys.executable)
+                            client=client, python=sys.executable, repairs=args.task_repairs,
+                            requirements=task_requirements.select(profile, shape))
         except Exception as exc:  # one failing task never stops the others
             row = {'id': f'{Path(bundle_path).parent.parent.name}-t{index:03d}', 'passed': False, 'stage': 'error',
                    'problems': [f'{type(exc).__name__}: {exc}'[:300]]}
@@ -793,11 +960,13 @@ def main():
     images = build_images(out, statuses) if args.docker else {}
     if images:
         print(json.dumps(images), flush=True)
-    policies = policy_stage(out, args.policy_k) if args.policy_k else {}
+    policies = policy_stage(out, args.policy_k, consent=args.policy_consent) if args.policy_k else {}
+    (out / 'task_coverage.json').write_text(json.dumps(task_requirements.coverage(
+        rows_before, policies if args.policy_k else None), ensure_ascii=False, indent=1))
     print(json.dumps(write_tasks(out, statuses, images, policies, args.eval_worlds, docker=args.docker)), flush=True)
 
 
-def policy_stage(out, k):
+def policy_stage(out, k, *, consent='token'):
     """Policy gate (k free-dialogue episodes by a strong model) on every certified task, in off-peak hours; the result
     stays next to the bundle (policy-natural.json), so a rerun skips tasks already gated."""
     from env_factory.certify import policy_gate as policy
@@ -809,11 +978,14 @@ def policy_stage(out, k):
 
     def one(row):
         saved = Path(row['bundle']) / 'policy-natural.json'
-        if saved.exists() and json.loads(saved.read_text()).get('k') == k:
-            return row['id'], json.loads(saved.read_text()).get('status')
+        report = json.loads(saved.read_text()) if saved.exists() else None
+        manifest = json.loads((Path(row['bundle']) / 'manifest.json').read_text())
+        if policy.reusable(report, manifest, k=k, user_mode='natural', consent=consent):
+            return row['id'], report['status']
         offpeak.wait(lambda text: print(text, flush=True))
         try:
-            return row['id'], policy.gate(row['bundle'], agent, k=k, user_mode='natural', user_client=user)['status']
+            return row['id'], policy.gate(row['bundle'], agent, k=k, user_mode='natural', user_client=user,
+                                         consent=consent)['status']
         except Exception as exc:  # noqa: BLE001 - a bundle the gate cannot play is not trainable
             return row['id'], f'error: {type(exc).__name__}'
     with concurrent.futures.ThreadPoolExecutor(6) as pool:
@@ -836,8 +1008,8 @@ def write_tasks(out, statuses, images, policies, eval_worlds=0, docker=False):
             reason = f"{row.get('stage')}: {row.get('failed') or row.get('problems')}"[:200]
         elif docker and (world not in images or 'error' in images.get(world, {})):
             reason = 'no verified image'
-        elif policies and policies.get(row['id']) not in ('passed', None):
-            reason = f"policy gate {policies.get(row['id'])}"
+        elif policies and policies.get(row['id']) != 'passed':
+            reason = f"policy gate {policies.get(row['id'], 'missing')}"
         if reason:
             excluded.append({'id': row['id'], 'reason': reason})
         else:

@@ -35,8 +35,14 @@ def api_problems(tools, request):
     import inspect
     problems = []
     tables = set(request['tables'])
+    from env_factory.runtime import Episode
+    reserved = {p.name for p in inspect.signature(Episode.call).parameters.values()
+                if p.kind != p.VAR_KEYWORD}
     for name, fn in sorted(tools.items()):
         arguments = set(inspect.signature(fn).parameters) - {'db', 'now'}
+        if arguments & reserved:
+            problems.append(f'tool {name}: business parameters {sorted(arguments & reserved)} collide with '
+                            'the episode dispatcher; use a business-specific name such as traveler_name')
         if arguments & TABLE_ARGUMENTS or re.search(r'(read|get|list|dump|query|fetch)_(table|rows|records)$', name) \
                 or name in {f'{verb}_{table}' for verb in ('read', 'dump') for table in tables}:
             problems.append(f'tool {name}: a generic table reader; expose business lookups instead (by id, by '
@@ -156,6 +162,8 @@ def check_env(folder):
         return ['make_tools() must return a non-empty dict'], notes
     problems += tool_spec_problems(tools)
     problems += api_problems(tools, request)
+    from env_factory.production.contracts import interface_problems
+    problems += interface_problems(tools, request)
     problems += write_argument_problems(tools)
     problems += gates.approval_problems(env, request)
     start = request['time']['start']
