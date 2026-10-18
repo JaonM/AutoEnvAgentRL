@@ -92,6 +92,29 @@ At most two codex sessions run at once.
 | `gates.json` | platform | every gate result and the worlds env/verifier agree on |
 | `manifest.json` | platform | file hashes and platform identity |
 
+## World and task request granularity
+
+The filename stays `request.json` for bundle compatibility. Newly generated requests declare
+`request_kind`: `world` for the reusable rules/database/process definitions plus a build-check
+sample, or `task` for one concrete episode specification. A composed task also has `world_id`,
+the `id` of the world/template used to compose it; a standalone task may omit it. A world uses
+its own `id` and does not have `world_id`.
+
+```json
+{"id": "world-00", "request_kind": "world"}
+```
+
+```json
+{"id": "world-00-t001", "request_kind": "task", "world_id": "world-00"}
+```
+
+These are metadata excerpts, not complete requests. Both kinds retain the full existing
+request structure; `goal_schema` alone cannot distinguish them. Composition deep-copies the
+world, applies the task overlay, replaces the sample's customer facts/scene/opening and stamps
+the task kind and parent id. RL task loading rejects explicitly marked world bundles.
+Existing unmarked requests remain readable as legacy/unspecified without silently rewriting
+their contents or hashes; their kind must be established from their generation provenance.
+
 ## Reward types
 
 A request's `reward_type` selects how episodes are graded:
