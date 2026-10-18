@@ -36,7 +36,11 @@ def main():
     p.add_argument('--public-mix', type=Path, required=True)
     p.add_argument('--old-control', action='store_true')
     p.add_argument('--port', type=int, default=9410)
+    p.add_argument('--wait-hours', type=float, default=0,
+                   help='Optional generation deadline; 0 keeps following a live bounded producer')
     args = p.parse_args()
+    if args.wait_hours < 0:
+        p.error('--wait-hours must be nonnegative')
     os.chdir(ROOT)
     args.producer = args.producer.resolve()
     args.output = args.output.resolve()
@@ -52,7 +56,7 @@ def main():
     save(args.output / 'protocol.json', {'started': started, 'producer': str(args.producer),
          'producer_pid': args.producer_pid, 'runtime': str(ROOT), 'frozen_inputs': frozen,
          'public_mix': str(args.public_mix), 'old_control': args.old_control,
-         'wait_budget_hours': 24, 'offpeak_wait_disabled': True,
+         'wait_budget_hours': args.wait_hours or None, 'offpeak_wait_disabled': True,
          'authorization': 'User requested automatic continuation through training and evaluation after generation.',
          'order': ['complete 1000/200', 'joint deterministic evidence/coverage review',
                    'world seed0 + 164 evaluation', 'base 164', 'mixed seed0 + 164',
@@ -65,13 +69,13 @@ def main():
             if sha(name) != expected:
                 raise ValueError('frozen experiment input changed: ' + name)
     try:
-        deadline = time.monotonic() + 24 * 3600
+        deadline = time.monotonic() + args.wait_hours * 3600 if args.wait_hours else None
         while True:
             progress = producer_state(args.producer, args.producer_pid)
             state(training_started=False, counts=progress['dataset_counts'], remaining=progress['remaining'])
             if progress['phase'] == 'completed':
                 break
-            if time.monotonic() > deadline:
+            if deadline is not None and time.monotonic() > deadline:
                 raise TimeoutError('bounded generation wait expired')
             time.sleep(30)
         unchanged()
