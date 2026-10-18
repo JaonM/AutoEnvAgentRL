@@ -63,3 +63,20 @@ def test_eval_refuses_to_overwrite_prior_result(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match='already exists'):
         control.evaluate('existing', Path('model'), 1, {}, Path('ids'), tmp_path, 9310, {})
     assert evidence.read_text() == 'prior evidence'
+
+
+def test_as_ready_prioritizes_both_new_data_arms_before_second_seeds_and_old_controls():
+    groups = [('world',), ('mixed',), ('old',)]
+    assert [(g[0], s) for g, s in control.training_schedule(groups, True)] == [
+        ('world', 0), ('mixed', 0), ('world', 1), ('mixed', 1), ('old', 0), ('old', 1)]
+    assert [(g[0], s) for g, s in control.training_schedule(groups)] == [
+        ('world', 0), ('world', 1), ('mixed', 0), ('mixed', 1), ('old', 0), ('old', 1)]
+
+
+def test_partial_report_does_not_invent_pending_scores(tmp_path):
+    control.write_results(tmp_path, {'world-s0': {'overall': {'tasks': 164, 'pass_at_1': .25},
+                                               'write': {'pass_at_1': .2}}})
+    text = (tmp_path / 'results.md').read_text()
+    assert '25.00%' in text and '20.00%' in text
+    assert '| world-s0 | 164 | 25.00% | — |' in text
+    assert 'mixed-s0' not in text

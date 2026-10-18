@@ -113,6 +113,38 @@ def training_command(teacher, replay, valid_ids, model, output, seed, public_rep
     return command
 
 
+def training_schedule(groups, as_ready=False):
+    if as_ready:
+        primary = [g for g in groups if g[0] != 'old']
+        historical = [g for g in groups if g[0] == 'old']
+        return [(g, seed) for batch in (primary, historical) for seed in (0, 1) for g in batch]
+    return [(g, seed) for g in groups for seed in (0, 1)]
+
+
+def write_results(output, results):
+    save(output / 'evaluation_report.json', results)
+    lines = ['# SFT experiment results', '',
+             'Only completed evaluations appear below. Pending arms are not zero scores.', '',
+             '| Arm | Tasks | pass@1 | pass@8 | Write pass@1 |',
+             '|---|---:|---:|---:|---:|']
+    def pct(v):
+        return '—' if v is None else f'{100 * v:.2f}%'
+    for arm, result in results.items():
+        overall = result['overall']
+        lines.append(f"| {arm} | {overall['tasks']} | {pct(overall.get('pass_at_1'))} | "
+                     f"{pct(overall.get('pass_at_8'))} | {pct(result['write'].get('pass_at_1'))} |")
+    lines += ['', 'Training uses the lowest development-loss checkpoint, including step 0. '
+              'A step-0 winner is a failed improvement, not a successful trained-model gain.', '']
+    for history in sorted(output.glob('*/sft/sft_history.json')):
+        row = json.loads(history.read_text())
+        lines.append(f"- {history.parent.parent.name}: best step {row.get('best_step')}, "
+                     f"dev loss {row.get('best_valid_loss')}, epochs {row.get('completed_epochs')}, "
+                     f"stop reason {row.get('stop_reason')}.")
+    temporary = output / 'results.md.tmp'
+    temporary.write_text('\n'.join(lines) + '\n')
+    temporary.replace(output / 'results.md')
+
+
 def evaluate(arm, model, trials, selected, ids_path, output, port, env):
     # quick_eval removes its own result directory; never hand it an existing arm.
     for domain in ('airline', 'retail'):
@@ -143,7 +175,9 @@ def evaluate(arm, model, trials, selected, ids_path, output, port, env):
                                 'agent_temperature': info['agent_info']['llm_args'].get('temperature')}
         result = {'arm': arm, 'protocol': protocol, 'overall': summarize(rows, 1),
                   'write': summarize([r for r in rows if r['write']], 1),
-                  'no_write': summarize([r for r in rows if not r['write']], 1), 'tasks': rows}
+                  'no_write': summarize([r for r in rows if not r['write']], 1),
+                  'domains': {d: summarize([r for r in rows if r['domain'] == d], 1) for d in protocol},
+                  'tasks': rows}
     for protocol in result['protocol'].values():
         if (protocol['num_trials'], protocol['seed'], protocol['max_steps'], protocol['agent_temperature']) != (
                 trials, 300, 100, 1.0 if trials == 8 else 0.0):
@@ -162,6 +196,8 @@ def main():
     parser.add_argument('--old-control', action='store_true', help='repeat the historical data under the same early-stop schedule')
     parser.add_argument('--public-mix', type=Path, help='1000 qualified public episodes for an additional 1:1 sample mixture')
     parser.add_argument('--port', type=int, default=9310)
+    parser.add_argument('--evaluate-as-ready', action='store_true',
+                        help='evaluate each trained model on 164 tasks immediately; run pass@8 after all arms')
     args = parser.parse_args()
     os.chdir(ROOT)
     args.out.mkdir(parents=True, exist_ok=False)
@@ -198,6 +234,7 @@ def main():
                         'basis': 'full dialogue samples', 'validation': 'same 200 world tasks',
                         'public_augmentation': 'none; append after deterministic world augmentation'} if args.public_mix else None,
          'evaluation': {'single_tasks': 164, 'subset_tasks': selected, 'trials': [1, 8], 'seed': 300},
+         'evaluate_as_ready': args.evaluate_as_ready,
          'limits': ['Different datasets have different validation tasks and update/token budgets.',
                     'This does not measure learning transfer to unaligned domains.']})
     phase = 'waiting_for_dataset_release'
@@ -218,6 +255,7 @@ def main():
         env = {**os.environ, 'PYTHONPATH': 'src', 'TOKENIZERS_PARALLELISM': 'false'}
         models = [('base', args.model)]
         world_valid_hash = None
+        preflights = {}
         for group, teacher, replay, held, public_replay in groups:
             phase = f'preflight_{group}'
             save(args.out / 'status.json', {'phase': phase})
@@ -231,33 +269,53 @@ def main():
             if group == 'mixed' and (preflight['sources'] != {'train:world': 1000, 'train:public': 1000, 'dev:world': 200}
                                      or preflight['valid_sha256'] != world_valid_hash):
                 raise ValueError('mixture ratio or world validation fingerprint changed')
-            first_manifest = None
-            for seed in (0, 1):
-                phase = f'training_{group}_seed{seed}'
+            preflights[group] = preflight
+        results, first_manifests = {}, {}
+        write_results(args.out, results)
+        for (group, teacher, replay, held, public_replay), seed in training_schedule(groups, args.evaluate_as_ready):
+            phase = f'training_{group}_seed{seed}'
+            save(args.out / 'status.json', {'phase': phase, 'training_started': True})
+            verify_hashes(frozen)
+            run = args.out / f'{group}_seed{seed}'
+            run.mkdir()
+            cmd = training_command(teacher, replay, held, args.model, run / 'sft', seed, public_replay)
+            save(run / 'command.json', cmd)
+            with (run / 'sft.log').open('x') as log:
+                subprocess.run(cmd, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
+            manifest = json.loads((run / 'sft/data_manifest.json').read_text())
+            if any(manifest[key] != preflights[group][key] for key in ('train_sha256', 'valid_sha256')):
+                raise ValueError('training data differs from rendered preflight')
+            if group in first_manifests and manifest != first_manifests[group]:
+                raise ValueError('data/augmentation differs across seeds')
+            first_manifests[group] = manifest
+            label, trained_model = f'{group}-s{seed}', run / 'sft/model'
+            models.append((label, trained_model))
+            write_results(args.out, results)
+            if args.evaluate_as_ready:
+                phase = f'evaluation_{label}_1_trials'
                 save(args.out / 'status.json', {'phase': phase, 'training_started': True})
                 verify_hashes(frozen)
-                run = args.out / f'{group}_seed{seed}'
-                run.mkdir()
-                cmd = training_command(teacher, replay, held, args.model, run / 'sft', seed, public_replay)
-                save(run / 'command.json', cmd)
-                with (run / 'sft.log').open('x') as log:
-                    subprocess.run(cmd, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
-                manifest = json.loads((run / 'sft/data_manifest.json').read_text())
-                if any(manifest[key] != preflight[key] for key in ('train_sha256', 'valid_sha256')):
-                    raise ValueError('training data differs from rendered preflight')
-                if first_manifest is not None and manifest != first_manifest:
-                    raise ValueError('data/augmentation differs across seeds')
-                first_manifest = manifest
-                models.append((f'{group}-s{seed}', run / 'sft/model'))
-        results = {}
+                arm = f'{args.out.name}-{label}-t1'
+                results[arm] = evaluate(arm, trained_model, 1, selected, ids_path, args.out, args.port, env)
+                write_results(args.out, results)
+                baseline_arm = f'{args.out.name}-base-t1'
+                if baseline_arm not in results:
+                    phase = 'evaluation_base_1_trials'
+                    save(args.out / 'status.json', {'phase': phase, 'training_started': True})
+                    verify_hashes(frozen)
+                    results[baseline_arm] = evaluate(baseline_arm, args.model, 1, selected,
+                                                    ids_path, args.out, args.port, env)
+                    write_results(args.out, results)
         for trials in (1, 8):
             for label, model in models:
                 phase = f'evaluation_{label}_{trials}_trials'
                 save(args.out / 'status.json', {'phase': phase, 'training_started': True})
                 verify_hashes(frozen)
                 arm = f'{args.out.name}-{label}-t{trials}'
+                if arm in results:
+                    continue
                 results[arm] = evaluate(arm, model, trials, selected, ids_path, args.out, args.port, env)
-                save(args.out / 'evaluation_report.json', results)
+                write_results(args.out, results)
         save(args.out / 'status.json', {'phase': 'complete', 'training_started': True})
         (args.out / 'all.done').write_text('done\n')
     except Exception as exc:
