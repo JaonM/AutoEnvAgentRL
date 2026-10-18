@@ -445,8 +445,8 @@ def _make_task(world_bundle, folder, *, index, processes, script, runner, client
     session.mkdir(parents=True, exist_ok=True)
     task_id = f"{world['id']}-t{index:03d}"
     # The world without its sample customer: the task author writes its own customer side.
-    shown = {k: v for k, v in world.items() if k not in ('user_facts', 'user_scene', 'user_request', 'user_script',
-                                                        'agent_policy', 'source')}
+    from env_factory.production.world_data import author_context
+    shown = author_context(world, index)
     (session / 'world.json').write_text(json.dumps(shown, ensure_ascii=False, indent=1))
     (session / 'assignment.json').write_text(json.dumps({'id': task_id, 'processes': processes, 'script': script,
                                                          'shape': shape, 'requirements': requirements or {}}))

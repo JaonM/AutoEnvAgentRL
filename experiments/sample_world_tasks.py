@@ -43,8 +43,10 @@ def draft_batch(domain, assignments, output, runner):
         return folder
     loaded = bundle.load_bundle(domain['bundle'])
     request = loaded['request']
-    shown = {k: v for k, v in request.items() if k not in (
-        'user_facts', 'user_scene', 'user_request', 'user_script', 'agent_policy', 'source')}
+    if (request.get('source') or {}).get('authoring_scope') and len(assignments) != 1:
+        raise ValueError('bounded author views require one assignment per batch')
+    from env_factory.production.world_data import author_context
+    shown = author_context(request, assignments[0]['index'])
     save(folder / 'world.json', shown)
     save(folder / 'assignments.json', assignments)
     details = []
