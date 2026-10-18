@@ -10,13 +10,13 @@ nothing. This keeps successful episodes only, then
   refusal, writing, verifying identity, several goals, out-of-scope requests, pushback), so gaps can be
   filled by targeted collection,
 - caps each domain at --domain-share of the selection (a small model memorizes one domain's tools),
-- drops near-duplicate episodes of a task (same tool-call sequence and same closing words),
+- drops near-duplicate episodes of a task (same behavior and similar dialogue; saves an audit),
 - prints a diversity report against the targets (≥2000 episodes, ≥500 tasks, no domain above the cap,
   every skill at --skill-min episodes) and exits with status 3 when a target is missed, so an
   undersized set is never trained by accident (--allow-short overrides),
 - drops episodes calling with an identifier that never appeared earlier (--max-invented), prefers per task the
   episodes whose lookups were all used (call_profile), and reports the unused-lookup share,
-- drops episodes whose speech leaks internal field names or cents, and episodes with more than
+- drops episodes whose speech leaks internal field names, and episodes with more than
   --max-failed failed tool results (turns that failed are kept as context but not trained, see
   sft_train.py --no-error-turns).
 
@@ -32,6 +32,8 @@ import random
 import re
 import sys
 from pathlib import Path
+
+from trajectory_dedup import add_arguments, deduplicate
 
 
 def is_failure(content):
@@ -149,7 +151,7 @@ def skills(episode, request, write_tools=()):
 
 
 def signature(episode):
-    """Near-duplicate key: the tool-call sequence and the last thing the agent said."""
+    """Legacy tool sequence statistic; not used for deduplication."""
     calls = tuple(c['function']['name'] for m in episode['messages'] if m['role'] == 'assistant'
                   for c in m.get('tool_calls') or [])
     said = [m.get('content') or '' for m in episode['messages'] if m['role'] == 'assistant' and m.get('content')]
@@ -176,6 +178,7 @@ def main():
     parser.add_argument('--teacher', nargs='+', required=True)
     parser.add_argument('--tasks', nargs='+', required=True, help='task lists with sandbox paths')
     parser.add_argument('--output', required=True)
+    add_arguments(parser)
     parser.add_argument('--per-task', type=int, default=4)
     parser.add_argument('--direct-share', type=float, default=0.15)
     parser.add_argument('--english-share', type=float, default=0.7)
@@ -230,6 +233,7 @@ def main():
     meta = {t: m for t, m in meta.items() if m[2] not in held}
     episodes = [r for path in args.teacher for r in map(json.loads, Path(path).read_text().splitlines())
                 if r.get('success') and r.get('messages') and r['id'] in meta
+                and (r.get('trajectory_policy') or {}).get('passed') is not False
                 and not r.get('speech_leaks') and failed_results(r['messages']) <= args.max_failed]
     STYLE_FLAGS = {'report', 'announce', 'repeat', 'leak', 'language'}  # teacher_review.STYLE
     flagged = len(episodes)
@@ -249,29 +253,32 @@ def main():
                 scores = r.get('field_scores') or {}
                 wrong = sum(1 for v in scores.values() if v < 1)
                 if (not r.get('success') and r.get('messages') and r['id'] in meta and r.get('state_ok')
+                        and (r.get('trajectory_policy') or {}).get('passed') is not False
                         and r.get('safety') is not False and (r.get('reward') or 0) >= 0.85 and wrong <= 1
                         and not r.get('speech_leaks')
                         and not (args.max_reply_chars and reports(r['messages'], args.max_reply_chars))):
                     near.append({**r, 'near_miss': True})
+    successful_count = len(episodes)
+    replies = lambda e: sum(1 for m in e['messages'][1:] if m['role'] == 'user')
+    wasted = lambda e: call_profile(e['messages'], write_tools[e['id']])[1]
+    priority = lambda e: (e.get('consent') != 'plain', not str(e.get('world') or '').startswith('flip'),
+                          wasted(e), -replies(e))
+    candidates, dedup_report = deduplicate(episodes + near, args.dedup_threshold,
+                                          enabled=not args.no_dedup, priority=priority)
+    episodes = [e for e in candidates if not e.get('near_miss')]
+    near = [e for e in candidates if e.get('near_miss')]
+    audit_path = Path(args.output).with_suffix('.dedup.json')
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    audit_path.write_text(json.dumps(dedup_report, ensure_ascii=False, indent=2))
     by_task = collections.defaultdict(list)
     for episode in episodes:
         by_task[episode['id']].append(episode)
-    chosen, duplicates = [], 0
+    chosen, duplicates = [], dedup_report['dropped']
     for task_id, group in by_task.items():
         rng.shuffle(group)
-        unique, keys = [], set()
-        for episode in group:
-            key = signature(episode)
-            if key in keys:
-                duplicates += 1
-                continue
-            keys.add(key)
-            unique.append(episode)
+        unique = group
         # plain-dialogue consent first (τ²-style), refusal (flip) worlds next, then the rest
-        replies = lambda e: sum(1 for m in e['messages'][1:] if m['role'] == 'user')
-        wasted = lambda e: call_profile(e['messages'], write_tools[e['id']])[1]
-        unique.sort(key=lambda e: (e.get('consent') != 'plain', not str(e.get('world') or '').startswith('flip'),
-                                   wasted(e), -replies(e)))  # targeted lookups, then longer dialogues first
+        unique.sort(key=priority)  # targeted lookups, then longer dialogues first
         seen, picked = set(), []
         for episode in unique:  # distinct worlds first, then the rest
             if episode.get('world') not in seen:
@@ -314,7 +321,8 @@ def main():
     skill_counts = collections.Counter(k for e in selected for k in skills(e, requests[e['id']], write_tools[e['id']]))
     sequences = collections.Counter(signature(e)[0] for e in selected)
     domains = collections.Counter(meta[e['id']][2] for e in selected)
-    report = {'successful': len(episodes), 'near_duplicates_dropped': duplicates, 'selected': len(selected),
+    report = {'successful': successful_count, 'near_duplicates_dropped': duplicates,
+              'dedup_audit': str(audit_path), 'selected': len(selected),
               'tasks': len({e['id'] for e in selected}), 'domains': len(domains),
               'largest_domain_share': round(max(domains.values()) / len(selected), 3) if selected else None,
               'category': count(0), 'language': count(1),

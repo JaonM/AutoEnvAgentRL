@@ -51,6 +51,16 @@ def call(name, arguments, index):
             'function': {'name': safe(name), 'arguments': json.dumps(arguments, ensure_ascii=False)}}
 
 
+def with_original_system(row, messages):
+    """Keep source instructions verbatim, including tool definitions and format guidance."""
+    system = row.get('system')
+    if not isinstance(system, str) or not system:
+        return messages
+    if messages and messages[0].get('role') == 'system' and messages[0].get('content') == system:
+        return messages
+    return [{'role': 'system', 'content': system}, *messages]
+
+
 def when2call(path, rng, count):
     rows = [json.loads(line) for line in Path(path).read_text().splitlines()]
     rng.shuffle(rows)
@@ -60,7 +70,8 @@ def when2call(path, rng, count):
     out = []
     for index, row in enumerate(picked):
         tools = [schema(json.loads(t) if isinstance(t, str) else t) for t in row.get('tools') or []]
-        out.append({'id': f'when2call-{index}', 'messages': row['messages'], 'tools': tools, 'source': 'when2call'})
+        out.append({'id': f'when2call-{index}', 'messages': with_original_system(row, row['messages']),
+                    'tools': tools, 'source': 'when2call'})
     return out
 
 
@@ -129,7 +140,7 @@ def toolace(path, rng, count):
                                                            ensure_ascii=False)})
         has_calls = any(m.get('tool_calls') for m in messages)
         if ok and has_calls and messages and messages[-1]['role'] == 'assistant':
-            out.append({'id': f'toolace-{len(out)}', 'messages': messages, 'tools': [schema(s) for s in specs],
+            out.append({'id': f'toolace-{len(out)}', 'messages': with_original_system(row, messages), 'tools': [schema(s) for s in specs],
                         'source': 'toolace'})
     return out
 
@@ -182,7 +193,7 @@ def glaive(path, rng, count):
                                  'content': value})
                 pending = None
         if ok and any(m.get('tool_calls') for m in messages) and messages[-1]['role'] == 'assistant':
-            out.append({'id': f'glaive-{len(out)}', 'messages': messages, 'tools': [schema(s) for s in specs],
+            out.append({'id': f'glaive-{len(out)}', 'messages': with_original_system(row, messages), 'tools': [schema(s) for s in specs],
                         'source': 'glaive'})
     return out
 

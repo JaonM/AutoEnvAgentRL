@@ -20,13 +20,48 @@ directory, which rl.train then starts from (--model).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import random
 import re
 import shutil
 import time
+from dataclasses import dataclass
 from pathlib import Path
+
+from trajectory_dedup import add_arguments, deduplicate, task_key, validation_keys
+
+
+@dataclass
+class ValidationStopper:
+    """Save every true loss minimum; stop only after sustained lack of progress."""
+    patience: int = 0
+    min_delta: float = 0.001
+    min_epochs: float = 1.0
+    best_loss: float = float('inf')
+    best_step: int = 0
+    reference_loss: float = float('inf')
+    bad_checks: int = 0
+
+    def __post_init__(self):
+        if self.patience < 0 or not math.isfinite(self.min_delta) or self.min_delta < 0 \
+                or not math.isfinite(self.min_epochs) or self.min_epochs < 0:
+            raise ValueError('early stopping settings must be finite and nonnegative')
+
+    def observe(self, loss, step, epoch):
+        if not math.isfinite(loss):
+            raise ValueError(f'non-finite validation loss at step {step}: {loss}')
+        improved = loss < self.best_loss
+        if improved:
+            self.best_loss, self.best_step = loss, step
+        if loss < self.reference_loss - self.min_delta:
+            self.reference_loss, self.bad_checks = loss, 0
+        elif epoch < self.min_epochs:
+            self.bad_checks = 0
+        else:
+            self.bad_checks += 1
+        return improved, bool(self.patience and self.bad_checks >= self.patience)
 
 
 def render(tokenizer, episode):
@@ -71,32 +106,10 @@ def failed_turns(messages):
             current = index
         elif message['role'] == 'tool' and current is not None:
             try:
-                if is_failure(message.get('content')):
+                if message.get('tool_failure', is_failure(message.get('content'))):
                     out.add(current)
             except ValueError:
                 pass
-    return out
-
-
-def redundant_turns(messages, consent_names=('consent',)):
-    """Indexes of assistant turns whose tool calls only repeat earlier identical calls, with no
-    successful write (a call carrying a consent token) since then: a repeated lookup."""
-    out, seen = set(), set()
-    results = {m.get('tool_call_id'): m.get('content') for m in messages if m['role'] == 'tool'}
-    for index, message in enumerate(messages):
-        calls = message.get('tool_calls') or [] if message['role'] == 'assistant' else []
-        keys = [(c['function']['name'], c['function'].get('arguments')) for c in calls]
-        if keys and all(k in seen for k in keys):
-            out.add(index)
-        seen.update(keys)
-        for call in calls:
-            arguments = call['function'].get('arguments') or ''
-            if any(f'"{name}"' in arguments for name in consent_names):
-                try:
-                    if not is_failure(results.get(call.get('id'))) and results.get(call.get('id')):
-                        seen.clear()  # the world changed: later lookups may repeat legitimately
-                except ValueError:
-                    pass
     return out
 
 
@@ -109,7 +122,8 @@ def strip_notices(messages):
     out = []
     for message in messages:
         content = message.get('content')
-        out.append({**message, 'content': NOTICE.sub('', content)} if isinstance(content, str) else message)
+        out.append({**message, 'content': NOTICE.sub('', content)}
+                   if isinstance(content, str) and message.get('role') != 'system' else message)
     return out
 
 
@@ -124,8 +138,10 @@ def render_episode(tokenizer, episode, skip_failed=False):
     assistants = [i for i, m in enumerate(episode['messages']) if m['role'] == 'assistant']
     trained = {i for i in assistants if not episode['messages'][i].get('context_only')}
     if skip_failed:
-        trained -= failed_turns(messages) | redundant_turns(
-            messages, {'consent', (episode.get('naming') or {}).get('consent', 'consent')})
+        # Repeated arguments do not imply a redundant action: intervening reads,
+        # consent or writes may make a previously failing action succeed.
+        # Successful turns are retained unless explicitly marked context_only.
+        trained -= failed_turns(episode['messages'])
     text = tokenizer.apply_chat_template(messages, tools=episode['tools'], tokenize=False, enable_thinking=False)
     head, empty = '<|im_start|>assistant\n', '<think>\n\n</think>\n\n'
     pieces, cursor = [], 0
@@ -158,8 +174,7 @@ def render_turns(tokenizer, episode, think, cap, limit=0, seed=0, skip_failed=Fa
     turns = [i for i, m in enumerate(episode['messages']) if m['role'] == 'assistant'
              and not episode['messages'][i].get('context_only')]
     if skip_failed:
-        untrained = failed_turns(messages) | redundant_turns(
-            messages, {'consent', (episode.get('naming') or {}).get('consent', 'consent')})
+        untrained = failed_turns(episode['messages'])
         turns = [i for i in turns if i not in untrained]
     if think:
         turns = [i for i in turns if (reasoning.get(i) or '').strip() and len(reasoning[i]) <= cap]
@@ -202,14 +217,116 @@ def chunked_causal_attention(chunk):
     return attend
 
 
+def prepare_episodes(args):
+    """Load and augment data independently of optimizer order when fixed seeds are given."""
+    # Successes and the near misses sft_select chose (safe, final state right, at most one answer field wrong);
+    # filtering on success alone silently dropped every near miss.
+    episodes = [r for path in [args.teacher, *args.replay] for r in map(json.loads, Path(path).read_text().splitlines())
+                if (r.get('success') or r.get('near_miss')) and r.get('messages')
+                and (r.get('trajectory_policy') or {}).get('passed') is not False]
+    episodes, args.dedup_report = deduplicate(episodes, getattr(args, 'dedup_threshold', 0.85),
+                                             enabled=not getattr(args, 'no_dedup', False))
+    split_seed = args.seed if args.split_seed is None else args.split_seed
+    augmentation_seed = args.seed if args.augmentation_seed is None else args.augmentation_seed
+    random.Random(split_seed).shuffle(episodes)
+    if args.rename_tools:
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from tool_rename import augment
+        rng = random.Random(augmentation_seed + 1)
+        episodes = [augment(e, f"{augmentation_seed}-{e['id']}-{e.get('seed')}") if not e.get('public') and rng.random() < args.rename_tools else e
+                    for e in episodes]
+    if args.relayout:
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from tool_rename import relayout
+        rng = random.Random(augmentation_seed + 4)
+        episodes = [relayout(e, f"{augmentation_seed}-{e['id']}-{e.get('seed')}") if not e.get('public') and rng.random() < args.relayout else e
+                    for e in episodes]
+    if args.greet:
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from tool_rename import greet
+        rng = random.Random(augmentation_seed + 3)
+        episodes = [greet(e, f"{augmentation_seed}-{e['id']}-{e.get('seed')}") if not e.get('public') and rng.random() < args.greet else e
+                    for e in episodes]
+    if args.example_values or args.inject_errors:
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from tool_rename import example_values, inject_errors
+        rng = random.Random(augmentation_seed + 5)
+        episodes = [example_values(e, f"{augmentation_seed}-{e['id']}-{e.get('seed')}") if not e.get('public') and rng.random() < args.example_values
+                    else e for e in episodes]
+        rng = random.Random(augmentation_seed + 6)
+        episodes = [inject_errors(e, f"{augmentation_seed}-{e['id']}-{e.get('seed')}") if not e.get('public') and rng.random() < args.inject_errors
+                    else e for e in episodes]
+    if args.vary_results:
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from tool_rename import vary_results
+        rng = random.Random(augmentation_seed + 2)
+        episodes = [vary_results(e, f"{augmentation_seed}-{e['id']}-{e.get('seed')}") if not e.get('public') and rng.random() < args.vary_results else e
+                    for e in episodes]
+    if args.context_only_announcements:
+        announce = re.compile(r"\b(let me (check|look|get|find|verify|pull|see)|i'll (check|look|get|find|pull)|"
+                              r"i will (check|look|get|find))\b|我(来|先)?(查|看|核实)一下|稍等", re.I)
+        announced = 0
+        for e in episodes:
+            for m in e['messages']:
+                if m.get('role') == 'assistant' and not m.get('tool_calls') and announce.search(m.get('content') or ''):
+                    m['context_only'] = True
+                    announced += 1
+        print(f'{announced} announcing turns (no tool call) kept as context only', flush=True)
+    if args.context_only_reports:
+        reports = 0
+        for e in episodes:
+            for m in e['messages']:
+                if (m.get('role') == 'assistant' and not m.get('tool_calls')
+                        and len(m.get('content') or '') > args.context_only_reports):
+                    m['context_only'] = True
+                    reports += 1
+        print(f'{reports} report turns (> {args.context_only_reports} chars, no tool call) kept as context only', flush=True)
+    # Append public replay AFTER world shuffling/augmentation. Adding a control
+    # source must not change the world's augmentation choices or validation data.
+    public_paths = getattr(args, 'public_replay', []) or []
+    if public_paths:
+        public = [json.loads(line) for path in public_paths for line in Path(path).read_text().splitlines()]
+        if any(not e.get('public') or not e.get('success') or not e.get('messages') for e in public):
+            raise ValueError('public replay must contain qualified public episodes only')
+        ids = [e['id'] for e in public]
+        held = set(json.loads(Path(args.valid_ids).read_text())) if getattr(args, 'valid_ids', None) else set()
+        if len(set(ids)) != len(ids) or set(ids) & ({e['id'] for e in episodes} | held):
+            raise ValueError('public replay IDs must be unique and disjoint from world and validation IDs')
+        public, public_report = deduplicate(public, getattr(args, 'dedup_threshold', .85),
+                                            enabled=not getattr(args, 'no_dedup', False))
+        world_report = args.dedup_report
+        args.dedup_report = {**world_report,
+                            **{k: world_report[k] + public_report[k] for k in ('input', 'kept', 'dropped')},
+                            'comparisons': world_report['comparisons'] + public_report['comparisons'],
+                            'per_task': {**world_report['per_task'], **public_report['per_task']},
+                            'public_replay_kept': len(public)}
+        episodes.extend(public)
+    return episodes
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     parser.add_argument('--teacher', required=True, help='collect_teacher.py JSONL (only successful episodes are used)')
+    parser.add_argument('--public-replay', nargs='*', default=[],
+                        help='qualified public episodes appended after world augmentation; fixed validation IDs required')
+    add_arguments(parser)
     parser.add_argument('--model', default='models/Qwen3-0.6B', help='floating-point base model')
     parser.add_argument('--output', required=True)
     parser.add_argument('--tuning', choices=('full', 'lora'), default='full', help='full (default since 2026-10-15) or lora')
     parser.add_argument('--lora-rank', type=int, default=16)
-    parser.add_argument('--epochs', type=float, default=2.0)
+    parser.add_argument('--epochs', type=float, default=2.0,
+                        help='maximum epochs; validation early stopping may end training sooner')
+    parser.add_argument('--early-stopping-patience', type=int, default=0,
+                        help='stop after this many validation checks without meaningful loss improvement (0: off)')
+    parser.add_argument('--early-stopping-min-delta', type=float, default=0.001,
+                        help='absolute validation-loss decrease needed to reset patience')
+    parser.add_argument('--early-stopping-min-epochs', type=float, default=1.0,
+                        help='do not accumulate plateau checks before this many epochs')
     parser.add_argument('--learning-rate', type=float, default=1e-5)
     parser.add_argument('--grad-accumulation', type=int, default=4)
     parser.add_argument('--context-only-announcements', action='store_true',
@@ -226,9 +343,13 @@ def main():
     parser.add_argument('--valid-share', type=float, default=0.1)
     parser.add_argument('--valid-ids', default=None,
                         help='JSON list of task ids whose episodes form the validation set (held-out domains); '
-                             'otherwise --valid-share of the episodes at random')
+                             'otherwise --valid-share of the tasks at random (all variants stay together)')
     parser.add_argument('--evals-per-epoch', type=int, default=4)
     parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--split-seed', type=int, default=None,
+                        help='fixed data ordering/split seed, independent of training --seed')
+    parser.add_argument('--augmentation-seed', type=int, default=None,
+                        help='fixed augmentation seed, independent of training --seed')
     parser.add_argument('--think', action='store_true', help="train the teacher's reasoning as <think> blocks")
     parser.add_argument('--reasoning-cap', type=int, default=1500, help='longest reasoning kept (characters)')
     parser.add_argument('--turns-per-episode', type=int, default=0, help='sample at most this many turns (0: all)')
@@ -253,9 +374,17 @@ def main():
     parser.add_argument('--replay', nargs='*', default=[],
                         help='extra episode files mixed in as they are (e.g. the base model\'s own successes)')
     parser.add_argument('--no-error-turns', action='store_true',
-                        help='do not train turns whose tool calls failed or only repeat earlier lookups '
-                             '(they stay as context)')
+                        help='do not train turns whose tool calls failed (they stay as context); '
+                             'successful retries are retained')
     args = parser.parse_args()
+    if args.public_replay and not args.valid_ids:
+        parser.error('--public-replay requires --valid-ids to preserve the existing validation set')
+    if not math.isfinite(args.epochs) or args.epochs <= 0:
+        parser.error('--epochs must be positive and finite')
+    stopper = ValidationStopper(args.early_stopping_patience, args.early_stopping_min_delta,
+                                args.early_stopping_min_epochs)
+    if args.early_stopping_patience and args.epochs < args.early_stopping_min_epochs:
+        parser.error('--epochs must be at least --early-stopping-min-epochs')
 
     import mlx.core as mx
     import numpy as np
@@ -278,68 +407,7 @@ def main():
         family = importlib.import_module(type(model).__module__)
         family.scaled_dot_product_attention = chunked_causal_attention(args.attention_chunk)
 
-    # Successes and the near misses sft_select chose (safe, final state right, at most one answer field wrong);
-    # filtering on success alone silently dropped every near miss.
-    episodes = [r for path in [args.teacher, *args.replay] for r in map(json.loads, Path(path).read_text().splitlines())
-                if (r.get('success') or r.get('near_miss')) and r.get('messages')]
-    random.Random(args.seed).shuffle(episodes)
-    if args.rename_tools:
-        import sys
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from tool_rename import augment
-        rng = random.Random(args.seed + 1)
-        episodes = [augment(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if not e.get('public') and rng.random() < args.rename_tools else e
-                    for e in episodes]
-    if args.relayout:
-        import sys
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from tool_rename import relayout
-        rng = random.Random(args.seed + 4)
-        episodes = [relayout(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if not e.get('public') and rng.random() < args.relayout else e
-                    for e in episodes]
-    if args.greet:
-        import sys
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from tool_rename import greet
-        rng = random.Random(args.seed + 3)
-        episodes = [greet(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if not e.get('public') and rng.random() < args.greet else e
-                    for e in episodes]
-    if args.example_values or args.inject_errors:
-        import sys
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from tool_rename import example_values, inject_errors
-        rng = random.Random(args.seed + 5)
-        episodes = [example_values(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if not e.get('public') and rng.random() < args.example_values
-                    else e for e in episodes]
-        rng = random.Random(args.seed + 6)
-        episodes = [inject_errors(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if not e.get('public') and rng.random() < args.inject_errors
-                    else e for e in episodes]
-    if args.vary_results:
-        import sys
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from tool_rename import vary_results
-        rng = random.Random(args.seed + 2)
-        episodes = [vary_results(e, f"{args.seed}-{e['id']}-{e.get('seed')}") if not e.get('public') and rng.random() < args.vary_results else e
-                    for e in episodes]
-    if args.context_only_announcements:
-        announce = re.compile(r"\b(let me (check|look|get|find|verify|pull|see)|i'll (check|look|get|find|pull)|"
-                              r"i will (check|look|get|find))\b|我(来|先)?(查|看|核实)一下|稍等", re.I)
-        announced = 0
-        for e in episodes:
-            for m in e['messages']:
-                if m.get('role') == 'assistant' and not m.get('tool_calls') and announce.search(m.get('content') or ''):
-                    m['context_only'] = True
-                    announced += 1
-        print(f'{announced} announcing turns (no tool call) kept as context only', flush=True)
-    if args.context_only_reports:
-        reports = 0
-        for e in episodes:
-            for m in e['messages']:
-                if (m.get('role') == 'assistant' and not m.get('tool_calls')
-                        and len(m.get('content') or '') > args.context_only_reports):
-                    m['context_only'] = True
-                    reports += 1
-        print(f'{reports} report turns (> {args.context_only_reports} chars, no tool call) kept as context only', flush=True)
+    episodes = prepare_episodes(args)
     if args.per_episode:
         pairs = [(e, render(tokenizer, e)) for e in episodes]
     elif args.render == 'episode':
@@ -355,13 +423,35 @@ def main():
         held = set(json.loads(Path(args.valid_ids).read_text()))
         valid, train = [s for e, s in kept if e['id'] in held], [s for e, s in kept if e['id'] not in held]
     else:
-        # Whole episodes go to validation, so no turn of a validation episode is trained on.
-        held = {id(e) for e in episodes[:max(1, round(len(episodes) * args.valid_share))]}
-        valid, train = [s for e, s in kept if id(e) in held], [s for e, s in kept if id(e) not in held]
+        # Distinct trajectories of one task must not leak across train/validation.
+        held = validation_keys(episodes, args.valid_share)
+        valid, train = [s for e, s in kept if task_key(e) in held], [s for e, s in kept if task_key(e) not in held]
     print(f'{len(episodes)} episodes ({sum(bool(e.get("near_miss")) for e in episodes)} near misses), '
           f'{len(kept)} samples within {args.max_tokens} tokens: '
           f'{len(train)} train / {len(valid)} valid; '
           f'{sum(sum(m) for _, m in train)} assistant tokens of {sum(len(i) for i, _ in train)}', flush=True)
+
+    if not train or not valid:
+        raise ValueError('training and validation sets must both be nonempty')
+    def fingerprint(samples):
+        digest = hashlib.sha256()
+        for ids, mask in samples:
+            digest.update(json.dumps([ids, mask], separators=(',', ':')).encode())
+            digest.update(b'\n')
+        return digest.hexdigest()
+    data_manifest = {
+        'train_sha256': fingerprint(train), 'valid_sha256': fingerprint(valid),
+        'split_seed': args.seed if args.split_seed is None else args.split_seed,
+        'augmentation_seed': args.seed if args.augmentation_seed is None else args.augmentation_seed,
+        'sources': {path: hashlib.sha256(Path(path).read_bytes()).hexdigest()
+                    for path in [args.teacher, *args.replay, *args.public_replay]},
+        'valid_ids_sha256': hashlib.sha256(Path(args.valid_ids).read_bytes()).hexdigest() if args.valid_ids else None,
+        'dedup': {k: v for k, v in args.dedup_report.items() if k not in ('comparisons', 'per_task')},
+    }
+    Path(args.output).mkdir(parents=True, exist_ok=True)
+    (Path(args.output) / 'dedup_report.json').write_text(json.dumps(args.dedup_report, ensure_ascii=False, indent=2))
+    (Path(args.output) / 'data_manifest.json').write_text(json.dumps(data_manifest, indent=2))
+    print('data manifest ' + json.dumps(data_manifest), flush=True)
 
     def loss_fn(model, ids, mask):
         # Logits only where the loss is taken (assistant tokens, about a fifth of an episode): the full-vocabulary
@@ -389,7 +479,7 @@ def main():
         return total / max(1, tokens)
 
     out = Path(args.output)
-    history, best = [], float('inf')
+    history = []
 
     def write_model(model):
         target = out / 'model'
@@ -398,6 +488,12 @@ def main():
         tokenizer.save_pretrained(target)
         for extra in Path(args.model).glob('generation_config.json'):
             shutil.copy(extra, target)
+
+    def save_best():
+        if args.tuning == 'lora':  # fused after restoring the lowest-loss adapters
+            mx.save_safetensors(str(out / 'adapters.safetensors'), dict(tree_flatten(model.trainable_parameters())))
+        else:
+            write_model(model)
     order = []
     while len(order) < steps * args.grad_accumulation:
         batch = list(range(len(train)))
@@ -407,9 +503,12 @@ def main():
     eval_every = max(1, steps // max(1, round(args.epochs * args.evals_per_epoch)))
     started = time.monotonic()
     baseline = evaluate()
-    history.append({'step': 0, 'valid_loss': round(baseline, 4)})
+    stopper.observe(baseline, 0, 0)
+    save_best()  # Keep the baseline if every training checkpoint is worse.
+    history.append({'step': 0, 'epoch': 0, 'valid_loss': baseline})
     print(f'step 0 valid loss {baseline:.4f}', flush=True)
     norms = []
+    stop_reason = 'max_epochs'
     for step in range(1, steps + 1):
         accumulated, losses = None, []
         for index in order[(step - 1) * args.grad_accumulation:step * args.grad_accumulation]:
@@ -426,7 +525,10 @@ def main():
         mx.eval(model.parameters(), optimizer.state)
         if step % eval_every == 0 or step == steps:
             current = evaluate()
-            row = {'step': step, 'train_loss': round(sum(losses) / len(losses), 4), 'valid_loss': round(current, 4),
+            epoch = step * args.grad_accumulation / len(train)
+            improved, stop = stopper.observe(current, step, epoch)
+            row = {'step': step, 'epoch': epoch, 'train_loss': round(sum(losses) / len(losses), 4),
+                   'valid_loss': current, 'plateau_checks': stopper.bad_checks,
                    'seconds': round(time.monotonic() - started)}
             if norms:
                 row.update(grad_norm_max=round(max(norms), 3), grad_norm_mean=round(sum(norms) / len(norms), 3),
@@ -434,21 +536,23 @@ def main():
                 norms = []
             history.append(row)
             print(json.dumps(row), flush=True)
-            if current < best:
-                best = current
-                if args.tuning == 'lora':  # keep the best adapters; fused into a model at the end
-                    out.mkdir(parents=True, exist_ok=True)
-                    mx.save_safetensors(str(out / 'adapters.safetensors'), dict(tree_flatten(model.trainable_parameters())))
-                else:
-                    write_model(model)
+            if improved:
+                save_best()
+            if stop:
+                stop_reason = 'validation_plateau'
+                print(f'early stop at epoch {epoch:.3f}: {stopper.bad_checks} checks without '
+                      f'a loss improvement > {stopper.min_delta}; best step {stopper.best_step}', flush=True)
+                break
     if args.tuning == 'lora':
         model.load_weights(str(out / 'adapters.safetensors'), strict=False)
         model.update_modules(tree_unflatten([(n, m.fuse()) for n, m in model.named_modules() if hasattr(m, 'fuse')]))
         write_model(model)
     (out / 'sft_history.json').write_text(json.dumps({'args': vars(args), 'train_episodes': len(train),
                                                       'valid_episodes': len(valid), 'history': history,
-                                                      'best_valid_loss': best}, indent=1))
-    print(f'best valid loss {best:.4f} (baseline {baseline:.4f}); model in {out / "model"}', flush=True)
+                                                      'best_valid_loss': stopper.best_loss,
+                                                      'best_step': stopper.best_step, 'stop_reason': stop_reason,
+                                                      'completed_epochs': step * args.grad_accumulation / len(train)}, indent=1))
+    print(f'best valid loss {stopper.best_loss:.4f} (baseline {baseline:.4f}); model in {out / "model"}', flush=True)
 
 
 if __name__ == '__main__':

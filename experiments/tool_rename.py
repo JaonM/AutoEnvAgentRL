@@ -144,10 +144,15 @@ def envelope(content, style):
 
 def vary_results(episode, seed):
     """A copy of the episode whose tool results all use one randomly chosen format."""
+    from sft_train import is_failure
+
     style = random.Random(f'{seed}-envelope').choice(['envelope', 'raw', 'raw', 'text'])
     episode = copy.deepcopy(episode)
     for message in episode['messages']:
         if message.get('role') == 'tool':
+            # Training metadata survives presentation changes; plain text errors are
+            # deliberately not parsed heuristically by the loss-mask builder.
+            message['tool_failure'] = message.get('tool_failure', is_failure(message.get('content')))
             message['content'] = envelope(message.get('content'), style)
     return episode
 

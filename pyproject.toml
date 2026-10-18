@@ -33,6 +33,10 @@ cuda-export = [
     "safetensors>=0.6,<1",
 ]
 
+public-data = [
+    "jsonschema>=4.26,<5",
+]
+
 [dependency-groups]
 dev = ["pytest>=9.1.1"]
 

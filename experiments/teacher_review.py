@@ -7,7 +7,7 @@ Every episode gets rule-based flags (cheap, no model call):
   report            a text-only reply longer than REPORT_CHARS or shaped as an outcome report
   announce          a text-only reply announcing a lookup ("let me check") without making it
   repeat            the same reply (over 40 characters) twice in a row
-  leak              internal field names or cents in what the agent said
+  leak              internal field names in what the agent said
   language          an English task answered in Chinese, or the other way round
   invented_id       a call with an identifier that never appeared earlier in the conversation
   repeated_failure  the same call made again right after it failed
@@ -38,7 +38,7 @@ REPORT = re.compile(r"(here'?s (the|a|your) (outcome|summary|picture|result|brea
                     r"^\s*#{1,4} |\n\s*\*\*[^*\n]{2,40}\*\*\s*\n\s*[-•])", re.I | re.M)
 ANNOUNCE = re.compile(r"\b(let me (check|look|get|find|verify|pull|see)|i'll (check|look|get|find|pull)|"
                       r"i will (check|look|get|find))\b|我(来|先)?(查|看|核实)一下|稍等", re.I)
-INTERNAL = re.compile(r'[A-Za-z]+_[A-Za-z_]+|\d+\s*分(?!钟)|\b\d+\s*cents?\b')
+INTERNAL = re.compile(r'[A-Za-z]+_[A-Za-z_]+')
 CJK = re.compile(r'[一-鿿]')
 STYLE = ('report', 'announce', 'repeat', 'leak', 'language')
 WINDOW, BREAKER, ERROR_BREAKER = 40, 0.25, 0.2
@@ -54,6 +54,8 @@ def flags(row):
     if row.get('error') or not row.get('messages'):
         return ['error']
     out = []
+    if (row.get('trajectory_policy') or {}).get('passed') is False:
+        out.append('trajectory_policy')
     texts = replies(row)
     if any(len(t) > REPORT_CHARS or REPORT.search(t) for t in texts):
         out.append('report')
