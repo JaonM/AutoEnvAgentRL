@@ -94,6 +94,16 @@ def validate_evidence(episode, candidate, pilot, loaded):
     require(bool(episode.get('messages')), 'missing transcript')
     require(all(episode.get(k) == v for k, v in candidate['episode'].items()),
             'selected episode differs from source demonstration')
+    migration=episode.get('migration') or {}
+    if migration.get('kind')=='deterministic_replay':
+        original=Path(migration['original_episode'])
+        require(sha(original)==migration['original_sha256'],'replay original evidence changed')
+        old=read(original)
+        demonstration=Path(migration['original_demonstration'])
+        require(sha(demonstration)==migration['original_demonstration_sha256'],'original demonstration changed')
+        require(old['messages']==episode['messages'],'replay transcript was rewritten')
+        require(old['answer']==episode['answer'],'replay answer was rewritten')
+        require(migration.get('new_teacher_collection') is False,'replay mislabeled as collection')
     request = loaded['request']
     require(episode['source_task_id'] == request['id'], 'task identity mismatch')
     rules = trajectory.constraints(request)

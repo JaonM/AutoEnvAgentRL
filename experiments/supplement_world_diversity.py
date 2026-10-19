@@ -24,6 +24,19 @@ def save(p,v):
 def sha(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
 
 
+def prepared_task(job, assignment, output):
+    """A recertified fixed task may skip authoring, never teacher/audit/diversity gates."""
+    prepared=job['prepared_task']
+    if assignment!=job['assignment']:raise ValueError('prepared task cannot change assignment')
+    if sha(prepared['pilot'])!=prepared['pilot_sha256']:raise ValueError('prepared pilot changed')
+    row=read(prepared['pilot'])
+    if row['assignment']!=assignment or not row['passed']:raise ValueError('unqualified prepared task')
+    if sha(Path(row['bundle'])/'manifest.json')!=prepared['manifest_sha256']:raise ValueError('prepared bundle changed')
+    destination=output/job['domain']['name']/'tasks'/f"t{assignment['index']:03d}"
+    save(destination/'pilot_result.json',row)
+    return row
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--plan',type=Path,required=True);p.add_argument('--frozen',type=Path,required=True)
@@ -91,8 +104,12 @@ def main():
             feedback={k:failure[k] for k in ('stage','errors','rejection_reason') if k in failure}
             feedback['task_problems']=(failure.get('pilot') or {}).get('problems',[])
             a['brief']+='\nPrevious attempt did not qualify. Address the following without changing policy or checkers: '+json.dumps(feedback)
-        folder=draft_batch(domain,[a],args.output,runner)
-        row=certify_task(domain,a,folder,args.output,runner)
+        if job.get('prepared_task'):
+            if attempt:raise ValueError('prepared task cannot retry authoring')
+            row=prepared_task(job,a,args.output)
+        else:
+            folder=draft_batch(domain,[a],args.output,runner)
+            row=certify_task(domain,a,folder,args.output,runner)
         if not row['passed']:return {'passed':False,'stage':'original_task_gate','pilot':row,'assignment':a}
         loaded=bundle.load_bundle(row['bundle']);request=loaded['request'];limits=domain['data_scope']
         errors=data_scope.check_references(request['tables'],limits['references'])
@@ -130,7 +147,7 @@ def main():
         entry={'branch':result.get('assignment',job['assignment'])['coverage_branch'],'domain':job['domain']['name'],
                'slot':job['assignment']['slot'],'attempt':attempt,**result}
         save(args.output/'attempt_results'/f"{job['domain']['name']}-{job['assignment']['slot']}-{attempt}.json",entry)
-        if not result['passed'] and result['stage']!='quota_filled' and attempt+1<plan['task_attempts']:
+        if not result['passed'] and result['stage']!='quota_filled' and attempt+1<job.get('task_attempts',plan['task_attempts']):
             queue.appendleft((job,attempt+1))
         else:
             results.append({k:v for k,v in entry.items() if k not in ('request','pilot','feature')})
