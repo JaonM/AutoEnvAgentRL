@@ -8,6 +8,7 @@ class Rejection(Exception):
 
 
 def expected(data, facts, now):
+    from env_factory.runtime import resolve_goal_params
     state = deepcopy(data)
     users = {r['user_id']: r for r in state['users']}
     reservations = {r['reservation_id']: r for r in state['reservations']}
@@ -236,7 +237,7 @@ def expected(data, facts, now):
         return out,policy
     answer={}
     for i,g in enumerate(facts.get('goals',[]),1):
-        proc=g['process']; p=g.get('params',{})
+        proc=g['process']; p=resolve_goal_params(g,answer)
         if proc=='eligibility_explanation':
             detail=dict(p.get('details') or {})
             detail.update(user_id=p.get('user_id'),reservation_id=p.get('reservation_id'))

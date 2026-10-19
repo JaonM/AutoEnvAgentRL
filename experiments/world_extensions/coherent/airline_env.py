@@ -363,6 +363,7 @@ def _allowance(membership, cabin, count):
 
 
 def reference(api) -> dict:
+    from env_factory.runtime import resolve_goal_params
     goals=api.ask('goals')
     results={}
     completed={}
@@ -435,7 +436,7 @@ def reference(api) -> dict:
         return fs,new,(sum(f['price'] for f in new)-sum(f['price'] for f in r['flights']))*len(r['passengers'])
 
     for i,g in enumerate(goals,1):
-        process=g['process']; p=deepcopy(g['params'])
+        process=g['process']; p=resolve_goal_params(g,results)
         out={'status':'completed','reason':None}
         if process in ('booking_creation','itinerary_change','cabin_change','adding_baggage','eligible_cancellation','requested_compensation'): out['amount']=0
         if process in ('booking_creation','constrained_booking'): out.update(reservation_id=None,amount=0)

@@ -76,9 +76,18 @@ def amend(request, domain, behavioral):
     return request
 
 
-def prepare(source, output, domain, behavioral):
+def prepare(source, output, domain, behavioral, *, sop=False):
     loaded=bundle.load_bundle(source,require_current_platform=False)
     request=amend(loaded['request'],domain,behavioral)
+    if sop:
+        from world_extensions.sop_specs import blueprint, executable_contract
+        request['sop_blueprint']=blueprint(domain,request)
+        request['sop_contract']=executable_contract(behavioral)
+        request['sop_contract_sha256']=behavior.digest({'blueprint':request['sop_blueprint'],'contract':request['sop_contract']})
+        # Historical tasks retain their original goals; they are never relabelled
+        # as sampled SOP tasks. compose() removes this marker for every new task.
+        request['sop_legacy']=True
+        request['source']['semantic_profile']='sop-v1'
     output=Path(output);stage=output/'source';stage.mkdir(parents=True,exist_ok=False)
     for name in ('env','verifier'):shutil.copyfile(SOURCE/f'{domain}_{name}.py',stage/f'{name}.py')
     save(stage/'request.json',request);save(stage/'answer_schema.json',loaded['schema'])
@@ -93,23 +102,28 @@ def prepare(source, output, domain, behavioral):
         raise ValueError({k:v for k,v in report.items() if isinstance(v,dict) and v.get('passed') is False})
     bundle.export(stage,stage/'request.json',report,output/'bundle',status='qualified')
     save(output/'lineage.json',{'source':str(Path(source).resolve()),'source_manifest':loaded['manifest'],
-        'behavior_contract_sha256':behavior.digest(behavioral),'profile':'coherent-v1'})
+        'behavior_contract_sha256':behavior.digest(behavioral),'profile':'sop-v1' if sop else 'coherent-v1'})
     return str((output/'bundle').resolve())
 
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--source',type=Path,default=Path('output/world_scale_v3'))
+    p.add_argument('--sop',action='store_true')
     p.add_argument('--output',type=Path,required=True);args=p.parse_args()
     args.output.mkdir(parents=True,exist_ok=False)
     summary=json.loads((args.source/'summary.json').read_text());summary['source']=str(args.source.resolve())
-    summary.update(passed=False,semantic_profile='coherent-v1',training_ready=False)
+    summary.update(passed=False,semantic_profile='sop-v1' if args.sop else 'coherent-v1',training_ready=False)
     for d,info in summary['domains'].items():
         full=bundle.load_bundle(args.source/d/'world/bundle',require_current_platform=False)
-        contract=make(d,full['request']['tables']);save(args.output/d/'behavior_contract.json',contract)
+        if args.sop:
+            from world_extensions.sop_specs import make_behavior
+            contract=make_behavior(d,full['request']['tables'])
+        else:contract=make(d,full['request']['tables'])
+        save(args.output/d/'behavior_contract.json',contract)
         old_report=behavior.run(full['env'],contract);save(args.output/d/'old_behavior.json',old_report)
-        info['bundle']=prepare(args.source/d/'world/bundle',args.output/d/'world',d,contract)
+        info['bundle']=prepare(args.source/d/'world/bundle',args.output/d/'world',d,contract,sop=args.sop)
         for g in info['groups']:
-            g['bundle']=prepare(Path(g['bundle']),args.output/d/g['split'],d,contract)
+            g['bundle']=prepare(Path(g['bundle']),args.output/d/g['split'],d,contract,sop=args.sop)
         print(json.dumps({'domain':d,'qualified':True,'behavior_cases':len(contract['cases'])}),flush=True)
     summary['passed']=True;save(args.output/'summary.json',summary)
 
