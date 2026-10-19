@@ -30,6 +30,7 @@ def test_booking_identifier_is_bound_at_runtime_and_ablated():
     verifier=load_module(SOURCE/'airline_verifier.py',role='verifier')
     case=make('airline',data('airline'),seeds=(103,))['cases'][0]
     tables=deepcopy(case['data']);u=tables['users'][0];uid=u['user_id']
+    tables['users'].append({**deepcopy(u),'id':'other','user_id':'other','reservations':[]})
     booking=case['steps'][0]['args']
     facts={'user_id':uid,'approve_book_'+uid:True,'goals':[
         {'process':'booking_creation','params':{'user_id':uid,'booking':booking}},
@@ -46,6 +47,9 @@ def test_booking_identifier_is_bound_at_runtime_and_ablated():
     report=sop.task_report(env,verifier,request)
     assert report['passed'],report
     assert report['witnesses'][0]['observed']
+    from env_factory.production.world import goal_sensitivity
+    sensitivity=goal_sensitivity(verifier,request)
+    assert sensitivity['passed'] and sensitivity['checked']==2,sensitivity
 
 
 def verify_method(domain,name,tables,facts,now):

@@ -621,7 +621,23 @@ def goal_sensitivity(verifier, request):
     insensitive, checked = [], 0
     for index, goal in enumerate(facts.get('goals') or []):
         field, tried, moved = f'goal_{index + 1}', 0, False
+        answer = lambda o: (o.get('answer') or {}).get(field, o.get('answer'))
+        if goal.get('bindings'):
+            # A future ID has no static alternative in the initial database.
+            # Removing its binding must affect the successor, rather than
+            # incorrectly treating every null placeholder as an ignored input.
+            changed = copy.deepcopy(facts)
+            changed['goals'][index].pop('bindings')
+            try:
+                outcome = verifier.expected(copy.deepcopy(tables), changed, start)
+            except Exception:
+                pass  # an execution error is not evidence of sensitivity
+            else:
+                tried += 1
+                moved = canonical(answer(outcome)) != canonical(answer(base)) or canonical(outcome['final_state']) != canonical(base['final_state'])
         for key, value in (goal.get('params') or {}).items():
+            if moved:
+                break
             for other in _alternatives(value, tables):
                 changed = copy.deepcopy(facts)
                 changed['goals'][index]['params'][key] = other
@@ -630,7 +646,6 @@ def goal_sensitivity(verifier, request):
                 except Exception:  # noqa: BLE001 - an invalid alternative proves nothing either way
                     continue
                 tried += 1
-                answer = lambda o: (o.get('answer') or {}).get(field, o.get('answer'))
                 if canonical(answer(outcome)) != canonical(answer(base)) or \
                         canonical(outcome['final_state']) != canonical(base['final_state']):
                     moved = True
