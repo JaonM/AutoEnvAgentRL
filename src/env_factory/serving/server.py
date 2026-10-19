@@ -403,8 +403,9 @@ class HttpAPI:
 
     BusinessError = BusinessError
 
-    def __init__(self, base_url, episode):
+    def __init__(self, base_url, episode, *, now=0):
         self.base_url, self.episode = base_url, episode
+        self.now = now
 
     def _post(self, path, body):
         request = Request(self.base_url + path, data=json.dumps(body).encode(),
@@ -414,6 +415,7 @@ class HttpAPI:
 
     def _step(self, action):
         reply = self._post('/step', {'episode': self.episode, 'action': action})
+        self.now = reply.get('now', self.now)
         if not reply['ok']:
             if reply['kind'] == 'business':
                 raise BusinessError(reply['error'])
@@ -440,7 +442,7 @@ def replay_check(env, verifier, schema, request, *, rubric=None, judge=None):
     server = start(service)
     try:
         base = f'http://127.0.0.1:{server.server_address[1]}'
-        session = HttpAPI(base, None)
+        session = HttpAPI(base, None, now=request['time']['start'])
         reset = session._post('/reset', {'world': 'original'})
         session.episode = reset['episode']
         try:

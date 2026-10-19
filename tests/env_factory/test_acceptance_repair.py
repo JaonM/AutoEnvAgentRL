@@ -227,3 +227,42 @@ def test_checker_cannot_change_the_candidate_after_qualification(case, tmp_path)
                        "(Path(sys.argv[2])/'report.json').write_text('{\"passed\":true}')\n")
     result = repair_bundle(source, tmp_path / 'repaired', runner=None, suite=config)
     assert not result['accepted'] and result['failure_class'] == 'acceptance_tampered'
+
+
+def test_caller_behavior_contract_drives_bounded_repair_and_stays_frozen(case, tmp_path):
+    from env_factory.certify import behavior
+    source, good, config, _ = case
+    request=json.loads((source/'request.json').read_text())
+    contract={'version':1,'cases':[{'id':'unseen-book','data':request['tables'],
+        'steps':[{'tool':'get_waitlist','args':{'book_id':'unseen-contract-id'},
+                  'error':'book unseen-contract-id not found'}]}]}
+    request.update(behavior_contract=contract,behavior_contract_sha256=behavior.digest(contract))
+    (source/'request.json').write_text(json.dumps(request))
+    def runner(folder, prompt, **options):
+        feedback=json.loads((folder/'acceptance_feedback.json').read_text())
+        assert not feedback['gates']['behavior']['passed']
+        (folder/'env.py').write_text(good)
+    result=repair_bundle(source,tmp_path/'fixed',runner=runner,suite=config)
+    assert result['accepted'] and result['repairs_used']==1
+    assert result['rounds'][1]['gates']['behavior']['passed']
+    assert json.loads((Path(result['bundle'])/'request.json').read_text())['behavior_contract']==contract
+
+
+@pytest.mark.parametrize('tamper',[False,True])
+def test_standard_pipeline_receives_behavior_failures_and_protects_truth(case,tmp_path,tamper):
+    from env_factory.certify import behavior
+    source,good,_,_=case
+    request=library_request()
+    contract={'version':1,'cases':[{'id':'independent-missing-book','data':request['tables'],
+        'steps':[{'tool':'get_waitlist','args':{'book_id':'unseen-contract-id'},'error':'book unseen-contract-id not found'}]}]}
+    request.update(behavior_contract=contract,behavior_contract_sha256=behavior.digest(contract))
+    def repair(folder):
+        feedback=json.loads((folder/'gate_report.json').read_text())
+        assert not feedback['behavior']['passed']
+        (folder/'env.py').write_text(good)
+        if tamper:
+            verifier=folder/'verifier.py';verifier.write_text(verifier.read_text()+'\n')
+    runner=FakeRunner(env_source=(source/'env.py').read_text(),repair=repair)
+    result=pipeline.build(request,tmp_path/'build',runner=runner)
+    if tamper:assert result['failure_class']=='acceptance_tampered' and not result['training_ready']
+    else:assert result['training_ready'] and result['repairs_used']==1

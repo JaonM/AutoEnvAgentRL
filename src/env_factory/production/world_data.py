@@ -106,7 +106,8 @@ def author_context(request, index):
     from the actual sandbox or silently truncates a record.
     """
     shown = {k: copy.deepcopy(v) for k, v in request.items() if k not in (
-        'user_facts', 'user_scene', 'user_request', 'user_script', 'agent_policy', 'source')}
+        'user_facts', 'user_scene', 'user_request', 'user_script', 'agent_policy', 'source',
+        'behavior_contract', 'behavior_contract_sha256')}
     config = (request.get('source') or {}).get('authoring_scope')
     if not config:
         return shown

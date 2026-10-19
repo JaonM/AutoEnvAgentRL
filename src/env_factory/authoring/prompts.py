@@ -393,7 +393,8 @@ OPENING_WRITER = """你是一位用户（可能是顾客、员工、专业人士
 不要总以“帮我”“麻烦”开头。只输出这条消息本身。"""
 
 REPAIR = """The environment in this folder failed qualification. gate_report.json lists the
-failed gates with evidence. brief.md remains the only authority.
+failed gates with evidence. brief.md and caller-owned behavior_contract in request.json are
+immutable authorities. The independent verifier and acceptance expectations must not be changed.
 
 Fix env.py (and only env.py) so the failures are resolved for the right reason. Do not weaken
 business rules, special-case ids or worlds, or change answer_schema.json.

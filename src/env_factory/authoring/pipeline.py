@@ -164,7 +164,11 @@ class Build:
         report = self.qualify(arbiter, schema)
         if not report['passed'] and self.spend():
             (arbiter / 'gate_report.json').write_text(json.dumps(self.failed_gates(report), ensure_ascii=False, indent=1, default=str))
+            protected={name:bundle.sha256(arbiter/name) for name in
+                       ('request.json','answer_schema.json','verifier.py','brief.md','data.json','facts.json')}
             self.call(arbiter, prompts.REPAIR, 'repair')
+            if any(not (arbiter/name).is_file() or bundle.sha256(arbiter/name)!=value for name,value in protected.items()):
+                return self.fail('acceptance_tampered','gate repair changed an independent specification or verifier')
             if checks.run('env', arbiter)['passed'] and checks.run('diff', arbiter)['passed']:
                 report = self.qualify(arbiter, schema)
         if not report['passed']:
@@ -348,8 +352,8 @@ class Build:
     @staticmethod
     def failed_gates(report):
         out = {}
-        for gate in ('differential', 'negatives', 'category', 'http'):
-            if not report[gate]['passed']:
+        for gate in ('differential', 'negatives', 'category', 'http', 'behavior'):
+            if gate in report and not report[gate]['passed']:
                 detail = dict(report[gate])
                 if gate == 'differential':
                     detail['mismatches'] = detail.get('mismatches', [])[:3]

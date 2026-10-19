@@ -338,6 +338,10 @@ def build_world(domain, folder, *, runner, client, python, language, index, repa
     if policy is None:
         return {'id': world_id, 'training_ready': False, 'failure_class': 'agent_policy', 'reason': problems[:5]}
     request['agent_policy'] = policy
+    if domain.get('behavior_contract') is not None:
+        from env_factory.certify import behavior
+        request['behavior_contract'] = copy.deepcopy(domain['behavior_contract'])
+        request['behavior_contract_sha256'] = behavior.digest(request['behavior_contract'])
     request['source'] = {'generated': domain['name'], 'world': True, 'language': language, 'persona': persona}
     status = pipeline.build(request, folder / 'build', runner=runner, repairs=max(0, repairs - spec_repairs),
                             acceptance_suite=acceptance_suite)
