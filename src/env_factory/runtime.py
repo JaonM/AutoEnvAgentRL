@@ -28,6 +28,27 @@ import re
 EVENTS = 'scheduled_events'
 
 
+def resolve_goal_params(goal, answers):
+    """Bind customer-request parameters to actual earlier business outcomes.
+
+    Only structural plumbing is shared with verifiers; no business rule or
+    expected result is computed here. A refused producer leaves a null value.
+    """
+    params = copy.deepcopy(goal.get('params', {}))
+    for target, source in goal.get('bindings', {}).items():
+        value = answers['goal_' + str(source['goal'])]
+        for part in source['path'].split('.'):
+            value = value[int(part)] if isinstance(value, list) else value[part]
+        parts = target.split('.'); container = params
+        for part in parts[:-1]:
+            container = container[int(part)] if isinstance(container, list) else container[part]
+        key = int(parts[-1]) if isinstance(container, list) else parts[-1]
+        if container[key] is not None:
+            raise ValueError('runtime-bound parameter must have a null placeholder')
+        container[key] = copy.deepcopy(value)
+    return params
+
+
 def apply_event(db, event):
     """Set `event['set']` on row `event['row_id']` of `event['table']` (verifiers may call this too)."""
     row = next((r for r in db.get(event['table'], []) if r.get('id') == event['row_id']), None)

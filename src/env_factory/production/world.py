@@ -39,13 +39,26 @@ def goal_problems(goals, schema):
     if not (isinstance(goals, list) and 1 <= len(goals) <= 3):
         return ['user_facts.goals must list one to three goals']
     problems = []
-    for goal in goals:
+    for index, goal in enumerate(goals, 1):
         if not isinstance(goal, dict) or goal.get('process') not in schema:
             problems.append(f'goal {goal!r}: process must be one of {sorted(schema)}')
             continue
         unknown = set(goal.get('params') or {}) - set(schema[goal['process']].get('params') or {})
         if unknown:
             problems.append(f"goal {goal['process']}: unknown params {sorted(unknown)}")
+        from env_factory.certify.behavior import at
+        for target, binding in (goal.get('bindings') or {}).items():
+            try:
+                source = binding['goal']
+                if type(source) is not int or not 1 <= source < index:
+                    raise ValueError('binding must reference an earlier goal')
+                shape = schema[goals[source - 1]['process']]['outcome']
+                for part in binding['path'].split('.'):
+                    shape = shape['items'] if shape['type'] == 'array' and part.isdigit() else shape['properties'][part]
+                if at(goal['params'], target) is not None:
+                    raise ValueError('binding target must have a null placeholder')
+            except (KeyError, IndexError, TypeError, ValueError) as exc:
+                problems.append(f'goal {index}: invalid result binding {target}: {exc}')
     return problems
 
 
@@ -157,6 +170,14 @@ def check_world(folder):
         schema = {}
     if schema:
         problems += outcome_problems(schema)
+    if request.get('sop_blueprint'):
+        from env_factory.sop import validate, graph_problems
+        problems += validate(request['sop_blueprint'])
+        cases = request.get('sop_contract', {}).get('cases', [])
+        if not cases:
+            problems.append('SOP blueprint requires independent executable contract cases')
+        for case in cases:
+            problems += graph_problems(case.get('graph', {}), request['sop_blueprint'].get('atoms', {}))
     rows = sum(len(v) for v in request.get('tables', {}).values()) if isinstance(request.get('tables'), dict) else 0
     if rows < MIN_ROWS:
         problems.append(f'the database has {rows} rows; a world needs at least {MIN_ROWS} '
@@ -195,6 +216,9 @@ def compose(world, task, task_id):
                    title=task.get('title') or world['title'], tables=tables,
                    user_facts=task['user_facts'], user_scene=task['user_scene'])
     request['user_script'] = task.get('user_script') or None
+    if 'sop_blueprint' in world:
+        request.pop('sop_legacy', None)
+        request['sop_method'] = task.get('sop_method')
     if request['user_script'] is None:
         request.pop('user_script')
     request.pop('user_request', None)
@@ -218,6 +242,15 @@ def check_task(folder):
     problems = overlay_problems + spec.validate({**request, 'user_request': request['user_scene']['goal']})
     problems += goal_problems(task['user_facts'].get('goals'), world['goal_schema'])
     problems += composed_answer_problems(world['goal_schema'], task['user_facts'].get('goals'))
+    if not problems and world.get('sop_blueprint'):
+        from env_factory.sop import task_problems
+        try:
+            problems += task_problems(request)
+        except (KeyError, TypeError, ValueError) as exc:
+            problems.append(f'invalid SOP task: {exc}')
+        required_method = (assignment.get('requirements') or {}).get('sop_method')
+        if required_method and request.get('sop_method') != required_method:
+            problems.append('task must use the assigned sop_method: ' + required_method)
     wanted = set(assignment['processes'])
     goals = [g for g in task['user_facts'].get('goals') or [] if isinstance(g, dict)]
     if not wanted <= {g.get('process') for g in goals}:
@@ -262,6 +295,8 @@ def build_world(domain, folder, *, runner, client, python, language, index, repa
     from env_factory.production import contracts
     contract = domain.get('public_contract')
     detail = domain.get('detail', '')
+    if domain.get('sop_required'):
+        detail += '\n' + prompts.SOP_DESIGN
     if contract is not None:
         errors = contracts.problems(contract)
         if errors:
@@ -294,6 +329,10 @@ def build_world(domain, folder, *, runner, client, python, language, index, repa
                         'reason': ['author modified caller-owned contract'], 'spec_repairs_used': spec_repairs}
         report = checks.run('world', session)
         failure_class = 'world_request'
+        if report['passed'] and domain.get('sop_required'):
+            design = json.loads((session / 'request.json').read_text())
+            if not design.get('sop_blueprint') or not design.get('sop_contract'):
+                report = {'passed': False, 'problems': ['caller requires sop_blueprint and independent sop_contract before implementation']}
         if report['passed']:
             request = json.loads((session / 'request.json').read_text())
             request['request_kind'] = 'world'
@@ -342,6 +381,14 @@ def build_world(domain, folder, *, runner, client, python, language, index, repa
         from env_factory.certify import behavior
         request['behavior_contract'] = copy.deepcopy(domain['behavior_contract'])
         request['behavior_contract_sha256'] = behavior.digest(request['behavior_contract'])
+    if domain.get('sop_blueprint') is not None:
+        from env_factory.certify.behavior import digest
+        request['sop_blueprint'] = copy.deepcopy(domain['sop_blueprint'])
+        request['sop_contract'] = copy.deepcopy(domain.get('sop_contract', {}))
+        request['sop_contract_sha256'] = digest({'blueprint': request['sop_blueprint'], 'contract': request['sop_contract']})
+    elif request.get('sop_blueprint'):
+        from env_factory.certify.behavior import digest
+        request['sop_contract_sha256'] = digest({'blueprint': request['sop_blueprint'], 'contract': request['sop_contract']})
     request['source'] = {'generated': domain['name'], 'world': True, 'language': language, 'persona': persona}
     status = pipeline.build(request, folder / 'build', runner=runner, repairs=max(0, repairs - spec_repairs),
                             acceptance_suite=acceptance_suite)
@@ -706,7 +753,14 @@ def certify(task_id, target, folder):
     failed = [g for g in report.get('gate_names', []) if not report[g]['passed']]
     slim = {k: v for k, v in report.items() if k != 'worlds'}
     (Path(folder) / 'qualify.json').write_text(json.dumps(slim, ensure_ascii=False, indent=1, default=str))
-    return {'id': task_id, 'passed': report['passed'], 'stage': 'gates', 'failed': failed, 'bundle': str(target)}
+    row = {'id': task_id, 'passed': report['passed'], 'stage': 'gates', 'failed': failed, 'bundle': str(target)}
+    sop = report.get('sop') or {}
+    if failed == ['sop'] and sop.get('task', {}).get('passed') is False and sop.get('scope', {}).get('passed') and all(
+            c['passed'] for c in sop.get('cases', [])):
+        # A false dependency or impossible customer branch is a task-author
+        # repair, never permission to weaken the frozen environment contract.
+        row.update(stage='task_requirements', problems=sop['task']['problems'])
+    return row
 
 
 def recertify_category(out):

@@ -12,13 +12,15 @@ from env_factory.runtime import canonical, run_reference
 
 
 COUNTS = ('min_goals', 'min_tool_calls', 'max_tool_calls', 'min_writes', 'max_writes')
-KEYS = {*COUNTS, 'state_effect', 'required_tools', 'result_dependency'}
+KEYS = {*COUNTS, 'state_effect', 'required_tools', 'result_dependency', 'sop_method'}
 
 
 def validate(value):
     if not isinstance(value, dict):
         raise ValueError('task requirements must be an object')
     unknown = set(value) - KEYS
+    if 'sop_method' in value and (not isinstance(value['sop_method'], str) or not value['sop_method']):
+        raise ValueError('sop_method must be a nonempty string')
     if unknown:
         raise ValueError(f'unknown task requirements: {sorted(unknown)}')
     for key in COUNTS:
@@ -69,6 +71,8 @@ def evaluate(env, request, requirements):
     result = run_reference(env, request['tables'], request['user_facts'], start=request['time']['start'])
     actual = measure(result, request)
     problems = []
+    if requirements.get('sop_method') and request.get('sop_method') != requirements['sop_method']:
+        problems.append('assigned SOP method differs from the executed task')
     for key in COUNTS:
         if key not in requirements:
             continue

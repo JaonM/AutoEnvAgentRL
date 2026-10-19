@@ -115,6 +115,10 @@ Write env.py:
    partial success. Return the answer exactly in answer_schema.json's shape. When data.json has
    scheduled_events, time passes only through api.wait(seconds); the events change rows as the
    clock passes them and tools never see that table.
+   If request.json contains sop_blueprint, implement its business transactions, declared state scope,
+   failures and retry semantics. Separate backend enforcement from agent obligations. Resolve declared
+   goal.bindings using env_factory.runtime.resolve_goal_params(goal, prior_answers); never predict a
+   future ID. SOP contracts and fixtures are frozen specification and must not be weakened to pass.
 
 Keep table names and row columns exactly as in data.json; new rows follow the record format
 in brief.md and the columns of existing rows of that table. Standard library only (no I/O,
@@ -507,6 +511,34 @@ Run `{python} -m env_factory.checks world` until it prints PASS. Do not read or 
 folder. End with one line: the title.
 """
 
+SOP_DESIGN = """Design the business SOP before its implementation. This domain requires request.json to contain:
+- sop_blueprint: version=1, objects (business identities and lifecycle/scope), atoms and methods.
+  Each atom has tool, intent, policy (source/version), inputs (JSON Schema object), output (JSON Schema),
+  preconditions (backend rules), agent_obligations (identity/eligibility/consent separately), reads and writes
+  (table.field paths, * for a row/key), effects, failure=atomic_rollback, retry, scope and money_unit.
+  Use complete business transactions as atoms, not individual field assignments. Reads have writes=[].
+  Optional row_scopes constrain changed rows: {table, key, argument}, where argument is a path in tool args.
+  Methods have intent, processes (ordered goal_schema names), edges ({from,to}: 0-based goal indices,
+  kind=data/state/resource/authorization; causal=true only for a genuine state dependency), same (lists of
+  [goal index,param path] pairs identifying a shared object), statuses (goal-index strings -> allowed status
+  lists), bindings ({from,source,to,target}: producer outcome path -> successor param path), and compensation.
+  Declare effects that remain if a later operation fails. Do not invent automatic business compensation.
+- sop_contract: version=1, cases of independent synthetic data, optional now, and graph {nodes,edges}.
+  Node: {id,atom,args,checks:[{name,assert}]} or expected business error string. Edge: {from,to,kind} with
+  node IDs. Bind actual outputs via {path:'outputs.<node>.<field>'}; give every binding a data edge.
+  Optional when uses the same expression language. Assertions use {op, args}; supported ops are eq,ne,ge,
+  le,sum,len,add,sub,unique,contains,split,get. Context paths: initial,before,after,result,outputs.
+  Include successful writes, rejection/rollback, retry boundaries, shared resources, object isolation,
+  legal alternate read orders and at least one composed SOP. Expected arithmetic comes from the stated
+  rules; never generate expected answers by executing the future environment. Use multiple fixture IDs,
+  amounts and resource states. Use bounded acyclic graphs; arbitrary loops are unsupported.
+These fields become immutable specification before independent env/verifier authors run. Do not include
+their contents in the customer opening or agent policy. Platform computes the contract hash. Declare
+honest scope boundaries (e.g. a stored request is not completed fulfillment). For runtime-bound goal
+params the platform provides env_factory.runtime.resolve_goal_params(goal, prior_answers); it performs
+structural binding only. Business outcome and state arithmetic must still be independently implemented.
+"""
+
 TASK_AUTHOR = """You write one customer task on an existing business world. Files in this folder: world.json (the
 policy manual "business_rules", "goal_schema" and the database "tables"), assignment.json (what this task must
 contain). Read them first.
@@ -525,6 +557,14 @@ Write task.json:
   counts. They are caller-owned and will be checked on the actual reference execution, not on your claims.
   Failed calls and no-op writes do not establish a successful state change. Keep user preferences realistic;
   do not disclose these internal difficulty requirements, expected answers or reference actions to the user.
+- When world.json contains sop_blueprint, multi-goal tasks MUST select a declared method and put its name
+  in top-level sop_method. Match its process order, same-object constraints, branch outcomes and bindings.
+  Follow requirements.sop_method when assigned. Never create arbitrary permutations of business processes.
+  For a declared runtime binding, put null at the target in params, and add bindings to that goal:
+  {{"<target.dot.path>": {{"goal": <earlier 1-based goal index>, "path": "<outcome.field>"}}}}.
+  Generated IDs must come from actual earlier results; never predict their literal values. The user asks
+  for the newly created object in ordinary words. Keep SOP metadata, graph edges, oracle answers and
+  binding syntax out of the customer scene, opening and dialogue. Separate independent goals honestly.
 - The composed answer must fit at most 8 graded values across all goals. Use the world's existing outcome
   shapes; do not add goals that exceed the budget, change the shapes, or weaken state verification.
 - Name every approve_* fact by the "approval" pattern of its process in goal_schema (for example

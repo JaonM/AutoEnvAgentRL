@@ -164,11 +164,17 @@ def features(request, reference, episode):
             calls.append(call); batch.append(call)
         if batch: batches.append(batch)
     task = {'goals': goals, 'branches': outcomes, 'script': script_features(request), 'reference': ref}
+    method = (request.get('sop_blueprint') or {}).get('methods', {}).get(request.get('sop_method'))
+    graph = ({'processes':method['processes'], 'edges':method.get('edges',[]),
+              'bindings':method.get('bindings',[]), 'branches':outcomes} if method and not request.get('sop_legacy') else None)
+    if graph:
+        task['sop_graph'] = graph
     texts = [request.get('user_request', ''), packed(request.get('user_scene') or {})]
     return {'task': task, 'task_key': digest(task), 'reference_path': [e['tool'] for e in ref],
             'tool_path': [c['tool'] for c in calls], 'normalized_calls': calls, 'batches': batches,
             'task_text': normal.text(' '.join(texts)), 'declared_obstacles': script_features(request),
-            'observed_obstacles': observed_obstacles(request, episode)}
+            'observed_obstacles': observed_obstacles(request, episode),
+            'sop_graph': graph, 'sop_graph_key': digest(graph) if graph else None}
 
 
 def repetition(records, key):

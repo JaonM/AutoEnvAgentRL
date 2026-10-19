@@ -267,6 +267,8 @@ def qualify(env, verifier, schema, request, *, perturbed=20, http=True, excluded
     report['category'] = category(request, env) if report['differential']['passed'] else {'passed': False}
     from env_factory.certify import behavior
     report['behavior'] = behavior.qualify(env, request)
+    from env_factory import sop
+    report['sop'] = sop.qualify(env, verifier, request)
     if http and report['differential']['passed']:
         from env_factory.serving.server import replay_check
         report['http'] = replay_check(env, verifier, schema, request)
@@ -281,7 +283,7 @@ def qualify(env, verifier, schema, request, *, perturbed=20, http=True, excluded
 
 # natural: env.approval_key maps every write to its approval topic; without it the free-dialogue service
 # refuses the bundle, so a task that passed every other gate would still be unservable.
-BUSINESS_GATES = ('static', 'natural', 'differential', 'negatives', 'category', 'behavior', 'http')
+BUSINESS_GATES = ('static', 'natural', 'differential', 'negatives', 'category', 'behavior', 'sop', 'http')
 RUBRIC_GATES = ('static', 'natural', 'rubric', 'negatives', 'category', 'http')
 EMPTY_REPLY, GENERIC_REPLY = '', '好的，已经帮您处理好了，还有其他需要吗？'
 

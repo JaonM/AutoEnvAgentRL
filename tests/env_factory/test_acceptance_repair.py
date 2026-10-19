@@ -266,3 +266,37 @@ def test_standard_pipeline_receives_behavior_failures_and_protects_truth(case,tm
     result=pipeline.build(request,tmp_path/'build',runner=runner)
     if tamper:assert result['failure_class']=='acceptance_tampered' and not result['training_ready']
     else:assert result['training_ready'] and result['repairs_used']==1
+
+
+def test_generic_sop_gate_drives_existing_automatic_repair(case,tmp_path):
+    from env_factory.certify.behavior import digest
+    from env_factory.core.sandbox import load_module
+    from env_factory.runtime import tool_specs
+    source,good,_,_=case;request=library_request()
+    tools=tool_specs(load_module(source/'env.py',role='env').make_tools(),consent=False)
+    atoms={t['name']:{'tool':t['name'],'intent':'library operation','policy':'library rules',
+        'inputs':t['parameters'],'output':{},'preconditions':[],'agent_obligations':[],
+        'reads':list(request['tables']),'writes':list(request['tables']) if t['kind']=='write' else [],
+        'effects':[],'failure':'atomic_rollback','retry':'inspect state','scope':'one transaction'} for t in tools}
+    blueprint={'version':1,'objects':{'book':{'lifecycle':['available','loaned']}},'atoms':atoms,'methods':{}}
+    contract={'cases':[{'id':'missing-book-contract','data':request['tables'],'graph':{'nodes':[
+        {'id':'lookup','atom':'get_waitlist','args':{'book_id':'not-present'},'error':'book not-present not found'}],'edges':[]}}]}
+    request.update(sop_blueprint=blueprint,sop_contract=contract,sop_legacy=True,
+                   sop_contract_sha256=digest({'blueprint':blueprint,'contract':contract}))
+    def repair(folder):
+        feedback=json.loads((folder/'gate_report.json').read_text())
+        assert not feedback['sop']['passed']
+        (folder/'env.py').write_text(good)
+    result=pipeline.build(request,tmp_path/'build',runner=FakeRunner(env_source=(source/'env.py').read_text(),repair=repair))
+    assert result['training_ready'] and result['repairs_used']==1
+
+
+def test_sop_required_rejects_missing_blueprint_before_model_implementation(tmp_path):
+    def runner(folder,prompt,**options):
+        assert options['role']=='world_author'
+        assert 'Design the business SOP' in prompt
+        (folder/'request.json').write_text(json.dumps(world_request()))
+    result=world.build_world({'name':'library','sop_required':True},tmp_path/'world',runner=runner,
+                              client=None,python=sys.executable,language='zh',index=0,repairs=0)
+    assert not result['training_ready']
+    assert any('requires sop_blueprint' in p for p in result['reason'])

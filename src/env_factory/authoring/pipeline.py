@@ -352,7 +352,7 @@ class Build:
     @staticmethod
     def failed_gates(report):
         out = {}
-        for gate in ('differential', 'negatives', 'category', 'http', 'behavior'):
+        for gate in ('differential', 'negatives', 'category', 'http', 'behavior', 'sop'):
             if gate in report and not report[gate]['passed']:
                 detail = dict(report[gate])
                 if gate == 'differential':

@@ -44,6 +44,8 @@ def expression(value, context):
         if op == 'le': return args[0] <= args[1]
         if op == 'unique': return len(args[0]) == len(set(map(canonical, args[0])))
         if op == 'contains': return args[1] in args[0]
+        if op == 'split': return args[0].split(args[1])
+        if op == 'get': return args[0][args[1]]
         raise ValueError('unknown behavior expression: ' + str(op))
     return {k: expression(v, context) for k, v in value.items()}
 

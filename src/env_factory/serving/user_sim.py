@@ -130,6 +130,20 @@ def describe(facts):
     return '\n'.join(lines) or '- （无）'
 
 
+def customer_facts(facts):
+    """Render unresolved output references as customer intent, never planner syntax."""
+    import copy
+    visible = copy.deepcopy(facts)
+    for goal in visible.get('goals', []):
+        for target in goal.pop('bindings', {}):
+            parts = target.split('.'); container = goal['params']
+            for part in parts[:-1]:
+                container = container[int(part)] if isinstance(container, list) else container[part]
+            key = int(parts[-1]) if isinstance(container, list) else parts[-1]
+            container[key] = 'Use the actual result of your earlier request; you do not know this value in advance.'
+    return visible
+
+
 APPROVALS = {'zh': '\n\n对方在修改你的数据之前会征求你的同意。你对这些具体操作的态度如下（只针对这里列出的操作）：\n{lines}\n'
                     '对方问你是否同意某项操作时，按上面的态度明确表示同意或不同意；没列出的操作一律不同意。',
              'en': '\n\nThe agent will ask for your agreement before changing your data. Your stance on these exact '
@@ -145,7 +159,7 @@ def stances(facts, approvals, descriptions, lang):
 
 class UserSimulator:
     def __init__(self, client, request, facts, approvals, plain=False):
-        private = {k: v for k, v in facts.items() if k not in approvals}
+        private = customer_facts({k: v for k, v in facts.items() if k not in approvals})
         self.client, self.ended = client, False
         self.english = request.get('language', 'zh') == 'en'
         persona = PERSONA_EN if self.english else PERSONA

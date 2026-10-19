@@ -107,7 +107,7 @@ def author_context(request, index):
     """
     shown = {k: copy.deepcopy(v) for k, v in request.items() if k not in (
         'user_facts', 'user_scene', 'user_request', 'user_script', 'agent_policy', 'source',
-        'behavior_contract', 'behavior_contract_sha256')}
+        'behavior_contract', 'behavior_contract_sha256', 'sop_contract', 'sop_contract_sha256', 'sop_legacy', 'sop_method')}
     config = (request.get('source') or {}).get('authoring_scope')
     if not config:
         return shown
