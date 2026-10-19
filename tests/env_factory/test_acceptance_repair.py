@@ -23,10 +23,11 @@ from env_factory.production.acceptance import Suite, repair_bundle
 CHECKER = '''import copy, json, sys
 from pathlib import Path
 from env_factory.core.sandbox import load_module
+from env_factory.core import spec
 from env_factory.runtime import BusinessError
 folder, out = map(Path, sys.argv[1:3])
 env = load_module(folder / 'env.py', role='env')
-db = json.loads((folder / 'request.json').read_text())['tables']
+db = spec.read(folder / 'request.json')['tables']
 before = copy.deepcopy(db)
 oracle = json.loads(Path(sys.argv[3]).read_text())
 results = []
@@ -232,12 +233,12 @@ def test_checker_cannot_change_the_candidate_after_qualification(case, tmp_path)
 def test_caller_behavior_contract_drives_bounded_repair_and_stays_frozen(case, tmp_path):
     from env_factory.certify import behavior
     source, good, config, _ = case
-    request=json.loads((source/'request.json').read_text())
+    request=spec.read(source/'request.json')
     contract={'version':1,'cases':[{'id':'unseen-book','data':request['tables'],
         'steps':[{'tool':'get_waitlist','args':{'book_id':'unseen-contract-id'},
                   'error':'book unseen-contract-id not found'}]}]}
     request.update(behavior_contract=contract,behavior_contract_sha256=behavior.digest(contract))
-    (source/'request.json').write_text(json.dumps(request))
+    spec.write(request, source/'request.json')
     def runner(folder, prompt, **options):
         feedback=json.loads((folder/'acceptance_feedback.json').read_text())
         assert not feedback['gates']['behavior']['passed']
@@ -245,7 +246,7 @@ def test_caller_behavior_contract_drives_bounded_repair_and_stays_frozen(case, t
     result=repair_bundle(source,tmp_path/'fixed',runner=runner,suite=config)
     assert result['accepted'] and result['repairs_used']==1
     assert result['rounds'][1]['gates']['behavior']['passed']
-    assert json.loads((Path(result['bundle'])/'request.json').read_text())['behavior_contract']==contract
+    assert spec.read(Path(result['bundle'])/'request.json')['behavior_contract']==contract
 
 
 @pytest.mark.parametrize('tamper',[False,True])

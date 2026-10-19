@@ -272,7 +272,7 @@ def assign_eval(trainable, details, share):
 def manifest(out, statuses, docker_results, policy_results, generation, options, difficulty=None):
     difficulty = difficulty or {}
     trainable, excluded, details = [], [], {}
-    requests = {path.stem: json.loads(path.read_text()) for path in (out / 'generate' / 'requests').glob('*.json')}
+    requests = {path.stem: spec.read(path) for path in (out / 'generate' / 'requests').glob('*.json')}
     for index, task in enumerate(sorted(statuses)):
         status, request = statuses[task], requests.get(task, {})
         ok, reason = classify(task, status, docker_results.get(task), policy_results.get(task), options,

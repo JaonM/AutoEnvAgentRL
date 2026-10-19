@@ -335,9 +335,9 @@ def check_request(folder):
     if not path.exists():
         return ['request.json is missing'], []
     try:
-        request = json.loads(path.read_text())
-    except json.JSONDecodeError as exc:
-        return [f'request.json is not JSON: {exc}'], []
+        request = spec.read(path)
+    except (ValueError, OSError) as exc:
+        return [f'request.json cannot be loaded: {exc}'], []
     request.setdefault('time', {'start': 10, 'tick': 0})
     scene = request.get('user_scene')
     scene_problems = scene_issues(scene)
@@ -508,7 +508,7 @@ def respread(kept, client, output):
         text, _, _ = write_opening(client, request, request['id'], avoid=tuple(hits))
         if text:
             request['user_request'] = text
-            (output / 'requests' / f"{request['id']}.json").write_text(json.dumps(request, ensure_ascii=False, indent=1))
+            spec.write(request, output / 'requests' / f"{request['id']}.json")
             rewritten.append(request['id'])
     return rewritten
 
@@ -578,7 +578,7 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
                'language': langs[index], 'passed': report['passed'], 'problems': report['problems'][:5]}
         if not report['passed']:
             return row, None
-        request = json.loads((output / 'sessions' / f'{index:03d}' / 'request.json').read_text())
+        request = spec.read(output / 'sessions' / f'{index:03d}' / 'request.json')
         request['request_kind'] = 'task'
         request.setdefault('time', {'start': 10, 'tick': 0})
         request['language'] = langs[index]
@@ -668,8 +668,7 @@ def generate(domains, count, output, *, runner, parallel=2, timeout=600, python=
                 request['id'] = f"gen-{row['index']:03d}"
                 kept.append(request)
                 (output / 'requests').mkdir(exist_ok=True)
-                (output / 'requests' / f'{request["id"]}.json').write_text(
-                    json.dumps(request, ensure_ascii=False, indent=1))
+                spec.write(request, output / 'requests' / f'{request["id"]}.json')
         rows.append(row)
     rewritten = respread(kept, opening_client, output)
     summary = {'requested': count, 'kept': len(kept), 'domains': [d['name'] for d in domains],

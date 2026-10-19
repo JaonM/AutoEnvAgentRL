@@ -148,7 +148,10 @@ def check_world(folder):
     path = Path(folder) / 'request.json'
     if not path.exists():
         return ['request.json is missing'], []
-    request = json.loads(path.read_text())
+    try:
+        request = spec.read(path)
+    except (ValueError, OSError) as exc:
+        return [f'request.json cannot be loaded: {exc}'], []
     if request.get('request_kind') not in (None, 'world'):
         return ['world check requires request_kind="world", not a task request'], []
     request.setdefault('time', {'start': 10, 'tick': 0})
@@ -227,7 +230,7 @@ def compose(world, task, task_id):
 
 def check_task(folder):
     folder = Path(folder)
-    world = json.loads((folder / 'world.json').read_text())
+    world = spec.read(folder / 'world.json')
     assignment = json.loads((folder / 'assignment.json').read_text())
     if not (folder / 'task.json').exists():
         return ['task.json is missing'], []
@@ -318,7 +321,16 @@ def build_world(domain, folder, *, runner, client, python, language, index, repa
         evidence = folder / 'specification_attempts' / f'{spec_repairs:02d}'
         evidence.mkdir(parents=True)
         if (session / 'request.json').exists():
-            shutil.copyfile(session / 'request.json', evidence / 'request.json')
+            try:
+                inputs = spec.input_files(session / 'request.json')
+            except ValueError:
+                inputs = [session / 'request.json']  # preserve malformed output for the normal repair loop
+            for source in inputs:
+                if not source.is_file() or not source.resolve().is_relative_to(session.resolve()):
+                    continue
+                dest = evidence / source.relative_to(session)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, dest)
         if contract is not None:
             try:
                 intact = json.loads((session / 'public_contract.json').read_text()) == contract
@@ -330,11 +342,11 @@ def build_world(domain, folder, *, runner, client, python, language, index, repa
         report = checks.run('world', session)
         failure_class = 'world_request'
         if report['passed'] and domain.get('sop_required'):
-            design = json.loads((session / 'request.json').read_text())
+            design = spec.read(session / 'request.json')
             if not design.get('sop_blueprint') or not design.get('sop_contract'):
                 report = {'passed': False, 'problems': ['caller requires sop_blueprint and independent sop_contract before implementation']}
         if report['passed']:
-            request = json.loads((session / 'request.json').read_text())
+            request = spec.read(session / 'request.json')
             request['request_kind'] = 'world'
             request.setdefault('time', {'start': 10, 'tick': 0})
             request['language'] = language
@@ -436,14 +448,14 @@ def make_task(world_bundle, folder, *, index, processes, script, runner, client,
     if type(repairs) is not int or repairs < 0:
         raise ValueError('task repairs must be a nonnegative integer')
     folder, world_bundle = Path(folder), Path(world_bundle)
-    world_id = json.loads((world_bundle / 'request.json').read_text())['id']
+    world_id = spec.read(world_bundle / 'request.json')['id']
     frozen = {p: bundle.sha256(world_bundle / p) for p in
-              ('manifest.json', 'request.json', 'env.py', 'verifier.py', 'answer_schema.json')}
+              ('manifest.json', *json.loads((world_bundle / 'manifest.json').read_text())['files'])}
     history, previous = [], None
     for attempt in range(repairs + 1):
         candidate = folder / f'attempt-{attempt:02d}'
         def author(session, prompt, **options):
-            fixed = {name: (session / name).read_bytes() for name in ('world.json', 'assignment.json')}
+            fixed = {p: p.read_bytes() for p in (*spec.input_files(session / 'world.json'), session / 'assignment.json', session / 'data_preview.json')}
             if previous is not None:
                 if (previous / 'author/task.json').exists():
                     shutil.copyfile(previous / 'author/task.json', session / 'task.json')
@@ -454,8 +466,7 @@ def make_task(world_bundle, folder, *, index, processes, script, runner, client,
                            'test answers. Fix the task facts/scene/overlay so it satisfies the original assignment. '
                            'If impossible under this world, explain it; do not pretend to meet it.\n')
             response = runner(session, prompt, **options)
-            if any(not (session / n).is_file() or (session / n).read_bytes() != contents
-                   for n, contents in fixed.items()):
+            if any(not p.is_file() or p.read_bytes() != contents for p, contents in fixed.items()):
                 raise ValueError('task author modified immutable world or assignment')
             return response
         try:
@@ -491,14 +502,15 @@ def _make_task(world_bundle, folder, *, index, processes, script, runner, client
     from env_factory import checks
     from env_factory.certify import bundle
     world_bundle, folder = Path(world_bundle), Path(folder)
-    world = json.loads((world_bundle / 'request.json').read_text())
+    world = spec.read(world_bundle / 'request.json')
     session = folder / 'author'
     session.mkdir(parents=True, exist_ok=True)
     task_id = f"{world['id']}-t{index:03d}"
     # The world without its sample customer: the task author writes its own customer side.
     from env_factory.production.world_data import author_context
     shown = author_context(world, index)
-    (session / 'world.json').write_text(json.dumps(shown, ensure_ascii=False, indent=1))
+    spec.write(shown, session / 'world.json')
+    (session / 'data_preview.json').write_text(json.dumps(spec.data_preview(shown['tables']), ensure_ascii=False, indent=1))
     (session / 'assignment.json').write_text(json.dumps({'id': task_id, 'processes': processes, 'script': script,
                                                          'shape': shape, 'requirements': requirements or {}}))
     language = world.get('language', 'zh')
@@ -535,9 +547,9 @@ def _make_task(world_bundle, folder, *, index, processes, script, runner, client
         if name != 'request.json':
             shutil.copy(world_bundle / name, target / name)
     shutil.copy(world_bundle / 'manifest.json', target / 'manifest.json')
-    (target / 'request.json').write_text(json.dumps(request, ensure_ascii=False, indent=1))
+    spec.write(request, target / 'request.json')
     manifest = json.loads((target / 'manifest.json').read_text())
-    manifest['files']['request.json'] = bundle.sha256(target / 'request.json')
+    manifest['files'].update({str(p.relative_to(target)): bundle.sha256(p) for p in spec.input_files(target / 'request.json')})
     schema = task_schema(world.get('goal_schema'), request['user_facts'].get('goals'))
     if schema is not None:
         from env_factory.core.sandbox import load_module
@@ -787,14 +799,14 @@ def recertify_category(out):
         if row.get('passed') or row.get('failed') != ['category']:
             continue
         target = Path(row['bundle'])
-        request = json.loads((target / 'request.json').read_text())
+        request = spec.read(target / 'request.json')
         manifest = json.loads((target / 'manifest.json').read_text())
         world_dir = next(p for p in Path(out).glob('*/build/bundle') if json.loads(
             (p / 'request.json').read_text())['id'] == manifest.get('world'))
         request['category'] = task_category(world_dir, request)
-        (target / 'request.json').write_text(json.dumps(request, ensure_ascii=False, indent=1))
+        spec.write(request, target / 'request.json')
         from env_factory.certify import bundle
-        manifest['files']['request.json'] = bundle.sha256(target / 'request.json')
+        manifest['files'].update({str(p.relative_to(target)): bundle.sha256(p) for p in spec.input_files(target / 'request.json')})
         (target / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=1))
         row.update(certify(row['id'], target, target.parent), recertified=True)
         fixed.append(row['id'])
@@ -952,7 +964,7 @@ def main():
     worlds = []
     for key, status in sorted(statuses.items()):
         if status.get('training_ready'):
-            worlds.append((key, status['bundle'], json.loads((Path(status['bundle']) / 'request.json').read_text())))
+            worlds.append((key, status['bundle'], spec.read(Path(status['bundle']) / 'request.json')))
 
     def jobs_for(phase):
         """Probe phase: the first task of every process (index < number of processes, single process).
@@ -996,7 +1008,7 @@ def main():
             row = {'id': f'{Path(bundle_path).parent.parent.name}-t{index:03d}', 'passed': False, 'stage': 'error',
                    'problems': [f'{type(exc).__name__}: {exc}'[:300]]}
         if row.get('passed'):
-            request = json.loads((Path(row['bundle']) / 'request.json').read_text())
+            request = spec.read(Path(row['bundle']) / 'request.json')
             signature = goal_signature(request['user_facts'].get('goals'))
             key = row['id'].rsplit('-t', 1)[0]
             with refusal_lock:

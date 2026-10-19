@@ -181,8 +181,8 @@ never promotes a merely certified bundle after an external acceptance failure.
             for item in feedback['external']['checks']:
                 item.get('report', {}).pop('bundle', None)
             write(folder / 'acceptance_feedback.json', feedback)
-            frozen_paths = [folder / n for n in ('request.json', 'answer_schema.json', 'verifier.py',
-                                                'brief.md', 'data.json', 'facts.json')]
+            frozen_paths = [*spec.input_files(folder / 'request.json'),
+                            *(folder / n for n in ('answer_schema.json', 'verifier.py', 'brief.md', 'data_preview.json'))]
             frozen = hashes([*frozen_paths, *context.iterdir()])
             before = bundle.sha256(folder / 'env.py')
             try:
@@ -210,7 +210,8 @@ never promotes a merely certified bundle after an external acceptance failure.
         if all(r['passed'] for r in static.values()):
             report = gates.qualify(load_module(folder / 'env.py', role='env'),
                                    load_module(folder / 'verifier.py', role='verifier'), schema, request)
-        candidate_hashes = hashes(folder / n for n in ('env.py', 'verifier.py', 'request.json', 'answer_schema.json'))
+        candidate_hashes = hashes([*spec.input_files(folder / 'request.json'),
+                                  *(folder / n for n in ('env.py', 'verifier.py', 'answer_schema.json'))])
         external = suite.evaluate(folder, folder / 'evidence')
         try:
             candidate_intact = hashes(candidate_hashes) == candidate_hashes

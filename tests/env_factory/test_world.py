@@ -14,6 +14,7 @@ from test_core import FakeRunner, library_request  # noqa: E402
 from test_generate import SCENE, Writer  # noqa: E402
 
 from env_factory.authoring import pipeline  # noqa: E402
+from env_factory.core import spec as request_spec
 from env_factory.production import world  # noqa: E402
 
 GOALS = {f'p{i}': {'description': f'process {i}', 'params': {'loan_id': 'str'}} for i in range(6)}  # before outcomes
@@ -191,7 +192,7 @@ class TaskCertificationTests(unittest.TestCase):
         self.assertTrue(status['training_ready'], status)
 
         def task_author(folder, prompt, *, timeout, role):
-            base = json.loads((Path(folder) / 'world.json').read_text())
+            base = request_spec.read(Path(folder) / 'world.json')
             facts = {**world_request(GOALS)['user_facts'], 'goals': [{'process': 'p1', 'params': {'loan_id': 'L1'}}]}
             (Path(folder) / 'task.json').write_text(json.dumps({
                 'title': '续借任务', 'user_facts': facts, 'user_scene': SCENE, 'user_script': {'traits': ['话少']},
@@ -202,7 +203,7 @@ class TaskCertificationTests(unittest.TestCase):
         row = world.make_task(status['bundle'], root / 'tasks' / 't000', index=0, processes=['p1'], script=[],
                               runner=task_author, client=Writer(), python=sys.executable)
         self.assertTrue(row['passed'], row)
-        task = json.loads((Path(row['bundle']) / 'request.json').read_text())
+        task = request_spec.read(Path(row['bundle']) / 'request.json')
         self.assertEqual(task['user_facts']['goals'][0]['process'], 'p1')
         self.assertTrue(task['user_request'])
         world_env = (Path(status['bundle']) / 'env.py').read_text()

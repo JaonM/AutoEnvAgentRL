@@ -67,6 +67,9 @@ def main(argv=None):
             p.add_argument('--frozen')
             p.add_argument('--samples', default='')
             p.add_argument('--parallel', type=int, default=1)
+    p = sub.add_parser('split-request', help='write a legacy or split request into a NEW directory with hashed data sidecars')
+    p.add_argument('--request', required=True)
+    p.add_argument('--output', required=True, help='new directory; source and existing bundles stay untouched')
     p = sub.add_parser('verify')
     p.add_argument('bundle')
     p.add_argument('--resign', action='store_true', help='on success, re-sign the bundle for this platform')
@@ -157,9 +160,20 @@ def main(argv=None):
     p.add_argument('kind', choices=sorted(checks.KINDS))
     args = parser.parse_args(argv)
 
+    if args.command == 'split-request':
+        target = Path(args.output)
+        if target.exists():
+            parser.error('split-request output must be a new directory')
+        request = spec.read(args.request)
+        problems = spec.validate(request)
+        if problems:
+            parser.error('; '.join(problems))
+        spec.materialize(request, target)
+        print(target / 'request.json')
+        return 0
     if args.command == 'import-frozen':
         request = spec.from_frozen(args.frozen, args.sample)
-        Path(args.output).write_text(json.dumps(request, ensure_ascii=False, indent=1))
+        spec.write(request, args.output)
         print(args.output)
         return 0
     if args.command == 'build':
@@ -269,7 +283,7 @@ def main(argv=None):
         return 0
     if args.command == 'clarify':
         request = spec.clarify(spec.load(args.request), args.answer)
-        Path(args.output).write_text(json.dumps(request, ensure_ascii=False, indent=1))
+        spec.write(request, args.output)
         print(args.output)
         return 0
     if args.command == 'docker':

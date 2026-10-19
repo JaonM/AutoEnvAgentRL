@@ -6,7 +6,7 @@ import json
 import shutil
 from pathlib import Path
 
-from env_factory.core import answers
+from env_factory.core import answers, spec
 from env_factory.core.sandbox import load_module
 from env_factory.core.spec import load
 
@@ -17,7 +17,8 @@ RUBRIC_FILES = ('request.json', 'answer_schema.json', 'env.py', 'rubric.json', '
 
 def files_for(request):
     """Business bundles carry the verifier; rubric bundles carry the rubric instead."""
-    return RUBRIC_FILES if request.get('reward_type') == 'rubric' else FILES
+    base = RUBRIC_FILES if request.get('reward_type') == 'rubric' else FILES
+    return base + spec.asset_files(request)
 
 
 def sha256(path):
@@ -45,10 +46,10 @@ def platform_identity():
 def export(source_folder, request_path, report, destination, *, status):
     destination = Path(destination)
     destination.mkdir(parents=True)
-    shutil.copy(request_path, destination / 'request.json')
-    names = files_for(json.loads(Path(request_path).read_text()))
+    document = spec.write(spec.read(request_path), destination / 'request.json')
+    names = files_for(document)
     for name in names:
-        if name not in ('request.json', 'gates.json'):
+        if name not in ('request.json', 'gates.json', *spec.asset_files(document)):
             shutil.copy(Path(source_folder) / name, destination / name)
     slim = {key: value for key, value in report.items() if key != 'worlds'}
     slim['worlds'] = [{k: w.get(k) for k in ('world', 'status', 'reward')} for w in report.get('worlds', [])]
@@ -62,6 +63,10 @@ def export(source_folder, request_path, report, destination, *, status):
 def load_bundle(folder, *, require_current_platform=True):
     folder = Path(folder)
     manifest = json.loads((folder / 'manifest.json').read_text())
+    document = json.loads((folder / 'request.json').read_text())
+    for name in ('request.json', *spec.asset_files(document)):
+        if name not in manifest['files']:
+            raise ValueError(f'bundle manifest omits required input {name}')
     for name, digest in manifest['files'].items():
         if sha256(folder / name) != digest:
             raise ValueError(f'bundle file {name} was modified after export')
@@ -122,7 +127,7 @@ def requalify(folder):
         (folder / 'gates.json').write_text(json.dumps(slim, ensure_ascii=False, indent=1, default=str))
         manifest = loaded['manifest']
         manifest.update(platform_identity=platform_identity(),
-                        files={name: sha256(folder / name) for name in files_for(loaded['request'])})
+                        files={name: sha256(folder / name) for name in files_for(json.loads((folder / 'request.json').read_text()))})
         manifest.setdefault('requalified', []).append(manifest['platform_identity'])
         (folder / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=1))
     return report

@@ -48,7 +48,7 @@ AUTHOR = """You build an executable business environment for agent RL training, 
 
 Folder: brief.md (business rules and user request; the only authority), data.json (initial
 tables), facts.json (the user's private facts; an agent learns them only by asking),
-answer_schema.json (the required final answer), request.json (all of the above).
+answer_schema.json (the required final answer), request.json (specification and hashed data references).
 
 When request.json contains public_contract, its supplied public policy and exact API are
 authoritative constraints included in business_rules. Preserve public tool names, requiredness,
@@ -540,8 +540,11 @@ structural binding only. Business outcome and state arithmetic must still be ind
 """
 
 TASK_AUTHOR = """You write one customer task on an existing business world. Files in this folder: world.json (the
-policy manual "business_rules", "goal_schema" and the database "tables"), assignment.json (what this task must
-contain). Read them first.
+policy manual "business_rules", "goal_schema" and hashed references to the database), assignment.json (what
+this task must contain), data_preview.json (illustrative samples). Read these first. The complete authorized
+owner shard is in world.assets/data.json; inspect specific records with Python, never dump the whole file.
+Load world.json with env_factory.core.spec.read to resolve references; do not treat preview markers as real
+records. Preserve world.json, its referenced files, the preview and assignment exactly.
 
 Write task.json:
 {{"title": "<short title in {language_name}>",
@@ -585,3 +588,30 @@ Write task.json:
 Run `{python} -m env_factory.checks task` until it prints PASS. Do not read or write files outside this folder.
 End with one line: the title.
 """
+
+# Shared input protocol: data stays on disk and is never expanded by prompt formatting.
+SPLIT_INPUTS = '''
+Input storage: request.json is a specification with request_assets references; tables, user_facts and
+independent behavior/SOP test cases live in separate hashed JSON files. Start with brief.md, request.json,
+data_preview.json and answer_schema.json when present. The preview is illustrative and deliberately
+truncated, never authoritative data or a complete schema. Inspect specific nested records/fields from
+data.json with Python when needed; do not print entire tables or independent test-case files. Use
+`from env_factory.core import spec; request = spec.read("request.json")` in local tooling to resolve all
+references without printing them. Business env.py/verifier.py still receive ordinary in-memory db/facts;
+they must not perform file I/O. Full data and independent cases run in host checks unchanged. Never edit
+referenced data, facts, case files, hashes or the preview during implementation repair.
+'''
+for _role in ('SCHEMA', 'AUTHOR', 'VERIFIER', 'ARBITER', 'BRANCH_AUDITOR', 'BRANCH_REPAIR',
+              'PERTURBATION_AUDITOR', 'PERTURBATION_REPAIR', 'RUBRIC_AUTHOR', 'REPAIR'):
+    if _role in globals():
+        globals()[_role] += SPLIT_INPUTS
+
+SPLIT_OUTPUTS = '''
+Persist the finished specification separately from full records and test fixtures. Construct the full
+request as a Python dict, then use `from env_factory.core import spec; spec.write(request, "request.json")`.
+This writes request_assets references and computes sidecar hashes automatically. To revise a generated
+specification, load it with spec.read, edit the intended fields, and save with spec.write. Do not manually
+invent hashes. Local checks resolve both this split format and legacy inline requests.
+'''
+WORLD_AUTHOR += SPLIT_OUTPUTS
+REQUEST_AUTHOR += SPLIT_OUTPUTS

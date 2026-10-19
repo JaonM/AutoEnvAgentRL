@@ -15,14 +15,18 @@ request.json
                    simulated user and every platform text the agent sees
     agent_policy   optional; the same policies in business language (no tables, fields or clock
                    internals, no solution steps). When present it is all the agent ever sees of the rules
-    tables         {table: [row objects]} initial data
-    user_facts     {key: value} private user facts and decisions (approve* keys are consent answers)
+    request_assets versioned local file references with SHA-256 hashes; resolved by read/load.
+                   New files externalize tables, user_facts, behavior_contract and sop_contract.
+                   Legacy inline requests remain readable; in-memory requests always stay resolved.
+    tables         {table: [row objects]} initial data (data.json on disk)
+    user_facts     {key: value} private facts and decisions (facts.json on disk)
     fact_descriptions  optional {key: public description of what the fact is}
     time           {"start": int, "tick": int}; tick 0 freezes the clock (required in M1)
 """
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -114,8 +118,125 @@ def validate(request):
     return problems
 
 
+ASSET_NAMES = {'tables': 'data.json', 'user_facts': 'facts.json',
+               'behavior_contract': 'behavior_contract.json', 'sop_contract': 'sop_contract.json'}
+
+
+def asset_files(document):
+    """Validate the on-disk reference format; paths are local, portable and unambiguous."""
+    assets = document.get('request_assets')
+    if assets is None:
+        return ()
+    if not isinstance(assets, dict) or assets.get('version') != 1 or not isinstance(assets.get('files'), dict):
+        raise RequestError('invalid request_assets version/files')
+    paths = []
+    for field, ref in assets['files'].items():
+        if field not in ASSET_NAMES or field in document:
+            raise RequestError(f'ambiguous or unsupported request asset: {field}')
+        if not isinstance(ref, dict):
+            raise RequestError(f'invalid asset reference: {field}')
+        name, digest = ref.get('path'), ref.get('sha256')
+        if (not isinstance(name, str) or not name or Path(name).is_absolute()
+                or any(p in ('', '.', '..') for p in name.split('/')) or '\\' in name
+                or Path(name).name != ASSET_NAMES[field]):
+            raise RequestError(f'unsafe asset path: {field}')
+        if not isinstance(digest, str) or not re.fullmatch('[0-9a-f]{64}', digest):
+            raise RequestError(f'invalid asset hash: {field}')
+        paths.append(name)
+    if len(paths) != len(set(paths)):
+        raise RequestError('duplicate asset paths')
+    return tuple(paths)
+
+
+def read(path):
+    """Resolve split or legacy JSON without adding defaults or validating business fields."""
+    path = Path(path)
+    request = json.loads(path.read_text())
+    if not isinstance(request, dict):
+        raise RequestError('request must be an object')
+    asset_files(request)
+    assets = request.pop('request_assets', {}).get('files', {})
+    for field, ref in assets.items():
+        source = path.parent / ref['path']
+        if not source.resolve().is_relative_to(path.parent.resolve()):
+            raise RequestError(f'asset escapes request directory: {field}')
+        try:
+            content = source.read_bytes()
+        except OSError as exc:
+            raise RequestError(f'cannot read asset {field}: {ref["path"]}') from exc
+        if hashlib.sha256(content).hexdigest() != ref['sha256']:
+            raise RequestError(f'asset hash mismatch: {field}')
+        try:
+            request[field] = json.loads(content)
+        except (ValueError, UnicodeError) as exc:
+            raise RequestError(f'asset is not JSON: {field}') from exc
+    return request
+
+
+def write(request, path):
+    """Persist a resolved specification with hashed sidecars, leaving the caller untouched.
+
+    Canonical request.json uses sibling files. Other names use a private asset directory,
+    so collections of requests can still be enumerated with *.json without finding data.
+    """
+    if 'request_assets' in request:
+        raise RequestError('write requires a resolved request; use read first')
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    document = {k: v for k, v in request.items() if k not in ASSET_NAMES}
+    refs = {}
+    for field, filename in ASSET_NAMES.items():
+        if field not in request:
+            continue
+        name = filename if path.name == 'request.json' else f'{path.stem}.assets/{filename}'
+        target = path.parent / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        content = (json.dumps(request[field], ensure_ascii=False, indent=1) + '\n').encode()
+        target.write_bytes(content)
+        refs[field] = {'path': name, 'sha256': hashlib.sha256(content).hexdigest()}
+    document['request_assets'] = {'version': 1, 'files': refs}
+    path.write_text(json.dumps(document, ensure_ascii=False, indent=1) + '\n')
+    return document
+
+
+def input_files(path):
+    """All authoritative inputs to protect/copy, including referenced data and test cases."""
+    path = Path(path)
+    return (path, *(path.parent / name for name in asset_files(json.loads(path.read_text()))))
+
+
+def data_preview(tables):
+    """Bounded illustrative values, never runtime data or a substitute for an actual schema."""
+    def preview(value, depth=0):
+        if isinstance(value, (dict, list)) and depth >= 4:
+            return {'preview_omitted': type(value).__name__, 'entries': len(value)}
+        if isinstance(value, dict):
+            result = {k: preview(v, depth + 1) for k, v in list(value.items())[:8]}
+            if len(value) > 8:
+                result['preview_omitted_fields'] = len(value) - 8
+            return result
+        if isinstance(value, list):
+            return {'entries': len(value), 'first_items': [preview(v, depth + 1) for v in value[:2]]}
+        return value[:160] + '…' if isinstance(value, str) and len(value) > 160 else value
+    def sample(rows):
+        if not rows:
+            return None
+        value = preview(rows[0])
+        # Nested catalogues can still be large after depth/width clipping. Keep each sample
+        # under a fixed byte budget; the full schema/records can be queried on demand.
+        if len(json.dumps(value, ensure_ascii=False).encode()) > 4096:
+            return {'preview_omitted': 'record exceeds 4096-byte sample budget',
+                    'inspect_full_record_on_demand': True}
+        return value
+    return {'illustrative_only': True, 'runtime_uses_full_data': True,
+            'tables': {name: {'rows': len(rows),
+                              'columns': sorted({key for row in rows for key in row}),
+                              'sample': sample(rows)}
+                       for name, rows in tables.items()}}
+
+
 def load(path):
-    request = json.loads(Path(path).read_text())
+    request = read(path)
     request.setdefault('time', {'start': 0, 'tick': 0})
     request.setdefault('fact_descriptions', {})
     problems = validate(request)
@@ -225,9 +346,8 @@ def materialize(request, folder, schema=None):
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     (folder / 'brief.md').write_text(brief(request, schema))
-    (folder / 'data.json').write_text(json.dumps(request['tables'], ensure_ascii=False, indent=1))
-    (folder / 'facts.json').write_text(json.dumps(request['user_facts'], ensure_ascii=False, indent=1))
-    (folder / 'request.json').write_text(json.dumps(request, ensure_ascii=False, indent=1))
+    write(request, folder / 'request.json')
+    (folder / 'data_preview.json').write_text(json.dumps(data_preview(request['tables']), ensure_ascii=False, indent=1))
     if schema is not None:
         (folder / 'answer_schema.json').write_text(json.dumps(schema, ensure_ascii=False, indent=1))
 

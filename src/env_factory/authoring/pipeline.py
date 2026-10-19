@@ -86,7 +86,7 @@ class Build:
         self.output.mkdir(parents=True)
         identity = bundle.platform_identity()
         self.status['platform_identity'] = identity
-        (self.output / 'request.json').write_text(json.dumps(self.request, ensure_ascii=False, indent=1))
+        spec.write(self.request, self.output / 'request.json')
         try:
             result = self._run()
         except InfrastructureError as exc:
@@ -164,10 +164,10 @@ class Build:
         report = self.qualify(arbiter, schema)
         if not report['passed'] and self.spend():
             (arbiter / 'gate_report.json').write_text(json.dumps(self.failed_gates(report), ensure_ascii=False, indent=1, default=str))
-            protected={name:bundle.sha256(arbiter/name) for name in
-                       ('request.json','answer_schema.json','verifier.py','brief.md','data.json','facts.json')}
+            protected={p: bundle.sha256(p) for p in (*spec.input_files(arbiter / 'request.json'),
+                       *(arbiter / n for n in ('answer_schema.json','verifier.py','brief.md','data_preview.json')))}
             self.call(arbiter, prompts.REPAIR, 'repair')
-            if any(not (arbiter/name).is_file() or bundle.sha256(arbiter/name)!=value for name,value in protected.items()):
+            if any(not path.is_file() or bundle.sha256(path)!=value for path,value in protected.items()):
                 return self.fail('acceptance_tampered','gate repair changed an independent specification or verifier')
             if checks.run('env', arbiter)['passed'] and checks.run('diff', arbiter)['passed']:
                 report = self.qualify(arbiter, schema)
