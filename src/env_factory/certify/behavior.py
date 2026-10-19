@@ -53,6 +53,12 @@ def expression(value, context):
 def run(env, contract):
     if contract.get('version') != 1 or not contract.get('cases'):
         return {'passed': False, 'problems': ['behavior contract needs version 1 and nonempty cases'], 'cases': []}
+    try:
+        matrix = coverage(contract)
+    except (TypeError, ValueError, KeyError, AttributeError) as error:
+        return {'passed': False, 'cases': [], 'problems': ['malformed rule coverage: ' + str(error)]}
+    if not matrix['passed']:
+        return {'passed': False, 'coverage': matrix, 'cases': [], 'problems': matrix['problems']}
     rows = []
     for case in contract['cases']:
         errors = [];outputs = [];step_index = None
@@ -90,7 +96,7 @@ def run(env, contract):
         except Exception as exc:
             errors.append({'step': step_index, 'error': f'{type(exc).__name__}: {exc}'})
         rows.append({'id': case['id'], 'passed': not errors, 'failures': errors})
-    return {'passed': all(r['passed'] for r in rows), 'cases': rows, 'contract_sha256': digest(contract)}
+    return {'passed': all(r['passed'] for r in rows), 'cases': rows, 'coverage': matrix, 'contract_sha256': digest(contract)}
 
 
 def qualify(env, request):
@@ -99,4 +105,62 @@ def qualify(env, request):
         return {'passed': True, 'applicable': False}
     if request.get('behavior_contract_sha256') != digest(contract):
         return {'passed': False, 'problems': ['behavior contract hash mismatch']}
+    from env_factory.core import spec
+    for rule in contract.get('rules', []):
+        if not isinstance(rule, dict):
+            return {'passed': False, 'problems': ['malformed rule declaration']}
+        if not spec.quoted(request, rule.get('brief_quote')):
+            return {'passed': False, 'problems': [f"{rule.get('id')}: rule quote not found in business authority"]}
     return run(env, contract)
+
+
+CASE_KINDS = frozenset({'positive', 'negative', 'boundary', 'interleaving'})
+
+
+def coverage(contract):
+    """Rule-to-case matrix from caller-owned assertions, including rejected operations."""
+    rules = contract.get('rules', [])
+    if not rules:
+        return {'passed': True, 'applicable': False, 'rules': {}, 'problems': []}
+    problems, matrix = [], {}
+    for rule in rules:
+        identifier = rule.get('id')
+        if not isinstance(identifier, str) or not identifier or identifier in matrix:
+            problems.append('rule ids must be unique nonempty strings')
+            continue
+        required = rule.get('required_cases', ['positive', 'negative', 'boundary'])
+        if not required or not set(required) <= CASE_KINDS:
+            problems.append(f'{identifier}: invalid required_cases')
+        if len(set(rule.get('workflows', []))) > 1 and 'interleaving' not in required:
+            required = [*required, 'interleaving']
+        matrix[identifier] = {'required': required, 'cases': {kind: [] for kind in CASE_KINDS}}
+    seen = set()
+    for case in contract.get('cases', []):
+        identifier, kind = case.get('id'), case.get('kind')
+        if not identifier or identifier in seen:
+            problems.append('case ids must be unique nonempty strings')
+        seen.add(identifier)
+        if kind not in CASE_KINDS:
+            problems.append(f'{identifier}: missing or invalid case kind')
+            continue
+        steps = case.get('steps', [])
+        evidence = {check.get('rule_id') for step in steps for check in step.get('checks', [])}
+        evidence.update(check.get('rule_id') for check in contract.get('invariants', []) + case.get('invariants', []))
+        evidence.update(step.get('rule_id') for step in steps if step.get('error'))
+        for rule_id in case.get('rules', []):
+            if rule_id not in matrix or rule_id not in evidence:
+                problems.append(f'{identifier}: {rule_id} has no independently declared assertion/rejection')
+                continue
+            if kind == 'negative' and not any(s.get('error') for s in steps):
+                problems.append(f'{identifier}: negative case needs an expected rejection')
+                continue
+            if kind == 'interleaving' and (len(set(case.get('workflows', []))) < 2
+                                           or len({step.get('tool') for step in steps}) < 2):
+                problems.append(f'{identifier}: interleaving case needs multiple workflows and tools')
+                continue
+            matrix[rule_id]['cases'][kind].append(identifier)
+    for identifier, row in matrix.items():
+        row['missing'] = [kind for kind in row['required'] if not row['cases'].get(kind)]
+        if row['missing']:
+            problems.append(f"{identifier}: missing {', '.join(row['missing'])} cases")
+    return {'passed': not problems, 'applicable': True, 'rules': matrix, 'problems': problems}

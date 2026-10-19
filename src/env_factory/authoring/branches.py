@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 
 from env_factory.core import spec
-from env_factory.core.worlds import variants
+from env_factory.core.worlds import request_variants
 from env_factory.runtime import canonical, run_reference
 
 VERDICTS = ('supported', 'unsupported', 'ambiguous')
@@ -60,7 +60,7 @@ def _skipped(original, flipped, denied):
 def cascades(env, request):
     """Approval flips after which the reference drops steps the all-approved original takes."""
     start = request['time']['start']
-    worlds = variants(request['tables'], request['user_facts'], perturbed=0)
+    worlds = request_variants(request, perturbed=0)
     original = run_reference(env, worlds[0][1], worlds[0][2], start=start)
     asked = _confirms(original['trace'])
     found = []
@@ -93,7 +93,7 @@ def unrepaired(env, request, found):
     call each skipped tool and ask each skipped approval at least as often as the original world."""
     start = request['time']['start']
     worlds = {name: (data, facts) for name, data, facts in
-              variants(request['tables'], request['user_facts'], perturbed=0)}
+              request_variants(request, perturbed=0)}
     trace = run_reference(env, *worlds['original'], start=start)['trace']
     left = []
     for cascade in found:

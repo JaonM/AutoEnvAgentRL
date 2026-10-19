@@ -21,7 +21,7 @@ from env_factory.certify import gates
 from env_factory.core import answers, reward
 from env_factory.core.sandbox import SandboxError, load_module
 from env_factory.core.spec import load
-from env_factory.core.worlds import variants
+from env_factory.core.worlds import request_variants
 from env_factory.runtime import InvalidWorld, canonical, run_reference, tool_spec_problems
 
 PERTURBED = 10
@@ -167,7 +167,7 @@ def check_env(folder):
     problems += write_argument_problems(tools)
     problems += gates.approval_problems(env, request)
     start = request['time']['start']
-    for name, data, facts in variants(request['tables'], request['user_facts'], perturbed=PERTURBED):
+    for name, data, facts in request_variants(request, perturbed=PERTURBED):
         try:
             first = run_reference(env, data, facts, start=start)
             second = run_reference(env, data, facts, start=start)
@@ -194,7 +194,7 @@ def check_verifier(folder):
     verifier = load_module(folder / 'verifier.py', role='verifier')
     problems, notes, valid = [], [], 0
     start = request['time']['start']
-    for name, data, facts in variants(request['tables'], request['user_facts'], perturbed=PERTURBED):
+    for name, data, facts in request_variants(request, perturbed=PERTURBED):
         try:
             first = verifier.expected(json.loads(json.dumps(data)), json.loads(json.dumps(facts)), start)
             second = verifier.expected(json.loads(json.dumps(data)), json.loads(json.dumps(facts)), start)

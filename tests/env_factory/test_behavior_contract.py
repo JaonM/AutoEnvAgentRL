@@ -45,3 +45,33 @@ def test_dependencies_and_unsupported_expressions():
     assert behavior.expression({'path': 'outputs.0.id'}, {'outputs': [{'id': 'new'}]}) == 'new'
     value = contract();value['cases'][0]['steps'][0]['checks'][0]['assert']['op'] = 'eval'
     assert not behavior.run(module(), value)['passed']
+
+
+def test_rule_matrix_requires_executable_positive_negative_and_boundary_evidence():
+    value = contract()
+    value['rules'] = [{'id': 'stock', 'brief_quote': 'borrow reduces stock'}]
+    base = value['cases'][0]
+    base.update(kind='positive', rules=['stock'])
+    base['steps'][0]['checks'][0]['rule_id'] = 'stock'
+    base['steps'][1]['rule_id'] = 'stock'
+    assert not behavior.run(module(), value)['passed']
+    for kind in ['negative', 'boundary']:
+        value['cases'].append({**copy.deepcopy(base), 'id': kind, 'kind': kind})
+    request = {'user_request': 'borrow', 'business_rules': 'borrow reduces stock',
+               'behavior_contract': value, 'behavior_contract_sha256': behavior.digest(value)}
+    assert behavior.qualify(module(), request)['passed']
+    assert not behavior.qualify(module(True), request)['passed']
+    request['business_rules'] = 'unrelated rule'
+    assert not behavior.qualify(module(), request)['passed']
+
+
+def test_cross_workflow_rule_requires_an_interleaving_case():
+    value = contract()
+    value['rules'] = [{'id': 'stock', 'workflows': ['borrow', 'reservation'], 'required_cases': ['positive']}]
+    case = value['cases'][0]
+    case.update(kind='positive', rules=['stock'])
+    case['steps'][0]['checks'][0]['rule_id'] = 'stock'
+    assert behavior.coverage(value)['rules']['stock']['missing'] == ['interleaving']
+    value['cases'].append({**copy.deepcopy(case), 'id': 'cross-flow', 'kind': 'interleaving',
+                           'workflows': ['borrow', 'reservation']})
+    assert behavior.run(module(), value)['passed']

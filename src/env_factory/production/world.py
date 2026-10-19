@@ -389,6 +389,9 @@ def build_world(domain, folder, *, runner, client, python, language, index, repa
     if policy is None:
         return {'id': world_id, 'training_ready': False, 'failure_class': 'agent_policy', 'reason': problems[:5]}
     request['agent_policy'] = policy
+    request['perturbation_version'] = domain.get('perturbation_version', 2)
+    if domain.get('perturbation_cases'):
+        request['perturbation_cases'] = copy.deepcopy(domain['perturbation_cases'])
     if domain.get('behavior_contract') is not None:
         from env_factory.certify import behavior
         request['behavior_contract'] = copy.deepcopy(domain['behavior_contract'])
@@ -685,10 +688,10 @@ def constant_leaves(verifier, request, perturbed=10):
     """{goal field: [property names]} of outcome properties whose value is the same in every perturbed world and
     under every param alternative: constants of the world (a fixed fee), which an agent can answer from memory.
     They stay required for success but earn no partial credit (partial: false)."""
-    from env_factory.core.worlds import variants
+    from env_factory.core.worlds import request_variants
     from env_factory.runtime import canonical
     tables, facts, start = request['tables'], request['user_facts'], request['time']['start']
-    cases = [(data, world_facts) for _, data, world_facts in variants(tables, facts, perturbed=perturbed)]
+    cases = [(data, world_facts) for _, data, world_facts in request_variants(request, perturbed=perturbed)]
     for index, goal in enumerate(facts.get('goals') or []):
         for key, value in (goal.get('params') or {}).items():
             for other in _alternatives(value, tables)[:2]:

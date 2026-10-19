@@ -62,6 +62,33 @@ def validate(request):
     problems = [f'missing {key}' for key in REQUIRED if key not in request]
     if problems:
         return problems
+    if request.get('perturbation_version', 1) not in (1, 2):
+        problems.append('perturbation_version must be 1 or 2')
+    cases = request.get('perturbation_cases', [])
+    if not isinstance(cases, list) or len(cases) > 100:
+        problems.append('perturbation_cases must be a list of at most 100 cases')
+    else:
+        identifiers = set()
+        for case in cases:
+            if (not isinstance(case, dict) or not isinstance(case.get('id'), str)
+                    or not re.fullmatch(r'[A-Za-z0-9_-]+', case['id']) or case['id'] in identifiers
+                    or not isinstance(case.get('changes'), list) or not 1 <= len(case['changes']) <= 100):
+                problems.append('perturbation cases require unique safe ids and 1..100 changes')
+                continue
+            identifiers.add(case['id'])
+            if not isinstance(case.get('rule_ids', []), list) or not all(isinstance(r, str) for r in case.get('rule_ids', [])):
+                problems.append('perturbation rule_ids must be a list of strings')
+            for change in case['changes']:
+                if (not isinstance(change, dict) or not {'table', 'id', 'path', 'value'} <= set(change)
+                        or not isinstance(change['path'], list) or not change['path']
+                        or not all(type(k) in (str, int) for k in change['path'])):
+                    problems.append('invalid perturbation field change')
+        if cases and not problems:
+            try:
+                from env_factory.core.worlds import request_variants
+                request_variants(request, perturbed=1)  # validates identities and exact target paths
+            except (ValueError, KeyError, IndexError, TypeError, StopIteration) as error:
+                problems.append('invalid perturbation case target: ' + str(error))
     if 'request_kind' in request and request['request_kind'] not in REQUEST_KINDS:
         problems.append(f'request_kind must be one of {REQUEST_KINDS}')
     if 'world_id' in request:

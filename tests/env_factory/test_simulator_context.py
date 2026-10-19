@@ -56,3 +56,20 @@ def test_scripted_questions_and_change_of_choice_are_delivered_in_both_languages
             assert value in prompt
         assert ('first: no' in prompt and 'second: yes' in prompt) if language == 'en' else (
             'first: 不同意' in prompt and 'second: 同意' in prompt)
+
+
+def test_unavailable_auditor_is_unknown_and_can_be_retried():
+    from env_factory.core.llm import ProviderError
+    calls = []
+    def audit(*args, **kwargs):
+        calls.append(True)
+        if len(calls) == 1:
+            raise ProviderError('temporary provider failure')
+        return {'valid': True, 'faults': []}
+    fake = SimpleNamespace(request={'user_request': 'x'}, auditor=lambda: SimpleNamespace(audit=audit))
+    record = {'facts': {}, 'episode': SimpleNamespace(trace=[])}
+    unknown = Service.audit_simulator(fake, record)
+    assert unknown['valid'] is False and unknown['audit_status'] == 'unknown'
+    retried = Service.audit_simulator(fake, record)
+    assert retried['valid'] is True and retried['audit_status'] == 'valid'
+    assert len(calls) == 2

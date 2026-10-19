@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 
 from env_factory.core import spec
-from env_factory.core.worlds import variants
+from env_factory.core.worlds import request_variants
 from env_factory.runtime import canonical, run_reference
 
 VERDICTS = ('consistent', 'should_change', 'ambiguous')
@@ -47,7 +47,7 @@ def changed_cells(original, data, touched, written=()):
 def insensitive(env, request, *, perturbed=20, excluded=()):
     """Perturbed worlds that change rows the task touches but leave writes and answer unchanged."""
     start = request['time']['start']
-    worlds = variants(request['tables'], request['user_facts'], perturbed=perturbed)
+    worlds = request_variants(request, perturbed=perturbed)
     name, original_data, facts = worlds[0]
     original = run_reference(env, original_data, facts, start=start)
     # Rows the task acts on: named by the user, written, or reported, not merely listed.

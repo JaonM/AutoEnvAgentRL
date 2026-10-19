@@ -21,7 +21,7 @@ import traceback
 from env_factory.core import answers, reward
 from env_factory.runtime import (BusinessError, Episode, InvalidWorld, canonical, is_write, run_policy,
                                     run_reference, tool_spec_problems)
-from env_factory.core.worlds import state_diff, variants
+from env_factory.core.worlds import state_diff, request_variants
 
 
 def _expected(verifier, data, facts, now):
@@ -40,7 +40,7 @@ def compare_worlds(env, verifier, schema, request, *, perturbed=20, excluded=())
     start = request['time']['start']
     excluded = set(excluded)
     worlds = []
-    for name, data, facts in variants(request['tables'], request['user_facts'], perturbed=perturbed):
+    for name, data, facts in request_variants(request, perturbed=perturbed):
         entry = {'world': name}
         if name in excluded:
             if not name.startswith('perturb'):
@@ -234,7 +234,7 @@ def approval_problems(env, request):
     if not callable(getattr(env, 'approval_key', None)):
         return ['env.py must define approval_key(tool, args, facts) -> approval topic for an exact write']
     problems = []
-    for name, data, facts in variants(request['tables'], request['user_facts'], perturbed=0):
+    for name, data, facts in request_variants(request, perturbed=0):
         for entry in run_reference(env, data, facts, start=request['time']['start'])['trace']:
             if entry.get('kind') != 'confirm':
                 continue
@@ -261,6 +261,8 @@ def qualify(env, verifier, schema, request, *, perturbed=20, http=True, excluded
               'excluded_worlds': sorted(excluded)}
     worlds = compare_worlds(env, verifier, schema, request, perturbed=perturbed, excluded=excluded)
     report['differential'] = differential(worlds)
+    from env_factory.core.worlds import perturbation_coverage
+    report['perturbation_coverage'] = perturbation_coverage(request, worlds, requested=perturbed)
     report['valid_worlds'] = [w['world'] for w in worlds if w['status'] == 'agree']
     report['negatives'] = (negatives(env, verifier, schema, request, worlds) if report['differential']['passed']
                            else {'passed': False, 'note': 'not run: differential failed'})
@@ -308,7 +310,7 @@ def qualify_rubric(env, rubric_spec, schema, request, *, judge=None, http=True):
     report = {'static': {'passed': not tool_problems and not rubric_problems, 'tool_problems': tool_problems[:10],
                          'rubric_problems': rubric_problems[:10]},
               'natural': {'passed': not approval, 'approval_problems': approval}, 'excluded_worlds': []}
-    worlds = variants(request['tables'], request['user_facts'], perturbed=0)
+    worlds = request_variants(request, perturbed=0)
     runs = {name: run_reference(env, data, facts, start=start) for name, data, facts in worlds}
     facts_of = {name: facts for name, _, facts in worlds}
     forged = Episode(env.make_tools(), request['tables'], request['user_facts'], start=start)

@@ -28,7 +28,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.request import Request, urlopen
 
 from env_factory.core import reward, spec
-from env_factory.core.worlds import variants
+from env_factory.core.worlds import request_variants
 from env_factory.runtime import BusinessError, Episode, EpisodeFinished, ToolError, tool_specs
 
 
@@ -74,7 +74,7 @@ class Service:
                 raise ValueError(f'bundle is not ready for the natural user: {problems[:3]}')
         self.approvals = {t['key'] for t in spec.fact_topics(request) if t['kind'] == 'approval'}
         worlds = {name: (data, facts) for name, data, facts in
-                  variants(request['tables'], request['user_facts'], perturbed=perturbed)}
+                  request_variants(request, perturbed=perturbed)}
         names = valid_worlds or ['original']
         self.worlds = {name: worlds[name] for name in names if name in worlds}
         self.order = [name for name in names if name in self.worlds]
@@ -307,14 +307,17 @@ class Service:
         """{'simulator_audit', 'valid'}: valid is False when the simulated user's slip, not the agent,
         may explain the failure (rl then leaves the episode out of training)."""
         from env_factory.core.llm import ProviderError
-        if 'audit' not in record:
+        if 'audit' not in record or record['audit'].get('status') == 'unknown':
             try:
                 record['audit'] = self.auditor().audit(record['facts'], self.request.get('user_script'),
                                                        record['episode'].trace,
                                                        opening=self.request['user_request'])
-            except ProviderError as error:  # an unavailable auditor never blocks grading
-                record['audit'] = {'faults': [], 'valid': True, 'error': str(error)[:200]}
-        return {'simulator_audit': record['audit'], 'valid': record['audit']['valid']}
+            except ProviderError as error:
+                record['audit'] = {'faults': [], 'valid': False, 'status': 'unknown', 'error': str(error)[:200]}
+        audit = record['audit']
+        audit.setdefault('status', 'valid' if audit['valid'] else 'invalid')
+        # Unknown evidence is excluded from learning; a later reward request may retry the audit.
+        return {'simulator_audit': audit, 'valid': audit['valid'], 'audit_status': audit['status']}
 
     def auditor(self):
         """The simulator auditor, created on first use from JUDGE_* (falling back to LLM_*)."""

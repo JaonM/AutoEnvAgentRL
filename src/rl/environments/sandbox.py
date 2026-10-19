@@ -259,7 +259,7 @@ class SandboxEpisode:
     def _grade(self):
         status, grade = self.request('/reward', {'episode': self.episode})
         self.score = grade if status == 200 and 'reward' in grade else \
-            {'reward': 0.0, 'success': False, 'reason': 'grading_failed'}
+            {'reward': 0.0, 'success': False, 'valid': False, 'reason': 'grading_failed'}
 
     def _submit(self, answer):
         self.answer = copy.deepcopy(answer)
