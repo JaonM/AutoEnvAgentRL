@@ -39,6 +39,7 @@ def parse_args(argv=None):
             "qat_scope": ["projections", "full"],
             "bits": [4, 8],
             "discount_unit": ["action", "token"],
+            "sampling_batch_policy": ["allow_short", "strict"],
             "zero_variance_policy": ["retry_skip", "retry_fail", "skip", "fail"],
             "advantage_std": ["group", "task"],
             "loss_aggregation": ["sequence", "token"],

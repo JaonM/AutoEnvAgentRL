@@ -176,7 +176,10 @@ def rollout_worker_main(index, config, shared_version, results, stop):
                     start_path = location(job) / 'start.json'
                     if config.get('reverse_curriculum'):
                         curriculum = Curriculum(config['reverse_curriculum'], Path(config['output']) / 'curriculum.json',
-                                                threshold=config.get('curriculum_threshold', .6), seed=config['seed'] + key)
+                                                threshold=config.get('curriculum_threshold', .6), seed=config['seed'] + key,
+                                                window=config.get('curriculum_window', 2),
+                                                minimum=config.get('curriculum_min_valid_episodes', 8),
+                                                minimum_group=config.get('curriculum_min_group_episodes', 2))
                         if start_path.exists():
                             start = json.loads(start_path.read_text())['start']
                         else:
@@ -191,7 +194,8 @@ def rollout_worker_main(index, config, shared_version, results, stop):
                     for key, episodes in sample_groups(policy, env, specs, stop=stop, notify=notify):
                         job, task, start, curriculum = metadata[key]
                         if start:
-                            curriculum.record(task.id, start['level'], episodes)
+                            curriculum.record(task.id, start['level'], episodes,
+                                              group_id=f"{config.get('_run_id', 'local')}/{key}/{job.get('rollout_attempt', 0)}")
                         for episode in episodes:
                             episode['task_id'] = task.id
                         group = {**job, 'schema_version': 2, 'rollout_worker': index,

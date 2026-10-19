@@ -75,9 +75,10 @@ def prepare(session: TrainingSession, group, path, replay_entry=None):
         pass
     elif age < 0 or age > max_age:
         reason = "policy_age"
+    elif session.config.algorithm == "grpo" and sum(trainable(e) for e in group["episodes"]) < 2:
+        reason = "insufficient_valid_episodes"
     elif session.config.algorithm == "grpo" and (
-        sum(trainable(episode) for episode in group["episodes"]) < 2
-        or all(
+        all(
             abs(a) < 1e-08
             for a in group_advantages(
                 [episode["final_reward"] for episode in group["episodes"] if trainable(episode)]

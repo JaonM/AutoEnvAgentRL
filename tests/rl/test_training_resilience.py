@@ -156,3 +156,15 @@ def test_live_plot_reader_prefers_journal_and_ignores_partial_tail(tmp_path):
     (tmp_path / 'metrics.json').write_text('[{"step": 99}]')
     (tmp_path / 'metrics.jsonl').write_bytes(b'{"step": 1}\n{"step":')
     assert load_metric_rows(tmp_path, 'metrics') == [{'step': 1}]
+
+
+def test_strict_sampling_never_silently_shortens_a_batch():
+    from rl.rollout.admission import check_sampling_budget
+    from rl.config import Config
+    for reason in ['zero_reward_variance', 'insufficient_valid_episodes', 'context_limit_empty', 'importance_drift']:
+        assert rejection_action(reason, 'skip', 0, 3, 'strict') == 'retry'
+        assert rejection_action(reason, 'retry_skip', 2, 3, 'strict') == 'fail'
+    with pytest.raises(RuntimeError, match='token budget'):
+        check_sampling_budget(Config(sampling_max_tokens=10), {'generated_tokens': 11}, 1, now=2)
+    with pytest.raises(RuntimeError, match='time budget'):
+        check_sampling_budget(Config(sampling_timeout_seconds=2), {}, 1, now=4)

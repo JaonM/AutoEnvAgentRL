@@ -87,7 +87,8 @@ def test_trainer_never_optimizes_or_replays_quarantined_group(tmp_path, monkeypa
     job = {'dataset_index': 0, 'dataset_epoch': 1, 'task_id': 'broken'}
     group = {**job, 'quarantined': True, 'reason': 'invalid reward', 'episodes': []}
     session = TrainingSession.__new__(TrainingSession)
-    session.config = SimpleNamespace(resume=True, max_groups=0, mini_batch_size=1,
+    from rl.config import Config
+    session.config = Config(resume=True, max_groups=0, mini_batch_size=1,
         optimization_passes=1, replay_batches_per_batch=0, rollout_group=2,
         checkpoint_keep=1, group_artifacts_keep=1)
     session.state = SimpleNamespace(dataset_cursor=0, inflight={}, groups=0,

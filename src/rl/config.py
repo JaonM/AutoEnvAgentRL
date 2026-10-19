@@ -14,6 +14,9 @@ class Config:
     metrics_export_interval: int = 0
     group_artifacts_keep: int = 256
     zero_variance_policy: str = "retry_skip"
+    sampling_batch_policy: str = "allow_short"  # strict: bounded retries, fail rather than train a shortened batch
+    sampling_max_tokens: int = 0  # per dataset batch, including rejected attempts; 0 disables this extra cap
+    sampling_timeout_seconds: float = 0.0
     # GRPO advantage scale: "group" (std of the group) or "task" (std of the recent rewards of the same
     # task across groups, AutoForge ERPO: less noise with small groups; falls back to the group early on)
     advantage_std: str = "task"
@@ -34,6 +37,9 @@ class Config:
     # late in recorded successes and move earlier once groups succeed at curriculum_threshold.
     reverse_curriculum: str = ""
     curriculum_threshold: float = 0.6
+    curriculum_window: int = 2
+    curriculum_min_valid_episodes: int = 8
+    curriculum_min_group_episodes: int = 2
     context_limit_policy: str = "finish"
     numerical_check_mode: str = "periodic"
     numerical_check_interval: int = 20
@@ -128,6 +134,12 @@ class Config:
         return self.mini_batch_size
 
     def validate(self):
+        if (not 0 <= self.curriculum_threshold <= 1 or
+                min(self.curriculum_window, self.curriculum_min_valid_episodes, self.curriculum_min_group_episodes) < 1):
+            raise ValueError('invalid curriculum evidence thresholds')
+        if (self.sampling_batch_policy not in {'allow_short', 'strict'} or self.sampling_max_tokens < 0
+                or not math.isfinite(self.sampling_timeout_seconds) or self.sampling_timeout_seconds < 0):
+            raise ValueError('invalid sampling batch policy/budgets')
         if self.scoring_workers < 0 or self.scoring_queue_size < max(1, self.scoring_workers):
             raise ValueError("invalid scoring worker/queue budgets")
         if (

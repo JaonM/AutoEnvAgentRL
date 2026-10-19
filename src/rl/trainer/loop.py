@@ -13,7 +13,8 @@ class TrainingSession:
         from rl.data.contracts import attach_contract
         from rl.rollout.scheduler import environment_overlap
         from rl.checkpointing.retention import prune_live_artifacts
-        from rl.rollout.admission import rejection_action
+        from rl.rollout.admission import rejection_action, check_sampling_budget
+        import time
         from rl.checkpointing.checkpoint import sha256
 
         try:
@@ -32,6 +33,8 @@ class TrainingSession:
                         "passes_completed": 0,
                         "replay_completed": 0,
                         "stop_fresh": False,
+                        "sampling_started_at": time.time(),
+                        "sampling_totals": {},
                     }
                 remaining = len(jobs) - sum(
                     (record.get("trained", True) for record in self.state.inflight["records"])
@@ -53,6 +56,8 @@ class TrainingSession:
                     wanted = min(self.config.mini_batch_size, remaining)
                     fresh = self.prepared_records(only_untrained=True)
                     while len(fresh) < wanted:
+                        check_sampling_budget(self.config, self.state.inflight.get('sampling_totals', {}),
+                                              self.state.inflight.setdefault('sampling_started_at', time.time()))
                         if self.config.max_groups and self.state.groups >= self.config.max_groups:
                             raise RuntimeError(
                                 "oversampling exhausted max_groups before filling qualified batch"
@@ -64,6 +69,8 @@ class TrainingSession:
                         index = group["dataset_index"]
                         path = self.output / f"group-{self.state.groups:04d}.json"
                         if group.get("quarantined") is True:
+                            if self.config.sampling_batch_policy == 'strict':
+                                raise RuntimeError('strict sampling cannot fill batch with quarantined environment: ' + group['task_id'])
                             write_json(path, group)
                             self.state.consumed_jobs.add(index)
                             self.state.skipped_jobs[str(index)] = "environment_quarantined"
@@ -81,6 +88,11 @@ class TrainingSession:
                                 "rollout_attempt": group.get("rollout_attempt", 0), "reason": group["reason"]})
                             self.commit()
                             continue
+                        totals = self.state.inflight.setdefault('sampling_totals', {})
+                        for name, value in sampling_counts(group).items():
+                            totals[name] = totals.get(name, 0) + value
+                        totals['sampled_groups'] = totals.get('sampled_groups', 0) + 1
+                        check_sampling_budget(self.config, totals, self.state.inflight['sampling_started_at'])
                         attach_contract(group)
                         with self.times.measure("actor_rollout_io"):
                             write_json(path, group)
@@ -103,12 +115,14 @@ class TrainingSession:
                         with self.times.measure("actor_prepare_targets"):
                             item = self.prepare(group, path)
                         if "rejected" in item:
+                            totals['rejected_groups'] = totals.get('rejected_groups', 0) + 1
                             attempt = group.get("rollout_attempt", 0)
                             disposition = rejection_action(
                                 item["rejected"],
                                 self.config.zero_variance_policy,
                                 attempt,
                                 self.config.rollout_max_attempts,
+                                self.config.sampling_batch_policy,
                             )
                             if disposition == "fail":
                                 raise RuntimeError(
@@ -156,6 +170,7 @@ class TrainingSession:
                                 "sampling_counts": sampling_counts(group),
                             }
                         )
+                        totals['effective_groups'] = totals.get('effective_groups', 0) + 1
                         fresh.append(item)
                     if not fresh:
                         break
@@ -216,6 +231,8 @@ class TrainingSession:
                             for record in self.state.inflight["records"]
                         ],
                         **batch_sampling_counts(self.state.inflight["records"]),
+                        "sampling_totals": self.state.inflight.get("sampling_totals", {}),
+                        "sampling_batch_policy": self.config.sampling_batch_policy,
                         "group_paths": [
                             record["path"] for record in self.state.inflight["records"]
                         ],
@@ -289,7 +306,7 @@ def sampling_counts(group):
 def batch_sampling_counts(records):
     import json
     from pathlib import Path
-    total = {}
+    total = sampling_counts({'episodes': []})
     for record in records:
         if record.get('quarantined'):
             continue

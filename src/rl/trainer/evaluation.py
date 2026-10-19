@@ -18,7 +18,7 @@ def evaluate(policy, tasks, config):
                 episode = rollout(
                     policy, environment, config, config["seed"] + 999 + offset, greedy=True
                 )
-                episode.update(task_id=task.id, split=task.split)
+                episode.update(task_id=task.id, split=task.split, start_scope="initial_state")
                 episodes.append(episode)
         finally:
             environment.close()
@@ -34,6 +34,7 @@ def evaluate(policy, tasks, config):
         }
 
     return {
+        "start_scope": "initial_state",
         "episodes": episodes,
         "by_task": {t.id: aggregate([e for e in episodes if e["task_id"] == t.id]) for t in tasks},
         "by_split": {

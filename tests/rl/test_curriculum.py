@@ -46,3 +46,14 @@ def test_a_curriculum_group_restores_one_start_for_every_episode(tmp_path):
     assert len(episodes) == 3
     assert all(e['taken'][:2] == ['a', 'b'] and len(e['actions']) == 1 for e in episodes)  # only the last step played
     assert all(e['curriculum'] == {'prefix_steps': 2, 'level': 1} for e in episodes)
+
+
+def test_too_few_valid_episodes_and_duplicate_groups_cannot_advance(tmp_path):
+    curriculum = Curriculum(library(tmp_path), tmp_path / 'state.json', minimum=8)
+    tiny = group(1, total=1) + [{'trainable': False, 'score': {'success': True}}] * 7
+    assert curriculum.record('hard', 0, tiny, group_id='tiny') is None
+    assert curriculum.record('hard', 0, group(2, total=2), group_id='a') == 0
+    assert curriculum.record('hard', 0, group(2, total=2), group_id='a') == 0
+    assert curriculum.record('hard', 0, group(2, total=2), group_id='b') == 0
+    assert curriculum.record('hard', 0, group(2, total=2), group_id='c') == 0
+    assert curriculum.record('hard', 0, group(2, total=2), group_id='d') == 1

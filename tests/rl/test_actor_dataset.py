@@ -55,7 +55,11 @@ def test_worker_claims_remaining_shared_jobs_and_keeps_group_seed(tmp_path, monk
             kwargs['notify']('batched-policy-decode')
         return [{'seed': seed, 'actions': [{'prompt': [1], 'tokens': [2], 'old_logp': [-.5]}]}
                 for _ in range(config['rollout_group'])]
-    monkeypatch.setattr(actor, 'parallel_rollouts', parallel)
+    import rl.rollout.multiplex as multiplex
+    def multiple(policy, env, groups, **kwargs):
+        for spec in groups:
+            yield spec['key'], parallel(policy, env, spec['config'], spec['seed'], **kwargs)
+    monkeypatch.setattr(multiplex, 'sample_groups', multiple)
     config = {**asdict(Config(sandbox='unused', output=str(tmp_path), rollout_workers=2, rollout_group=3,
                             thinking_mode='no-thinking', qat_scope='full')),
               '_tasks': [asdict(task) for task in tasks], '_dataset_jobs': plan.jobs,
@@ -65,7 +69,7 @@ def test_worker_claims_remaining_shared_jobs_and_keeps_group_seed(tmp_path, monk
     assert restored == ['policy-000007.safetensors']
     assert policy_options[0]['thinking_mode'] == 'no-thinking'
     assert policy_options[0]['qat_scope'] == 'full'
-    assert sum(h['stage'] == 'batched-policy-decode' for h in heartbeats) == 3
+    assert 1 <= sum(h['stage'] == 'batched-policy-decode' for h in heartbeats) <= 3
     assert all(len(g['episodes']) == 3 and all(e['seed'] == plan.jobs[g['dataset_index']]['seed']
                                                for e in g['episodes']) for g in received)
     assert all(env.closed for env in environments)

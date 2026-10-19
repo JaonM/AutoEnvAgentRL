@@ -104,6 +104,8 @@ def group_metrics(group):
     values['grpo_zero_advantage_group'] = int(len(kept) >= 2 and all(abs(a) < 1e-8 for a in group_advantages(kept_rewards)))
     values['nonzero_advantage_fraction'] = (sum(abs(a) >= 1e-8 for a in group_advantages(kept_rewards)) / len(kept)
                                              if len(kept) >= 2 else 0.)
+    values['curriculum_episodes'] = sum(bool(e.get('curriculum')) for e in episodes)
+    values['from_start_episodes'] = sum(not e.get('curriculum') and (e.get('tree') or {}).get('role') != 'branch' for e in episodes)
     forks = {}
     for episode in episodes:
         tree = episode.get('tree') or {}

@@ -21,10 +21,13 @@ LEVELS = (0.25, 0.5, 0.75, 1.0)
 
 
 class Curriculum:
-    def __init__(self, library, state, *, threshold=0.6, window=2, seed=0):
+    def __init__(self, library, state, *, threshold=0.6, window=2, seed=0, minimum=8, minimum_group=2):
         self.library = json.loads(Path(library).read_text()) if library else {}
         self.state_path = Path(state)
+        if not 0 <= threshold <= 1 or min(window, minimum, minimum_group) < 1:
+            raise ValueError("invalid curriculum evidence thresholds")
         self.threshold, self.window = threshold, window
+        self.minimum, self.minimum_group = minimum, minimum_group
         self.rng = random.Random(seed)
 
     def _locked(self, update=None):
@@ -53,10 +56,10 @@ class Curriculum:
         prefix = min(len(recording['snapshots']), max(1, round(turns * (1 - share))))
         return {'snapshot': recording['snapshots'][prefix - 1], 'prefix_steps': prefix, 'level': level}
 
-    def record(self, task_id, level, episodes):
+    def record(self, task_id, level, episodes, *, group_id=None):
         """Update the task's level from a finished group started at `level`."""
         trainable = [e for e in episodes if e and e.get('trainable', True) is not False]
-        if not trainable:
+        if len(trainable) < self.minimum_group:
             return None
         rate = sum(bool((e.get('score') or {}).get('success')) for e in trainable) / len(trainable)
 
@@ -64,8 +67,17 @@ class Curriculum:
             entry = state.setdefault(task_id, {'level': 0, 'rates': []})
             if entry['level'] != level:
                 return  # another worker already moved the task on
-            entry['rates'] = (entry['rates'] + [rate])[-self.window:]
-            if len(entry['rates']) == self.window and min(entry['rates']) >= self.threshold:
+            evidence = entry.setdefault('evidence', [])
+            if group_id is not None and any(item.get('group_id') == group_id for item in evidence):
+                return  # a replayed completed journal must not advance the curriculum twice
+            evidence.append({'rate': rate, 'valid_episodes': len(trainable), 'group_id': group_id})
+            # Retain enough groups to satisfy both the window and sample-count threshold.
+            limit = max(self.window, (self.minimum + self.minimum_group - 1) // self.minimum_group)
+            del evidence[:-limit]
+            entry['rates'] = [item['rate'] for item in evidence]
+            if (level < len(LEVELS) - 1 and len(evidence) >= self.window
+                    and sum(item['valid_episodes'] for item in evidence) >= self.minimum
+                    and min(item['rate'] for item in evidence) >= self.threshold):
                 entry['level'] += 1
-                entry['rates'] = []
+                entry['rates'], entry['evidence'] = [], []
         return self._locked(update)[task_id]['level']
