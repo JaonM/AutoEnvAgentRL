@@ -176,6 +176,11 @@ def audit_and_release(producer, output, audit_root, *, complete=True):
         reference = run_reference(loaded['env'], request['tables'], request['user_facts'], start=request['time']['start'])
         require(canonical(reference['answer']) == canonical(pilot['reference_answer']), 'reference answer changed')
         f = features(request, pilot, episode)
+        sop_receipt = None
+        if request.get('sop_blueprint'):
+            from env_factory import sop
+            sop_receipt = sop.task_report(loaded['env'], loaded['verifier'], request)
+            require(sop_receipt['passed'], 'SOP dependency evidence failed: '+str(sop_receipt))
         key, _ = signature(request, pilot, f, Normalizer(request), rules[episode['domain']], digest)
         require(key == record['key'], 'normalized structure changed')
         witnesses = dict(f['observed_obstacles'])
@@ -185,7 +190,9 @@ def audit_and_release(producer, output, audit_root, *, complete=True):
                  for i, g in enumerate(request['user_facts']['goals'], 1)]
         rows.append({'id': episode['id'], 'domain': episode['domain'], 'split': episode['split'],
                      'key': key, 'goals': goals, 'witnesses': witnesses, 'tool_path': f['tool_path'],
-                     'normalized_calls': f['normalized_calls'], 'task_type': pilot['assignment']['type']})
+                     'normalized_calls': f['normalized_calls'], 'task_type': pilot['assignment']['type'],
+                     'sop': sop_receipt, 'sop_graph': f.get('sop_graph'), 'sop_graph_key': f.get('sop_graph_key'),
+                     'sop_contract_sha256': request.get('sop_contract_sha256')})
         paths = [Path(record['episode']), source, pilot_path, folder / 'manifest.json',
                  *[folder / name for name in loaded['manifest']['files']]]
         hashes = {str(p.resolve()): sha(p) for p in paths}
@@ -198,6 +205,12 @@ def audit_and_release(producer, output, audit_root, *, complete=True):
     require(baseline_ids <= {e['id'] for e in episodes}, 'selected baseline was lost')
     coverage = coverage_report(rows, audit_root)
     save(output / 'coverage.json', coverage)
+    sop_counts = Counter((r['domain'], (r.get('sop') or {}).get('method','legacy_or_single')) for r in rows)
+    save(output / 'sop_coverage.json', {
+        'methods': [{'domain':d,'method':m,'count':n} for (d,m),n in sorted(sop_counts.items())],
+        'graphs': dict(Counter(r['sop_graph_key'] for r in rows if r.get('sop_graph_key'))),
+        'limits': ['Historical replays are not newly sampled SOP tasks.',
+                   'Method frequency is reported separately from normalized policy-context diversity.']})
     save(output / 'records.json', rows)
     save(output / 'evidence_receipts.json', receipts)
     for name, expected in {**identity['code'], **pinned}.items():
@@ -218,7 +231,7 @@ def audit_and_release(producer, output, audit_root, *, complete=True):
         (output / 'teacher.jsonl').write_text(''.join(json.dumps(e, ensure_ascii=False) + '\n' for e in episodes))
         save(output / 'valid_ids.json', sorted(e['id'] for e in episodes if e['split'] == 'dev'))
         save(output / 'tasks.json', {'tasks': [{'id': e['id'], 'sandbox': e['sandbox']} for e in episodes]})
-        names = ['teacher.jsonl', 'valid_ids.json', 'tasks.json', 'review.json', 'coverage.json',
+        names = ['teacher.jsonl', 'valid_ids.json', 'tasks.json', 'review.json', 'coverage.json', 'sop_coverage.json',
                  'records.json', 'evidence_receipts.json']
         save(output / 'release.json', {'training_ready': True, 'train_tasks': 1000, 'dev_tasks': 200,
              'one_episode_per_task': True, 'producer': str(producer), 'platform': identity['platform'],

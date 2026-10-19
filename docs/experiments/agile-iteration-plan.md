@@ -554,3 +554,15 @@ DeepSeek 请求继续按已配置的非高峰窗口发送；本次认证、迁�
 训练接续含历史对照，其他组为世界数据 / 等样本数公开 agent 混合、seed 0/1；配额完整和证据复核通过前不会训练。
 验证：完整回归 585 passed / 34 skipped；随后主 pipeline 修复保护相关 60 项通过，
 发布分区回归 7 项、领域语义（含证书实际退款、跨月连接）10 项通过。这些集合有重叠，不累加成总测试数。
+# 2026-10-19 SOP 沙箱升级与剩余语料接续
+
+用户要求先实施原子业务契约 / SOP 依赖图，再用新沙箱在非高峰期采样剩余 SFT。已停止 coherent-v1 的 producer 62892、continuation 62900；保留 442 条历史基线与本轮新增 114 条，共 556 条。训练此前尚未开始。
+
+- 新世界：`output/world_sop_v1/summary.json`，零售、航空全量及 train/dev 共 6 个 bundle 验收通过。
+- 通用代码：SOP 契约、DAG 校验/执行、写入范围、结果绑定、因果消融、任务修复反馈、用户侧隐藏绑定语法、规范化图特征与发布复核。
+- 首批方法：零售 4 个、航空 7 个；均有独立 env/verifier 执行测试。领域规范与通用引擎分离；图书馆验证自动修复通路。
+- 回归：相关完整回归 436 passed / 1 skipped；随后新增方法见证、SOP 自动修复与蓝图必需模式检查通过（分批测试存在重叠，不累加为总数）。
+- 历史迁移：`output/world_sft_sop_v1/replay/progress.json`；原样重认证与回放，不把旧示范标成新采样。
+- 接续：`experiments/bench/advance_sop_sft.py` → `prepare_sop_experiment.py` → 冻结 runtime → 非高峰补题采样 → 完整数据联合验收 → 原训练与评测协议。状态写入 `advance_status.json`，启动后另有 `launch.json` 和 `sop_control_v1/status.json`。
+
+目标仍为 1000 train + 200 dev（各领域各 500/100）。若 556 条全部通过迁移且去重保留，剩余零售训练 316、航空训练 328，共 644 条；最终缺口以重认证后的 plan 为准。新世界不含电信。未改变 benchmark 数据或评分器。任意循环、无限 SOP 自动搜索、真实物流/退货结算及真人工单不在当前实现范围。

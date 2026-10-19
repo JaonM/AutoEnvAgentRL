@@ -72,7 +72,8 @@ def migrate(result, worlds, output):
     oldpilot=read(Path(old['source_episode']).parent/'pilot_result.json')
     domain=old['domain'];contract=read(worlds/domain/'behavior_contract.json')
     try:
-        newbundle=prepare(oldpilot['bundle'],folder/'semantic_task',domain,contract)
+        profile=read(worlds/'summary.json').get('semantic_profile')
+        newbundle=prepare(oldpilot['bundle'],folder/'semantic_task',domain,contract,sop=profile=='sop-v1')
         loaded=bundle.load_bundle(newbundle);request=loaded['request']
         original_request=read(Path(oldpilot['bundle'])/'request.json')
         if request['agent_policy']!=original_request['agent_policy']:raise ValueError('public policy changed: new audit needed')

@@ -61,7 +61,8 @@ def main():
         unfilled.append(original)
     job_index=30000
     for group,g in groups.items():
-        schema=read(Path(g['bundle'])/'request.json')['goal_schema']
+        world=read(Path(g['bundle'])/'request.json');schema=world['goal_schema']
+        sop_methods=(world.get('sop_blueprint') or {}).get('methods', {})
         templates={};families=sorted({a['scenario_family'] for a in g['assignments']})
         for a in g['assignments']:
             key=(a['type'],tuple(a['processes']),tuple(a['script']))
@@ -82,7 +83,21 @@ def main():
                 variants=[[],['inquisitive'],['wrong_first'],['ambiguous'],['ambiguous','inquisitive']] if has_record else [[],['inquisitive']]
                 a['script']=variants[serial%len(variants)]
                 a['brief']+='The assigned interaction must actually happen before any write. '
-            if a['quota_group']=='multi_write' and a['type']!='dependent_multi_write':
+            if a['quota_group']=='multi_write' and sop_methods:
+                choices=[(name,m) for name,m in sop_methods.items() if
+                         sum(bool(schema[n].get('approval')) for n in m['processes'])>=2 and
+                         all('refused' not in outcomes for outcomes in m.get('statuses',{}).values())]
+                if not choices:raise ValueError('SOP world needs an executable multi-write method')
+                # Three retries per slot must not stride through only every
+                # third method when the catalogue size shares that factor.
+                name,method=choices[(serial//3+serial%3)%len(choices)]
+                a.update(processes=method['processes'],type='sop_multi_write',shape='complex',script=['multi_goal'],
+                    requirements={'min_goals':len(method['processes']),'min_writes':2,'state_effect':'changed','sop_method':name},
+                    required_statuses=[],sop_method=name)
+                a['brief']=(f'Use SOP method {name}: '+method['intent']+
+                    ' Follow its shared-object constraints, bindings and outcome branches in sop_blueprint. '
+                    'User reveals later requests at the appropriate stage and separately confirms each write. ')
+            elif a['quota_group']=='multi_write' and a['type']!='dependent_multi_write':
                 count=3 if serial%3==0 else 2
                 combos=list(itertools.combinations(writers,count))
                 if combos:
