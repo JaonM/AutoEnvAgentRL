@@ -32,6 +32,7 @@ import random
 import re
 import sys
 from pathlib import Path
+from env_factory.core import spec as request_spec
 
 from trajectory_dedup import add_arguments, deduplicate
 
@@ -212,7 +213,7 @@ def main():
     from env_factory.core.sandbox import load_module
     from env_factory.runtime import is_write
     for task_id, sandbox in sandboxes.items():
-        request = json.loads((Path(sandbox) / 'request.json').read_text())
+        request = request_spec.read(Path(sandbox) / 'request.json')
         try:
             tools = load_module(Path(sandbox) / 'env.py', role='env').make_tools()
             write_tools[task_id] = {name for name, fn in tools.items() if is_write(fn)}

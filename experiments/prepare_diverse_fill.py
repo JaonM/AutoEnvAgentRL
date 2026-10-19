@@ -6,13 +6,14 @@ import copy
 import itertools
 import json
 from pathlib import Path
+from env_factory.core import spec as request_spec
 import random
 
 from env_factory.diversity import features, Normalizer, digest, AdmissionLedger
 from env_factory.diversity_context import signature
 
 
-def read(p):return json.loads(Path(p).read_text())
+def read(p):return request_spec.read(p) if Path(p).name == 'request.json' else json.loads(Path(p).read_text())
 def save(p,v):
     p=Path(p);p.parent.mkdir(parents=True,exist_ok=True);p.write_text(json.dumps(v,ensure_ascii=False,indent=2)+'\n')
 

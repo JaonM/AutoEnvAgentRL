@@ -15,6 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
 
+from env_factory.core import spec as request_spec
 from env_factory.authoring import branches, prompts
 from env_factory.authoring.codex import CodexRunner  # noqa: E402
 from env_factory.core import spec  # noqa: E402
@@ -22,7 +23,7 @@ from env_factory.core.sandbox import load_module  # noqa: E402
 
 
 def replay(build, runner):
-    request = json.loads((build / 'request.json').read_text())
+    request = request_spec.read(build / 'request.json')
     env_path = next(p for p in (build / 'bundle' / 'env.py', build / 'arbiter' / 'env.py', build / 'author' / 'env.py')
                     if p.exists())
     schema = json.loads((build / 'schema' / 'answer_schema.json').read_text())

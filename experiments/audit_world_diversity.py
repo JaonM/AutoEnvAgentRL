@@ -3,6 +3,7 @@ import argparse
 from collections import Counter, defaultdict
 import json
 from pathlib import Path
+from env_factory.core import spec as request_spec
 
 from env_factory.coverage import matches
 from env_factory.diversity import features, repetition, digest, Normalizer
@@ -10,7 +11,7 @@ from env_factory.diversity_context import signature
 from env_factory.production.dialogue_audit import evidence_ok
 
 
-def read(path): return json.loads(Path(path).read_text())
+def read(path): return request_spec.read(path) if Path(path).name == 'request.json' else json.loads(Path(path).read_text())
 def save(path, value):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(json.dumps(value, ensure_ascii=False, indent=2)+'\n')

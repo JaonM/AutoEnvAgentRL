@@ -3,6 +3,7 @@ import argparse
 import copy
 import json
 from pathlib import Path
+from env_factory.core import spec as request_spec
 import shutil
 
 from env_factory.certify import bundle
@@ -68,7 +69,7 @@ def main():
                 stage.mkdir(parents=True, exist_ok=True)
                 for name in ('env.py', 'verifier.py', 'answer_schema.json'):
                     shutil.copyfile(source / name, stage / name)
-                save(stage / 'request.json', request)
+                request_spec.write(request, stage / 'request.json')
                 bundle.export(stage, stage / 'request.json', report, target / 'bundle', status='qualified')
                 result = {'domain': domain, 'split': split, 'bundle': str((target / 'bundle').resolve()),
                           'owners': scoped['owners'], 'private_row_ids': scoped['private_row_ids'],

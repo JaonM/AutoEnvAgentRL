@@ -11,6 +11,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from collections import Counter
 import json
 from pathlib import Path
+from env_factory.core import spec as request_spec
 import traceback
 
 from env_factory.certify import bundle, trajectory, policy_gate
@@ -22,7 +23,7 @@ from repair_world_semantics import prepare, save
 from release_diverse_dataset import validate_evidence
 
 
-def read(p): return json.loads(Path(p).read_text())
+def read(p): return request_spec.read(p) if Path(p).name == 'request.json' else json.loads(Path(p).read_text())
 
 
 def replay(loaded, old):

@@ -20,6 +20,7 @@ import collections
 import json
 import statistics
 from pathlib import Path
+from env_factory.core import spec as request_spec
 
 LINES = {'user_replies': 4, 'agent_turns': 8, 'asks_first': 0.7, 'triggered': 0.8}
 ASKING = ('identity', 'ambiguous', 'clarify', 'forgotten')
@@ -66,7 +67,7 @@ def report(bundles):
         gate = folder / 'policy-natural.json'
         if not gate.exists():
             continue
-        request = json.loads((folder / 'request.json').read_text())
+        request = request_spec.read(folder / 'request.json')
         rows += [episode_stats(request, e) for e in json.loads(gate.read_text()).get('episodes') or []
                  if e.get('messages')]
     if not rows:

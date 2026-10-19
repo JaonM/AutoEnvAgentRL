@@ -22,6 +22,7 @@ import re
 import shutil
 import sys
 from pathlib import Path
+from env_factory.core import spec as request_spec
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
@@ -188,8 +189,9 @@ def relabel_once(task, out_root, client, negative_feedback=''):
         key = 'agent_policy' if request.get('agent_policy') else 'business_rules'
         new_request[key] = policy.replace(clause['original'], clause['replacement'], 1)
     new_request['relabelled'] = {'from': str(source), 'kept': keep}
-    (target / 'request.json').write_text(json.dumps(new_request, ensure_ascii=False, indent=1))
+    request_spec.write(new_request, target / 'request.json')
     manifest = json.loads((target / 'manifest.json').read_text())
+    manifest['files'].update({str(p.relative_to(target)): bundle.sha256(p) for p in request_spec.input_files(target / 'request.json')})
     manifest['files'] = {name: bundle.sha256(target / name) for name in manifest['files']}
     manifest['relabelled_from'] = str(source)
     (target / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=1))

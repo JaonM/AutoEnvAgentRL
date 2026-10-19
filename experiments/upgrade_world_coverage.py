@@ -3,6 +3,7 @@ import argparse
 import copy
 import json
 from pathlib import Path
+from env_factory.core import spec as request_spec
 
 from env_factory.certify import bundle
 from env_factory.core.sandbox import load_module
@@ -190,7 +191,7 @@ def main():
     (stage/'env.py').write_text(env);(stage/'verifier.py').write_text(verifier)
     request['goal_schema']=schemas(request['goal_schema'])
     request['id']='airline-coverage-v1'
-    save(stage/'request.json',request);save(stage/'answer_schema.json',loaded['schema'])
+    request_spec.write(request, stage / 'request.json');save(stage/'answer_schema.json',loaded['schema'])
     issues,notes=check_world(stage)
     save(args.output/'airline/world_check.json',{'passed':not issues,'issues':issues,'notes':notes})
     if issues: raise ValueError(issues)

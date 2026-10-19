@@ -3,6 +3,7 @@ import argparse
 import copy
 import json
 from pathlib import Path
+from env_factory.core import spec as request_spec
 import shutil
 
 from env_factory.certify import bundle, behavior
@@ -90,7 +91,7 @@ def prepare(source, output, domain, behavioral, *, sop=False):
         request['source']['semantic_profile']='sop-v1'
     output=Path(output);stage=output/'source';stage.mkdir(parents=True,exist_ok=False)
     for name in ('env','verifier'):shutil.copyfile(SOURCE/f'{domain}_{name}.py',stage/f'{name}.py')
-    save(stage/'request.json',request);save(stage/'answer_schema.json',loaded['schema'])
+    request_spec.write(request, stage / 'request.json');save(stage/'answer_schema.json',loaded['schema'])
     candidate={**loaded,'request':request,'env':load_module(stage/'env.py',role='env'),
                'verifier':load_module(stage/'verifier.py',role='verifier')}
     errors=contracts.interface_problems(candidate['env'].make_tools(),request)

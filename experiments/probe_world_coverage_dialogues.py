@@ -8,6 +8,7 @@ import json
 import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from env_factory.core import spec as request_spec
 
 from env_factory.certify import bundle, policy_gate, sufficiency, trajectory
 from env_factory.core.llm import ChatClient, load_env_file
@@ -85,7 +86,7 @@ def main():
         request['category']=task_category(source,request)
         loaded.update(request=request,schema=task_schema(request['goal_schema'],facts['goals']))
         stage=folder/'source';stage.mkdir(parents=True,exist_ok=True)
-        save(stage/'request.json',request);save(stage/'answer_schema.json',loaded['schema'])
+        request_spec.write(request, stage / 'request.json');save(stage/'answer_schema.json',loaded['schema'])
         for filename in ('env.py','verifier.py'):shutil.copy(source/filename,stage/filename)
         quality=bundle.qualify_loaded(loaded);save(folder/'qualification.json',quality)
         if not quality['passed']:

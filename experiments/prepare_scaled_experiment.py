@@ -8,13 +8,14 @@ from collections import defaultdict, deque
 import copy
 import json
 from pathlib import Path
+from env_factory.core import spec as request_spec
 import shutil
 import subprocess
 import sys
 
 
 def read(path):
-    return json.loads(Path(path).read_text())
+    return request_spec.read(path) if Path(path).name == 'request.json' else json.loads(Path(path).read_text())
 
 
 def save(path, value):

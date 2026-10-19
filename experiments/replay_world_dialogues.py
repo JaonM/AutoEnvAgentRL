@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import copy
 import json
 from pathlib import Path
+from env_factory.core import spec as request_spec
 import shutil
 
 from env_factory.certify import bundle, policy_gate, sufficiency
@@ -92,7 +93,7 @@ def prepare_bundle(source, destination, changes):
         stage.mkdir(parents=True, exist_ok=True)
         for name in ('env.py', 'verifier.py'):
             shutil.copyfile(source / name, stage / name)
-        save(stage / 'request.json', request)
+        request_spec.write(request, stage / 'request.json')
         save(stage / 'answer_schema.json', schema)
         bundle.export(stage, stage / 'request.json', report, destination, status='qualified')
     save(receipt, record)

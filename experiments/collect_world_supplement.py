@@ -7,6 +7,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 from pathlib import Path
+from env_factory.core import spec as request_spec
 
 from env_factory.certify import bundle, policy_gate, trajectory
 from env_factory.core.llm import ChatClient, load_env_file
@@ -73,7 +74,9 @@ def main():
             bundle.export(source / 'bundle', source / 'bundle/request.json', report, target, status='qualified')
         loaded = bundle.load_bundle(target)
         # Freeze all business inputs; only platform qualification evidence can differ.
-        for name in ('request.json', 'answer_schema.json', 'env.py', 'verifier.py'):
+        if loaded['request'] != request_spec.load(source / 'bundle/request.json'):
+            raise ValueError('business request changed during supplementation')
+        for name in ('answer_schema.json', 'env.py', 'verifier.py'):
             if (target / name).read_bytes() != (source / 'bundle' / name).read_bytes():
                 raise ValueError('business input changed during supplementation')
         rules = trajectory.constraints(loaded['request'])

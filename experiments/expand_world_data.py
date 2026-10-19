@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import shutil
 
+from env_factory.core import spec as request_spec
 from env_factory.certify import bundle
 from env_factory.core.reward import grade
 from env_factory.production.data_scope import partition
@@ -32,7 +33,7 @@ def certify(source, request, output):
     stage = output / 'source';stage.mkdir(parents=True, exist_ok=True)
     for name in ('env.py', 'verifier.py'):
         shutil.copyfile(source / name, stage / name)
-    save(stage / 'request.json', request);save(stage / 'answer_schema.json', schema)
+    request_spec.write(request, stage / 'request.json');save(stage / 'answer_schema.json', schema)
     bundle.export(stage, stage / 'request.json', report, output / 'bundle', status='qualified')
     return loaded
 
@@ -108,7 +109,7 @@ def main():
         save(args.output / domain / 'record_probes.json', record_probes)
         split = partition(tables, ownership, seed=args.seed, heldout_count=100)
         groups = []
-        samples = [loaded['request']] + [json.loads(p.read_text()) for p in sorted((args.pilot / domain / 'tasks').glob('t*/bundle/request.json'))]
+        samples = [loaded['request']] + [request_spec.read(p) for p in sorted((args.pilot / domain / 'tasks').glob('t*/bundle/request.json'))]
         for name, scope in split['partitions'].items():
             scoped = copy.deepcopy(request);scoped['tables'] = scope['tables'];scoped['id'] += '-' + name
             selected = None

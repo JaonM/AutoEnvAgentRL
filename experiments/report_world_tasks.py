@@ -5,10 +5,11 @@ import collections
 import json
 import statistics
 from pathlib import Path
+from env_factory.core import spec as request_spec
 
 
 def read(path):
-    return json.loads(path.read_text()) if path.exists() else None
+    return (request_spec.read(path) if path.name == 'request.json' else json.loads(path.read_text())) if path.exists() else None
 
 
 def histogram(values):

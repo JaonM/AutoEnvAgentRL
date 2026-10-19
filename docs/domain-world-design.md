@@ -243,3 +243,24 @@ M1 可以单独交付，现有的一题一环境任务立刻就能用上复杂�
 旧队列的 556 条已验收示范先在新版本逐条重认证、原样回放；只有对话、工具观察、公开政策和判分一致才复用，并保留 `deterministic_replay` 来源。新题使用新的沙箱与 SOP 出题规则。
 
 `experiments/bench/advance_sop_sft.py` 等待迁移完成，准备缺口、冻结运行副本，启动采样与训练续跑；发生迁移错误会停止并记原因。所有 DeepSeek 调用沿用 `ENVFACTORY_OFFPEAK=1` 传输门禁：北京时间工作日 09–12、14–18 为项目配置的高峰窗口。补齐 1000 train / 200 dev 并通过联合发布后，自动接续既定 seed0/seed1、公开 agent 数据等比例混合、开发集早停、164 题及固定 32×8 评测。
+
+## 11. 规格与数据分离：2026-10-19
+
+新产物的 `request.json` 保留业务规则、公开政策/API、goal schema、SOP 蓝图、数据约束及来源；不再内嵌完整业务记录、用户事实和验收夹具。`request_assets`（version 1）按字段引用同目录文件并保存 SHA-256：`tables → data.json`、`user_facts → facts.json`、`behavior_contract → behavior_contract.json`、`sop_contract → sop_contract.json`。后两者是独立验收依据，外置不会削弱检查，也不会交给学生。SOP 原子事务和组合方法仍在规格里。
+
+`core.spec.read(path)` 解析引用并还原原始字典，不增加默认字段；`load(path)` 在此基础上补默认值、执行规格校验。旧的全内嵌格式继续可读。路径必须留在请求目录内；缺文件、哈希不符、同一字段同时内嵌与引用均拒绝。`spec.write(request, path)` 接收已经解析的字典，统一写入数据文件和引用。非标准文件名（例如 `requests/gen-000.json`、`world.json`）使用各自的 `gen-000.assets/`、`world.assets/` 子目录，避免批量枚举 `*.json` 时把数据误当任务，也避免多个请求互相覆盖数据。
+
+生成会话默认从 `brief.md`、规格、`data_preview.json` 和答案 schema 开始。预览提供每表行数、顶层字段和经过明确标记的受限样例（每表最多一条、样例不超过 4096 字节）；它不是完整 schema 或运行数据。需要嵌套字段或特定客户记录时，用 Python 精确读取，避免打印整个数据集。宿主程序仍用完整数据执行所有工具、扰动、验收和评分。任务作者继续只获得原来的 owner shard 和外键闭包，分离存储不扩大可见范围。
+
+生成、世界构建、任务组装、bundle 导出/加载/重新认证、实验补题/回放和数据筛选入口统一处理该格式。Bundle manifest 覆盖全部被引用文件；重新认证保留这些哈希。任务作者及实现修复者不能修改引用数据或独立案例。当前改造没有按原子事务分模块生成代码，也没有引入自动上下文检索器；按需读取仍由生成会话执行。
+
+对旧规格做独立无损转换：
+
+```bash
+.venv/bin/python -m env_factory split-request \
+  --request path/to/old/request.json --output path/to/new_directory
+```
+
+输出目录必须不存在；转换不覆盖原世界，也不直接重签原 bundle。`output/world_spec_split_v1` 保留当前零售、航空的转换与验收证据：完整字典逐字段相等，零售 `request.json` 从 3,012,223 字节降至 136,596 字节，航空从 7,171,877 字节降至 151,495 字节。预览分别为 4,338 / 4,722 字节。这是文件体积变化，不是实测模型 token 或费用节省比例。完整业务数据未删减，独立新 bundle 经过原有业务认证。
+
+正在运行的 `world_sft_sop_v2/runtime` 与其世界不改动，继续原实验；新代码影响后续构建。加载旧 bundle 时仍遵守 platform identity 校验，需在新平台完整重新认证，不能仅修改签名绕过验收。

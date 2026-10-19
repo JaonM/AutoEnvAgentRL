@@ -31,6 +31,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
 
+from env_factory.core import spec as request_spec
 from env_factory.core.llm import ChatClient, load_env_file  # noqa: E402
 from env_factory.production.openings import diversity, persona, red_flags  # noqa: E402
 
@@ -125,11 +126,11 @@ def items(source, out):
     else:
         out.mkdir(parents=True)
         for path in sorted(source.glob('*.json')):
-            request = json.loads(path.read_text())
+            request = request_spec.read(path)
 
             def save(text, request=request, path=path):
                 request['original_user_request'], request['user_request'] = request['user_request'], text
-                (out / path.name).write_text(json.dumps(request, ensure_ascii=False, indent=1))
+                request_spec.write(request, out / path.name)
             shutil.copy(path, out / path.name)  # unchanged copy until a rewrite is accepted
             yield request['id'], request['category'], request['user_request'], request['business_rules'], save
 

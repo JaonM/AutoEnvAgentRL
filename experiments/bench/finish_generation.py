@@ -20,6 +20,7 @@ import os
 import threading
 import time
 from pathlib import Path
+from env_factory.core import spec as request_spec
 
 
 def main():
@@ -66,7 +67,7 @@ def main():
         report = json.loads((folder / 'check-request.json').read_text()) if (folder / 'check-request.json').exists() else None
         if not report or not report['passed']:
             return reject(row | {'passed': False, 'problems': (report or {}).get('problems', ['no request'])[:5]})
-        request = json.loads((folder / 'request.json').read_text())
+        request = request_spec.read(folder / 'request.json')
         request.setdefault('time', {'start': 10, 'tick': 0})
         request['language'] = langs[index]
         opening, persona, problems = generate.write_opening(client, request, f'gen-{index:03d}')
@@ -81,7 +82,7 @@ def main():
         request['id'] = f'gen-{index:03d}'
         request['source'] = {'generated': domain['name'], 'family': domain.get('family'), 'shape': shape,
                              'persona': persona, 'language': langs[index], 'opening_writer': client.model}
-        (output / 'requests' / f"{request['id']}.json").write_text(json.dumps(request, ensure_ascii=False, indent=1))
+        request_spec.write(request, output / 'requests' / f"{request['id']}.json")
 
     todo = [i for i in range(count) if not (output / 'requests' / f'gen-{i:03d}.json').exists() and i not in rejected]
     print(f'{len(todo)} requests to finish', flush=True)
@@ -112,7 +113,7 @@ def main():
         if not path.exists():
             rows.append(rejected.get(index, base_row(index) | {'passed': False, 'problems': ['not finished']}))
             continue
-        request = json.loads(path.read_text())
+        request = request_spec.read(path)
         twin = next((k for k in kept if generate.similarity(generate.signature(k), generate.signature(request))
                      >= generate.SIMILAR), None)
         if twin is not None:

@@ -15,17 +15,18 @@ import json
 import threading
 import time
 from pathlib import Path
+from env_factory.core import spec as request_spec
 
 
 def amend(folder, policy):
     """Store the policy in the bundle's request.json; requalify then re-certifies the changed bundle."""
     from env_factory.certify import bundle
     path = folder / 'request.json'
-    request = json.loads(path.read_text())
+    request = request_spec.read(path)
     request['agent_policy'] = policy
-    path.write_text(json.dumps(request, ensure_ascii=False, indent=1))
+    request_spec.write(request, path)
     manifest = json.loads((folder / 'manifest.json').read_text())
-    manifest['files']['request.json'] = bundle.sha256(path)
+    manifest['files'].update({str(p.relative_to(folder)): bundle.sha256(p) for p in request_spec.input_files(path)})
     (folder / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=1))
 
 
