@@ -39,10 +39,11 @@ def main():
     from env_factory.authoring.codex import CodexRunner, InfrastructureError
     from env_factory.core.llm import load_env_file
     from env_factory.certify import bundle
-    from env_factory.production import data_scope, dialogue_audit
+    from env_factory.production import data_scope, dialogue_audit, offpeak
     from sample_world_tasks import draft_batch, certify_task
     from generate_world_dataset import collect
     load_env_file()
+    offpeak.gate_chat_clients()
     plan=read(args.plan);jobs=plan['jobs'][:args.limit] if args.limit else plan['jobs']
     audit=Path(plan['source_audit']);baseline=read(audit/'records.json')
     context_rules=read(plan['context_rules'])

@@ -6,6 +6,13 @@ The judge is the same for every arm.   .bench/tau2/bin/python experiments/bench/
 """
 import os
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'src'))
+from env_factory.production import offpeak
+import tau2.utils.llm_utils as llm_utils
+
+llm_utils.completion = offpeak.gate_completion(llm_utils.completion)
 
 import tau2.evaluator.evaluator_nl_assertions as nl
 

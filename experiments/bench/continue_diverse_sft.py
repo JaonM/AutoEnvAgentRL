@@ -56,7 +56,7 @@ def main():
     save(args.output / 'protocol.json', {'started': started, 'producer': str(args.producer),
          'producer_pid': args.producer_pid, 'runtime': str(ROOT), 'frozen_inputs': frozen,
          'public_mix': str(args.public_mix), 'old_control': args.old_control,
-         'wait_budget_hours': args.wait_hours or None, 'offpeak_wait_disabled': True,
+         'wait_budget_hours': args.wait_hours or None, 'offpeak_wait_disabled': False,
          'authorization': 'User requested automatic continuation through training and evaluation after generation.',
          'order': ['complete 1000/200', 'joint deterministic evidence/coverage review',
                    'world seed0 + 164 evaluation', 'base 164', 'mixed seed0 + 164',
@@ -94,7 +94,7 @@ def main():
         if args.old_control:
             command.append('--old-control')
         save(args.output / 'control_command.json', command)
-        env = {**os.environ, 'PYTHONPATH': str(ROOT / 'src'), 'ENVFACTORY_OFFPEAK': '0',
+        env = {**os.environ, 'PYTHONPATH': str(ROOT / 'src'), 'ENVFACTORY_OFFPEAK': '1',
                'TOKENIZERS_PARALLELISM': 'false'}
         with (args.output / 'control.log').open('x') as log:
             child = subprocess.Popen(command, env=env, stdout=log, stderr=subprocess.STDOUT)

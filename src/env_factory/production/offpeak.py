@@ -13,6 +13,8 @@ import argparse
 import datetime
 import os
 import time
+from functools import wraps
+from urllib.parse import urlparse
 
 BEIJING = datetime.timezone(datetime.timedelta(hours=8))
 PEAK = ((9, 12), (14, 18))  # Beijing hours, [start, end)
@@ -50,6 +52,52 @@ def wait(log=None):
         time.sleep(pause)
         waited += pause
     return waited
+
+
+def scheduled_remote(base_url, model=''):
+    """Identify DeepSeek calls, including a configured provider gateway; exclude local inference."""
+    host = urlparse(base_url or '').hostname
+    if host in ('localhost', '127.0.0.1', '::1'):
+        return False
+    return ('deepseek' in str(model).lower() or 'deepseek' in (host or '').lower())
+
+
+def gate_completion(completion):
+    """Check every tau2 completion, including calls after a tariff-window boundary."""
+    @wraps(completion)
+    def call(*args, **kwargs):
+        model = kwargs.get('model', args[0] if args else '')
+        if scheduled_remote(kwargs.get('api_base') or kwargs.get('base_url'), model):
+            wait(lambda message: print(message, flush=True))
+        return completion(*args, **kwargs)
+    return call
+
+
+def gate_chat_clients():
+    """Opt-in batch transport scheduling, leaving sandbox semantics and identity unchanged.
+
+    Gate each HTTP attempt, rather than a whole conversation or only its first
+    call. An already submitted request may finish after the boundary.
+    """
+    from env_factory.core.llm import ChatClient
+    if getattr(ChatClient, '_offpeak_transport', False):
+        return
+    initialize = ChatClient.__init__
+
+    @wraps(initialize)
+    def init(self, *args, **kwargs):
+        initialize(self, *args, **kwargs)
+        if scheduled_remote(self.base_url, self.model):
+            opening = self.opener.open
+
+            @wraps(opening)
+            def open_request(*a, **k):
+                wait(lambda message: print(message, flush=True))
+                return opening(*a, **k)
+            self.opener.open = open_request
+
+    ChatClient.__init__ = init
+    ChatClient._offpeak_transport = True
 
 
 def main():
