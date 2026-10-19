@@ -485,3 +485,24 @@ GPU 主线的顺序：I2p-E → I2p-F → I2 → I3 → I3b → I3c。工程支�
 顺序保留 world / 1:1 公开 agent 混合、seed 0/1、历史数据对照；开发集 loss 早停、最多 10 epoch、每 epoch 验证 8 次。
 训练后逐组进行同协议 164 题评测，再做固定 32 题 × 8 次；step 0 如果最优，照实报告没有训练增益。
 生成和接续分别使用冻结的 `runtime` / `control_runtime`，后续主目录开发不改变本轮实验输入。
+
+### 2026-10-19 调度变更：DeepSeek 批量调用限非高峰
+
+用户新增要求覆盖此前连续运行的时段设置。沿用项目配置：北京时间工作日 09:00–12:00、14:00–18:00
+等待，其余时段及周末允许调用；这是当前调度配置，不是本次重新核实的供应商价格声明。
+截至切换已验收 490 题（零售训练 146、航空训练 144、两个开发集各 100），全部保留。
+
+当前生成代码与实验身份保持冻结，`experiments/bench/offpeak_follow_process.py` 监管 PID 79269 及其子进程，
+高峰暂停整个生成现场、非高峰自动恢复；本轮因此也会暂停与生成耦合的 Codex 工作。
+状态在 `output/world_sft_scaled_v1/offpeak_status.json`。已发送给服务端的请求不可能撤回，
+时段切换阻止后续发送；进程级迁移保留当前内存与文件，不重新采集已验收示范。
+
+后续新生成进程接入 `offpeak.gate_chat_clients()`，在 DeepSeek 的每次 HTTP 尝试前等待，
+包含开场、充分性检查、教师、模拟用户与审计；独立的 Codex 调用不受该请求级门控影响。
+tau2 在共享 completion 入口逐次门控 DeepSeek，包括模拟用户和自然语言判分，
+不能只在快评开始时检查窗口；本地推理请求旁路此等待，生成参数与判分不变。
+接续脚本取消强制 `ENVFACTORY_OFFPEAK=0`，改为启用等待，本地 SFT 训练不加时段限制。
+
+当前接续状态改为 `output/world_sft_scaled_v1/scaled_control_offpeak_v1/status.json`，运行代码冻结在
+`offpeak_control_runtime`；旧 `scaled_control_v2` 标为 superseded，未开始训练。
+非高峰调度、调用门控与接续相关测试共 20 项通过，当前生成文件哈希核对无变化。
