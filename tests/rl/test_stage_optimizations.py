@@ -133,3 +133,18 @@ def test_deferred_checkpoint_packed_rollout_resume(tiny_qwen3,tmp_path,monkeypat
         deferred_failure=True,config_overrides={'checkpoint_interval_steps':3,
         'policy_publish_interval_steps':3,'packed_inference':True,'gradient_checkpointing':True,
         'logits_chunk_size':2,'prefill_chunk_size':2,'prefix_cache_tokens':64})
+
+
+def test_decode_random_keys_are_independent_of_batch_membership(tiny_qwen3):
+    from rl.model import Policy
+    policy = Policy(str(tiny_qwen3), tuning='full')
+    def run(other):
+        decoder = policy.batch_decoder()
+        if other:
+            decoder.add('other', [{'role': 'user', 'content': 't8 t9'}], 4, 64, sampling_seed=999)
+        decoder.add('target', [{'role': 'user', 'content': 't3'}], 4, 64, sampling_seed=123)
+        result = {}
+        while decoder.requests:
+            result.update(decoder.tick())
+        return result['target']
+    assert run(False)['tokens'] == run(True)['tokens']

@@ -5,12 +5,14 @@ import mlx.core as mx
 from mlx_lm.sample_utils import make_sampler
 
 from rl.errors import ContextBudgetExceeded
+from rl.rollout.randomness import seed_for
 from rl.environments.chat import completion
 
 
 class BatchDecoder:
     def __init__(self, policy, *, greedy=False):
         self.policy = policy
+        self.greedy = greedy
         self.sampler = make_sampler(temp=0. if greedy else 1.)
         self.requests = {}
         self.order = []
@@ -18,7 +20,7 @@ class BatchDecoder:
         self.forward_calls = 0
         self.max_batch_size = 0
 
-    def add(self, key, messages, max_tokens, max_context, *, tools=None):
+    def add(self, key, messages, max_tokens, max_context, *, tools=None, sampling_seed=None):
         if key in self.requests:
             raise ValueError('duplicate decode request')
         prompt = self.policy.encode(messages, tools=tools)
@@ -31,7 +33,7 @@ class BatchDecoder:
             if hasattr(self.policy, '_iter_prefill'):
                 return (yield from self.policy._iter_prefill(mx.array([prompt])))
             return self.policy._prefill(mx.array([prompt]))
-        self.requests[key] = dict(prompt=prompt, tools=tools, tokens=[], old_logp=[], old_values=[],
+        self.requests[key] = dict(prompt=prompt, tools=tools, sampling_seed=sampling_seed, tokens=[], old_logp=[], old_values=[],
             prefill=prefill(), current=prompt[-1], limit=max_tokens, started=started,
             compute=0., prefill_seconds=0., reused_tokens=0, batch_sizes=[])
 
@@ -69,7 +71,13 @@ class BatchDecoder:
             self.order = order
         ids = mx.array([[self.requests[key]['current']] for key in order])
         logp, values = self.policy._batch_step(ids, self.cache)
-        chosen = self.sampler(logp)
+        if any(self.requests[key]['sampling_seed'] is not None for key in order) and not self.greedy:
+            chosen = mx.stack([
+                mx.random.categorical(logp[i], key=mx.random.key(seed_for(self.requests[key]['sampling_seed'], len(self.requests[key]['tokens']))))
+                if self.requests[key]['sampling_seed'] is not None else self.sampler(logp[i:i+1])[0]
+                for i, key in enumerate(order)])
+        else:
+            chosen = self.sampler(logp)
         selected = mx.take_along_axis(logp, chosen[:, None], axis=-1).squeeze(-1)
         mx.eval(chosen, selected, *([] if values is None else [values]))
         if not bool(mx.all(mx.isfinite(selected))) or (values is not None and not bool(mx.all(mx.isfinite(values)))):

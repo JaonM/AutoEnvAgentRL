@@ -173,3 +173,14 @@ def test_tree_rollout_to_real_optimizer(tiny_qwen3, tmp_path):
     result = trainer.step(samples)
     assert result['gradient_norm'] > 0 and policy.digest() != before
     assert {s['episode_index'] for s in samples} == set(range(6))
+
+
+
+@pytest.mark.parametrize('tiny_qwen3', [{'hidden_size': 64}], indirect=True)
+def test_real_workers_multiplex_groups(tiny_qwen3, tmp_path, monkeypatch):
+    from test_continuation import test_real_rollout_workers_share_queue_and_publish_complete_groups as run
+    monkeypatch.setenv('RL_TEST_MODEL', str(tiny_qwen3))
+    run(tmp_path)
+    groups = [json.loads(p.read_text()) for p in (tmp_path / 'queue').glob('result-*.json')]
+    assert any(g['wave_groups'] > 1 for g in groups)
+    assert all(g['policy_version'] == 0 for g in groups)

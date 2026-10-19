@@ -30,11 +30,21 @@ def environment_worker(connection, sandbox, parent_pid, factory="rl.environment:
     loaded_path = None
     try:
         from rl.data.contracts import create_runtime
-        environment = create_runtime(factory, sandbox)
+        if sandbox is not None:
+            environment = create_runtime(factory, sandbox)
+        binding = (sandbox, factory)
         while True:
             command, argument = connection.recv()
             if command == 'close':
                 break
+            if command == 'task':
+                target = (argument['sandbox'], argument['factory'])
+                if environment is None or binding != target:
+                    if environment is not None:
+                        environment.close()
+                    environment = create_runtime(target[1], target[0])
+                    binding, loaded_path = target, None
+                command, argument = argument['command'], argument['argument']
             with ExitStack() as resources:
                 durable = None
                 if command == 'durable':
@@ -128,7 +138,19 @@ class EnvironmentPool:
         self.workers = []
 
 
-def parallel_rollouts(policy, pool, config, seed, *, stop=None, notify=None, continuation=None, observe=None):
+def parallel_rollouts(policy, pool, config, seed, **kwargs):
+    iterator = rollout_steps(policy, pool, config, seed, **kwargs)
+    while True:
+        try:
+            progressed = next(iterator)
+            if not progressed:
+                time.sleep(.01)
+        except StopIteration as done:
+            return done.value
+
+
+def rollout_steps(policy, pool, config, seed, *, stop=None, notify=None, continuation=None, observe=None,
+                  decoder=None):
     notify = notify or (lambda stage: None)
     observe = observe or (lambda event, **fields: None)
     count = config['rollout_group']
@@ -148,7 +170,7 @@ def parallel_rollouts(policy, pool, config, seed, *, stop=None, notify=None, con
     branched = False
     active = {}
     next_episode = 0
-    decoder = policy.batch_decoder() if hasattr(policy, 'batch_decoder') else None
+    decoder = decoder if decoder is not None else (policy.batch_decoder() if hasattr(policy, 'batch_decoder') else None)
 
     journal = Path(continuation) / 'progress.json' if continuation is not None else None
 
@@ -182,6 +204,8 @@ def parallel_rollouts(policy, pool, config, seed, *, stop=None, notify=None, con
 
     def start(slot):
         nonlocal next_episode
+        if hasattr(pool, 'acquire') and not pool.acquire(slot):
+            return False
         job = jobs[next_episode]
         active[slot] = {'index':next_episode,'actions':[], 'rpc_intervals':[], 'started_at':time.time(),
                         'job': {k: v for k, v in job.items() if k != 'snapshot'},
@@ -191,6 +215,7 @@ def parallel_rollouts(policy, pool, config, seed, *, stop=None, notify=None, con
             send(slot, 'restore', job['snapshot'])
         else:
             send(slot,'reset',seed)
+        return True
 
     def branch():
         """Queue the continuations of the chosen fork points once every trunk has finished."""
@@ -217,18 +242,14 @@ def parallel_rollouts(policy, pool, config, seed, *, stop=None, notify=None, con
             else:
                 state['sequence'] -= 1
                 send(slot, operation, state['argument'])
-    for slot in range(min(len(pool.workers),count)):
-        if slot not in active and next_episode < len(jobs):
-            start(slot)
     while True:
-        if not active:
-            if tree and not branched and next_episode >= len(jobs):
-                branch()
-                for slot in range(len(pool.workers)):
-                    if slot not in active and next_episode < len(jobs):
-                        start(slot)
-            if not active:
-                break
+        if not active and tree and not branched and next_episode >= len(jobs):
+            branch()
+        for slot in range(len(pool.workers)):
+            if slot not in active and next_episode < len(jobs):
+                start(slot)
+        if not active and next_episode >= len(jobs):
+            break
         if stop is not None and stop.is_set():
             raise InterruptedError('parallel rollouts cancelled')
         progressed = False
@@ -295,8 +316,8 @@ def parallel_rollouts(policy, pool, config, seed, *, stop=None, notify=None, con
                         messages=reply['messages'], result=result)
                 completed[state['index']] = result
                 del active[slot]
-                if next_episode < len(jobs):
-                    start(slot)
+                if hasattr(pool, 'release'):
+                    pool.release(slot)
                 persist()
                 continue
             if operation == 'step':
@@ -327,15 +348,18 @@ def parallel_rollouts(policy, pool, config, seed, *, stop=None, notify=None, con
                             report=state['budget_admission'])
             state['operation'] = 'policy'
             state['generated_steps'] = 0
+            sample_options = dict(tool_options)
+            if getattr(policy, 'supports_sampling_seed', False):
+                sample_options['sampling_seed'] = action_seed(config, seed, state['index'], len(state['actions']))
             if decoder is not None:
                 try:
-                    decoder.add(slot, reply['messages'], config['max_tokens'], config['max_context'], **tool_options)
+                    decoder.add(slot, reply['messages'], config['max_tokens'], config['max_context'], **sample_options)
                 except ContextBudgetExceeded:
                     if config.get('context_limit_policy', 'finish') == 'fail':
                         raise
                     finish_context(slot)
             else:
-                state['generator'] = policy.iter_sample(reply['messages'],config['max_tokens'],config['max_context'], **tool_options)
+                state['generator'] = policy.iter_sample(reply['messages'],config['max_tokens'],config['max_context'], **sample_options)
         if decoder is not None and decoder.requests:
             progressed = True
             notify('batched-policy-decode')
@@ -343,8 +367,7 @@ def parallel_rollouts(policy, pool, config, seed, *, stop=None, notify=None, con
                 active[slot]['actions'].append(sample)
                 observe('action', rollout_index=active[slot]['index'], step=len(active[slot]['actions']), sample=sample)
                 send(slot, 'step', sample.get('action', sample['text']))
-        if not progressed:
-            time.sleep(.01)
+        yield progressed
     return completed
 
 
@@ -391,3 +414,10 @@ def environment_overlap(groups):
                        for a in first for b in second):
                     return True
     return False
+
+
+def action_seed(config, world_seed, episode_index, step):
+    # Stateless per-action keys make retries independent of decode order and batch membership.
+    identity = [config.get('_sampling_seed', config.get('seed', 0)), world_seed, episode_index, step]
+    from .randomness import seed_for
+    return seed_for(*identity)

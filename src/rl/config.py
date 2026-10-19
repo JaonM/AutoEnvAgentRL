@@ -71,6 +71,7 @@ class Config:
     updates: int = 0
     rollout_workers: int = 1
     rollout_concurrency: int = 8
+    rollout_active_groups: int = 2  # bounded wave; one model version shared until the wave drains
     watchdog_interval: float = 1.0
     micro_batch_size: int = 4
     max_tokens_per_micro_batch: int = 32768
@@ -200,6 +201,7 @@ class Config:
             "micro_batch_size",
             "max_tokens_per_micro_batch",
             "rollout_concurrency",
+            "rollout_active_groups",
             "epochs",
             "rollout_timeout",
             "eval_episodes",

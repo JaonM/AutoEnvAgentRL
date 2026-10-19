@@ -89,6 +89,7 @@ def test_real_rollout_workers_share_queue_and_publish_complete_groups(tmp_path):
     version = PolicyVersion(tmp_path / 'version.json', 0)
     config = {**asdict(Config(sandbox='unused', output=str(tmp_path), model=model,
                   rollout_workers=2, rollout_group=2, max_tokens=4, max_steps=2,
+                  thinking_mode='auto', tuning='qat',
                   prefill_chunk_size=16, prefix_cache_tokens=256, **options)),
               '_tasks':[asdict(task) for task in tasks], '_dataset_jobs':schedule.jobs,
               '_task_queue':str(task_queue.root), '_queue_capacity':4,

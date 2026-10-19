@@ -5,6 +5,8 @@ import json
 import os
 import time
 import traceback
+import uuid
+from contextlib import ExitStack
 
 from rl.checkpointing.checkpoint import atomic_json
 from rl.rollout.process_control import pin_policy
@@ -108,8 +110,17 @@ def rollout_worker_main(index, config, shared_version, results, stop):
         task_queue = TaskQueue(config['_task_queue'], config['_dataset_jobs'], config['_queue_capacity'])
         snapshot_seconds = 0.
         version = -1
+        from rl.rollout.multiplex import sample_groups
+        from rl.rollout.curriculum import Curriculum
+
+        def location(job):
+            path = Path(config['_task_queue']) / f"continuation-{job['dataset_index']}-attempt-{job.get('rollout_attempt', 0)}"
+            path.mkdir(exist_ok=True)
+            return path
+
         while not stop.is_set():
-            with task_queue.claim() as job:
+            with ExitStack() as wave:
+                job = wave.enter_context(task_queue.claim())
                 if job is None:
                     group_started_at = None
                     notify('task_queue_wait')
@@ -117,76 +128,97 @@ def rollout_worker_main(index, config, shared_version, results, stop):
                     continue
                 group_started_at = time.time()
                 count = job['dataset_index']
-                attempt = job.get('rollout_attempt', 0)
-                continuation = Path(config['_task_queue']) / f'continuation-{count}-attempt-{attempt}'
-                continuation.mkdir(exist_ok=True)
-                metadata_path = continuation / 'group.json'
+                metadata_path = location(job) / 'group.json'
+                wave_id = uuid.uuid4().hex
                 def choose_version():
+                    nonlocal wave_id
                     if metadata_path.exists():
-                        return json.loads(metadata_path.read_text())['policy_version']
+                        metadata = json.loads(metadata_path.read_text())
+                        wave_id = metadata.get('wave_id', f'legacy-{count}')
+                        return metadata['policy_version']
                     selected = shared_version.value
-                    atomic_json(metadata_path, {'policy_version': selected})
+                    atomic_json(metadata_path, {'policy_version': selected, 'wave_id': wave_id})
                     return selected
-                with pin_policy(Path(config['output']) / 'snapshots', choose_version) as current:
-                    mx.random.seed(config['seed'] + 1000 + count + attempt * 1000003)
-                    if version != current:
-                        notify('loading_snapshot')
-                        sync_started = time.perf_counter()
-                        policy.restore(Path(config['output']) / 'snapshots' / f'policy-{current:06d}.safetensors')
-                        version = current
-                        snapshot_seconds += time.perf_counter() - sync_started
+                current = wave.enter_context(pin_policy(Path(config['output']) / 'snapshots', choose_version))
+                if version != current:
+                    notify('loading_snapshot')
+                    sync_started = time.perf_counter()
+                    policy.restore(Path(config['output']) / 'snapshots' / f'policy-{current:06d}.safetensors')
+                    version = current
+                    snapshot_seconds += time.perf_counter() - sync_started
+                claimed = [job]
+                def compatible(candidate):
+                    path = location(candidate) / 'group.json'
+                    if not path.exists():
+                        return True
+                    metadata = json.loads(path.read_text())
+                    return metadata['policy_version'] == current and metadata.get('wave_id') == wave_id
+                for _ in range(config.get('rollout_active_groups', 1) - 1):
+                    extra = wave.enter_context(task_queue.claim(ready=compatible))
+                    if extra is None:
+                        break
+                    atomic_json(location(extra) / 'group.json', {'policy_version': current, 'wave_id': wave_id})
+                    claimed.append(extra)
+                if env is None:
+                    notify('loading_environment')
+                    env = EnvironmentPool(None, config['rollout_concurrency'],
+                                          factory=config.get('environment_factory', 'rl.environment:SandboxEpisode'))
+                specs, metadata = [], {}
+                for job in claimed:
                     task = next(task for task in tasks if task.id == job['task_id'])
-                    if current_task != task:
-                        if env is not None:
-                            env.close()
-                        current_task = task
-                        notify('loading_environment')
-                        env = EnvironmentPool(task.sandbox,min(config['rollout_concurrency'],config['rollout_group']),
-                                              factory=config.get('environment_factory', 'rl.environment:SandboxEpisode'))
-                    started = time.time()
-                    seed = job['seed']
+                    current_task = task
+                    key, attempt = job['dataset_index'], job.get('rollout_attempt', 0)
                     observer = RolloutMonitor(logger, {'run_id': config.get('_run_id'),
-                        'dataset_index': count, 'attempt': attempt, 'task_id': task.id,
-                        'policy_version': version, 'seed': seed},
+                        'dataset_index': key, 'attempt': attempt, 'task_id': task.id,
+                        'policy_version': version, 'seed': job['seed']},
                         samples=config.get('rollout_trace_samples', 1), max_chars=config.get('rollout_trace_max_chars', 16000))
-                    start = None
+                    start, curriculum = None, None
+                    start_path = location(job) / 'start.json'
                     if config.get('reverse_curriculum'):
-                        from rl.rollout.curriculum import Curriculum
                         curriculum = Curriculum(config['reverse_curriculum'], Path(config['output']) / 'curriculum.json',
-                                                threshold=config.get('curriculum_threshold', 0.6),
-                                                seed=config['seed'] + count)
-                        start = curriculum.start(task.id)
-                    try:
-                        episodes = parallel_rollouts(policy,env,{**config, '_start': start},seed,stop=stop,
-                                                     notify=notify, continuation=continuation, observe=observer)
+                                                threshold=config.get('curriculum_threshold', .6), seed=config['seed'] + key)
+                        if start_path.exists():
+                            start = json.loads(start_path.read_text())['start']
+                        else:
+                            start = curriculum.start(task.id)
+                            atomic_json(start_path, {'start': start})
+                    metadata[key] = (job, task, start, curriculum)
+                    specs.append({'key': key, 'sandbox': task.sandbox,
+                                  'config': {**config, '_start': start,
+                                             '_sampling_seed': config['seed'] + 1000 + key + attempt * 1000003},
+                                  'seed': job['seed'], 'continuation': location(job), 'observe': observer})
+                try:
+                    for key, episodes in sample_groups(policy, env, specs, stop=stop, notify=notify):
+                        job, task, start, curriculum = metadata[key]
                         if start:
                             curriculum.record(task.id, start['level'], episodes)
-                    except EnvironmentProtocolError as error:
-                        task_queue.quarantine(task.id, task.identity, error)
-                        logger.emit('task/quarantined', text=str(error), task_id=task.id,
-                                    dataset_index=count)
-                        env.close()
-                        env = None
-                        current_task = None
-                        continue
-                    for episode in episodes:
-                        episode['task_id'] = task.id
-                    group = {**job, 'schema_version':2, 'rollout_worker':index, 'group_id':f'{config.get("_run_id", "local")}/job-{count}-attempt-{attempt}', 'group_index':count,
-                             'task_id':task.id, 'task_identity':task.identity,
-                             'rollout_rng_after':[key.tolist() for key in mx.random.state], 'policy_version':version,
-                             'started_at':started, 'finished_at':time.time(), 'episodes':episodes,
-                             'policy_identity':config.get('_policy_identity'), 'temperature':config['temperature']}
-                    attach_contract(group)
-                    group['timings'] = {'weight_load': snapshot_seconds}
-                    snapshot_seconds = 0.
-                    group['shared_task'] = True
-                    task_queue.publish(group)
-                    logger.flush()
-                # The durable result is authoritative; a full notification queue cannot block workers.
-                try:
-                    results.put_nowait(group)
-                except queue.Full:
-                    pass
+                        for episode in episodes:
+                            episode['task_id'] = task.id
+                        group = {**job, 'schema_version': 2, 'rollout_worker': index,
+                                 'group_id': f"{config.get('_run_id', 'local')}/job-{key}-attempt-{job.get('rollout_attempt', 0)}",
+                                 'group_index': key, 'task_identity': task.identity, 'policy_version': version,
+                                 'rollout_rng_after': [k.tolist() for k in mx.random.state],
+                                 'started_at': group_started_at, 'finished_at': time.time(), 'episodes': episodes,
+                                 'policy_identity': config.get('_policy_identity'), 'temperature': config['temperature'],
+                                 'shared_task': True, 'wave_id': wave_id, 'wave_groups': len(specs),
+                                 'timings': {'weight_load': snapshot_seconds}}
+                        attach_contract(group)
+                        snapshot_seconds = 0.
+                        task_queue.publish(group)
+                        logger.flush()
+                        try:
+                            results.put_nowait(group)
+                        except queue.Full:
+                            pass
+                except EnvironmentProtocolError as error:
+                    job, task, _, _ = metadata[error.group_key]
+                    task_queue.quarantine(task.id, task.identity, error)
+                    logger.emit('task/quarantined', text=str(error), task_id=task.id,
+                                dataset_index=job['dataset_index'])
+                    # Other groups retain their durable journals. Close every in-flight
+                    # connection before reusing slots after a protocol failure.
+                    env.close()
+                    env = None
     except InterruptedError:
         if not stop.is_set():
             raise

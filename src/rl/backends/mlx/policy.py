@@ -6,6 +6,7 @@ import json
 import time
 
 import mlx.core as mx
+from rl.rollout.randomness import seed_for
 import mlx.nn as nn
 from mlx.utils import tree_flatten, tree_unflatten
 from mlx_lm import load
@@ -218,7 +219,9 @@ class Policy(nn.Module):
             except StopIteration as result:
                 return result.value
 
-    def iter_sample(self, messages, max_tokens=256, max_context=4096, greedy=False, *, tools=None):
+    supports_sampling_seed = True
+
+    def iter_sample(self, messages, max_tokens=256, max_context=4096, greedy=False, *, tools=None, sampling_seed=None):
         """Yield at token boundaries; each iterator owns an independent KV cache."""
         prompt = self.encode(messages, tools=tools)
         if len(prompt) + max_tokens > max_context:
@@ -234,7 +237,8 @@ class Policy(nn.Module):
         sampler = make_sampler(temp=0.0 if greedy else 1.0)
         for _ in range(max_tokens):
             logprobs, _ = self._step(current, cache)
-            token = int(sampler(logprobs[None])[0])
+            token = int(sampler(logprobs[None])[0] if sampling_seed is None or greedy else
+                        mx.random.categorical(logprobs, key=mx.random.key(seed_for(sampling_seed, len(tokens)))))
             tokens.append(token)
             old_logp.append(float(logprobs[token]))
             compute_seconds += time.perf_counter() - tick_started

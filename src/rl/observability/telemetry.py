@@ -97,6 +97,22 @@ def group_metrics(group):
         'protocol_errors': sum(bool(a.get('action', {}).get('protocol_error')) for a in actions),
         'token_limit_rate': sum(a.get('generation_finish') == 'token_limit' for a in actions) / max(1, len(actions)),
     }
+    kept = [e for e in episodes if e.get('trainable', True) is not False]
+    kept_rewards = [e['final_reward'] for e in kept]
+    values['trainable_episodes'] = len(kept)
+    values['grpo_group_eligible'] = int(len(kept) >= 2)
+    values['grpo_zero_advantage_group'] = int(len(kept) >= 2 and all(abs(a) < 1e-8 for a in group_advantages(kept_rewards)))
+    values['nonzero_advantage_fraction'] = (sum(abs(a) >= 1e-8 for a in group_advantages(kept_rewards)) / len(kept)
+                                             if len(kept) >= 2 else 0.)
+    forks = {}
+    for episode in episodes:
+        tree = episode.get('tree') or {}
+        if tree.get('role') == 'branch' and episode['actions']:
+            first = episode['actions'][0]
+            signature = json.dumps(first.get('action', first.get('text', first.get('tokens'))), sort_keys=True)
+            forks.setdefault((tree['trunk'], tree['fork_step']), []).append(signature)
+    values['branch_first_action_unique_fraction'] = (sum(len(set(v)) for v in forks.values()) /
+                                                      sum(len(v) for v in forks.values()) if forks else 0.)
     if tools:
         values['tool_http_error_rate'] = sum(t.get('status', 200) >= 400 for t in tools) / len(tools)
     if compute > 0:
