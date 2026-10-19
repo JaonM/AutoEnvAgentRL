@@ -137,3 +137,39 @@ def test_partial_full_model_shards_are_not_treated_as_small_model(tiny_qwen3):
     index.write_text(json.dumps(data))
     with pytest.raises(ValueError, match='incomplete'):
         full_training_memory(tiny_qwen3, 1)
+
+
+def test_tree_rollout_to_real_optimizer(tiny_qwen3, tmp_path):
+    import mlx.optimizers as optim
+    from rl.model import Policy
+    from rl.actor import ActorTrainer
+    from rl.train import Config
+    from rl.timing import StageTimes
+    from rl.parallel_rollout import EnvironmentPool, parallel_rollouts
+    from rl.data.trajectory import make_samples
+    from rl.data.batching import combine_samples
+    from test_tree_rollout import snapshot_environment, Policy as ScriptedPolicy
+    import itertools
+    sampler = ScriptedPolicy()
+    sampler.texts = itertools.cycle(['bad'] * 6 + ['good', 'bad', 'good', 'bad'])
+    config = Config(rollout_group=2, max_steps=3, max_tokens=4, max_context=32,
+                    rollout_mode='tree', tree_forks=2, tree_branches=2,
+                    tuning='full', target_kl=0, learning_rate=1e-3)
+    pool = EnvironmentPool(str(tmp_path), 2, target=snapshot_environment)
+    try:
+        episodes = parallel_rollouts(sampler, pool, asdict(config), 7)
+    finally:
+        pool.close()
+    policy = Policy(str(tiny_qwen3), tuning='full')
+    reference = Policy(str(tiny_qwen3), tuning='full')
+    reference.freeze()
+    for episode in episodes:
+        for action in episode['actions']:
+            logp, _ = policy.token_stats(mx.array([action['prompt'] + action['tokens']]), len(action['prompt']))
+            action['old_logp'] = logp.tolist()
+    samples = combine_samples([make_samples({'episodes': episodes}, 'grpo')], 2)
+    trainer = ActorTrainer(policy, reference, optim.Adam(config.learning_rate), config, StageTimes())
+    before = policy.digest()
+    result = trainer.step(samples)
+    assert result['gradient_norm'] > 0 and policy.digest() != before
+    assert {s['episode_index'] for s in samples} == set(range(6))

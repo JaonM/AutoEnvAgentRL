@@ -153,6 +153,7 @@ class TrainingSession:
                                 "drift": item["drift"],
                                 "lag": item["lag"],
                                 "trained": False,
+                                "sampling_counts": sampling_counts(group),
                             }
                         )
                         fresh.append(item)
@@ -214,9 +215,7 @@ class TrainingSession:
                             self.schedule.jobs[record["dataset_index"]]["task_id"]
                             for record in self.state.inflight["records"]
                         ],
-                        "fresh_rollouts": sum(not record.get("quarantined", False)
-                                              for record in self.state.inflight["records"])
-                                          * self.config.rollout_group,
+                        **batch_sampling_counts(self.state.inflight["records"]),
                         "group_paths": [
                             record["path"] for record in self.state.inflight["records"]
                         ],
@@ -274,3 +273,29 @@ class TrainingSession:
 
     def finalize(self):
         return finalization.finalize(self)
+
+
+def sampling_counts(group):
+    episodes = group['episodes']
+    return {'fresh_rollouts': len(episodes),
+            'fresh_trunks': sum((e.get('tree') or {}).get('role', 'trunk') == 'trunk' for e in episodes),
+            'fresh_branches': sum((e.get('tree') or {}).get('role') == 'branch' for e in episodes),
+            'generated_tokens': sum(len(a['tokens']) for e in episodes for a in e['actions']),
+            'trainable_rollouts': sum(e.get('trainable', True) is not False for e in episodes),
+            'restore_seconds': sum(x['finished_at'] - x['started_at'] for e in episodes
+                                   for x in e.get('environment_intervals', []) if x['operation'] == 'restore')}
+
+
+def batch_sampling_counts(records):
+    import json
+    from pathlib import Path
+    total = {}
+    for record in records:
+        if record.get('quarantined'):
+            continue
+        counts = record.get('sampling_counts')
+        if counts is None:  # checkpoints written before sampling counts were recorded
+            counts = sampling_counts(json.loads(Path(record['path']).read_text()))
+        for key, value in counts.items():
+            total[key] = total.get(key, 0) + value
+    return total

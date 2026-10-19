@@ -161,3 +161,32 @@ def test_parallel_context_limit_and_finish_reply_recovery(tmp_path, policy_type)
     assert result['finish_reason'] == 'context_limit' and result['bootstrap'] == 0.
     assert result['final_reward'] == .5 and len(result['actions']) == 1
     assert (tmp_path / 'executed.txt').read_text().splitlines() == ['step']
+
+
+def test_tree_branch_recovery_and_training_batch(tmp_path):
+    from rl.data.trajectory import make_samples
+    from rl.data.batching import combine_samples
+    config = {'rollout_group': 2, 'max_steps': 3, 'max_tokens': 8, 'max_context': 64,
+              'algorithm': 'grpo', 'rollout_timeout': 5, 'rollout_mode': 'tree',
+              'tree_forks': 2, 'tree_branches': 2}
+    continuation = tmp_path / 'tree'
+    continuation.mkdir()
+    def interrupt(stage):
+        if stage == 'rollout-2-step':
+            raise InterruptedError('lost branch step reply')
+    pool = EnvironmentPool(str(tmp_path), 2, factory=f'{__name__}:ResumableRuntime')
+    try:
+        with pytest.raises(InterruptedError):
+            parallel_rollouts(Policy(), pool, config, 42, continuation=continuation, notify=interrupt)
+    finally:
+        pool.close()
+    pool = EnvironmentPool(str(tmp_path), 2, factory=f'{__name__}:ResumableRuntime')
+    try:
+        episodes = parallel_rollouts(Policy(), pool, config, 42, continuation=continuation)
+    finally:
+        pool.close()
+    assert len(episodes) == 6
+    assert [len(e['actions']) for e in episodes] == [2, 2, 1, 1, 1, 1]
+    assert len((tmp_path / 'executed.txt').read_text().splitlines()) == 8
+    batch = combine_samples([make_samples({'episodes': episodes}, 'grpo')], 2)
+    assert len(batch) == 8 and sum(s['weight'] for s in batch) == pytest.approx(1)

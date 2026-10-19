@@ -96,7 +96,10 @@ def tree_advantages(episodes, kept, scale=None, mode='segment'):
             for j in range(bounds[s], bounds[s + 1]):
                 out[i][j] = credit / spread
     for (t, k), items in branches.items():
-        fork_value = mean([reward[b] for b in items if b in reward] + ([reward[t]] if t in reward else []))
+        values = [reward[b] for b in items if b in reward] + ([reward[t]] if t in reward else [])
+        if not values:
+            continue
+        fork_value = mean(values)
         for b in items:
             if b in reward:
                 out[b] = [((reward[b] - fork_value) + (reward[b] - root)) / spread] * len(episodes[b]['actions'])
@@ -112,6 +115,17 @@ def make_samples(group, algorithm, gamma=1.0, lam=.95, discount_unit='action', s
     episodes = group['episodes']
     if not episodes or len({(e.get('task_id', group.get('task_id')), e['seed']) for e in episodes}) != 1:
         raise ValueError('a group must share the same initial task/seed')
+    if any(e.get('tree') for e in episodes):
+        for episode in episodes:
+            tree = episode.get('tree') or {}
+            if tree.get('role') not in ('trunk', 'branch'):
+                raise ValueError('invalid tree role')
+            if tree['role'] == 'branch':
+                trunk, step = tree.get('trunk'), tree.get('fork_step')
+                if (not isinstance(trunk, int) or not 0 <= trunk < len(episodes)
+                        or (episodes[trunk].get('tree') or {}).get('role') != 'trunk'
+                        or not isinstance(step, int) or not 0 < step < len(episodes[trunk]['actions'])):
+                    raise ValueError('invalid branch lineage')
     kept = [i for i, e in enumerate(episodes) if trainable(e)]
     grouped = None
     if algorithm == 'grpo':
@@ -165,11 +179,12 @@ def make_samples(group, algorithm, gamma=1.0, lam=.95, discount_unit='action', s
             advantage = (per_action[index][step] if per_action is not None else
                          grouped[index] if algorithm == 'grpo' else advantages[offset:offset+n])
             samples.append({**action, 'episode_index': index,
+                **({'tree': dict(episode['tree'])} if episode.get('tree') else {}),
                 'old_values': action.get('old_values', [0.] * n),
                 'advantage': advantage,
                 'return': returns[offset:offset+n],
                 'weight': (sum(action.get('loss_mask', [1]*n)) if index in kept else 0)
                           / (max(1, group_tokens) if aggregation == 'token' else
-                             sum(sum(a.get('loss_mask', [1]*len(a['tokens']))) for a in actions) * max(1, len(kept)))})
+                             max(1, sum(sum(a.get('loss_mask', [1]*len(a['tokens']))) for a in actions)) * max(1, len(kept)))})
             offset += n
     return samples

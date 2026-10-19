@@ -111,3 +111,29 @@ def test_forks_spread_over_trunks_and_skip_untrainable():
               {'actions': actions([-.1, -5., -5.]), 'trainable': False}]
     snaps = {0: [{'messages': []}] * 2, 1: [{'messages': []}] * 2, 2: [{'messages': []}] * 2}
     assert choose_forks(trunks, snaps, 2) == [(0, 1), (1, 2)]
+
+
+def test_tree_batch_preserves_suffixes_weights_and_unique_episode_ids():
+    from rl.data.batching import combine_samples
+    from rl.trainer.loop import sampling_counts
+    episodes = [episode(0, 4, role='trunk'), episode(1, 3, role='trunk'),
+                episode(1, 2, role='branch', trunk=0, fork_step=2)]
+    group = {'episodes': episodes}
+    samples = make_samples(group, 'grpo', scale=1.)
+    batch = combine_samples([samples, samples, samples[:7]], 2)
+    assert {s['episode_index'] for s in batch} == set(range(8))
+    assert len(batch) == 25  # prefix actions appear only on the trunk
+    assert sum(s['weight'] for s in batch[:9]) == pytest.approx(1/3)
+    assert sum(s['weight'] for s in batch[9:18]) == pytest.approx(1/3)
+    assert sampling_counts(group)['fresh_branches'] == 1
+    assert sampling_counts(group)['generated_tokens'] == 9
+    with pytest.raises(ValueError, match='lineage'):
+        make_samples({'episodes': [*episodes[:2], episode(1, 2, role='branch', trunk=99, fork_step=2)]}, 'grpo')
+
+
+def test_invalid_subtree_has_zero_weight_without_dividing_by_zero():
+    episodes = [episode(0, 4, role='trunk'), episode(1, 3, role='trunk'),
+                episode(1, 2, role='branch', trunk=0, fork_step=2)]
+    episodes[0]['trainable'] = episodes[2]['trainable'] = False
+    samples = make_samples({'episodes': episodes}, 'grpo', scale=1.)
+    assert all(s['weight'] == 0 and s['advantage'] == 0 for s in samples if s['episode_index'] != 1)
