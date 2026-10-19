@@ -88,9 +88,10 @@ def main():
                          sum(bool(schema[n].get('approval')) for n in m['processes'])>=2 and
                          all('refused' not in outcomes for outcomes in m.get('statuses',{}).values())]
                 if not choices:raise ValueError('SOP world needs an executable multi-write method')
-                # Three retries per slot must not stride through only every
-                # third method when the catalogue size shares that factor.
-                name,method=choices[(serial//3+serial%3)%len(choices)]
+                # Rotate by this quota's counter, not the global job ordinal:
+                # deficit interleaving and three retries can both alias with
+                # the number of methods and repeatedly select the same subset.
+                name,method=choices[(category_counts[group,'multi_write']+serial%3)%len(choices)]
                 a.update(processes=method['processes'],type='sop_multi_write',shape='complex',script=['multi_goal'],
                     requirements={'min_goals':len(method['processes']),'min_writes':2,'state_effect':'changed','sop_method':name},
                     required_statuses=[],sop_method=name)
