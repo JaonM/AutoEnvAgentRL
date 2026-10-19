@@ -29,6 +29,8 @@ def combine_samples(groups, rollout_group):
             raise ValueError('incomplete rollout group')
         samples.extend({**sample, 'sandbox_index': sandbox_index,
                         'episode_index': offset + sample['episode_index'],
+                        **({'tree': {**sample['tree'], 'trunk': offset + sample['tree']['trunk']}}
+                           if (sample.get('tree') or {}).get('role') == 'branch' else {}),
                         'weight': sample['weight'] / len(groups)} for sample in group)
         offset += len(indices)
     return samples

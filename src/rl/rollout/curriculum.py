@@ -74,6 +74,9 @@ class Curriculum:
             # Retain enough groups to satisfy both the window and sample-count threshold.
             limit = max(self.window, (self.minimum + self.minimum_group - 1) // self.minimum_group)
             del evidence[:-limit]
+            while (len(evidence) > self.window
+                   and sum(item['valid_episodes'] for item in evidence[1:]) >= self.minimum):
+                evidence.pop(0)
             entry['rates'] = [item['rate'] for item in evidence]
             if (level < len(LEVELS) - 1 and len(evidence) >= self.window
                     and sum(item['valid_episodes'] for item in evidence) >= self.minimum

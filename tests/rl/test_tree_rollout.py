@@ -120,8 +120,10 @@ def test_tree_batch_preserves_suffixes_weights_and_unique_episode_ids():
                 episode(1, 2, role='branch', trunk=0, fork_step=2)]
     group = {'episodes': episodes}
     samples = make_samples(group, 'grpo', scale=1.)
-    batch = combine_samples([samples, samples, samples[:7]], 2)
+    batch = combine_samples([samples, samples, make_samples({'episodes': episodes[:2]}, 'grpo')], 2)
     assert {s['episode_index'] for s in batch} == set(range(8))
+    assert sum(s['weight'] for s in batch) == pytest.approx(1.)
+    assert all(s['tree']['trunk'] == 3 for s in batch if s['episode_index'] == 5)
     assert len(batch) == 25  # prefix actions appear only on the trunk
     assert sum(s['weight'] for s in batch[:9]) == pytest.approx(1/3)
     assert sum(s['weight'] for s in batch[9:18]) == pytest.approx(1/3)

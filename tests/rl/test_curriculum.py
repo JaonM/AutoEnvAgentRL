@@ -57,3 +57,10 @@ def test_too_few_valid_episodes_and_duplicate_groups_cannot_advance(tmp_path):
     assert curriculum.record('hard', 0, group(2, total=2), group_id='b') == 0
     assert curriculum.record('hard', 0, group(2, total=2), group_id='c') == 0
     assert curriculum.record('hard', 0, group(2, total=2), group_id='d') == 1
+
+
+def test_evidence_window_drops_old_failures_once_recent_groups_supply_enough_samples(tmp_path):
+    curriculum = Curriculum(library(tmp_path), tmp_path / 'state.json', minimum=8, window=2)
+    assert curriculum.record('hard', 0, group(0), group_id='old') == 0
+    assert curriculum.record('hard', 0, group(4), group_id='new-1') == 0
+    assert curriculum.record('hard', 0, group(4), group_id='new-2') == 1

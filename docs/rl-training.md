@@ -39,15 +39,61 @@ uv sync --extra rl
 | --- | --- | --- |
 | `--sandbox-backend` | `docker` | `docker`：每个沙箱从它通过离线验证的加固镜像启动；`local`：在进程内服务，便于开发 |
 | `--algorithm` | `grpo` | `grpo` 或 `ppo` |
-| `--rollout-group` | 4 | 每个任务同一 seed 采样的轨迹数（GRPO 的组大小），多轮 agent 任务建议 8–16 |
-| `--rollout-concurrency` | 2 | 每个 worker 同时推进的环境数，建议不小于组大小 |
-| `--max-steps` | 6 | 每局最多的策略动作数；多轮对话建议约 30 |
-| `--advantage-std` | `group` | `task`：组内减均值，标准差取该任务最近的奖励，组小时更稳定 |
+| `--rollout-group` | 8 | 每个任务同一 seed 采样的轨迹数（GRPO 的组大小），多轮 agent 任务建议 8–16 |
+| `--rollout-concurrency` | 8 | 每个 worker 的总执行槽位，多个 group 共享 |
+| `--max-steps` | 30 | 每局最多的策略动作数；多轮对话建议约 30 |
+| `--advantage-std` | `task` | `task`：组内减均值，标准差取该任务最近的奖励，组小时更稳定 |
 | `--zero-variance-policy` | `retry_skip` | 组内奖励全部相同时：重采，仍相同则跳过 |
-| `--tuning` | `qat` | `qat`、`lora` 或 `full` |
-| `--thinking-mode` | `auto` | `thinking` / `no-thinking` 控制 Qwen3 模板 |
+| `--tuning` | `full` | `qat`、`lora` 或 `full` |
+| `--thinking-mode` | `no-thinking` | `thinking` / `no-thinking` 控制 Qwen3 模板 |
 
 完整选项见 `./scripts/train_rl.sh --help`。
+
+### 跨组采样、评分与恢复
+
+同一 rollout worker 默认同时接纳 2 个 group，共享一份 policy 权重和批量解码器。
+空闲环境槽位可运行另一组的 episode；准备好生成的请求跨组组成 decode batch。
+每组仍共享自己的任务、环境 seed 和课程起点，完整收齐后独立计算优势。
+当前采用有界波次：同一波固定 policy 版本，排空后才加载下一版；波次末尾仍可能等待长轨迹。
+
+终态通过快照冻结，交给独立评分进程恢复和判分；执行槽位随后可以服务其他 episode。
+评分队列满时会施加背压。执行进度与 `score-*.json` 持久化在任务队列的 continuation 目录，
+恢复时重新映射物理槽位，复用已保存的评分结果。policy 不会为分支或评分进程复制。
+快照恢复和进程启动也有成本；评分很快的任务可以设 `--scoring-workers 0` 使用同步评分。
+
+| 选项 | 默认 | 含义 |
+| --- | --- | --- |
+| `--rollout-active-groups` | 2 | 每个 worker 每波最多接纳的 group 数；1 关闭跨组复用 |
+| `--scoring-workers` | 2 | 每个 rollout worker 的评分进程数；0 关闭异步评分 |
+| `--scoring-queue-size` | 8 | 每个评分池最多未完成的评分任务数，至少覆盖评分进程数 |
+| `--rollout-mode` | `chain` | `tree` 增加从精确快照恢复的分支 |
+| `--tree-forks` / `--tree-branches` | 4 / 2 | 每组分叉点预算、每点分支数；最多 G + F × B 条轨迹 |
+| `--tree-advantage` | `segment` | `segment` 或 `tree_grpo` |
+
+树状训练只训练新生成的动作；分支的共享前缀只作上下文。拼批保留完整组、重映射轨迹与
+父节点编号，并维持组间等权。动作采样使用由组、episode、动作序号派生的独立随机数键，
+不受其他请求消耗随机数的影响；不强制分支去重，浮点计算及外部用户模拟仍可能影响重放结果。
+
+### 课程证据与动态采样
+
+`--reverse-curriculum LIBRARY.json` 启用已有成功轨迹的起点库。默认从后段开始，
+至少 2 个有效 group、累计 8 条有效 episode，且记录窗口内每组成功率均达到 0.6 才升级；
+每组至少 2 条有效 episode 才能计入。分别由 `--curriculum-window`、
+`--curriculum-min-valid-episodes`、`--curriculum-min-group-episodes`、`--curriculum-threshold` 配置。
+同一 group 恢复后不会重复计数，旧层级结果也不会推进新层级。周期评估始终从初始状态开始，
+结果标记 `start_scope: initial_state`；训练日志另记课程 episode 数。
+
+`--sampling-batch-policy allow_short` 保留重试后跳过任务、缩小实际 batch 的行为。
+`strict` 对不可训练组进行有界重采，必须补足当前计划批次才继续；耗尽
+`--rollout-max-attempts`（默认 3，含首次）或遇到隔离任务时明确失败，不默默缩小 batch。
+该策略不改变最后一个计划批次本身可以较小的约定，也不从其他题目拼出同一个 GRPO 组。
+
+`--sampling-max-tokens`、`--sampling-timeout-seconds` 可限制每个 dataset batch 的采样成本，
+默认 0 表示无额外限制；时间按 batch 墙钟时间计，包括期间的等待与训练。预算在收组边界检查，
+因此最后一个在途 group 可能使消耗超出上限。
+重采使用新的 attempt seed，不追加到旧组。日志中的 `sampling_totals` 包含重试成本、
+拒绝组数和有效组数；`fresh_trunks`、`fresh_branches`、`generated_tokens`、
+`restore_seconds` 与分支首动作去重比例用于观察树状成本和有效信号。
 
 ## 3. Episode 的协议随机化
 
@@ -67,6 +113,7 @@ uv sync --extra rl
 
 - 奖励 = 业务分（最终状态 + 答案各字段的得分）+ 效率分（只在成功时计入）；任何未经同意的写入使整局为 0。
 - 失败的自由对话 episode 会审计模拟用户是否出错（漏说、说错、编造、与平台决定相反）。查实的 episode 标记为不可训练：不参与组内基线，也不产生梯度。
+- 审计服务不可用时标记 `audit_status: unknown`、`valid: false`，不把未审计结果当作有效训练证据；后续 reward 请求可以重试审计。有效 episode 不足与有效奖励无方差分别记为拒绝原因。
 - 沙箱自身反复崩溃的任务会被隔离，不再采样。
 
 ## 5. SFT 冷启动

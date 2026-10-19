@@ -166,6 +166,30 @@ OpenAI-compatible model plays k episodes through the HTTP service and the shared
 at least one episode succeeds. Provider failures are infrastructure errors, not task results.
 `policy --user-mode natural` plays through the free-dialogue user.
 
+### Independent assertions and perturbation coverage
+
+Caller-owned `behavior_contract` remains hash-pinned. It can declare a `rules` list, where each
+rule has `id`, a verbatim `brief_quote`, optional `workflows`, and `required_cases` (default:
+`positive`, `negative`, `boundary`). Cases declare `kind`, `rules`, and executable checks with
+`rule_id`; an expected-error step can carry `rule_id` too. A rule spanning multiple workflows
+also requires an `interleaving` case, with multiple workflows and tools. Missing evidence or
+an ungrounded quote fails qualification. Contracts without a rule list remain compatible and
+explicitly report that rule coverage is not applicable. Coverage checks do not establish the
+truth of caller-supplied expected values; those still need independent business review.
+
+Requests pin `perturbation_version`. Missing/1 preserves legacy worlds exactly. New domain-world
+requests default to 2: nested fields, decimal amounts, booleans, integer/calendar boundaries,
+and enum alternatives already observed in status/state/tier/type/category/mode fields. IDs and
+relations are protected. V2 removes unchanged/duplicate random worlds with a bounded candidate
+budget; a small state space may yield fewer than requested and still must pass existing gates.
+
+Optional `perturbation_cases` specify coupled changes, for example a debit and credit whose sum
+stays fixed. Each case has a unique `id`, optional `rule_ids`, and `changes` with `table`, row `id`,
+`path` (list of keys/indices), and scalar `value`. These are caller-supplied fixtures, not inferred
+business constraints. `gates.json.perturbation_coverage` reports candidate attempts, duplicate
+removal, changed paths, accepted/rejected variants, and declared rule IDs. Invalid worlds are
+not counted as successful coverage. Existing bundles retain their pinned generator version.
+
 ## Commands
 
 ```sh

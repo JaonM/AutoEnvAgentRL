@@ -9,6 +9,7 @@ from pathlib import Path
 
 from rl.errors import EnvironmentProtocolError
 from .scheduler import rollout_steps
+from rl.checkpointing.checkpoint import atomic_json
 
 
 class TaskConnection:
@@ -80,6 +81,24 @@ def _sample_groups(policy, pool, groups, *, stop=None, notify=None, scoring=None
     """
     owners, iterators, decoders = {}, {}, {}
     decoder = policy.batch_decoder() if hasattr(policy, 'batch_decoder') else None
+    # Episode journals are keyed by episode identity, not physical slot. Groups may
+    # have last run on different workers with overlapping local slot numbers.
+    journals = []
+    for spec in groups:
+        path = Path(spec['continuation']) / 'progress.json' if spec.get('continuation') else None
+        if path and path.exists():
+            journals.append((path, json.loads(path.read_text())))
+    required = sum(len(saved['active']) for _, saved in journals)
+    if required > len(pool.workers):
+        raise ValueError('continuations exceed execution slot capacity; admit fewer groups')
+    next_slot = 0
+    for path, saved in journals:
+        remapped = {}
+        for old_slot in sorted(saved['active'], key=int):
+            remapped[str(next_slot)] = saved['active'][old_slot]
+            next_slot += 1
+        saved['active'] = remapped
+        atomic_json(path, saved)
     for spec in groups:
         key = spec['key']
         if key in iterators:

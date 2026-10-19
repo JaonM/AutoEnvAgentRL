@@ -44,3 +44,25 @@ def test_optimizer_attempt_rate_does_not_claim_policy_improvement():
                                          {'mini_batch': 1, 'skipped': 'kl_threshold'}])
     assert result['totals']['optimizer_step_execution_rate'] == .5
     assert result['totals']['reward_success_rate'] is None
+
+
+def test_unknown_audit_rewards_do_not_count_as_learning_signal():
+    from rl.rollout.admission import zero_variance_kind
+    value = group([0, 0, 1])
+    value['episodes'][2].update(trainable=False, score={'audit_status': 'unknown'})
+    metrics = group_metrics(value)
+    assert metrics['trainable_reward_std'] == 0 and metrics['audit_unknown_episodes'] == 1
+    assert metrics['grpo_zero_advantage_group'] == 1
+    assert zero_variance_kind(value['episodes']) == 'all_failure'
+    assert zero_variance_kind([value['episodes'][2]]) == 'no_valid_episodes'
+
+
+def test_branch_diversity_ignores_reasoning_transport_ids_and_json_spacing():
+    from rl.observability.telemetry import action_signature
+    def sample(identifier, args, reasoning):
+        return {'action': {'role': 'assistant', 'content': '', 'reasoning_content': reasoning,
+            'tool_calls': [{'id': identifier, 'function': {'name': 'refund', 'arguments': args}}]}}
+    first = sample('a', '{"amount":1}', 'first reasoning')
+    second = sample('b', '{ "amount": 1 }', 'different reasoning')
+    assert action_signature(first) == action_signature(second)
+    assert action_signature(first) != action_signature(sample('a', '{"amount":2}', 'first reasoning'))

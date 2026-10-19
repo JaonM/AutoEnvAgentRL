@@ -166,3 +166,25 @@ def test_async_score_reply_recovery_does_not_repeat_actions_or_change_reward(tmp
     assert all(len(e) == 5 for e in completed.values())
     assert all(e['final_reward'] == e['seed'] for episodes in completed.values() for e in episodes)
     assert all((tmp_path / str(k) / 'events').read_text().count('\n') == 8 for k in completed)
+
+
+def test_independently_interrupted_groups_can_resume_on_shared_slots(tmp_path):
+    groups = specs(tmp_path)
+    def interrupt(stage):
+        if stage.endswith('-step'):
+            raise InterruptedError('separate worker interruption')
+    # Both groups previously owned slot zero, on different worker processes.
+    for spec in groups:
+        pool = EnvironmentPool(None, 1)
+        try:
+            with pytest.raises(InterruptedError):
+                dict(sample_groups(Policy(), pool, [spec], notify=interrupt))
+        finally:
+            pool.close()
+    pool = EnvironmentPool(None, 2)
+    try:
+        result = dict(sample_groups(Policy(), pool, groups))
+    finally:
+        pool.close()
+    assert all(len(e) == 3 for e in result.values())
+    assert all((tmp_path / str(k) / 'events').read_text().count('\n') == 6 for k in result)

@@ -66,6 +66,25 @@ class TensorBoardWriter:
         self.writer.close()
 
 
+def action_signature(sample):
+    action = sample.get('action')
+    if not isinstance(action, dict):
+        return json.dumps(sample.get('text', sample.get('tokens')), sort_keys=True)
+    calls = []
+    for call in action.get('tool_calls') or []:
+        function = call.get('function') or {}
+        args = function.get('arguments')
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except ValueError:
+                pass
+        calls.append({'name': function.get('name'), 'arguments': args})
+    # Reasoning text and transport call IDs do not change the executed action.
+    return json.dumps({'content': (action.get('content') or '').strip(), 'calls': calls,
+                       'protocol_error': action.get('protocol_error')}, sort_keys=True)
+
+
 def group_metrics(group):
     episodes = group['episodes']
     actions = [a for e in episodes for a in e['actions']]
@@ -100,9 +119,11 @@ def group_metrics(group):
     kept = [e for e in episodes if e.get('trainable', True) is not False]
     kept_rewards = [e['final_reward'] for e in kept]
     values['trainable_episodes'] = len(kept)
+    values['audit_unknown_episodes'] = sum((e.get('score') or {}).get('audit_status') == 'unknown' for e in episodes)
+    values['trainable_reward_std'] = statistics.pstdev(kept_rewards) if kept_rewards else 0.
     values['grpo_group_eligible'] = int(len(kept) >= 2)
     values['grpo_zero_advantage_group'] = int(len(kept) >= 2 and all(abs(a) < 1e-8 for a in group_advantages(kept_rewards)))
-    values['nonzero_advantage_fraction'] = (sum(abs(a) >= 1e-8 for a in group_advantages(kept_rewards)) / len(kept)
+    values['nonzero_group_advantage_fraction'] = (sum(abs(a) >= 1e-8 for a in group_advantages(kept_rewards)) / len(kept)
                                              if len(kept) >= 2 else 0.)
     values['curriculum_episodes'] = sum(bool(e.get('curriculum')) for e in episodes)
     values['from_start_episodes'] = sum(not e.get('curriculum') and (e.get('tree') or {}).get('role') != 'branch' for e in episodes)
@@ -111,7 +132,7 @@ def group_metrics(group):
         tree = episode.get('tree') or {}
         if tree.get('role') == 'branch' and episode['actions']:
             first = episode['actions'][0]
-            signature = json.dumps(first.get('action', first.get('text', first.get('tokens'))), sort_keys=True)
+            signature = action_signature(first)
             forks.setdefault((tree['trunk'], tree['fork_step']), []).append(signature)
     values['branch_first_action_unique_fraction'] = (sum(len(set(v)) for v in forks.values()) /
                                                       sum(len(v) for v in forks.values()) if forks else 0.)

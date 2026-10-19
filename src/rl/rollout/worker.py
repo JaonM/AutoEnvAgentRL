@@ -147,12 +147,17 @@ def rollout_worker_main(index, config, shared_version, results, stop):
                     version = current
                     snapshot_seconds += time.perf_counter() - sync_started
                 claimed = [job]
+                def active_slots(candidate):
+                    path = location(candidate) / 'progress.json'
+                    return len(json.loads(path.read_text())['active']) if path.exists() else 0
                 def compatible(candidate):
+                    if sum(active_slots(j) for j in claimed) + active_slots(candidate) > config['rollout_concurrency']:
+                        return False
                     path = location(candidate) / 'group.json'
                     if not path.exists():
                         return True
                     metadata = json.loads(path.read_text())
-                    return metadata['policy_version'] == current and metadata.get('wave_id') == wave_id
+                    return metadata['policy_version'] == current
                 for _ in range(config.get('rollout_active_groups', 1) - 1):
                     extra = wave.enter_context(task_queue.claim(ready=compatible))
                     if extra is None:

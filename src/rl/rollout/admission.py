@@ -2,6 +2,9 @@
 
 
 def zero_variance_kind(episodes):
+    episodes = [e for e in episodes if e.get('trainable', True) is not False]
+    if not episodes:
+        return 'no_valid_episodes'
     if all(e['terminated'] and e['final_reward'] >= 1. - 1e-9 for e in episodes):
         return 'all_success'
     if all(e['final_reward'] <= 0 for e in episodes):
