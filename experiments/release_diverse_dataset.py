@@ -143,11 +143,16 @@ def coverage_report(rows, audit_root):
     return result
 
 
+def plan_groups(plan):
+    # Fully populated baseline groups may have no remaining generation jobs.
+    return {d['name']:d for d in (plan.get('domains') or [j['domain'] for j in plan['jobs']])}
+
+
 def audit_and_release(producer, output, audit_root, *, complete=True):
     output.mkdir(parents=True, exist_ok=False)
     records, plan, identity = selected_records(producer, complete=complete)
     rules = read(plan['context_rules'])
-    groups = {j['domain']['name']: j['domain'] for j in plan['jobs']}
+    groups = plan_groups(plan)
     episodes = [read(r['episode']) for r in records]
     counts = validate_population(episodes, records, complete=complete)
     receipts, rows, pinned = [], [], {}

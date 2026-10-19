@@ -48,3 +48,33 @@ def test_acceptance_kills_deliberate_defects(tmp_path,domain,old,new):
     candidate=tmp_path/'env.py';candidate.write_text(source.replace(old,new))
     env=load_module(candidate,role='env')
     assert not behavior.run(env,make(domain,data(domain),seeds=(101,)))['passed']
+
+
+def test_cancel_restores_paid_certificate_amount_without_restoring_forfeited_face_value():
+    from env_factory.runtime import Episode
+    env=load_module(SOURCE/'airline_env.py',role='env')
+    case=make('airline',data('airline'),seeds=(101,))['cases'][0]
+    tables=copy.deepcopy(case['data']);args=copy.deepcopy(case['steps'][0]['args'])
+    paid=args['payment_methods'][0]['amount'];certificate='certificate_independent_unused'
+    tables['users'][0]['payment_methods'][certificate]={'id':certificate,'source':'certificate','amount':paid+500}
+    args['payment_methods']=[{'payment_id':certificate,'amount':paid}]
+    api=Episode(env.make_tools(),tables,{},start=case['now'],approve=lambda *_:True)
+    booking=api.call('book_reservation',**args)
+    assert certificate not in api.db['users'][0]['payment_methods']
+    api.call('cancel_reservation',reservation_id=booking['reservation_id'])
+    assert api.db['users'][0]['payment_methods'][certificate]['amount']==paid
+    before=copy.deepcopy(api.db)
+    api.call('cancel_reservation',reservation_id=booking['reservation_id'])
+    assert api.db==before
+
+
+def test_connecting_search_uses_calendar_rollover_and_next_day_local_time():
+    env=load_module(SOURCE/'airline_env.py',role='env')
+    def flight(fid,origin,destination,date,departure,arrival):
+        return {'id':fid,'flight_number':fid,'origin':origin,'destination':destination,
+            'scheduled_departure_time_est':departure,'scheduled_arrival_time_est':arrival,
+            'dates':{date:{'status':'available','prices':{'economy':100},'available_seats':{'economy':3}}}}
+    tables={'flights':[flight('overnight','SFO','ORD','2024-05-31','22:00:00','01:00:00+1'),
+                      flight('connection','ORD','JFK','2024-06-01','02:00:00','05:00:00')]}
+    result=env.make_tools()['search_onestop_flight'](tables,'2024-05-31T10:00:00','SFO','JFK','2024-05-31')
+    assert len(result)==1 and result[0][1]['date']=='2024-06-01'

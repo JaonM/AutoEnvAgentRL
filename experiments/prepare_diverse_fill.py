@@ -132,7 +132,7 @@ def main():
             jobs_by_group[group].append({'domain':{k:v for k,v in g.items() if k!='assignments'},'assignment':a,'alternatives':alternatives})
             category_counts[group,category]+=1;job_index+=1
     jobs=[arr[i] for i in range(max(map(len,jobs_by_group.values()))) for arr in jobs_by_group.values() if i<len(arr)]
-    plan={'jobs':jobs,'seed':args.seed,'task_attempts':3,'teacher_attempts':3,'author_parallel':2,'dialogue_parallel':4,
+    plan={'jobs':jobs,'domains':[{k:v for k,v in g.items() if k!='assignments'} for g in groups.values()],'seed':args.seed,'task_attempts':3,'teacher_attempts':3,'author_parallel':2,'dialogue_parallel':4,
         'source_audit':str((args.output/'baseline').resolve()),'context_rules':str((args.output/'baseline/context_rules.json').resolve()),
         'fill_targets':targets,'initial_counts':dict(counts),'initial_deficits':deficits,
         'admission':{'normalized_structure_cap_train':3,'normalized_structure_cap_dev':1,'cross_split_structure_overlap':0},

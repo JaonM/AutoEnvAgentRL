@@ -78,7 +78,7 @@ def prepare(replay_root, preparation):
             a=copy.deepcopy(missing[group].popleft());job['assignment']=a
             job['alternatives']=[a,copy.deepcopy(a),job['alternatives'][2]];branch_slots+=1
         for a in [job['assignment'],*job.get('alternatives',[])]:a.update(index=100000+i,slot=100000+i)
-    plan.update(jobs=recollect+plan['jobs'],source_audit=str(audit.resolve()),context_rules=str((audit/'context_rules.json').resolve()),
+    plan.update(jobs=recollect+plan['jobs'],domains=list(groups.values()),source_audit=str(audit.resolve()),context_rules=str((audit/'context_rules.json').resolve()),
         initial_counts=dict(counts),initial_deficits={g:n-counts[g] for g,n in plan['fill_targets'].items()},
         historical_demonstrations_reused=len(baseline),recollection_jobs=len(recollect),planned_branch_slots=branch_slots,
         fresh_world_data=False,semantic_profile='coherent-v1',historical_replay=str(replay_root.resolve()))

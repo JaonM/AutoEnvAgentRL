@@ -78,3 +78,11 @@ def test_stopped_generation_cannot_start_training(tmp_path, monkeypatch):
     monkeypatch.setattr(continuation.subprocess, 'run', lambda *a, **k: pytest.fail('no process launch'))
     with pytest.raises(RuntimeError, match='without a complete dataset'):
         continuation.producer_state(tmp_path, 1)
+
+
+def test_release_retains_scopes_for_fully_populated_baseline_groups():
+    train={'name':'example_train','data_scope':{'owners':['t']}}
+    dev={'name':'example_dev','data_scope':{'owners':['d']}}
+    plan={'domains':[train,dev],'jobs':[{'domain':train}]}
+    assert release.plan_groups(plan)['example_dev']==dev
+    assert release.plan_groups({'jobs':[{'domain':train}]})=={'example_train':train}
