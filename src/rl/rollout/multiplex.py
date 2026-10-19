@@ -12,13 +12,14 @@ from .scheduler import rollout_steps
 
 
 class TaskConnection:
-    def __init__(self, connection, sandbox, factory):
+    def __init__(self, connection, sandbox, factory, defer_grading=False):
         self.connection, self.sandbox, self.factory = connection, sandbox, factory
+        self.defer_grading = defer_grading
 
     def send(self, value):
         command, argument = value
         self.connection.send(('task', {'sandbox': self.sandbox, 'factory': self.factory,
-                                       'command': command, 'argument': argument}))
+                                       'command': command, 'argument': argument, 'defer_grading': self.defer_grading}))
 
     def poll(self):
         return self.connection.poll()
@@ -28,9 +29,9 @@ class TaskConnection:
 
 
 class GroupPool:
-    def __init__(self, pool, owners, key, sandbox, factory):
+    def __init__(self, pool, owners, key, sandbox, factory, defer_grading=False):
         self.owners, self.key = owners, key
-        self.workers = [(TaskConnection(c, sandbox, factory), p) for c, p in pool.workers]
+        self.workers = [(TaskConnection(c, sandbox, factory, defer_grading), p) for c, p in pool.workers]
 
     def acquire(self, slot):
         if slot in self.owners and self.owners[slot] != self.key:
@@ -60,6 +61,18 @@ class GroupDecoder:
 
 
 def sample_groups(policy, pool, groups, *, stop=None, notify=None):
+    from .scoring import ScoringPool
+    config = groups[0]['config'] if groups else {}
+    workers = config.get('scoring_workers', 0)
+    scoring = ScoringPool(workers, config.get('scoring_queue_size', 8)) if workers else None
+    try:
+        yield from _sample_groups(policy, pool, groups, stop=stop, notify=notify, scoring=scoring)
+    finally:
+        if scoring is not None:
+            scoring.close()
+
+
+def _sample_groups(policy, pool, groups, *, stop=None, notify=None, scoring=None):
     """Yield (group key, episodes) as each complete group is ready; preserve journals on failure.
 
     Each spec supplies key, sandbox, config, seed, continuation and optional observe.
@@ -80,11 +93,12 @@ def sample_groups(policy, pool, groups, *, stop=None, notify=None):
                     raise ValueError('conflicting continuation slot ownership')
                 owners[slot] = key
         view = GroupPool(pool, owners, key, spec['sandbox'],
-                         spec['config'].get('environment_factory', 'rl.environment:SandboxEpisode'))
+                         spec['config'].get('environment_factory', 'rl.environment:SandboxEpisode'), scoring is not None)
         local_decoder = GroupDecoder(decoder, key) if decoder else None
         decoders[key] = local_decoder
         iterators[key] = rollout_steps(policy, view, spec['config'], spec['seed'], stop=stop, notify=notify,
-                                       continuation=continuation, observe=spec.get('observe'), decoder=local_decoder)
+                                       continuation=continuation, observe=spec.get('observe'), decoder=local_decoder,
+                                       scoring=scoring, sandbox=spec['sandbox'])
     order = list(iterators)
     try:
         while iterators:

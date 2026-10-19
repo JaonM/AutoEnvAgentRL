@@ -116,3 +116,53 @@ def test_action_random_keys_are_stable_and_distinct():
     assert len(keys) == 24
     assert action_seed({'_sampling_seed': 123}, 42, 2, 1) == action_seed({'_sampling_seed': 123}, 42, 2, 1)
     assert keys.isdisjoint({action_seed({'_sampling_seed': 124}, 42, i, j) for i in range(6) for j in range(4)})
+
+
+class SlowScoreRuntime(Runtime):
+    def finish(self):
+        time.sleep(.15)
+        return {**super().finish(), 'frozen_steps': self.steps}
+
+
+def test_async_scoring_uses_frozen_state_and_releases_slots(tmp_path):
+    groups = specs(tmp_path)
+    for spec in groups:
+        spec['config'].update(scoring_workers=1, scoring_queue_size=2,
+                              environment_factory=f'{__name__}:SlowScoreRuntime')
+    pool = EnvironmentPool(None, 1)
+    try:
+        completed = dict(sample_groups(Policy(), pool, groups))
+    finally:
+        pool.close()
+    episodes = [e for group in completed.values() for e in group]
+    assert all(e['final_reward'] == e['seed'] and e['frozen_steps'] == 2 for e in episodes)
+    scores = [x for e in episodes for x in e['environment_intervals'] if x['operation'] == 'score']
+    steps = [x for e in episodes for x in e['environment_intervals'] if x['operation'] == 'step']
+    assert any(s['started_at'] < t['finished_at'] and t['started_at'] < s['finished_at'] for s in scores for t in steps)
+    assert len(list(tmp_path.glob('*/journal/score-*.json'))) == 6
+
+
+def test_async_score_reply_recovery_does_not_repeat_actions_or_change_reward(tmp_path):
+    groups = specs(tmp_path, tree=True)
+    def interrupt(event, **fields):
+        if event == 'finish':
+            raise InterruptedError('score completed before group journal commit')
+    for spec in groups:
+        spec['config'].update(scoring_workers=1, scoring_queue_size=2)
+        spec['observe'] = interrupt
+    pool = EnvironmentPool(None, 2)
+    try:
+        with pytest.raises(InterruptedError):
+            dict(sample_groups(Policy(), pool, groups))
+    finally:
+        pool.close()
+    for spec in groups:
+        spec.pop('observe')
+    pool = EnvironmentPool(None, 2)
+    try:
+        completed = dict(sample_groups(Policy(), pool, groups))
+    finally:
+        pool.close()
+    assert all(len(e) == 5 for e in completed.values())
+    assert all(e['final_reward'] == e['seed'] for episodes in completed.values() for e in episodes)
+    assert all((tmp_path / str(k) / 'events').read_text().count('\n') == 8 for k in completed)

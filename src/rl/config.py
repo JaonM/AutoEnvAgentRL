@@ -71,6 +71,8 @@ class Config:
     updates: int = 0
     rollout_workers: int = 1
     rollout_concurrency: int = 8
+    scoring_workers: int = 2  # 0 retains synchronous terminal scoring
+    scoring_queue_size: int = 8
     rollout_active_groups: int = 2  # bounded wave; one model version shared until the wave drains
     watchdog_interval: float = 1.0
     micro_batch_size: int = 4
@@ -126,6 +128,8 @@ class Config:
         return self.mini_batch_size
 
     def validate(self):
+        if self.scoring_workers < 0 or self.scoring_queue_size < max(1, self.scoring_workers):
+            raise ValueError("invalid scoring worker/queue budgets")
         if (
             min(
                 self.logits_chunk_size,

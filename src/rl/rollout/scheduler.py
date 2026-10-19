@@ -13,6 +13,7 @@ import os
 import threading
 import time
 import traceback
+from concurrent.futures.process import BrokenProcessPool
 
 from rl.errors import InfrastructureError, ContextBudgetExceeded, EnvironmentProtocolError
 from rl.data.trajectory import assign_episode_reward
@@ -44,6 +45,7 @@ def environment_worker(connection, sandbox, parent_pid, factory="rl.environment:
                         environment.close()
                     environment = create_runtime(target[1], target[0])
                     binding, loaded_path = target, None
+                environment.defer_grading = argument.get('defer_grading', False)
                 command, argument = argument['command'], argument['argument']
             with ExitStack() as resources:
                 durable = None
@@ -77,6 +79,8 @@ def environment_worker(connection, sandbox, parent_pid, factory="rl.environment:
                     value = environment.step(argument)
                 elif command == 'finish':
                     value = environment.finish()
+                elif command == 'freeze':
+                    value = environment.snapshot()
                 elif command == 'snapshot':  # tree rollouts: the exact state after this step
                     value = environment.snapshot()
                 elif command == 'restore':  # tree rollouts: continue from a trunk's state
@@ -150,7 +154,7 @@ def parallel_rollouts(policy, pool, config, seed, **kwargs):
 
 
 def rollout_steps(policy, pool, config, seed, *, stop=None, notify=None, continuation=None, observe=None,
-                  decoder=None):
+                  decoder=None, scoring=None, sandbox=None):
     notify = notify or (lambda stage: None)
     observe = observe or (lambda event, **fields: None)
     count = config['rollout_group']
@@ -169,6 +173,7 @@ def rollout_steps(policy, pool, config, seed, *, stop=None, notify=None, continu
     snapshots = {}
     branched = False
     active = {}
+    pending_scores, score_futures = {}, {}
     next_episode = 0
     decoder = decoder if decoder is not None else (policy.batch_decoder() if hasattr(policy, 'batch_decoder') else None)
 
@@ -177,12 +182,14 @@ def rollout_steps(policy, pool, config, seed, *, stop=None, notify=None, continu
     def persist():
         if journal is not None:
             atomic_json(journal, {'completed':completed, 'next_episode':next_episode, 'jobs':jobs,
-                'branched':branched, 'snapshots':{str(k): v for k, v in snapshots.items()},
+                'pending_scores': pending_scores, 'branched':branched, 'snapshots':{str(k): v for k, v in snapshots.items()},
                 'active':{str(slot):{k:v for k,v in state.items() if k != 'generator'}
                           for slot,state in active.items()}})
 
     def send(slot, operation, argument):
         state = active[slot]
+        if operation == 'finish' and scoring is not None:
+            operation = 'freeze'
         state['operation'], state['sent_at'] = operation,time.monotonic()
         state['argument'] = argument
         if operation != 'resume':
@@ -228,34 +235,101 @@ def rollout_steps(policy, pool, config, seed, *, stop=None, notify=None, continu
                 completed.append(None)
         persist()
 
+    def complete(state, reply):
+        result = reply['value']
+        if state['actions']:
+            assign_episode_reward(state['actions'], result)
+        result.update(actions=state['actions'],bootstrap=state['bootstrap'],
+                      bootstrap_prompt=state['bootstrap_prompt'],seed=seed,
+                      truncated=not reply['terminated'],
+                      finish_reason=state.get('finish_reason') or ('terminated' if reply['terminated'] else 'step_limit'),
+                      started_at=state['started_at'],finished_at=time.time(),
+                      environment_intervals=state['rpc_intervals'])
+        if state.get('budget_admission') is not None:
+            result['budget_admission'] = state['budget_admission']
+        if start_state:
+            result['curriculum'] = {k: v for k, v in state['job'].items() if k in ('prefix_steps', 'level')}
+        if tree:
+            result['tree'] = {k: v for k, v in state['job'].items() if k not in ('kind',)}
+            if state['job'].get('role') == 'trunk':
+                snapshots[state['index']] = state['snapshots']
+        observe('finish', rollout_index=state['index'], step=len(state['actions']),
+                messages=reply['messages'], result=result)
+        completed[state['index']] = result
+
+    def submit_score(state):
+        path = str(Path(continuation) / f"score-{state['index']}.json") if continuation is not None else None
+        future = scoring.submit(sandbox, config.get('environment_factory', 'rl.environment:SandboxEpisode'),
+                                state['frozen_reply']['value'], path)
+        if future is None:
+            return False
+        pending_scores[state['index']] = state
+        score_futures[state['index']] = future
+        return True
+
     if journal is not None and journal.exists():
         saved = json.loads(journal.read_text())
         completed, next_episode = saved['completed'], saved['next_episode']
         jobs, branched = saved.get('jobs', jobs), saved.get('branched', False)
+        pending_scores = {int(k): v for k, v in saved.get('pending_scores', {}).items()}
+        if pending_scores and scoring is None:
+            raise ValueError('resuming asynchronous scores requires scoring_workers > 0')
         snapshots = {int(k): v for k, v in saved.get('snapshots', {}).items()}
         active = {int(slot):state for slot,state in saved['active'].items()}
+        for state in [*pending_scores.values(), *active.values()]:
+            if 'score_started_at' in state:
+                state['score_started_at'] = time.time()
         for slot in list(active):
             state = active[slot]
             operation = state['operation']
+            if operation == 'score_wait':
+                continue
             if operation in ('policy', 'resume'):
                 send(slot, 'resume', None)
             else:
                 state['sequence'] -= 1
                 send(slot, operation, state['argument'])
     while True:
-        if not active and tree and not branched and next_episode >= len(jobs):
+        if not active and not pending_scores and tree and not branched and next_episode >= len(jobs):
             branch()
         for slot in range(len(pool.workers)):
             if slot not in active and next_episode < len(jobs):
                 start(slot)
-        if not active and next_episode >= len(jobs):
+        if not active and not pending_scores and next_episode >= len(jobs):
             break
         if stop is not None and stop.is_set():
             raise InterruptedError('parallel rollouts cancelled')
         progressed = False
+        for index, state in list(pending_scores.items()):
+            if index not in score_futures:
+                submit_score(state)
+            future = score_futures.get(index)
+            if future is not None and future.done():
+                try:
+                    reply = future.result()
+                except (TimeoutError, OSError, BrokenProcessPool) as error:
+                    raise InfrastructureError('asynchronous grading failed') from error
+                state['rpc_intervals'].append({'operation': 'score', 'started_at': reply['started_at'],
+                                               'finished_at': reply['finished_at']})
+                complete(state, reply)
+                del pending_scores[index], score_futures[index]
+                persist()
+                progressed = True
+            elif time.time() - state['score_started_at'] > config['rollout_timeout']:
+                raise TimeoutError('asynchronous grading timed out')
         for slot in list(active):
             state = active[slot]
             connection, process = pool.workers[slot]
+            if state['operation'] == 'score_wait':
+                if submit_score(state):
+                    del active[slot]
+                    if hasattr(pool, 'release'):
+                        pool.release(slot)
+                    persist()
+                    progressed = True
+                elif time.time() - state['score_started_at'] > config['rollout_timeout']:
+                    raise TimeoutError('scoring queue admission timed out')
+                continue
             if state['operation'] == 'policy':
                 if decoder is not None:
                     continue
@@ -294,27 +368,14 @@ def rollout_steps(policy, pool, config, seed, *, stop=None, notify=None, continu
             state['rpc_intervals'].append({'operation':operation,
                 'started_at':reply['started_at'],'finished_at':reply['finished_at']})
             notify(f'rollout-{state["index"]}-{operation}')
+            if operation == 'freeze':
+                state['frozen_reply'] = reply
+                state['operation'] = 'score_wait'
+                state['score_started_at'] = time.time()
+                persist()
+                continue
             if operation == 'finish':
-                result = reply['value']
-                if state['actions']:
-                    assign_episode_reward(state['actions'], result)
-                result.update(actions=state['actions'],bootstrap=state['bootstrap'],
-                              bootstrap_prompt=state['bootstrap_prompt'],seed=seed,
-                              truncated=not reply['terminated'],
-                              finish_reason=state.get('finish_reason') or ('terminated' if reply['terminated'] else 'step_limit'),
-                              started_at=state['started_at'],finished_at=time.time(),
-                              environment_intervals=state['rpc_intervals'])
-                if state.get('budget_admission') is not None:
-                    result['budget_admission'] = state['budget_admission']
-                if start_state:
-                    result['curriculum'] = {k: v for k, v in state['job'].items() if k in ('prefix_steps', 'level')}
-                if tree:
-                    result['tree'] = {k: v for k, v in state['job'].items() if k not in ('kind',)}
-                    if state['job'].get('role') == 'trunk':
-                        snapshots[state['index']] = state['snapshots']
-                observe('finish', rollout_index=state['index'], step=len(state['actions']),
-                        messages=reply['messages'], result=result)
-                completed[state['index']] = result
+                complete(state, reply)
                 del active[slot]
                 if hasattr(pool, 'release'):
                     pool.release(slot)

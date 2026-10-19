@@ -250,7 +250,7 @@ class SandboxEpisode:
         if reply.get('kind') == 'finished' or result.get('ended') == 'closed':
             # The user left: graded on the final state, the latest recorded answer and what was said.
             self.terminated = True
-            if self.score is None:
+            if self.score is None and not getattr(self, 'defer_grading', False):
                 self._grade()
         elif result.get('ended') == 'warning':
             return agent_view.left_notice(self.language, self.naming['v3_answer'] if self.answer_tool else None)
@@ -266,7 +266,8 @@ class SandboxEpisode:
         reply = self._step({'type': 'answer', 'answer': answer})
         self.terminated = True
         if reply.get('ok'):
-            self._grade()
+            if not getattr(self, 'defer_grading', False):
+                self._grade()
         else:
             self.score = {'reward': 0.0, 'success': False, 'reason': 'invalid_final_answer'}
         return {'ok': True, 'result': {'submitted': True}} if reply.get('ok') else reply
@@ -331,7 +332,7 @@ class SandboxEpisode:
         return 0.0, self.terminated
 
     def finish(self):
-        if self.score is None and self.user_mode == 'natural' and self.episode is not None:
+        if self.score is None and self.episode is not None and (self.user_mode == 'natural' or self.answer is not None):
             self._grade()  # step limit reached: the service closes the conversation and grades it
         if self.score is None:
             self.score = {'reward': 0.0, 'success': False, 'reason': 'no_final_answer'}

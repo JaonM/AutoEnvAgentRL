@@ -272,6 +272,22 @@ class V3AdapterTests(unittest.TestCase):
         self.assertTrue(self.env.terminated)
         self.assertEqual(result['final_reward'], 1.0, result['score'])
 
+    def test_deferred_grade_restores_the_frozen_terminal_state(self):
+        from env_factory.certify.bundle import load_bundle
+        self.env.defer_grading = True
+        self.env.reset(0)
+        answer = load_bundle(self.bundle)['env'].reference(ScriptedPolicy(self.env))
+        self.env.step(call('v3_answer', answer, 'final'))
+        self.assertTrue(self.env.terminated)
+        self.assertIsNone(self.env.score)
+        frozen = self.env.snapshot()
+        self.env.reset(1)  # execution slot already serves a different episode
+        scorer = SandboxEpisode(self.bundle)
+        self.addCleanup(scorer.close)
+        scorer.restore(frozen)
+        self.assertEqual(scorer.finish()['final_reward'], 1.)
+        self.assertFalse(self.env.terminated)
+
     def test_write_without_consent_earns_zero(self):
         self.env.reset(0)
         try:
