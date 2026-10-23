@@ -34,6 +34,12 @@ def expression(value, context):
     if 'op' in value:
         args = [expression(v, context) for v in value.get('args', [])]
         op = value['op']
+        if op == 'all': return all(v is True for v in args)
+        if op == 'any': return any(v is True for v in args)
+        if op == 'not': return not args[0]
+        if op == 'gt': return args[0] > args[1]
+        if op == 'lt': return args[0] < args[1]
+        if op == 'mul': return args[0] * args[1]
         if op == 'sum': return sum(args[0])
         if op == 'len': return len(args[0])
         if op == 'add': return sum(args)
@@ -50,7 +56,7 @@ def expression(value, context):
     return {k: expression(v, context) for k, v in value.items()}
 
 
-def run(env, contract):
+def run(env, contract, *, request=None):
     if contract.get('version') != 1 or not contract.get('cases'):
         return {'passed': False, 'problems': ['behavior contract needs version 1 and nonempty cases'], 'cases': []}
     try:
@@ -61,19 +67,24 @@ def run(env, contract):
         return {'passed': False, 'coverage': matrix, 'cases': [], 'problems': matrix['problems']}
     rows = []
     for case in contract['cases']:
-        errors = [];outputs = [];step_index = None
+        errors = [];outputs = [];step_index = None;api = None
         try:
             if not case.get('steps') or len(case['steps']) > 1000:
                 raise ValueError('case needs 1..1000 steps')
-            api = Episode(env.make_tools(), case['data'], {}, start=case.get('now', '2024-05-15T15:00:00'), approve=lambda *_: True)
+            from env_factory.lifecycle import options
+            config = {**(request or {}), **({'scenario': case['scenario']} if 'scenario' in case else {})}
+            api = Episode(env.make_tools(), case['data'], {}, start=case.get('now', '2024-05-15T15:00:00'),
+                          approve=lambda *_: True, **options(config))
             for step_index, step in enumerate(case['steps']):
                 before = copy.deepcopy(api.db)
                 if 'now' in step:
+                    if api.lifecycle is not None:
+                        raise ValueError('lifecycle contracts must advance with wait, not assign now')
                     api.now = step['now']
                 context = {'initial': case['data'], 'before': before, 'after': api.db, 'outputs': outputs}
                 args = expression(step.get('args', {}), context)
                 try:
-                    result = api.call(step['tool'], **args)
+                    result = api.wait(step['wait']) if 'wait' in step else api.call(step['tool'], **args)
                 except BusinessError as exc:
                     if not step.get('error') or (step['error'] != '*' and step['error'] not in str(exc)):
                         raise
@@ -95,7 +106,9 @@ def run(env, contract):
                     break
         except Exception as exc:
             errors.append({'step': step_index, 'error': f'{type(exc).__name__}: {exc}'})
-        rows.append({'id': case['id'], 'passed': not errors, 'failures': errors})
+        rows.append({'id': case['id'], 'passed': not errors, 'failures': errors,
+                     **({'transitions': sorted({e['transition'] for e in api.lifecycle.log if e['kind'] == 'transition'})}
+                        if api is not None and api.lifecycle is not None else {})})
     return {'passed': all(r['passed'] for r in rows), 'cases': rows, 'coverage': matrix, 'contract_sha256': digest(contract)}
 
 
@@ -111,7 +124,7 @@ def qualify(env, request):
             return {'passed': False, 'problems': ['malformed rule declaration']}
         if not spec.quoted(request, rule.get('brief_quote')):
             return {'passed': False, 'problems': [f"{rule.get('id')}: rule quote not found in business authority"]}
-    return run(env, contract)
+    return run(env, contract, request=request)
 
 
 CASE_KINDS = frozenset({'positive', 'negative', 'boundary', 'interleaving'})

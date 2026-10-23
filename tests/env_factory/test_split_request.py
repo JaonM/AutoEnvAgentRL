@@ -51,6 +51,9 @@ def test_named_requests_have_distinct_assets_and_no_extra_json_in_collection(tmp
 def test_modified_or_missing_asset_fails_closed(tmp_path, field):
     request = {**library_request(), 'sop_contract': {'cases': []}, 'behavior_contract': {'cases': []}}
     document = spec.write(request, tmp_path / 'request.json')
+    if field not in request:
+        request[field] = {}  # storage integrity is independent of business validation
+        document = spec.write(request, tmp_path / 'request.json')
     asset = tmp_path / document['request_assets']['files'][field]['path']
     asset.write_text('{}')
     with pytest.raises(spec.RequestError, match='hash mismatch'):

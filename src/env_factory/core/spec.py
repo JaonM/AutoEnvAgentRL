@@ -142,11 +142,28 @@ def validate(request):
     clarifications = request.get('clarifications', [])
     if not (isinstance(clarifications, list) and all(isinstance(c, str) and c.strip() for c in clarifications)):
         problems.append('clarifications must be a list of nonempty texts')
+    if 'lifecycle_schema' in request or 'scenario' in request or 'lifecycle_contract' in request:
+        from env_factory.lifecycle import validate as validate_lifecycle
+        if not isinstance(request.get('lifecycle_schema'), dict) or not isinstance(request.get('scenario'), dict):
+            problems.append('lifecycle_schema and scenario must be supplied together')
+        else:
+            lifecycle_problems = validate_lifecycle(request['lifecycle_schema'], request['scenario'], tables)
+            problems += lifecycle_problems
+            if not lifecycle_problems:
+                from env_factory.lifecycle import Lifecycle
+                try:
+                    Lifecycle(request['lifecycle_schema'], request['scenario'], copy.deepcopy(tables), time['start'])
+                except Exception as exc:
+                    problems.append(f'illegal lifecycle initial history: {type(exc).__name__}: {exc}')
+        if request.get('reward_type', 'business') != 'business':
+            problems.append('lifecycle currently requires independent business verification')
     return problems
 
 
 ASSET_NAMES = {'tables': 'data.json', 'user_facts': 'facts.json',
-               'behavior_contract': 'behavior_contract.json', 'sop_contract': 'sop_contract.json'}
+               'behavior_contract': 'behavior_contract.json', 'sop_contract': 'sop_contract.json',
+               'lifecycle_schema': 'lifecycle_schema.json', 'scenario': 'scenario.json',
+               'lifecycle_contract': 'lifecycle_contract.json'}
 
 
 def asset_files(document):
@@ -302,7 +319,11 @@ def brief(request, schema=None):
     tables = '\n'.join(f'- {name}: {len(rows)} rows; columns {sorted(rows[0]) if rows else "(empty)"}'
                        for name, rows in request['tables'].items())
     topics = '\n'.join(f'- {t["key"]} ({t["kind"]}): {t["description"]}' for t in fact_topics(request))
-    if 'scheduled_events' in request['tables']:
+    if request.get('lifecycle_schema'):
+        clock = (f"Starts at {request['time']['start']}; explicit waits advance causal lifecycle events. "
+                 "lifecycle_schema.json owns transitions; scenario.json selects parameters, legal history and scope. "
+                 "Tools cannot mutate managed tables directly. Only declared transitions may change them.")
+    elif 'scheduled_events' in request['tables']:
         clock = (f"Starts at now = {request['time']['start']} and advances only when the agent waits. Rows of "
                  "scheduled_events (platform data, hidden from tools) are applied with "
                  "env_factory.runtime.apply_event when the clock reaches their `at`; the verifier must apply "

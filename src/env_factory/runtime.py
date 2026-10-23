@@ -197,7 +197,7 @@ class Episode:
 
     BusinessError = BusinessError
 
-    def __init__(self, tools, data, facts, *, start=0, tick=0, approve=None):
+    def __init__(self, tools, data, facts, *, start=0, tick=0, approve=None, lifecycle_schema=None, scenario=None):
         # approve(tool, args) -> bool switches writes to plain-dialogue consent: no token; the platform
         # executes a write only when the user's approval fact for that exact write is true, and an
         # attempt the user did not agree to is a safety violation (see Service.reset, consent='plain').
@@ -211,6 +211,13 @@ class Episode:
         self.trace, self.tokens = [], {}
         self.answer, self.finished = None, False
         self.safety_violations, self.tool_errors = 0, 0
+        self.lifecycle = None
+        if lifecycle_schema is not None:
+            from env_factory.lifecycle import Lifecycle, clock
+            if tick:
+                raise ValueError('lifecycle time advances only through explicit wait')
+            self.lifecycle = Lifecycle(lifecycle_schema, scenario or {}, self.db, start, tools)
+            self.now = clock(self.lifecycle.now, self.lifecycle.calendar)
         self._apply_events()
 
     # -- clock ------------------------------------------------------------
@@ -226,13 +233,26 @@ class Episode:
         self._apply_events()
 
     def wait(self, seconds):
-        if EVENTS not in self.initial:
+        if EVENTS not in self.initial and self.lifecycle is None:
             # Same rule as the HTTP service: without a scheduled_events table the clock is fixed.
             raise ValueError('the clock is fixed for this task (no scheduled_events table)')
-        if not isinstance(seconds, (int, float)) or isinstance(seconds, bool) or seconds < 0:
+        import math
+        if type(seconds) not in (int, float) or not math.isfinite(seconds) or seconds < 0:
             raise ValueError('wait requires nonnegative seconds')
         self._guard()
-        self.now += seconds
+        if self.lifecycle is not None:
+            from env_factory.lifecycle import clock, LifecycleError
+            candidate, engine = copy.deepcopy(self.db), copy.deepcopy(self.lifecycle)
+            try:
+                engine.advance(candidate, engine.now + seconds)
+            except (LifecycleError, KeyError, TypeError, ValueError) as exc:
+                self.tool_errors += 1
+                self.trace.append({'kind': 'event_error', 'time': self.now, 'error': str(exc)[:300]})
+                raise ToolError('lifecycle event failed: ' + str(exc)) from exc
+            new_now = clock(engine.now, engine.calendar)
+            self.db, self.lifecycle, self.now = candidate, engine, new_now
+        else:
+            self.now += seconds
         self.trace.append({'kind': 'wait', 'seconds': seconds, 'time': self.now})
         self._apply_events()
         return {'now': self.now}
@@ -257,6 +277,36 @@ class Episode:
         if self.finished:
             raise EpisodeFinished('episode already answered')
 
+    def _execute_write(self, name, fn, args):
+        """Database, transition history, outbox and receipts commit together."""
+        candidate = copy.deepcopy(self.db)
+        engine = copy.deepcopy(self.lifecycle)
+        if engine is not None and name in engine.schema.get('tools', {}):
+            binding = engine.schema['tools'][name]
+            bound = inspect.signature(fn).bind(candidate, self.now, **copy.deepcopy(args))
+            bound.apply_defaults()
+            inputs = dict(list(bound.arguments.items())[2:])
+            entity = inputs[binding['entity_arg']]
+            if not isinstance(inputs[binding['key_arg']], str) or not inputs[binding['key_arg']]:
+                raise BusinessError('idempotency key must be a nonempty string')
+            key = 'tool:' + inputs[binding['key_arg']]
+            receipt, duplicate = engine.execute(candidate, binding['transition'], entity, inputs,
+                                                key=key, actor='agent', cause='tool:' + name)
+            if duplicate:
+                return copy.deepcopy(receipt['result'])
+            before = canonical(candidate)
+            result = jsonable(copy.deepcopy(fn(candidate, self.now, **copy.deepcopy(args))))
+            if canonical(candidate) != before:
+                from env_factory.lifecycle import LifecycleError
+                raise LifecycleError('bound lifecycle tool must only read state and format its receipt')
+            engine.receipts[key]['result'] = copy.deepcopy(result)
+        else:
+            result = jsonable(copy.deepcopy(fn(candidate, self.now, **copy.deepcopy(args))))
+            if engine is not None:
+                engine.protected(self.db, candidate)
+        self.db, self.lifecycle = candidate, engine
+        return result
+
     # -- actions ----------------------------------------------------------
     def call(self, name, **args):
         self._guard()
@@ -279,9 +329,8 @@ class Episode:
                 self.trace.append(entry)
                 self._advance()
                 raise BusinessError('the customer has not agreed to this change')
-            candidate = copy.deepcopy(self.db)
             try:
-                result = jsonable(copy.deepcopy(fn(candidate, self.now, **copy.deepcopy(args))))
+                result = self._execute_write(name, fn, args)
             except BusinessError as exc:
                 entry.update(status='rejected', error=str(exc))
                 self.trace.append(entry)
@@ -289,7 +338,6 @@ class Episode:
                 raise
             except Exception as exc:
                 self._tool_error(entry, exc)
-            self.db = candidate
             entry['write'] = True
         elif is_write(fn):
             token = args.pop('consent', None)
@@ -313,10 +361,8 @@ class Episode:
                                     'exactly the approved arguments, or ask for consent again')
             self._check_arguments(name, fn, args)
             grant['used'] = True
-            candidate = copy.deepcopy(self.db)
             try:
-                result = fn(candidate, self.now, **copy.deepcopy(args))
-                result = jsonable(copy.deepcopy(result))
+                result = self._execute_write(name, fn, args)
             except BusinessError as exc:
                 entry.update(status='rejected', error=str(exc))
                 self.trace.append(entry)
@@ -324,7 +370,6 @@ class Episode:
                 raise
             except Exception as exc:  # authored code crashed; the candidate state is discarded
                 self._tool_error(entry, exc)
-            self.db = candidate
             entry['write'] = True
         else:
             entry['args'] = copy.deepcopy(args)
@@ -397,17 +442,19 @@ class Episode:
         return {'answer': copy.deepcopy(self.answer), 'final_state': final,
                 'trace': copy.deepcopy(self.trace), 'safety_violations': self.safety_violations,
                 'tool_errors': self.tool_errors,
-                'tool_calls': sum(1 for e in self.trace if e['kind'] == 'tool'), 'now': self.now}
+                'tool_calls': sum(1 for e in self.trace if e['kind'] == 'tool'), 'now': self.now,
+                **({'lifecycle': self.lifecycle.snapshot()} if self.lifecycle is not None else {})}
 
 
-def run_policy(env, policy, data, facts, *, start=0, tick=0):
+def run_policy(env, policy, data, facts, *, start=0, tick=0, request=None):
     """Run a policy function (api -> answer) in a fresh episode of env."""
-    episode = Episode(env.make_tools(), data, facts, start=start, tick=tick)
+    from env_factory.lifecycle import options
+    episode = Episode(env.make_tools(), data, facts, start=start, tick=tick, **options(request or {}))
     answer = policy(episode)
     if not episode.finished:
         episode.submit(answer if answer is not None else {})
     return episode.result()
 
 
-def run_reference(env, data, facts, *, start=0, tick=0):
-    return run_policy(env, env.reference, data, facts, start=start, tick=tick)
+def run_reference(env, data, facts, *, start=0, tick=0, request=None):
+    return run_policy(env, env.reference, data, facts, start=start, tick=tick, request=request)

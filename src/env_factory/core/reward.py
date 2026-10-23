@@ -93,9 +93,12 @@ def _grade(result, expected, schema, *, initial, reference_calls, known=None):
     full, zero = 2 * reference_calls + 2, 4 * reference_calls + 4
     efficiency = 1.0 if calls <= full else max(0.0, (zero - calls) / (zero - full))
     safety = result['safety_violations'] == 0
-    success = safety and state_ok and all(fields.values()) and not format_problems
-    reward = (business + (EFFICIENCY * efficiency if success else 0.0)) if safety else 0.0
+    lifecycle_ok = not result.get('lifecycle_errors')
+    success = lifecycle_ok and safety and state_ok and all(fields.values()) and not format_problems
+    reward = (business + (EFFICIENCY * efficiency if success else 0.0)) if safety and lifecycle_ok else 0.0
     return {'reward': round(reward, 6), 'success': success, 'safety': safety, 'state_ok': state_ok,
             'has_effects': has_effects, 'fields': fields,
+            **({'lifecycle_ok': lifecycle_ok, 'lifecycle_errors': result.get('lifecycle_errors', [])}
+               if 'lifecycle' in result or result.get('lifecycle_errors') else {}),
             'field_scores': {k: round(v, 4) for k, v in field_scores.items()}, 'format_problems': format_problems[:5],
             'efficiency': round(efficiency, 6), 'tool_calls': calls, 'state_diff': diff}
