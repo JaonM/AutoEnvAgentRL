@@ -11,6 +11,8 @@ Prints PASS/FAIL and exits 0 only on PASS. Results also go to check-<kind>.json.
 """
 from __future__ import annotations
 
+from env_factory import lifecycle
+
 import json
 import re
 import sys
@@ -22,7 +24,7 @@ from env_factory.core import answers, reward
 from env_factory.core.sandbox import SandboxError, load_module
 from env_factory.core.spec import load
 from env_factory.core.worlds import request_variants
-from env_factory.runtime import InvalidWorld, canonical, run_reference, tool_spec_problems
+from env_factory.runtime import BusinessError, InvalidWorld, canonical, run_reference, tool_spec_problems
 
 PERTURBED = 10
 TABLE_ARGUMENTS = {'table', 'table_name', 'tables', 'collection'}
@@ -161,6 +163,8 @@ def check_env(folder):
     if not isinstance(tools, dict) or not tools:
         return ['make_tools() must return a non-empty dict'], notes
     problems += tool_spec_problems(tools)
+    if request.get('lifecycle_schema'):
+        problems += lifecycle.validate(request['lifecycle_schema'], request['scenario'], request['tables'], tools)
     problems += api_problems(tools, request)
     from env_factory.production.contracts import interface_problems
     problems += interface_problems(tools, request)
@@ -168,9 +172,18 @@ def check_env(folder):
     problems += gates.approval_problems(env, request)
     start = request['time']['start']
     for name, data, facts in request_variants(request, perturbed=PERTURBED):
+        if name.startswith('perturb') and request.get('lifecycle_schema'):
+            try:
+                lifecycle.Lifecycle(request['lifecycle_schema'], request['scenario'],
+                                    json.loads(json.dumps(data)), start)
+            except (lifecycle.LifecycleError, BusinessError) as exc:
+                # Only caller-owned initial invariants/history may exclude a candidate here.
+                # G2 still asks the independent verifier about every candidate; disagreement fails.
+                notes.append(f'{name}: invalid lifecycle initial state ({exc})')
+                continue
         try:
-            first = run_reference(env, data, facts, start=start)
-            second = run_reference(env, data, facts, start=start)
+            first = run_reference(env, data, facts, start=start, request=request)
+            second = run_reference(env, data, facts, start=start, request=request)
         except Exception:
             problems.append(f'{name}: reference raised\n{traceback.format_exc(limit=4)}')
             continue
@@ -193,11 +206,13 @@ def check_verifier(folder):
     schema = answers.load_schema(folder / 'answer_schema.json')
     verifier = load_module(folder / 'verifier.py', role='verifier')
     problems, notes, valid = [], [], 0
+    if request.get('lifecycle_schema') and not callable(getattr(verifier, 'verify_lifecycle', None)):
+        problems.append('lifecycle requires verifier.verify_lifecycle')
     start = request['time']['start']
     for name, data, facts in request_variants(request, perturbed=PERTURBED):
         try:
-            first = verifier.expected(json.loads(json.dumps(data)), json.loads(json.dumps(facts)), start)
-            second = verifier.expected(json.loads(json.dumps(data)), json.loads(json.dumps(facts)), start)
+            first = lifecycle.expected(verifier, json.loads(json.dumps(data)), json.loads(json.dumps(facts)), start, request)
+            second = lifecycle.expected(verifier, json.loads(json.dumps(data)), json.loads(json.dumps(facts)), start, request)
             json.dumps(first, allow_nan=False)
         except InvalidWorld as exc:
             notes.append(f'{name}: invalid world ({exc})')

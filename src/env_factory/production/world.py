@@ -20,6 +20,8 @@ brief, so per-process audits guard correlated errors instead.)
 """
 from __future__ import annotations
 
+from env_factory import lifecycle
+
 import argparse
 import collections
 import concurrent.futures
@@ -213,11 +215,17 @@ def apply_overlay(tables, overlay):
 
 def compose(world, task, task_id):
     """The build request of one task on a world (the opening is written afterwards)."""
+    if any(k in task for k in ('lifecycle_schema', 'lifecycle_contract')):
+        raise ValueError('tasks cannot redefine world lifecycle rules/contracts')
     request = copy.deepcopy(world)
     tables, _ = apply_overlay(world['tables'], task.get('overlay'))
     request.update(id=task_id, request_kind='task', world_id=world['id'],
                    title=task.get('title') or world['title'], tables=tables,
                    user_facts=task['user_facts'], user_scene=task['user_scene'])
+    if world.get('lifecycle_schema'):
+        if not isinstance(task.get('scenario'), dict):
+            raise ValueError('lifecycle task must explicitly select its own scenario')
+        request['scenario'] = copy.deepcopy(task['scenario'])
     request['user_script'] = task.get('user_script') or None
     if 'sop_blueprint' in world:
         request.pop('sop_legacy', None)
@@ -241,6 +249,10 @@ def check_task(folder):
     if problems:
         return problems, []
     _, overlay_problems = apply_overlay(world['tables'], task.get('overlay'))
+    if any(k in task for k in ('lifecycle_schema', 'lifecycle_contract')):
+        return ['tasks cannot redefine world lifecycle rules/contracts'], []
+    if world.get('lifecycle_schema') and not isinstance(task.get('scenario'), dict):
+        return ['lifecycle task requires scenario'], []
     request = compose(world, task, assignment['id'])
     problems = overlay_problems + spec.validate({**request, 'user_request': request['user_scene']['goal']})
     problems += goal_problems(task['user_facts'].get('goals'), world['goal_schema'])
@@ -300,6 +312,12 @@ def build_world(domain, folder, *, runner, client, python, language, index, repa
     detail = domain.get('detail', '')
     if domain.get('sop_required'):
         detail += '\n' + prompts.SOP_DESIGN
+    lifecycle_inputs = {k: copy.deepcopy(domain[k]) for k in ('lifecycle_schema', 'scenario', 'lifecycle_contract') if k in domain}
+    if lifecycle_inputs:
+        (session / 'lifecycle_inputs.json').write_text(json.dumps(lifecycle_inputs, ensure_ascii=False, indent=1))
+        detail += '\nRead lifecycle_inputs.json. Preserve these caller-owned lifecycle fields exactly; create compatible base data.'
+    if domain.get('lifecycle_required'):
+        detail += '\nThis world REQUIRES lifecycle_schema, scenario and independent lifecycle_contract before implementation.'
     if contract is not None:
         errors = contracts.problems(contract)
         if errors:
@@ -339,12 +357,21 @@ def build_world(domain, folder, *, runner, client, python, language, index, repa
             if not intact:
                 return {'id': world_id, 'training_ready': False, 'failure_class': 'public_contract_modified',
                         'reason': ['author modified caller-owned contract'], 'spec_repairs_used': spec_repairs}
+        if lifecycle_inputs:
+            if json.loads((session / 'lifecycle_inputs.json').read_text()) != lifecycle_inputs:
+                return {'id': world_id, 'training_ready': False, 'failure_class': 'lifecycle_inputs_modified'}
         report = checks.run('world', session)
         failure_class = 'world_request'
         if report['passed'] and domain.get('sop_required'):
             design = spec.read(session / 'request.json')
             if not design.get('sop_blueprint') or not design.get('sop_contract'):
                 report = {'passed': False, 'problems': ['caller requires sop_blueprint and independent sop_contract before implementation']}
+        if report['passed'] and (domain.get('lifecycle_required') or lifecycle_inputs):
+            design = spec.read(session / 'request.json')
+            if not all(design.get(k) for k in ('lifecycle_schema', 'scenario', 'lifecycle_contract')):
+                report = {'passed': False, 'problems': ['caller requires lifecycle schema, scenario and independent contract']}
+            elif any(design.get(k) != v for k, v in lifecycle_inputs.items()):
+                report = {'passed': False, 'problems': ['caller-owned lifecycle inputs were changed']}
         if report['passed']:
             request = spec.read(session / 'request.json')
             request['request_kind'] = 'world'
@@ -396,6 +423,9 @@ def build_world(domain, folder, *, runner, client, python, language, index, repa
         from env_factory.certify import behavior
         request['behavior_contract'] = copy.deepcopy(domain['behavior_contract'])
         request['behavior_contract_sha256'] = behavior.digest(request['behavior_contract'])
+    for field in ('lifecycle_schema', 'scenario', 'lifecycle_contract'):
+        if field in domain:
+            request[field] = copy.deepcopy(domain[field])
     if domain.get('sop_blueprint') is not None:
         from env_factory.certify.behavior import digest
         request['sop_blueprint'] = copy.deepcopy(domain['sop_blueprint'])
@@ -593,7 +623,7 @@ def missing_approvals(world_bundle, request):
     from env_factory.runtime import run_reference
     env = load_module(Path(world_bundle) / 'env.py', role='env')
     try:
-        result = run_reference(env, request['tables'], request['user_facts'], start=request['time']['start'])
+        result = run_reference(env, request['tables'], request['user_facts'], start=request['time']['start'], request=request)
     except Exception as exc:  # noqa: BLE001 - the gates report a reference that fails
         return []
     asked = [e.get('key') for e in result['trace'] if e.get('kind') == 'confirm']
@@ -607,7 +637,7 @@ def built_shape(target):
     from env_factory.runtime import run_reference
     loaded = bundle.load_bundle(target)
     request = loaded['request']
-    result = run_reference(loaded['env'], request['tables'], request['user_facts'], start=request['time']['start'])
+    result = run_reference(loaded['env'], request['tables'], request['user_facts'], start=request['time']['start'], request=request)
     return generate.actual_shape(trace_structure(result['trace'], request['user_facts']))
 
 
@@ -632,7 +662,7 @@ def goal_sensitivity(verifier, request):
     this when env and verifier ignore it alike. Inconclusive when no param has an alternative."""
     from env_factory.runtime import canonical
     tables, facts, start = request['tables'], request['user_facts'], request['time']['start']
-    base = verifier.expected(copy.deepcopy(tables), copy.deepcopy(facts), start)
+    base = lifecycle.expected(verifier, copy.deepcopy(tables), copy.deepcopy(facts), start, request)
     insensitive, checked = [], 0
     for index, goal in enumerate(facts.get('goals') or []):
         field, tried, moved = f'goal_{index + 1}', 0, False
@@ -644,7 +674,7 @@ def goal_sensitivity(verifier, request):
             changed = copy.deepcopy(facts)
             changed['goals'][index].pop('bindings')
             try:
-                outcome = verifier.expected(copy.deepcopy(tables), changed, start)
+                outcome = lifecycle.expected(verifier, copy.deepcopy(tables), changed, start, request)
             except Exception:
                 pass  # an execution error is not evidence of sensitivity
             else:
@@ -657,7 +687,7 @@ def goal_sensitivity(verifier, request):
                 changed = copy.deepcopy(facts)
                 changed['goals'][index]['params'][key] = other
                 try:
-                    outcome = verifier.expected(copy.deepcopy(tables), changed, start)
+                    outcome = lifecycle.expected(verifier, copy.deepcopy(tables), changed, start, request)
                 except Exception:  # noqa: BLE001 - an invalid alternative proves nothing either way
                     continue
                 tried += 1
@@ -679,8 +709,7 @@ def is_refusal(verifier, request):
     from env_factory.runtime import canonical
     if (request.get('source') or {}).get('shape') not in ('single_write', 'complex'):
         return False
-    expected = verifier.expected(copy.deepcopy(request['tables']), copy.deepcopy(request['user_facts']),
-                               request['time']['start'])
+    expected = lifecycle.expected(verifier, copy.deepcopy(request['tables']), copy.deepcopy(request['user_facts']), request['time']['start'], request)
     return canonical(expected['final_state']) == canonical(request['tables'])
 
 
@@ -701,7 +730,7 @@ def constant_leaves(verifier, request, perturbed=10):
     answers_seen = []
     for data, world_facts in cases:
         try:
-            answers_seen.append(verifier.expected(copy.deepcopy(data), copy.deepcopy(world_facts), start)['answer'])
+            answers_seen.append(lifecycle.expected(verifier, copy.deepcopy(data), copy.deepcopy(world_facts), start, request)['answer'])
         except Exception:  # noqa: BLE001 - an invalid case says nothing about constancy
             continue
     if len(answers_seen) < 3:

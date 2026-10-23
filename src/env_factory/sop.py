@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import itertools
 
+from env_factory import lifecycle
 from env_factory.certify.behavior import at, digest, expression
 from env_factory.runtime import BusinessError, Episode, canonical
 
@@ -157,21 +158,27 @@ def validate(blueprint, tools=None):
         return errors + [str(exc)]
 
 
-def run_graph(env, blueprint, case, *, reverse=False):
+def run_graph(env, blueprint, case, *, reverse=False, request=None):
     graph = case['graph']; atoms = blueprint['atoms']
     problems = graph_problems(graph, atoms)
     if problems:
         return {'passed': False, 'problems': problems}
-    api = Episode(env.make_tools(), case['data'], {}, start=case.get('now', '2024-05-15T15:00:00'), approve=lambda *_: True)
+    config = {**(request or {}), **({'scenario': case['scenario']} if 'scenario' in case else {})}
+    api = Episode(env.make_tools(), case['data'], {}, start=case.get('now', '2024-05-15T15:00:00'),
+                  approve=lambda *_: True, **lifecycle.options(config))
     outputs = {}; rows = []; nodes = {n['id']: n for n in graph['nodes']}
     try:
         for name in order(graph, reverse=reverse):
             node = nodes[name]; atom = atoms[node['atom']]
+            if 'wait_before' in node:
+                api.wait(node['wait_before'])
             before = copy.deepcopy(api.db)
             context = {'initial': case['data'], 'before': before, 'after': api.db, 'outputs': outputs}
             if 'when' in node and expression(node['when'], context) is not True:
                 rows.append({'node': name, 'status': 'skipped'}); continue
             if 'now' in node:
+                if api.lifecycle is not None:
+                    raise ValueError('lifecycle SOPs use wait_before, not direct clock assignment')
                 api.now = node['now']
             args = expression(node.get('args', {}), context)
             from jsonschema import validate as validate_json
@@ -234,7 +241,7 @@ def task_report(env, verifier, request):
     if problems or not method or request.get('sop_legacy'):
         return {'passed': not problems, 'problems': problems, 'legacy': bool(request.get('sop_legacy'))}
     facts = request['user_facts']; now = request['time']['start']
-    full = verifier.expected(copy.deepcopy(request['tables']), copy.deepcopy(facts), now)
+    full = lifecycle.expected(verifier, copy.deepcopy(request['tables']), copy.deepcopy(facts), now, request)
     witnesses = []
     for i, allowed in method.get('statuses', {}).items():
         if full['answer']['goal_' + str(int(i) + 1)]['status'] not in allowed:
@@ -246,7 +253,7 @@ def task_report(env, verifier, request):
         if edge['kind'] == 'data':
             altered = copy.deepcopy(facts)
             altered['goals'][edge['to']].pop('bindings', None)
-            counter = verifier.expected(copy.deepcopy(request['tables']), altered, now)
+            counter = lifecycle.expected(verifier, copy.deepcopy(request['tables']), altered, now, request)
             changed = full['answer'][f"goal_{edge['to']+1}"] != counter['answer'][f"goal_{edge['to']+1}"]
             witnesses.append({**edge, 'evidence': 'runtime_binding_ablation', 'observed': changed})
             if not changed:
@@ -260,17 +267,17 @@ def task_report(env, verifier, request):
         altered['goals'].pop(removed)
         if any(g.get('bindings') for g in altered['goals']):
             problems.append('state ablation with mixed result bindings is unsupported'); continue
-        counter = verifier.expected(copy.deepcopy(request['tables']), altered, now)
+        counter = lifecycle.expected(verifier, copy.deepcopy(request['tables']), altered, now, request)
         target_changed = full['answer'][f'goal_{target+1}'] != counter['answer'][f'goal_{target}']
         changed = (target_changed or
                    canonical(full['final_state']) != canonical(counter['final_state']))
         # A persistent predecessor-only edit is not proof: its successor alone
         # must differ when started from the post-predecessor state.
         prefix = copy.deepcopy(facts); prefix['goals'] = prefix['goals'][:target]
-        prior = verifier.expected(copy.deepcopy(request['tables']), prefix, now)['final_state']
+        prior = lifecycle.expected(verifier, copy.deepcopy(request['tables']), prefix, now, request)['final_state']
         isolated = copy.deepcopy(facts); isolated['goals'] = [facts['goals'][target]]
-        on_before = verifier.expected(copy.deepcopy(request['tables']), isolated, now)
-        on_after = verifier.expected(copy.deepcopy(prior), isolated, now)
+        on_before = lifecycle.expected(verifier, copy.deepcopy(request['tables']), isolated, now, request)
+        on_after = lifecycle.expected(verifier, copy.deepcopy(prior), isolated, now, request)
         effect_before = changes(request['tables'], on_before['final_state'])
         effect_after = changes(prior, on_after['final_state'])
         # Compare both changed paths and their resulting values, stripping any
@@ -288,11 +295,14 @@ def task_report(env, verifier, request):
 def trace_report(env, request):
     """Check declared write scope on the task's actual arguments, beyond canned fixtures."""
     from env_factory.runtime import run_reference
-    result = run_reference(env, request['tables'], request['user_facts'], start=request['time']['start'])
+    result = run_reference(env, request['tables'], request['user_facts'], start=request['time']['start'], request=request)
     atoms = {a['tool']: a for a in request['sop_blueprint']['atoms'].values()}
-    api = Episode(env.make_tools(), request['tables'], request['user_facts'], start=request['time']['start'], approve=lambda *_: True)
+    api = Episode(env.make_tools(), request['tables'], request['user_facts'], start=request['time']['start'], approve=lambda *_: True, **lifecycle.options(request))
     problems = []; counts = {}
     for entry in result['trace']:
+        if entry.get('kind') == 'wait':
+            api.wait(entry['seconds'])
+            continue
         if entry.get('kind') != 'tool' or entry.get('status') not in ('ok', 'rejected'):
             continue
         name = entry['tool']; before = copy.deepcopy(api.db)
@@ -325,8 +335,8 @@ def qualify(env, verifier, request):
         return {'passed': False, 'problems': problems}
     rows = []
     for case in contract['cases']:
-        forward = run_graph(env, blueprint, case)
-        backward = run_graph(env, blueprint, case, reverse=True)
+        forward = run_graph(env, blueprint, case, request=request)
+        backward = run_graph(env, blueprint, case, reverse=True, request=request)
         equivalent = all(forward.get(k) == backward.get(k) for k in ('final_state_sha256', 'outputs_sha256'))
         rows.append({'id': case['id'], 'passed': forward['passed'] and backward['passed'] and equivalent,
                      'execution': forward, 'alternate_order': backward, 'equivalent': equivalent})

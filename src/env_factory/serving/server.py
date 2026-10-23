@@ -28,6 +28,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.request import Request, urlopen
 
 from env_factory.core import reward, spec
+from env_factory import lifecycle
 from env_factory.core.worlds import request_variants
 from env_factory.runtime import BusinessError, Episode, EpisodeFinished, ToolError, tool_specs
 
@@ -87,7 +88,7 @@ class Service:
             'business_rules': request.get('agent_policy') or request['business_rules'], 'tools': tool_specs(tools),
             'user_topics': spec.fact_topics(request), 'answer_schema': schema,
             'time': {'start': request['time']['start'],
-                     'advancing': 'scheduled_events' in request['tables']},
+                     'advancing': 'scheduled_events' in request['tables'] or bool(request.get('lifecycle_schema'))},
             'protocol': 'Use ask to learn user facts and confirm before every write; '
                         'pass the returned consent token to that exact write; finish with answer.',
             'user_mode': user_mode, 'language': request.get('language', 'zh')}
@@ -111,16 +112,16 @@ class Service:
             raise KeyError(f'unknown world {name}')
         data, facts = self.worlds[name]
         start = self.request['time']['start']
-        expected = (self.verifier.expected(copy.deepcopy(data), copy.deepcopy(facts), start)
+        expected = (lifecycle.expected(self.verifier, data, facts, start, self.request)
                     if self.reward_type == 'business' else None)
         approve = None
         if plain:
             env, private = self.env, copy.deepcopy(facts)
             approve = lambda tool, args: private.get(env.approval_key(tool, args, copy.deepcopy(private))) is True
-        episode = Episode(self.env.make_tools(), data, facts, start=start, approve=approve)
+        episode = Episode(self.env.make_tools(), data, facts, start=start, approve=approve, **lifecycle.options(self.request))
         identifier = uuid.uuid4().hex
         record = {'episode': episode, 'expected': expected, 'world': name, 'data': data, 'facts': facts,
-                  'consent': 'plain' if plain else 'token'}
+                  'consent': 'plain' if plain else 'token', 'lock': threading.RLock()}
         if self.user_mode == 'natural':
             from env_factory.serving.user_sim import UserSimulator
             record['user'] = UserSimulator(self.user_client, self.request, facts, self.approvals, plain=plain)
@@ -191,6 +192,10 @@ class Service:
 
     def step(self, identifier, action):
         record = self._get(identifier)
+        with record['lock']:
+            return self._step(record, action)
+
+    def _step(self, record, action):
         episode = record['episode']
         kind = action.get('type')
         if self.user_mode == 'natural' and kind in ('ask', 'confirm'):
@@ -240,7 +245,8 @@ class Service:
         shared = [self.user_client, record['data'], record['facts'], record.get('expected'), record['episode'].initial,
                   record['episode'].tools, record['episode'].approve]
         memo = {id(value): value for value in shared if value is not None}
-        with self.lock:
+        memo[id(record['lock'])] = threading.RLock()
+        with record['lock'], self.lock:
             clone = copy.deepcopy(record, memo)
             fork_id = uuid.uuid4().hex
             self.episodes[fork_id] = clone
@@ -270,6 +276,10 @@ class Service:
 
     def reward(self, identifier):
         record = self._get(identifier)
+        with record['lock']:
+            return self._reward(record)
+
+    def _reward(self, record):
         episode = record['episode']
         if self.user_mode == 'natural':
             self._close(record)  # grading ends a free-dialogue episode (e.g. the trainer's step limit)
@@ -279,7 +289,7 @@ class Service:
         if reference_calls is None:
             from env_factory.runtime import run_reference
             data, facts = self.worlds[record['world']]
-            reference_calls = run_reference(self.env, data, facts, start=self.request['time']['start'])['tool_calls']
+            reference_calls = run_reference(self.env, data, facts, start=self.request['time']['start'], request=self.request)['tool_calls']
             record['reference_calls'] = reference_calls
         if self.reward_type == 'rubric':
             from env_factory.core import rubric
@@ -294,6 +304,8 @@ class Service:
                     result['trace']), records_of(result['trace']),
                     dialogue=conversation_of(result['trace'], self.request['user_request']))}, 'extracted'
             from env_factory.core import answers
+            result['lifecycle_errors'] = lifecycle.audit(self.verifier, record['data'], record['facts'],
+                                                         self.request['time']['start'], result, self.request)
             grade = reward.grade(result, record['expected'], self.schema, initial=record['data'],
                                  reference_calls=reference_calls,
                                  known=answers.known_strings(self.request, record['facts']))

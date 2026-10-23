@@ -16,6 +16,8 @@ review and can be left out of training (make_split.py --exclude). Nothing here c
 """
 from __future__ import annotations
 
+from env_factory import lifecycle
+
 import argparse
 import collections
 import concurrent.futures
@@ -130,8 +132,7 @@ def mine(folder, report, client=None):
         name = episode['world']
         if name not in expected_of and name in service.worlds:
             data, facts = service.worlds[name]
-            outcome = loaded['verifier'].expected(json.loads(json.dumps(data)), json.loads(json.dumps(facts)),
-                                                request['time']['start'])
+            outcome = lifecycle.expected(loaded['verifier'], data, facts, request['time']['start'], request)
             changes = {table: {'should_appear': d['missing'], 'should_disappear': d['unexpected']}
                        for table, d in state_diff(outcome['final_state'], data).items()}
             expected_of[name] = (outcome, changes, facts)

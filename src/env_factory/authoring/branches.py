@@ -61,14 +61,14 @@ def cascades(env, request):
     """Approval flips after which the reference drops steps the all-approved original takes."""
     start = request['time']['start']
     worlds = request_variants(request, perturbed=0)
-    original = run_reference(env, worlds[0][1], worlds[0][2], start=start)
+    original = run_reference(env, worlds[0][1], worlds[0][2], start=start, request=request)
     asked = _confirms(original['trace'])
     found = []
     for name, data, facts in worlds[1:]:
         denied = name.split(':', 1)[1]
         if denied not in asked:
             continue
-        run = run_reference(env, data, facts, start=start)
+        run = run_reference(env, data, facts, start=start, request=request)
         skipped = _skipped(original, run, denied)
         if skipped:
             found.append({'world': name, 'denied': denied,
@@ -94,7 +94,7 @@ def unrepaired(env, request, found):
     start = request['time']['start']
     worlds = {name: (data, facts) for name, data, facts in
               request_variants(request, perturbed=0)}
-    trace = run_reference(env, *worlds['original'], start=start)['trace']
+    trace = run_reference(env, *worlds['original'], start=start, request=request)['trace']
     left = []
     for cascade in found:
         original = _counts(trace)
@@ -103,7 +103,7 @@ def unrepaired(env, request, found):
             if entry.get('kind') == 'confirm' and entry['key'] == cascade['denied']:
                 tool = entry['proposal']['tool']
                 original[tool] = original.get(tool, 0) - 1
-        flipped = _counts(run_reference(env, *worlds[cascade['world']], start=start)['trace'])
+        flipped = _counts(run_reference(env, *worlds[cascade['world']], start=start, request=request)['trace'])
         needed = {step.split(' ', 1)[0] if not step.startswith('confirm ') else step
                   for step in cascade['skipped_steps']}
         if any(flipped.get(key, 0) < original.get(key, 0) for key in needed):

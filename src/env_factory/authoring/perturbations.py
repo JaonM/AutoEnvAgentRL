@@ -49,7 +49,7 @@ def insensitive(env, request, *, perturbed=20, excluded=()):
     start = request['time']['start']
     worlds = request_variants(request, perturbed=perturbed)
     name, original_data, facts = worlds[0]
-    original = run_reference(env, original_data, facts, start=start)
+    original = run_reference(env, original_data, facts, start=start, request=request)
     # Rows the task acts on: named by the user, written, or reported, not merely listed.
     written = _strings([e.get('args') for e in original['trace'] if e.get('write')])
     touched = written | _strings(original['answer']) | _strings(facts)
@@ -61,7 +61,7 @@ def insensitive(env, request, *, perturbed=20, excluded=()):
         if not cells:
             continue
         try:
-            run = run_reference(env, data, facts_, start=start)
+            run = run_reference(env, data, facts_, start=start, request=request)
         except Exception:
             continue
         if _outcome(run) == _outcome(original):

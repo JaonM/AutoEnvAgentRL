@@ -19,13 +19,14 @@ import copy
 import traceback
 
 from env_factory.core import answers, reward
+from env_factory import lifecycle
 from env_factory.runtime import (BusinessError, Episode, InvalidWorld, canonical, is_write, run_policy,
                                     run_reference, tool_spec_problems)
 from env_factory.core.worlds import state_diff, request_variants
 
 
-def _expected(verifier, data, facts, now):
-    result = verifier.expected(copy.deepcopy(data), copy.deepcopy(facts), now)
+def _expected(verifier, data, facts, now, request=None):
+    result = lifecycle.expected(verifier, data, facts, now, request or {})
     if not (isinstance(result, dict) and 'answer' in result and 'final_state' in result):
         raise ValueError('verifier.expected must return {"answer": ..., "final_state": ...}')
     return result
@@ -49,7 +50,7 @@ def compare_worlds(env, verifier, schema, request, *, perturbed=20, excluded=())
             worlds.append(entry)
             continue
         try:
-            expected = _expected(verifier, data, facts, start)
+            expected = _expected(verifier, data, facts, start, request)
         except InvalidWorld as exc:
             entry.update(status='invalid_world', reason=str(exc)[:200])
             worlds.append(entry)
@@ -64,7 +65,8 @@ def compare_worlds(env, verifier, schema, request, *, perturbed=20, excluded=())
             worlds.append(entry)
             continue
         try:
-            result = run_reference(env, data, facts, start=start)
+            result = run_reference(env, data, facts, start=start, request=request)
+            result['lifecycle_errors'] = lifecycle.audit(verifier, data, facts, start, result, request)
         except Exception:
             entry.update(status='env_error', error=traceback.format_exc(limit=3))
             worlds.append(entry)
@@ -77,6 +79,9 @@ def compare_worlds(env, verifier, schema, request, *, perturbed=20, excluded=())
                      writes=sum(1 for e in result['trace'] if e.get('write')),
                      data=data if name.startswith('perturb') else None, facts=facts,
                      trace_tail=result['trace'][-12:])
+        if request.get('lifecycle_schema'):
+            entry.update(lifecycle_errors=result.get('lifecycle_errors', []),
+                         lifecycle_tail=result['lifecycle']['log'][-12:])
         worlds.append(entry)
     return worlds
 
@@ -129,14 +134,15 @@ def negatives(env, verifier, schema, request, worlds):
     start = request['time']['start']
     data, facts = request['tables'], request['user_facts']
     original = next(w for w in worlds if w['world'] == 'original')
-    expected = _expected(verifier, data, facts, start)
+    expected = _expected(verifier, data, facts, start, request)
     has_effects = bool(state_diff(data, expected['final_state']))
     reference_calls = original['reference_calls']
     checks = {}
 
     def judge(name, policy, world_data, world_facts, world_expected, *, must_be_zero=False):
         try:
-            result = run_policy(env, policy, world_data, world_facts, start=start)
+            result = run_policy(env, policy, world_data, world_facts, start=start, request=request)
+            result['lifecycle_errors'] = lifecycle.audit(verifier, world_data, world_facts, start, result, request)
         except Exception as exc:  # a crashing wrong behaviour cannot earn reward
             checks[name] = {'applicable': True, 'passed': True, 'note': f'policy raised {type(exc).__name__}'}
             return
@@ -150,7 +156,7 @@ def negatives(env, verifier, schema, request, worlds):
     # pay an agent that refuses without checking).
     denied = {k: (False if k.startswith('approve') and isinstance(v, bool) else v) for k, v in facts.items()}
     try:
-        refusal = _expected(verifier, data, denied, start)
+        refusal = _expected(verifier, data, denied, start, request)
     except Exception:  # noqa: BLE001 - no refusal outcome to imitate
         refusal = None
     if refusal is not None and canonical(refusal['answer']) != canonical(expected['answer']):
@@ -162,7 +168,7 @@ def negatives(env, verifier, schema, request, worlds):
     if stale:
         results = []
         for world in stale:
-            world_expected = _expected(verifier, world['data'], world['facts'], start)
+            world_expected = _expected(verifier, world['data'], world['facts'], start, request)
             judge('stale_answer', lambda api: copy.deepcopy(expected['answer']), world['data'], world['facts'], world_expected)
             results.append(checks.pop('stale_answer'))
         checks['stale_answer'] = {'applicable': True, 'passed': all(r['passed'] for r in results), 'worlds': len(results)}
@@ -211,7 +217,7 @@ def trace_structure(trace, facts):
 
 
 def category(request, env):
-    result = run_reference(env, request['tables'], request['user_facts'], start=request['time']['start'])
+    result = run_reference(env, request['tables'], request['user_facts'], start=request['time']['start'], request=request)
     structure = trace_structure(result['trace'], request['user_facts'])
     declared = request['category']
     if declared == 'direct_response':
@@ -228,6 +234,10 @@ def approval_problems(env, request):
     exact write (platform side; the agent never sees it). It must name the topic the reference
     itself confirms, on every approval world."""
     from env_factory.core import spec
+    if request.get('lifecycle_schema'):
+        issues = lifecycle.validate(request['lifecycle_schema'], request['scenario'], request['tables'], env.make_tools())
+        if issues:
+            return issues
     approvals = {t['key'] for t in spec.fact_topics(request) if t['kind'] == 'approval'}
     if not approvals:
         return []
@@ -235,7 +245,7 @@ def approval_problems(env, request):
         return ['env.py must define approval_key(tool, args, facts) -> approval topic for an exact write']
     problems = []
     for name, data, facts in request_variants(request, perturbed=0):
-        for entry in run_reference(env, data, facts, start=request['time']['start'])['trace']:
+        for entry in run_reference(env, data, facts, start=request['time']['start'], request=request)['trace']:
             if entry.get('kind') != 'confirm':
                 continue
             proposal = entry['proposal']
@@ -271,6 +281,7 @@ def qualify(env, verifier, schema, request, *, perturbed=20, http=True, excluded
     report['behavior'] = behavior.qualify(env, request)
     from env_factory import sop
     report['sop'] = sop.qualify(env, verifier, request)
+    report['lifecycle'] = lifecycle.qualify(env, verifier, request)
     if http and report['differential']['passed']:
         from env_factory.serving.server import replay_check
         report['http'] = replay_check(env, verifier, schema, request)
@@ -285,7 +296,7 @@ def qualify(env, verifier, schema, request, *, perturbed=20, http=True, excluded
 
 # natural: env.approval_key maps every write to its approval topic; without it the free-dialogue service
 # refuses the bundle, so a task that passed every other gate would still be unservable.
-BUSINESS_GATES = ('static', 'natural', 'differential', 'negatives', 'category', 'behavior', 'sop', 'http')
+BUSINESS_GATES = ('static', 'natural', 'differential', 'negatives', 'category', 'behavior', 'sop', 'lifecycle', 'http')
 RUBRIC_GATES = ('static', 'natural', 'rubric', 'negatives', 'category', 'http')
 EMPTY_REPLY, GENERIC_REPLY = '', '好的，已经帮您处理好了，还有其他需要吗？'
 
@@ -311,7 +322,7 @@ def qualify_rubric(env, rubric_spec, schema, request, *, judge=None, http=True):
                          'rubric_problems': rubric_problems[:10]},
               'natural': {'passed': not approval, 'approval_problems': approval}, 'excluded_worlds': []}
     worlds = request_variants(request, perturbed=0)
-    runs = {name: run_reference(env, data, facts, start=start) for name, data, facts in worlds}
+    runs = {name: run_reference(env, data, facts, start=start, request=request) for name, data, facts in worlds}
     facts_of = {name: facts for name, _, facts in worlds}
     forged = Episode(env.make_tools(), request['tables'], request['user_facts'], start=start)
     try:
@@ -334,7 +345,7 @@ def qualify_rubric(env, rubric_spec, schema, request, *, judge=None, http=True):
         references = {name: score(name, reply(name)) for name in runs}
         original = reply('original')
         nothing = run_policy(env, lambda api: {'reply': GENERIC_REPLY}, request['tables'], request['user_facts'],
-                             start=start)
+                             start=start, request=request)
         null_reward = rubric_mod.grade(nothing, rubric_spec, request, request['user_facts'], judge,
                                        reference_calls=runs['original']['tool_calls'])['reward']
         probes = {'empty': score('original', EMPTY_REPLY), 'generic': score('original', GENERIC_REPLY),

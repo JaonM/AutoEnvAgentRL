@@ -55,7 +55,7 @@ writes 列出按手册应当执行的全部写操作（没有就为空列表）�
 def reference_view(loaded):
     """The reference run on the original world: its reads (with results), writes and answer."""
     request = loaded['request']
-    result = run_reference(loaded['env'], request['tables'], request['user_facts'], start=request['time']['start'])
+    result = run_reference(loaded['env'], request['tables'], request['user_facts'], start=request['time']['start'], request=request)
     reads, written = [], False
     for index, event in enumerate(result['trace']):
         if event.get('kind') != 'tool' or event.get('status') != 'ok':
@@ -77,7 +77,7 @@ def staged_reference(loaded):
     leak future actions. The business reference and grading are not changed here.
     """
     request = loaded['request']
-    result = run_reference(loaded['env'], request['tables'], request['user_facts'], start=request['time']['start'])
+    result = run_reference(loaded['env'], request['tables'], request['user_facts'], start=request['time']['start'], request=request)
     evidence, decisions = [], []
     for index, event in enumerate(result['trace']):
         if event.get('kind') != 'tool' or event.get('status') != 'ok':

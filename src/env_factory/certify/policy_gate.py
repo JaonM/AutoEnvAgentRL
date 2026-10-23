@@ -10,6 +10,8 @@ trajectories to start from. Provider failures are infrastructure errors, never b
 """
 from __future__ import annotations
 
+from env_factory import lifecycle
+
 import json
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
@@ -172,7 +174,7 @@ def extraction_probe(loaded, service, client):
     the way a good agent would; the service's extractor must read every graded field back exactly."""
     from env_factory.core import answers
     request = loaded['request']
-    expected = loaded['verifier'].expected(request['tables'], request['user_facts'], request['time']['start'])['answer']
+    expected = lifecycle.expected(loaded['verifier'], request['tables'], request['user_facts'], request['time']['start'], request)['answer']
     speech = (client.chat([{'role': 'user', 'content': SAY.format(
         language='英文' if request.get('language') == 'en' else '中文',
         schema=json.dumps(loaded['schema']['fields'], ensure_ascii=False), answer=json.dumps(

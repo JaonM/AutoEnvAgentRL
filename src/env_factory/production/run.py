@@ -155,7 +155,7 @@ def stage_difficulty(out, statuses, options, log):
             request = loaded['request']
             floor = floors.get((request.get('source') or {}).get('shape'), 0)
             result = run_reference(loaded['env'], request['tables'], request['user_facts'],
-                                   start=request['time']['start'])
+                                   start=request['time']['start'], request=request)
             calls, actual = result['tool_calls'], generate.actual_shape(trace_structure(result['trace'],
                                                                                       request['user_facts']))
         except Exception as exc:  # later stages report the broken bundle

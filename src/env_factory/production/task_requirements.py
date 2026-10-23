@@ -68,7 +68,7 @@ def measure(result, request):
 
 def evaluate(env, request, requirements):
     requirements = validate(requirements)
-    result = run_reference(env, request['tables'], request['user_facts'], start=request['time']['start'])
+    result = run_reference(env, request['tables'], request['user_facts'], start=request['time']['start'], request=request)
     actual = measure(result, request)
     problems = []
     if requirements.get('sop_method') and request.get('sop_method') != requirements['sop_method']:

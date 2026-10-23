@@ -615,3 +615,79 @@ invent hashes. Local checks resolve both this split format and legacy inline req
 '''
 WORLD_AUTHOR += SPLIT_OUTPUTS
 REQUEST_AUTHOR += SPLIT_OUTPUTS
+
+LIFECYCLE_DESIGN = '''
+For a world that includes physical fulfillment, delayed payment or customer/carrier/warehouse actions,
+model the causal process explicitly with lifecycle_schema version 1 before implementing env.py.
+This is opt-in: request-only services may keep their existing, honestly stated scope.
+- lifecycle_schema owns machines (table, state field, states, initial), named transitions (machine,
+  actor, from-state list, to-state, guard, effects, emit), tools, parameters, invariants and scopes.
+  Actors are agent/customer/carrier/warehouse/payment/system. A tool can bind ONLY an agent transition.
+  Each tool binding names transition, entity_arg and key_arg (a string idempotency argument).
+- Base rows must be in their machine's initial state. Each machine owns a distinct existing table.
+  Effects update declared existing fields on a row selected by table and entity; they cannot set an id
+  or state field. State changes occur only through the transition's from/to. There are no inserts in v1.
+  Guards/effects use the behavior-contract expression language with db,row,args,params,entity,now paths.
+  Conditions can use all/any/not, eq/ne/ge/le/gt/lt; arithmetic add/sub/mul and existing collection operators.
+- An emission names transition, entity, delay in seconds, optional args and optional when. It is created
+  ONLY after its parent transition commits. External actors cannot be invoked as student tools. Events
+  cannot emit agent transitions. Stale events are cancelled when their business preconditions no longer hold.
+- scenario version 1 selects exactly the declared parameters (enum or min/max bounds), one named scope,
+  and optional history. History actions have offset (seconds <= 0 from time.start, chronological),
+  transition, entity, args and unique key. They construct the initial stage through legal transitions.
+  Do not set a row to received/refunded merely to match the desired answer. Never interpret a customer's
+  words as an actual handover. If a scripted customer will ship, emit that action causally after approval.
+- lifecycle_contract version 1 contains independent cases: id, data, now, scenario and steps. A step is a
+  tool plus args and checks/expected error, or wait (seconds) plus checks. Each check has name and assert.
+  Cover every transition with actual executions, timing boundaries, unshipped returns, cancellation,
+  rejected premature refund, repeated idempotent requests, failed payment and unrelated-object isolation.
+  Assertions are derived from business policy, never by running the future env/reference implementation.
+- Choose explicit completion scopes (e.g. request_only/full). Completing a request is distinct from
+  warehouse receipt or successful payment. State the scope in the customer's goal in natural language.
+- time.start can be numeric or an ISO calendar time; tick stays zero. Only explicit waits advance time.
+  Do not combine lifecycle with legacy scheduled_events. The platform hides the schema, scenario, queue,
+  receipts and event log from business tools and the student. Public tools expose only business observations.
+Save lifecycle_schema, scenario and lifecycle_contract using spec.write; it creates hashed sidecars.
+'''
+
+WORLD_AUTHOR += LIFECYCLE_DESIGN
+REQUEST_AUTHOR += LIFECYCLE_DESIGN
+TASK_AUTHOR += '''
+If the world contains lifecycle_schema, task.json MUST include its own scenario (version 1, parameters,
+scope, history). Select only the world's declared values and legal historical transitions. Never redefine
+lifecycle_schema or lifecycle_contract, and never use overlays to jump managed rows to later states.
+Historical receipt is appropriate only when the user's opening describes a previously shipped return;
+a newly initiated return must start before handover. External outcomes are fixed scenario choices but
+occur only after the corresponding business action emits an event. The task does not define a new machine.
+'''
+
+LIFECYCLE_IMPLEMENTATION = '''
+If request.json contains lifecycle_schema/scenario, read those hashed sidecars too. The platform enforces
+the declared transitions, guards, effects, actor roles and event scheduling. A bound @write function
+keeps its normal typed signature and docstring, including entity/idempotency arguments, but ONLY formats
+its return receipt from the candidate state AFTER the platform transition. It must not mutate any table.
+Other write tools cannot change machine-owned tables. Guard checks belong in the immutable schema;
+report a specification defect rather than moving checks into a receipt function. Reads see only business
+rows. Keep reference(api) limited to ask/confirm/call/wait and observable business results. Never access
+api.db, api.lifecycle, pending events, scenario parameters or oracle results to solve the task.
+The platform uses explicit wait(seconds), including for calendar clocks; conversations alone do not advance
+physical events. A final answer closes the episode without draining pending events to fabricate completion.
+Legacy requests without lifecycle keep their existing tool implementation and verifier signatures.
+'''
+AUTHOR += LIFECYCLE_IMPLEMENTATION
+REPAIR += LIFECYCLE_IMPLEMENTATION
+VERIFIER += '''
+For lifecycle requests, expected(data, facts, now, *, scenario) independently computes the legitimate
+answer and final state for the selected completion scope. Also implement
+verify_lifecycle(data, facts, now, result, *, scenario) -> list of error strings (empty on valid history).
+result contains actual final_state, trace, now and a private lifecycle snapshot: log, pending events,
+processed IDs and idempotency receipts. Transition log entries include id, cause, actor, transition,
+entity, args, from, to, time and before/after state hashes. Scheduling entries and cancelled events are
+also recorded. Validate actual causal order, legal predecessor, actor, timing, no duplicate settlement,
+real tool writes versus claims, and final effects independently from the business rules. Allow legal
+alternate read orders and idempotent retries; never demand literal reference tool sequences or IDs.
+Do not import the lifecycle executor or derive expected outcomes by invoking env tools or reference.
+Shared structural helpers do not replace independent business semantics. Independently declared
+lifecycle_contract assertions remain immutable. The platform rejects forged history even when the
+reported answer and final database happen to match expected().
+'''

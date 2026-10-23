@@ -36,7 +36,8 @@ def bundle_identity(root):
     from env_factory.runtime import canonical
     import hashlib
     loaded = load_bundle(root)
-    return hashlib.sha256(canonical(loaded['manifest']['files']).encode()).hexdigest()
+    identity = {'files': loaded['manifest']['files'], 'platform_identity': loaded['manifest']['platform_identity']}
+    return hashlib.sha256(canonical(identity).encode()).hexdigest()
 
 
 LAYOUTS = {
