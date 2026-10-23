@@ -1,0 +1,333 @@
+{
+ "version": 1,
+ "machines": {
+  "return": {
+   "table": "returns",
+   "field": "status",
+   "initial": "none",
+   "states": [
+    "none",
+    "requested",
+    "in_transit",
+    "received",
+    "accepted",
+    "rejected",
+    "refund_pending",
+    "refunded",
+    "refund_failed",
+    "cancelled"
+   ]
+  }
+ },
+ "transitions": {
+  "apply": {
+   "machine": "return",
+   "actor": "agent",
+   "from": [
+    "none"
+   ],
+   "to": "requested",
+   "guard": {
+    "op": "gt",
+    "args": [
+     {
+      "path": "row.amount"
+     },
+     0
+    ]
+   },
+   "effects": [],
+   "emit": [
+    {
+     "transition": "handover",
+     "entity": {
+      "path": "entity"
+     },
+     "delay": {
+      "path": "params.ship_delay"
+     },
+     "when": {
+      "path": "params.will_ship"
+     }
+    }
+   ]
+  },
+  "handover": {
+   "machine": "return",
+   "actor": "customer",
+   "from": [
+    "requested"
+   ],
+   "to": "in_transit",
+   "guard": true,
+   "effects": [],
+   "emit": [
+    {
+     "transition": "receive",
+     "entity": {
+      "path": "entity"
+     },
+     "delay": 20,
+     "when": true
+    }
+   ]
+  },
+  "receive": {
+   "machine": "return",
+   "actor": "carrier",
+   "from": [
+    "in_transit"
+   ],
+   "to": "received",
+   "guard": true,
+   "effects": [],
+   "emit": [
+    {
+     "transition": "accept",
+     "entity": {
+      "path": "entity"
+     },
+     "delay": 10,
+     "when": {
+      "path": "params.inspection_pass"
+     }
+    },
+    {
+     "transition": "reject",
+     "entity": {
+      "path": "entity"
+     },
+     "delay": 10,
+     "when": {
+      "op": "not",
+      "args": [
+       {
+        "path": "params.inspection_pass"
+       }
+      ]
+     }
+    }
+   ]
+  },
+  "accept": {
+   "machine": "return",
+   "actor": "warehouse",
+   "from": [
+    "received"
+   ],
+   "to": "accepted",
+   "guard": true,
+   "effects": [],
+   "emit": []
+  },
+  "reject": {
+   "machine": "return",
+   "actor": "warehouse",
+   "from": [
+    "received"
+   ],
+   "to": "rejected",
+   "guard": true,
+   "effects": [],
+   "emit": []
+  },
+  "refund": {
+   "machine": "return",
+   "actor": "agent",
+   "from": [
+    "accepted"
+   ],
+   "to": "refund_pending",
+   "guard": true,
+   "effects": [],
+   "emit": [
+    {
+     "transition": "settle",
+     "entity": {
+      "path": "entity"
+     },
+     "delay": 10,
+     "when": {
+      "path": "params.payment_success"
+     }
+    },
+    {
+     "transition": "payment_failure",
+     "entity": {
+      "path": "entity"
+     },
+     "delay": 10,
+     "when": {
+      "op": "not",
+      "args": [
+       {
+        "path": "params.payment_success"
+       }
+      ]
+     }
+    }
+   ]
+  },
+  "settle": {
+   "machine": "return",
+   "actor": "payment",
+   "from": [
+    "refund_pending"
+   ],
+   "to": "refunded",
+   "guard": true,
+   "effects": [
+    {
+     "table": "returns",
+     "entity": {
+      "path": "entity"
+     },
+     "set": {
+      "refund": {
+       "path": "row.amount"
+      }
+     }
+    }
+   ],
+   "emit": []
+  },
+  "payment_failure": {
+   "machine": "return",
+   "actor": "payment",
+   "from": [
+    "refund_pending"
+   ],
+   "to": "refund_failed",
+   "guard": true,
+   "effects": [],
+   "emit": []
+  },
+  "cancel": {
+   "machine": "return",
+   "actor": "agent",
+   "from": [
+    "requested"
+   ],
+   "to": "cancelled",
+   "guard": true,
+   "effects": [],
+   "emit": []
+  }
+ },
+ "scopes": [
+  "request_only",
+  "full"
+ ],
+ "parameters": {
+  "will_ship": {
+   "enum": [
+    true,
+    false
+   ]
+  },
+  "ship_delay": {
+   "min": 0,
+   "max": 30
+  },
+  "inspection_pass": {
+   "enum": [
+    true,
+    false
+   ]
+  },
+  "payment_success": {
+   "enum": [
+    true,
+    false
+   ]
+  }
+ },
+ "tools": {
+  "request_return": {
+   "transition": "apply",
+   "entity_arg": "return_id",
+   "key_arg": "request_id"
+  },
+  "request_refund": {
+   "transition": "refund",
+   "entity_arg": "return_id",
+   "key_arg": "request_id"
+  },
+  "cancel_return": {
+   "transition": "cancel",
+   "entity_arg": "return_id",
+   "key_arg": "request_id"
+  }
+ },
+ "invariants": [
+  {
+   "name": "positive purchased amount",
+   "table": "returns",
+   "assert": {
+    "op": "gt",
+    "args": [
+     {
+      "path": "row.amount"
+     },
+     0
+    ]
+   }
+  },
+  {
+   "name": "refund bounded by paid amount",
+   "table": "returns",
+   "assert": {
+    "op": "all",
+    "args": [
+     {
+      "op": "ge",
+      "args": [
+       {
+        "path": "row.refund"
+       },
+       0
+      ]
+     },
+     {
+      "op": "le",
+      "args": [
+       {
+        "path": "row.refund"
+       },
+       {
+        "path": "row.amount"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "money only after settlement",
+   "table": "returns",
+   "assert": {
+    "op": "any",
+    "args": [
+     {
+      "op": "eq",
+      "args": [
+       {
+        "path": "row.refund"
+       },
+       0
+      ]
+     },
+     {
+      "op": "eq",
+      "args": [
+       {
+        "path": "row.status"
+       },
+       "refunded"
+      ]
+     }
+    ]
+   }
+  }
+ ]
+}

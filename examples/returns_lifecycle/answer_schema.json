@@ -1,0 +1,1 @@
+{"fields":{"status":{"type":"string","enum":["none","requested","in_transit","received","accepted","rejected","refund_pending","refunded","refund_failed","cancelled"],"description":"The current return outcome, as actually observed."},"refund":{"type":"integer","description":"Amount refunded, in integer cents; zero before successful payment."}}}

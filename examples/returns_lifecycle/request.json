@@ -1,0 +1,39 @@
+{
+ "id": "returns-lifecycle-v1",
+ "request_kind": "task",
+ "family": "retail_returns",
+ "category": "multi_step_agentic",
+ "title": "退货物流与退款闭环",
+ "language": "zh",
+ "user_request": "我想退 R1 对应的商品，帮我申请退货，并跟进到退款结果。",
+ "business_rules": "本示例入口已完成身份认证，两笔单据属于同一客户。金额单位为分，原始商品金额必须为正。先获用户同意提交申请；未实际交运不得签收，物流签收后仓库验收，通过后才能请求退款。申请、取消和退款需用户同意。只允许交运前取消。仓库拒收不退款；支付失败不入账。申请的商品金额必须大于零。交运后20秒物流签收，再10秒完成验收，退款请求后10秒支付完成或失败。外部动作按情景发生，聊天声称不构成交运。最多跟进100秒；仍未交运时告知等待客户寄回。request_only只办理申请，full跟进退款或拒收/失败。退款到账金额等于商品金额；其它客户单据不能改变。相同幂等键和参数的重试返回原回执，不重复执行。",
+ "time": {
+  "start": 0,
+  "tick": 0
+ },
+ "request_assets": {
+  "version": 1,
+  "files": {
+   "tables": {
+    "path": "data.json",
+    "sha256": "6892c26b3779410c7a4649415c180a658d738800a4104b2fcfc938ee7f5a1967"
+   },
+   "user_facts": {
+    "path": "facts.json",
+    "sha256": "a5b49ab2ddc4cd7147e87983228c6a3b81b03c4fa1f030d2494925edae855692"
+   },
+   "lifecycle_schema": {
+    "path": "lifecycle_schema.json",
+    "sha256": "517c90cd20157532fca48859c6c7fe1221d80a32265ec65e645707ba912ea98e"
+   },
+   "scenario": {
+    "path": "scenario.json",
+    "sha256": "00285af91bdf152ac989a89265aec61ab79a446f880af00600b652e9a8f4c84f"
+   },
+   "lifecycle_contract": {
+    "path": "lifecycle_contract.json",
+    "sha256": "0fa5e36fc4022bf9329965f8622ea3ca68f45320826f5ba9924fa3f951537175"
+   }
+  }
+ }
+}

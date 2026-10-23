@@ -1,0 +1,11 @@
+{
+ "version": 1,
+ "scope": "full",
+ "parameters": {
+  "will_ship": true,
+  "ship_delay": 10,
+  "inspection_pass": true,
+  "payment_success": true
+ },
+ "history": []
+}

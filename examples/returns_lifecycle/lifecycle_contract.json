@@ -1,0 +1,1084 @@
+{
+ "version": 1,
+ "cases": [
+  {
+   "id": "causal_success_and_retry",
+   "transitions": [
+    "apply",
+    "handover",
+    "receive",
+    "accept",
+    "refund",
+    "settle"
+   ],
+   "steps": [
+    {
+     "tool": "request_refund",
+     "args": {
+      "return_id": "R1",
+      "request_id": "K1"
+     },
+     "error": "precondition"
+    },
+    {
+     "tool": "request_return",
+     "args": {
+      "return_id": "R1",
+      "request_id": "K1"
+     },
+     "checks": [
+      {
+       "name": "independent expected status",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.status"
+         },
+         "requested"
+        ]
+       }
+      },
+      {
+       "name": "independent expected refund",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.refund"
+         },
+         0
+        ]
+       }
+      },
+      {
+       "name": "other customer unchanged",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.1"
+         },
+         {
+          "path": "initial.returns.1"
+         }
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "tool": "request_return",
+     "args": {
+      "return_id": "R1",
+      "request_id": "K1"
+     },
+     "checks": [
+      {
+       "name": "independent expected status",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.status"
+         },
+         "requested"
+        ]
+       }
+      },
+      {
+       "name": "independent expected refund",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.refund"
+         },
+         0
+        ]
+       }
+      },
+      {
+       "name": "other customer unchanged",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.1"
+         },
+         {
+          "path": "initial.returns.1"
+         }
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "wait": 9,
+     "checks": [
+      {
+       "name": "independent expected status",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.status"
+         },
+         "requested"
+        ]
+       }
+      },
+      {
+       "name": "independent expected refund",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.refund"
+         },
+         0
+        ]
+       }
+      },
+      {
+       "name": "other customer unchanged",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.1"
+         },
+         {
+          "path": "initial.returns.1"
+         }
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "wait": 1,
+     "checks": [
+      {
+       "name": "independent expected status",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.status"
+         },
+         "in_transit"
+        ]
+       }
+      },
+      {
+       "name": "independent expected refund",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.refund"
+         },
+         0
+        ]
+       }
+      },
+      {
+       "name": "other customer unchanged",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.1"
+         },
+         {
+          "path": "initial.returns.1"
+         }
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "wait": 20,
+     "checks": [
+      {
+       "name": "independent expected status",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.status"
+         },
+         "received"
+        ]
+       }
+      },
+      {
+       "name": "independent expected refund",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.refund"
+         },
+         0
+        ]
+       }
+      },
+      {
+       "name": "other customer unchanged",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.1"
+         },
+         {
+          "path": "initial.returns.1"
+         }
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "tool": "request_refund",
+     "args": {
+      "return_id": "R1",
+      "request_id": "too-early"
+     },
+     "error": "precondition"
+    },
+    {
+     "wait": 10,
+     "checks": [
+      {
+       "name": "independent expected status",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.status"
+         },
+         "accepted"
+        ]
+       }
+      },
+      {
+       "name": "independent expected refund",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.refund"
+         },
+         0
+        ]
+       }
+      },
+      {
+       "name": "other customer unchanged",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.1"
+         },
+         {
+          "path": "initial.returns.1"
+         }
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "tool": "request_refund",
+     "args": {
+      "return_id": "R1",
+      "request_id": "pay"
+     },
+     "checks": [
+      {
+       "name": "independent expected status",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.status"
+         },
+         "refund_pending"
+        ]
+       }
+      },
+      {
+       "name": "independent expected refund",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.refund"
+         },
+         0
+        ]
+       }
+      },
+      {
+       "name": "other customer unchanged",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.1"
+         },
+         {
+          "path": "initial.returns.1"
+         }
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "wait": 10,
+     "checks": [
+      {
+       "name": "independent expected status",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.status"
+         },
+         "refunded"
+        ]
+       }
+      },
+      {
+       "name": "independent expected refund",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.refund"
+         },
+         1000
+        ]
+       }
+      },
+      {
+       "name": "other customer unchanged",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.1"
+         },
+         {
+          "path": "initial.returns.1"
+         }
+        ]
+       }
+      }
+     ]
+    }
+   ],
+   "data": {
+    "returns": [
+     {
+      "id": "R1",
+      "status": "none",
+      "amount": 1000,
+      "refund": 0
+     },
+     {
+      "id": "R2",
+      "status": "none",
+      "amount": 2000,
+      "refund": 0
+     }
+    ]
+   },
+   "now": 0,
+   "scenario": {
+    "version": 1,
+    "scope": "full",
+    "parameters": {
+     "will_ship": true,
+     "ship_delay": 10,
+     "inspection_pass": true,
+     "payment_success": true
+    },
+    "history": []
+   }
+  },
+  {
+   "id": "cancel_discards_handover",
+   "transitions": [
+    "apply",
+    "cancel"
+   ],
+   "steps": [
+    {
+     "tool": "request_return",
+     "args": {
+      "return_id": "R1",
+      "request_id": "K1"
+     },
+     "checks": [
+      {
+       "name": "independent expected status",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.status"
+         },
+         "requested"
+        ]
+       }
+      },
+      {
+       "name": "independent expected refund",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.refund"
+         },
+         0
+        ]
+       }
+      },
+      {
+       "name": "other customer unchanged",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.1"
+         },
+         {
+          "path": "initial.returns.1"
+         }
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "tool": "cancel_return",
+     "args": {
+      "return_id": "R1",
+      "request_id": "cancel"
+     },
+     "checks": [
+      {
+       "name": "independent expected status",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.status"
+         },
+         "cancelled"
+        ]
+       }
+      },
+      {
+       "name": "independent expected refund",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.refund"
+         },
+         0
+        ]
+       }
+      },
+      {
+       "name": "other customer unchanged",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.1"
+         },
+         {
+          "path": "initial.returns.1"
+         }
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "wait": 100,
+     "checks": [
+      {
+       "name": "independent expected status",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.status"
+         },
+         "cancelled"
+        ]
+       }
+      },
+      {
+       "name": "independent expected refund",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.refund"
+         },
+         0
+        ]
+       }
+      },
+      {
+       "name": "other customer unchanged",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.1"
+         },
+         {
+          "path": "initial.returns.1"
+         }
+        ]
+       }
+      }
+     ]
+    }
+   ],
+   "data": {
+    "returns": [
+     {
+      "id": "R1",
+      "status": "none",
+      "amount": 1000,
+      "refund": 0
+     },
+     {
+      "id": "R2",
+      "status": "none",
+      "amount": 2000,
+      "refund": 0
+     }
+    ]
+   },
+   "now": 0,
+   "scenario": {
+    "version": 1,
+    "scope": "full",
+    "parameters": {
+     "will_ship": true,
+     "ship_delay": 10,
+     "inspection_pass": true,
+     "payment_success": true
+    },
+    "history": []
+   }
+  },
+  {
+   "id": "unshipped_never_arrives",
+   "transitions": [
+    "apply"
+   ],
+   "steps": [
+    {
+     "tool": "request_return",
+     "args": {
+      "return_id": "R1",
+      "request_id": "K1"
+     },
+     "checks": [
+      {
+       "name": "independent expected status",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.status"
+         },
+         "requested"
+        ]
+       }
+      },
+      {
+       "name": "independent expected refund",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.refund"
+         },
+         0
+        ]
+       }
+      },
+      {
+       "name": "other customer unchanged",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.1"
+         },
+         {
+          "path": "initial.returns.1"
+         }
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "wait": 100,
+     "checks": [
+      {
+       "name": "independent expected status",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.status"
+         },
+         "requested"
+        ]
+       }
+      },
+      {
+       "name": "independent expected refund",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.refund"
+         },
+         0
+        ]
+       }
+      },
+      {
+       "name": "other customer unchanged",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.1"
+         },
+         {
+          "path": "initial.returns.1"
+         }
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "tool": "request_refund",
+     "args": {
+      "return_id": "R1",
+      "request_id": "pay"
+     },
+     "error": "precondition"
+    }
+   ],
+   "data": {
+    "returns": [
+     {
+      "id": "R1",
+      "status": "none",
+      "amount": 1000,
+      "refund": 0
+     },
+     {
+      "id": "R2",
+      "status": "none",
+      "amount": 2000,
+      "refund": 0
+     }
+    ]
+   },
+   "now": 0,
+   "scenario": {
+    "version": 1,
+    "scope": "full",
+    "parameters": {
+     "will_ship": false,
+     "ship_delay": 10,
+     "inspection_pass": true,
+     "payment_success": true
+    },
+    "history": []
+   }
+  },
+  {
+   "id": "inspection_rejected",
+   "transitions": [
+    "apply",
+    "handover",
+    "receive",
+    "reject"
+   ],
+   "steps": [
+    {
+     "tool": "request_return",
+     "args": {
+      "return_id": "R1",
+      "request_id": "K1"
+     },
+     "checks": [
+      {
+       "name": "independent expected status",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.status"
+         },
+         "requested"
+        ]
+       }
+      },
+      {
+       "name": "independent expected refund",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.refund"
+         },
+         0
+        ]
+       }
+      },
+      {
+       "name": "other customer unchanged",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.1"
+         },
+         {
+          "path": "initial.returns.1"
+         }
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "wait": 40,
+     "checks": [
+      {
+       "name": "independent expected status",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.status"
+         },
+         "rejected"
+        ]
+       }
+      },
+      {
+       "name": "independent expected refund",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.refund"
+         },
+         0
+        ]
+       }
+      },
+      {
+       "name": "other customer unchanged",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.1"
+         },
+         {
+          "path": "initial.returns.1"
+         }
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "tool": "request_refund",
+     "args": {
+      "return_id": "R1",
+      "request_id": "pay"
+     },
+     "error": "precondition"
+    }
+   ],
+   "data": {
+    "returns": [
+     {
+      "id": "R1",
+      "status": "none",
+      "amount": 1000,
+      "refund": 0
+     },
+     {
+      "id": "R2",
+      "status": "none",
+      "amount": 2000,
+      "refund": 0
+     }
+    ]
+   },
+   "now": 0,
+   "scenario": {
+    "version": 1,
+    "scope": "full",
+    "parameters": {
+     "will_ship": true,
+     "ship_delay": 10,
+     "inspection_pass": false,
+     "payment_success": true
+    },
+    "history": []
+   }
+  },
+  {
+   "id": "payment_failed",
+   "transitions": [
+    "apply",
+    "handover",
+    "receive",
+    "accept",
+    "refund",
+    "payment_failure"
+   ],
+   "steps": [
+    {
+     "tool": "request_return",
+     "args": {
+      "return_id": "R1",
+      "request_id": "K1"
+     },
+     "checks": [
+      {
+       "name": "independent expected status",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.status"
+         },
+         "requested"
+        ]
+       }
+      },
+      {
+       "name": "independent expected refund",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.refund"
+         },
+         0
+        ]
+       }
+      },
+      {
+       "name": "other customer unchanged",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.1"
+         },
+         {
+          "path": "initial.returns.1"
+         }
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "wait": 40,
+     "checks": [
+      {
+       "name": "independent expected status",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.status"
+         },
+         "accepted"
+        ]
+       }
+      },
+      {
+       "name": "independent expected refund",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.refund"
+         },
+         0
+        ]
+       }
+      },
+      {
+       "name": "other customer unchanged",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.1"
+         },
+         {
+          "path": "initial.returns.1"
+         }
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "tool": "request_refund",
+     "args": {
+      "return_id": "R1",
+      "request_id": "pay"
+     },
+     "checks": [
+      {
+       "name": "independent expected status",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.status"
+         },
+         "refund_pending"
+        ]
+       }
+      },
+      {
+       "name": "independent expected refund",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.refund"
+         },
+         0
+        ]
+       }
+      },
+      {
+       "name": "other customer unchanged",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.1"
+         },
+         {
+          "path": "initial.returns.1"
+         }
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "wait": 10,
+     "checks": [
+      {
+       "name": "independent expected status",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.status"
+         },
+         "refund_failed"
+        ]
+       }
+      },
+      {
+       "name": "independent expected refund",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.0.refund"
+         },
+         0
+        ]
+       }
+      },
+      {
+       "name": "other customer unchanged",
+       "assert": {
+        "op": "eq",
+        "args": [
+         {
+          "path": "after.returns.1"
+         },
+         {
+          "path": "initial.returns.1"
+         }
+        ]
+       }
+      }
+     ]
+    }
+   ],
+   "data": {
+    "returns": [
+     {
+      "id": "R1",
+      "status": "none",
+      "amount": 1000,
+      "refund": 0
+     },
+     {
+      "id": "R2",
+      "status": "none",
+      "amount": 2000,
+      "refund": 0
+     }
+    ]
+   },
+   "now": 0,
+   "scenario": {
+    "version": 1,
+    "scope": "full",
+    "parameters": {
+     "will_ship": true,
+     "ship_delay": 10,
+     "inspection_pass": true,
+     "payment_success": false
+    },
+    "history": []
+   }
+  }
+ ]
+}
