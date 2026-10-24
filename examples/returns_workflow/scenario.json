@@ -1,0 +1,10 @@
+{
+ "version": 2,
+ "scope": "full",
+ "parameters": {
+  "will_ship": true,
+  "inspection_pass": true,
+  "payment_success": true
+ },
+ "history": []
+}

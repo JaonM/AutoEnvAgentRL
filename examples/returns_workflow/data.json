@@ -1,0 +1,16 @@
+{
+ "returns": [
+  {
+   "id": "R1",
+   "status": "none",
+   "amount": 1000,
+   "refund": 0
+  },
+  {
+   "id": "R2",
+   "status": "none",
+   "amount": 2000,
+   "refund": 0
+  }
+ ]
+}
