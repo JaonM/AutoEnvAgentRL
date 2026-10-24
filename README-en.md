@@ -42,11 +42,11 @@ AutoEnvAgentRL turns this into an automated production line:
 
 ## Features
 
-- **Trustworthy reward**: environment and verifier are written independently and accepted only after differential certification, negative checks, branch and perturbation audits; the reward comes from the verifier, never from author-written code.
+- **Trustworthy reward**: environment and verifier are written independently and accepted only after differential certification, negative checks, branch and perturbation audits; the independent verifier supplies expected outcomes and the platform computes reward, never author-written reward code.
 - **Independent grading, realistic dialogue**: the simulated user is a language model that only decides *how* to say things; whether a write is approved or which option is chosen comes from structured facts enforced by the platform. An independent verifier checks business outcomes; free-dialogue answer extraction and subjective grading use models.
 - **Rich user scripts**: several goals, fallbacks, persistent unreasonable demands, misremembered identifiers, vague requests, undecided users, questions before agreeing, changes of mind and out-of-scope requests combine into long, varied dialogues.
 - **Safety constraint**: any write the user did not agree to zeroes the episode; both a "proposal + consent token" protocol and plain-dialogue confirmation are supported.
-- **Grading what was said**: the agent tells the user the result like a human agent would; the platform extracts the answer from the dialogue and verifies every number and identifier was actually said.
+- **Grading business completion**: the final environment state and reported outcome are checked against the task goals; workflow tasks also require valid state transitions and causal history. Answer extraction in free dialogue checks that the outcome delivered to the user is accurate; claiming completion cannot substitute for executing the business operation.
 - **Hardened runtime**: generated code passes static sandbox rules; sandboxes can be packaged as Docker images run with a read-only filesystem, dropped Linux capabilities and a non-root user, then re-verified offline.
 - **Training designed for transfer**: tool names, consent protocol, tool-result format and system-prompt layout are randomized per episode, so the policy learns to read its instructions instead of memorizing one platform.
 - **Local training**: asynchronous PPO / GRPO on MLX with parallel rollouts, batched decoding, LoRA / QAT / full fine-tuning and resumable checkpoints.
