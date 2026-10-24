@@ -43,11 +43,11 @@ AutoEnvAgentRL 把这件事做成一条自动生产线：
 ## 特性
 
 - **可信的奖励**：环境与 verifier 由不同会话独立编写，经差分认证、反例检查、分支与扰动审计后才接受；奖励由 verifier 计算，作者从不编写奖励代码。
-- **确定的判分，真实的对话**：模拟用户由大模型扮演，只负责"怎么说"；是否同意写操作、选择哪个方案等决定都来自结构化事实，由平台执行，因此奖励完全确定。
+- **独立的判分，真实的对话**：模拟用户由大模型扮演，只负责"怎么说"；是否同意写操作、选择哪个方案等决定来自结构化事实，由平台执行。业务结果由独立 verifier 校验；自由对话答案抽取和主观题评审使用模型。
 - **丰富的用户剧本**：多诉求、备选方案、坚持不合理要求、记错编号、意图含糊、拿不定主意、追问后再决定、中途改主意、超出范围等，组合出多轮、多样的对话。
 - **安全约束**：未经用户同意的写操作使整局奖励为 0；支持"提议 + 授权凭证"和"纯对话确认"两种同意协议。
 - **按说话判分**：Agent 像真人客服一样把结果说给用户，平台从对话中抽取答案，并校验每个数字和编号确实被说出。
-- **加固的运行环境**：生成代码通过静态沙箱规则检查；每个沙箱打包成只读、无权限、非 root 的 Docker 镜像，并在断网条件下复验全部认证项。
+- **加固的运行环境**：生成代码通过静态沙箱规则检查；沙箱可打包为以只读文件系统、移除 Linux capabilities、非 root 身份运行的 Docker 镜像，并在断网条件下复验认证项。
 - **为迁移而设计的训练**：每局随机化工具名、同意协议、工具返回格式和 system prompt 版式，让策略学会读说明再行动。
 - **本地训练**：基于 MLX 的异步 PPO / GRPO，支持并行 rollout、批量解码、LoRA / QAT / 全参数微调、断点续训。
 
@@ -69,13 +69,18 @@ AutoEnvAgentRL 把这件事做成一条自动生产线：
 tasks.json ──► 示范采集 → SFT 冷启动 ──► 强化学习（GRPO / PPO）
 ```
 
-每个认证沙箱（bundle）包含：
+一个领域世界可以复用业务规则和工具承载多个题目。每次 episode 独立持有业务数据、待处理活动、日志、幂等回执和同意令牌；容器可以承载多个隔离的 episode，不要求每局单独创建 Docker。
+
+认证沙箱（bundle）的主要文件如下；流程与契约文件按任务需要提供：
 
 | 文件 | 内容 |
 | --- | --- |
-| `request.json` | 用户请求、业务规则、对外手册、数据表、用户私人事实与剧本 |
-| `env.py` | 工具实现与参考解（只能导入 `env_factory.runtime`） |
-| `verifier.py` | 独立计算的期望结果（最终状态 + 答案） |
+| `request.json` | 请求元数据、业务规则、对外手册与侧文件哈希引用；`request_kind` 区分世界和题目 |
+| `data.json`、`facts.json` | 业务数据与用户私人事实；旧格式也支持直接内嵌在请求中 |
+| `lifecycle_schema.json`、`scenario.json` | 世界业务流转规则与题目情景、合法初始历史 |
+| `behavior_contract.json`、`sop_contract.json`、`lifecycle_contract.json` | 按需提供的独立业务断言、流程与状态迁移验收用例 |
+| `env.py` | 工具实现与参考解；允许导入受限标准库和 `env_factory.runtime` |
+| `verifier.py` | 独立计算期望结果（最终状态 + 答案），流程任务还校验实际因果历史 |
 | `answer_schema.json` | 答案格式与判分字段 |
 | `gates.json`、`manifest.json` | 认证报告与按平台身份签名的文件哈希 |
 
@@ -170,8 +175,10 @@ SFT 冷启动、示范采集与行为检查见 [docs/rl-training.md](docs/rl-tra
 | 路由 | 说明 |
 | --- | --- |
 | `POST /reset` | 开始一局，返回 Agent 可见的说明 |
-| `POST /step` | 执行一个动作：调用工具、对用户说话、等待、记录答案 |
-| `POST /reward` | 结束并判分 |
+| `POST /step` | 执行一个动作：调用工具、对用户说话、移交外部处理、记录答案；时间调度任务还支持等待 |
+| `POST /reward` | 判分；结构化模式须先提交答案，自由对话模式会结束对话并按需提取答案 |
+| `POST /fork` | 复制当前 episode 状态，用于分叉 rollout |
+| `POST /restore` | 从动作记录及已记录的用户回复恢复 episode |
 | `POST /release` | 释放 episode |
 | `GET /health` | 健康检查 |
 
@@ -181,6 +188,9 @@ SFT 冷启动、示范采集与行为检查见 [docs/rl-training.md](docs/rl-tra
 src/
   env_factory/          主链路：沙箱生成、认证与服务
     runtime.py          生成代码的运行契约（write、BusinessError、Episode）
+    lifecycle.py        业务状态机、规格校验与兼容时间调度
+    workflow.py         活动移交、条件分支、并行汇合与受限重试
+    sop.py              原子业务流程组合与验收
     checks.py           代码 Agent 会话中运行的自检
     core/               任务模型与判分：spec、sandbox、worlds、answers、reward、rubric、extract
     serving/            HTTP 服务、Agent 视角、模拟用户
@@ -191,6 +201,7 @@ src/
   rl/                   训练框架：rollout、算法、MLX 后端、检查点、观测、导出
 scripts/                生产线与训练入口
 experiments/            SFT 示范采集、筛选、训练、插值、行为检查等工具
+examples/               可执行业务示例（含 returns_workflow 退货退款流程）
 tests/                  单元与集成测试
 docs/                   架构、领域世界设计、训练指南
 ```
@@ -226,6 +237,7 @@ docs/                   架构、领域世界设计、训练指南
 | --- | --- |
 | [docs/architecture.md](docs/architecture.md) | 生产线、门禁、判分、自由对话用户、HTTP 协议的详细说明 |
 | [docs/domain-world-design.md](docs/domain-world-design.md) | 领域世界：一个认证环境承载多个任务 |
+| [业务流程](docs/workflow-v2.md) | 业务状态流转、活动移交、并行汇合、隔离与回放 |
 | [docs/rl-training.md](docs/rl-training.md) | SFT 冷启动与强化学习训练指南 |
 
 ## 贡献
@@ -233,7 +245,7 @@ docs/                   架构、领域世界设计、训练指南
 欢迎提交 Issue 和 Pull Request。提交前请：
 
 1. 运行 `.venv/bin/python -m pytest -q` 并保证通过；
-2. 修改 `runtime.py`、`core/`、`serving/`、`certify/`（`policy_gate` 除外）会改变平台身份，已有沙箱需要 `verify --resign` 重新认证，请在 PR 中说明；
+2. 修改 [RUNTIME_MODULES](src/env_factory/certify/bundle.py) 列出的文件（含业务状态机、工作流运行时与认证模块）会改变平台身份，已有沙箱需要 `verify --resign` 重新认证，请在 PR 中说明；
 3. 不要提交模型权重、凭据或 `output/` 下的产物。
 
 ## 许可证

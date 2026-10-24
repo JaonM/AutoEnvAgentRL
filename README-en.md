@@ -43,11 +43,11 @@ AutoEnvAgentRL turns this into an automated production line:
 ## Features
 
 - **Trustworthy reward**: environment and verifier are written independently and accepted only after differential certification, negative checks, branch and perturbation audits; the reward comes from the verifier, never from author-written code.
-- **Deterministic grading, realistic dialogue**: the simulated user is a language model that only decides *how* to say things; whether a write is approved or which option is chosen comes from structured facts the platform enforces, so the reward stays deterministic.
+- **Independent grading, realistic dialogue**: the simulated user is a language model that only decides *how* to say things; whether a write is approved or which option is chosen comes from structured facts enforced by the platform. An independent verifier checks business outcomes; free-dialogue answer extraction and subjective grading use models.
 - **Rich user scripts**: several goals, fallbacks, persistent unreasonable demands, misremembered identifiers, vague requests, undecided users, questions before agreeing, changes of mind and out-of-scope requests combine into long, varied dialogues.
 - **Safety constraint**: any write the user did not agree to zeroes the episode; both a "proposal + consent token" protocol and plain-dialogue confirmation are supported.
 - **Grading what was said**: the agent tells the user the result like a human agent would; the platform extracts the answer from the dialogue and verifies every number and identifier was actually said.
-- **Hardened runtime**: generated code passes static sandbox rules; every sandbox is packed into a read-only, capability-free, non-root Docker image and re-verified offline.
+- **Hardened runtime**: generated code passes static sandbox rules; sandboxes can be packaged as Docker images run with a read-only filesystem, dropped Linux capabilities and a non-root user, then re-verified offline.
 - **Training designed for transfer**: tool names, consent protocol, tool-result format and system-prompt layout are randomized per episode, so the policy learns to read its instructions instead of memorizing one platform.
 - **Local training**: asynchronous PPO / GRPO on MLX with parallel rollouts, batched decoding, LoRA / QAT / full fine-tuning and resumable checkpoints.
 
@@ -72,13 +72,18 @@ actually solves it in free dialogue)
 tasks.json ──► demonstration collection → SFT cold start ──► reinforcement learning (GRPO / PPO)
 ```
 
-Each certified sandbox (bundle) contains:
+A domain world can reuse its business rules and tools across many tasks. Each episode owns its business data, pending activities, logs, idempotency receipts and consent tokens. A container can host multiple isolated episodes; an episode does not require a dedicated Docker container.
+
+The main files in a certified sandbox (bundle) are listed below; workflow and contract files are included as needed:
 
 | File | Content |
 | --- | --- |
-| `request.json` | user request, business rules, customer-facing manual, tables, the user's private facts and script |
-| `env.py` | tools and the reference solution (may import only `env_factory.runtime`) |
-| `verifier.py` | the independently computed expected outcome (final state + answer) |
+| `request.json` | request metadata, business rules, customer-facing manual and hashed sidecar references; `request_kind` distinguishes worlds from tasks |
+| `data.json`, `facts.json` | business data and private user facts; legacy requests may embed them directly |
+| `lifecycle_schema.json`, `scenario.json` | world transition rules and task-specific scenario choices and legal initial history |
+| `behavior_contract.json`, `sop_contract.json`, `lifecycle_contract.json` | optional independent business assertions, process contracts and transition acceptance cases |
+| `env.py` | tools and the reference solution; imports restricted standard-library modules and `env_factory.runtime` |
+| `verifier.py` | independently computed outcomes (final state + answer), plus actual causal-history checks for workflow tasks |
 | `answer_schema.json` | answer format and graded fields |
 | `gates.json`, `manifest.json` | certification report and file hashes signed for the platform identity |
 
@@ -172,8 +177,10 @@ Full reference: `./scripts/run_pipeline.sh --help`.
 | Route | Meaning |
 | --- | --- |
 | `POST /reset` | start an episode; returns what the agent may see |
-| `POST /step` | one action: call a tool, talk to the user, wait, record an answer |
-| `POST /reward` | end and grade |
+| `POST /step` | one action: call a tool, talk to the user, hand off external work, record an answer; timed tasks also support waiting |
+| `POST /reward` | grade a submitted answer in structured mode; close the conversation and extract an answer if needed in natural mode |
+| `POST /fork` | copy the current episode state for branching rollouts |
+| `POST /restore` | restore an episode from recorded actions and user replies |
 | `POST /release` | release the episode |
 | `GET /health` | health check |
 
@@ -183,6 +190,9 @@ Full reference: `./scripts/run_pipeline.sh --help`.
 src/
   env_factory/          main pipeline: sandbox generation, certification and serving
     runtime.py          the contract generated code runs against (write, BusinessError, Episode)
+    lifecycle.py        business state machines, specification checks and legacy timed scheduling
+    workflow.py         activity handoffs, conditional branches, parallel joins and bounded retries
+    sop.py              composition and acceptance of atomic business processes
     checks.py           self-checks run inside code-agent sessions
     core/               task model and grading: spec, sandbox, worlds, answers, reward, rubric, extract
     serving/            HTTP service, the agent's view, simulated user
@@ -193,6 +203,7 @@ src/
   rl/                   training: rollout, algorithms, MLX backend, checkpoints, observability, export
 scripts/                production-line and training entry points
 experiments/            SFT demonstration collection, selection, training, interpolation, behaviour checks
+examples/               executable examples, including the returns_workflow return-and-refund process
 tests/                  unit and integration tests
 docs/                   architecture, domain-world design, training guide
 ```
@@ -228,6 +239,7 @@ Tests never call external model services; model-dependent parts use deterministi
 | --- | --- |
 | [docs/architecture.md](docs/architecture.md) | production line, gates, grading, the free-dialogue user, HTTP protocol |
 | [docs/domain-world-design.md](docs/domain-world-design.md) | domain worlds: one certified environment hosting many tasks |
+| [Business workflows](docs/workflow-v2.md) | business transitions, activity handoffs, parallel joins, isolation and replay (Chinese) |
 | [docs/rl-training.md](docs/rl-training.md) | SFT cold start and reinforcement-learning guide (Chinese) |
 
 ## Contributing
@@ -235,7 +247,7 @@ Tests never call external model services; model-dependent parts use deterministi
 Issues and pull requests are welcome. Before submitting:
 
 1. run `.venv/bin/python -m pytest -q` and make sure it passes;
-2. changes to `runtime.py`, `core/`, `serving/` or `certify/` (except `policy_gate`) change the platform identity: existing sandboxes need `verify --resign`; say so in the PR;
+2. changes to files listed in [RUNTIME_MODULES](src/env_factory/certify/bundle.py), including the state-machine and workflow runtimes and certification modules, change the platform identity: existing sandboxes need `verify --resign`; say so in the PR;
 3. never commit model weights, credentials or anything under `output/`.
 
 ## License
