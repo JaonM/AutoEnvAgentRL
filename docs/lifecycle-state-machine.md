@@ -1,6 +1,6 @@
 # 业务状态机与因果事件调度（v1）
 
-状态：已实现，可选启用。旧任务保持原来的执行方式。完整示例在 `examples/returns_lifecycle/`。
+状态：已实现，作为时间调度兼容协议保留。新世界使用 [无模拟时间的业务流程 v2](workflow-v2.md)。本文描述 v1；完整 v1 示例在 `examples/returns_lifecycle/`。
 
 ## 1. 解决的问题
 

@@ -99,7 +99,8 @@ Write env.py:
    business meaning of the write, not the order calls happen to arrive in. It runs on the
    platform side only.
 3. reference(api) -> dict: a deterministic agent that handles the request correctly using only
-   api.ask(fact_key), api.call(tool, **args) and api.confirm(approval_key, proposal).
+   api.ask(fact_key), api.call(tool, **args), api.confirm(approval_key, proposal), and
+   api.yield_control() when lifecycle_schema.version=2 (see workflow protocol below).
    Before every write: token = api.confirm(approval_key, {{"tool": name, "args": exact_args}}),
    then api.call(name, consent=token, **exact_args). confirm returns None when the user
    declines; then that write must not happen. api.ask raises KeyError for a fact the user does
@@ -617,8 +618,10 @@ WORLD_AUTHOR += SPLIT_OUTPUTS
 REQUEST_AUTHOR += SPLIT_OUTPUTS
 
 LIFECYCLE_DESIGN = '''
-For a world that includes physical fulfillment, delayed payment or customer/carrier/warehouse actions,
-model the causal process explicitly with lifecycle_schema version 1 before implementing env.py.
+For a new world with physical fulfillment, payment or customer/carrier/warehouse actions, model the
+causal process with lifecycle_schema version 2 before implementing env.py. Use a workflow GRAPH:
+conditional branches, parallel activities, joins and bounded retries, rather than a time schedule.
+Existing version 1 worlds keep their timed protocol; never silently change a supplied world's version.
 This is opt-in: request-only services may keep their existing, honestly stated scope.
 - lifecycle_schema owns machines (table, state field, states, initial), named transitions (machine,
   actor, from-state list, to-state, guard, effects, emit), tools, parameters, invariants and scopes.
@@ -626,39 +629,60 @@ This is opt-in: request-only services may keep their existing, honestly stated s
   Each tool binding names transition, entity_arg and key_arg (a string idempotency argument).
 - Base rows must be in their machine's initial state. Each machine owns a distinct existing table.
   Effects update declared existing fields on a row selected by table and entity; they cannot set an id
-  or state field. State changes occur only through the transition's from/to. There are no inserts in v1.
+  or state field. State changes occur only through the transition's from/to; preallocate business rows.
   Guards/effects use the behavior-contract expression language with db,row,args,params,entity,now paths.
   Conditions can use all/any/not, eq/ne/ge/le/gt/lt; arithmetic add/sub/mul and existing collection operators.
-- An emission names transition, entity, delay in seconds, optional args and optional when. It is created
-  ONLY after its parent transition commits. External actors cannot be invoked as student tools. Events
-  cannot emit agent transitions. Stale events are cancelled when their business preconditions no longer hold.
-- scenario version 1 selects exactly the declared parameters (enum or min/max bounds), one named scope,
-  and optional history. History actions have offset (seconds <= 0 from time.start, chronological),
-  transition, entity, args and unique key. They construct the initial stage through legal transitions.
-  Do not set a row to received/refunded merely to match the desired answer. Never interpret a customer's
-  words as an actual handover. If a scripted customer will ship, emit that action causally after approval.
-- lifecycle_contract version 1 contains independent cases: id, data, now, scenario and steps. A step is a
-  tool plus args and checks/expected error, or wait (seconds) plus checks. Each check has name and assert.
-  Cover every transition with actual executions, timing boundaries, unshipped returns, cancellation,
-  rejected premature refund, repeated idempotent requests, failed payment and unrelated-object isolation.
-  Assertions are derived from business policy, never by running the future env/reference implementation.
+- A v2 emission names transition, entity, optional args, when, ready and cancel_when. No delay/at fields.
+  It activates ONLY when its parent transition commits and when is true. when selects branches once;
+  ready is rechecked for each dispatch and can block without discarding work. cancel_when true or an
+  invalid source state cancels the activity; a rejected guard cancels its attempted execution. To wait
+  for another branch, use ready or requires, not a guard that prematurely rejects. Source states must
+  remain valid while blocked. Events cannot invoke agent transitions or replace consent.
+- One api.yield_control() executes at most ONE external activity then returns to interaction. Queries,
+  chat, confirmation and final answers never advance external work. With no executable work it returns
+  progressed=false/status=blocked; success returns progressed=true/status=resumed. It takes no arguments
+  and never exposes private queue names or outcome choices. A rejected attempt returns progressed=false
+  with status=resumed; other branches may still run. Query business tools after each handoff.
+- execution=internal is allowed only for system transitions. Enabled internal steps settle atomically
+  after a committed command or handoff; all other non-agent transitions require a handoff. Never mark
+  carrier/warehouse/customer/payment work internal to skip interaction boundaries.
+- requires is an AND list of predecessor transition and entity expressions. Each must have an earlier
+  committed transition on that exact object; the log records dependency receipt IDs. These are historical
+  witnesses, not consumable tokens. Check current states/resources separately with ready/guard. For a new
+  business attempt use a distinct preallocated object ID when old witnesses must not count again.
+  Multiple emissions form parallel branches. Use max_occurrences per transition/object to bound business
+  retries and schema max_events to bound all processed activities. A budget fault rolls back the action.
+- scenario version 2 selects exactly declared parameters (enum or min/max bounds), one named scope, and
+  optional history and dispatch_order. dispatch_order lists unique external transitions in priority order;
+  remaining ties use activation order and stable IDs. It cannot invent transitions or bypass readiness.
+  History contains type=command with transition/entity/args/unique key, or type=yield. Commands must be
+  agent transitions; historical yields execute actually activated external work and must make progress.
+  No offsets or injected external transitions. Never set a row to received/refunded to match an answer.
+  A newly initiated return starts before handover; customer claims do not create physical receipt.
+- lifecycle_contract remains version 1 (independent contract format). Cases have id/data/now/scenario and
+  steps: tool plus args and checks/expected error, or yield=true plus checks. Each check has name/assert.
+  Cover every transition with actual execution, premature-operation rejection, blocked work, cancellation,
+  branch outcomes, joins, idempotency, failed payment and unrelated-object isolation. Declare assertions
+  from the business policy, never by executing the future env/reference implementation.
 - Choose explicit completion scopes (e.g. request_only/full). Completing a request is distinct from
   warehouse receipt or successful payment. State the scope in the customer's goal in natural language.
-- time.start can be numeric or an ISO calendar time; tick stays zero. Only explicit waits advance time.
-  Do not combine lifecycle with legacy scheduled_events. The platform hides the schema, scenario, queue,
-  receipts and event log from business tools and the student. Public tools expose only business observations.
+- time.start is a fixed business date/reference value and tick stays zero; v2 rejects wait(seconds).
+  Date eligibility can inspect now and stored dates; an expiry during an episode needs an explicit
+  activated business event, not an implicit timer or a count of queries. Do not use scheduled_events.
+  The platform hides schema, scenario, queues, receipts and event log from tools and the student.
 Save lifecycle_schema, scenario and lifecycle_contract using spec.write; it creates hashed sidecars.
 '''
 
 WORLD_AUTHOR += LIFECYCLE_DESIGN
 REQUEST_AUTHOR += LIFECYCLE_DESIGN
 TASK_AUTHOR += '''
-If the world contains lifecycle_schema, task.json MUST include its own scenario (version 1, parameters,
-scope, history). Select only the world's declared values and legal historical transitions. Never redefine
+If the world contains lifecycle_schema, task.json MUST include its own scenario (version matching the world,
+parameters, scope, history; optional dispatch_order for v2). Select only the world's declared values and legal historical transitions. Never redefine
 lifecycle_schema or lifecycle_contract, and never use overlays to jump managed rows to later states.
 Historical receipt is appropriate only when the user's opening describes a previously shipped return;
 a newly initiated return must start before handover. External outcomes are fixed scenario choices but
-occur only after the corresponding business action emits an event. The task does not define a new machine.
+occur only after the corresponding business action activates work. For v2 history use agent commands and
+yields; no time offsets or direct injection of carrier/payment transitions. The task does not define a new machine.
 '''
 
 LIFECYCLE_IMPLEMENTATION = '''
@@ -668,10 +692,14 @@ keeps its normal typed signature and docstring, including entity/idempotency arg
 its return receipt from the candidate state AFTER the platform transition. It must not mutate any table.
 Other write tools cannot change machine-owned tables. Guard checks belong in the immutable schema;
 report a specification defect rather than moving checks into a receipt function. Reads see only business
-rows. Keep reference(api) limited to ask/confirm/call/wait and observable business results. Never access
+rows. Keep reference(api) limited to ask/confirm/call/yield_control (v2) or wait (v1) and observable results. Never access
 api.db, api.lifecycle, pending events, scenario parameters or oracle results to solve the task.
-The platform uses explicit wait(seconds), including for calendar clocks; conversations alone do not advance
-physical events. A final answer closes the episode without draining pending events to fabricate completion.
+For v2 use api.yield_control() with no arguments: one external activity, then query business results.
+Stop or obtain missing business input when status=blocked; progressed=false/status=resumed means an
+external attempt was rejected, so query state and handle other branches. Repeated yields cannot create
+unactivated work. Internal system steps settle atomically. now stays fixed and wait is rejected.
+Only legacy v1 uses explicit wait(seconds), including calendar clocks. Conversations do not advance
+physical work. A final answer closes the episode without draining pending activities.
 Legacy requests without lifecycle keep their existing tool implementation and verifier signatures.
 '''
 AUTHOR += LIFECYCLE_IMPLEMENTATION
@@ -682,9 +710,13 @@ answer and final state for the selected completion scope. Also implement
 verify_lifecycle(data, facts, now, result, *, scenario) -> list of error strings (empty on valid history).
 result contains actual final_state, trace, now and a private lifecycle snapshot: log, pending events,
 processed IDs and idempotency receipts. Transition log entries include id, cause, actor, transition,
-entity, args, from, to, time and before/after state hashes. Scheduling entries and cancelled events are
-also recorded. Validate actual causal order, legal predecessor, actor, timing, no duplicate settlement,
-real tool writes versus claims, and final effects independently from the business rules. Allow legal
+entity, args, from, to and before/after state hashes. V2 records sequence and dependency receipt IDs,
+activated/handoff/event_cancelled entries; v1 records time and scheduled events. Validate actual causal
+order, legal predecessor, actor, dependency object identity, no duplicate settlement,
+real tool writes versus claims, and final effects independently from the business rules. In v2 rebuild
+external work from actual handoff trace entries: at most one external transition per handoff, only
+causally activated work, legal internal closure and unchanged calendar. Verify queues and receipts too;
+a correct final state with missing or forged predecessors must fail. hashlib is allowed for state hashes. Allow legal
 alternate read orders and idempotent retries; never demand literal reference tool sequences or IDs.
 Do not import the lifecycle executor or derive expected outcomes by invoking env tools or reference.
 Shared structural helpers do not replace independent business semantics. Independently declared

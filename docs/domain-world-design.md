@@ -268,4 +268,4 @@ M1 可以单独交付，现有的一题一环境任务立刻就能用上复杂�
 
 ## 业务状态机与事件调度
 
-需要真实模拟物流、验收、支付等后续动作的世界，使用可选的 `lifecycle_schema`、题目 `scenario` 和独立 `lifecycle_contract`。世界定义规则，题目选择合法初始历史和完成范围，episode 维护私有事件队列；聊天声明不会改变业务状态。详见 [状态机方案与实现](lifecycle-state-machine.md)。
+需要真实模拟物流、验收、支付等后续动作的世界，使用可选的 `lifecycle_schema`、题目 `scenario` 和独立 `lifecycle_contract`。世界定义规则，题目选择合法初始历史和完成范围，episode 维护私有事件队列；聊天声明不会改变业务状态。新世界使用无模拟时间的 v2 流程图，通过显式移交推进一个外部环节，支持分支、并行、汇合和受限重试。详见 [业务流程 v2](workflow-v2.md)；旧时间调度见 [v1 状态机](lifecycle-state-machine.md)。
