@@ -117,7 +117,7 @@ def validate(request):
     calendar = isinstance(time, dict) and isinstance(time.get('start'), str) and is_calendar(time['start'])
     if not (isinstance(time, dict) and (isinstance(time.get('start'), int) or calendar) and time.get('tick') == 0):
         problems.append('time must be {"start": int or "YYYY-MM-DDTHH:MM", "tick": 0}; the clock advances only by '
-                        'explicit waits')
+                        'explicit waits on timed tasks; workflow v2 keeps this value fixed')
     if calendar and isinstance(request.get('tables'), dict) and request['tables'].get('scheduled_events'):
         problems.append('a calendar clock (ISO start) is fixed: no scheduled_events')
     for text in ('user_request', 'business_rules', 'title'):
@@ -150,9 +150,9 @@ def validate(request):
             lifecycle_problems = validate_lifecycle(request['lifecycle_schema'], request['scenario'], tables)
             problems += lifecycle_problems
             if not lifecycle_problems:
-                from env_factory.lifecycle import Lifecycle
+                from env_factory.lifecycle import create
                 try:
-                    Lifecycle(request['lifecycle_schema'], request['scenario'], copy.deepcopy(tables), time['start'])
+                    create(request['lifecycle_schema'], request['scenario'], copy.deepcopy(tables), time['start'])
                 except Exception as exc:
                     problems.append(f'illegal lifecycle initial history: {type(exc).__name__}: {exc}')
         if request.get('reward_type', 'business') != 'business':
@@ -320,7 +320,10 @@ def brief(request, schema=None):
                        for name, rows in request['tables'].items())
     topics = '\n'.join(f'- {t["key"]} ({t["kind"]}): {t["description"]}' for t in fact_topics(request))
     if request.get('lifecycle_schema'):
-        clock = (f"Starts at {request['time']['start']}; explicit waits advance causal lifecycle events. "
+        progress = ("Fixed business date/reference; yield_control() hands off one external activity without advancing time. "
+                    if request['lifecycle_schema']['version'] == 2 else
+                    "Explicit waits advance causal lifecycle events. ")
+        clock = (f"Starts at {request['time']['start']}; " + progress +
                  "lifecycle_schema.json owns transitions; scenario.json selects parameters, legal history and scope. "
                  "Tools cannot mutate managed tables directly. Only declared transitions may change them.")
     elif 'scheduled_events' in request['tables']:

@@ -14,7 +14,7 @@ from pathlib import Path
 
 ALLOWED_MODULES = {
     'bisect', 'collections', 'copy', 'dataclasses', 'datetime', 'decimal', 'enum', 'fractions',
-    'functools', 'heapq', 'itertools', 'json', 'math', 'operator', 're', 'statistics', 'string',
+    'functools', 'hashlib', 'heapq', 'itertools', 'json', 'math', 'operator', 're', 'statistics', 'string',
     'typing', '__future__', 'env_factory.runtime', 'env_factory_v3.runtime',
 }
 FORBIDDEN_NAMES = {'open', 'exec', 'eval', 'compile', '__import__', 'input', 'globals', 'locals',

@@ -108,6 +108,8 @@ def transcript(result, facts, limit=600):
         elif kind == 'chat':
             lines.append(f"[助理对用户说] {entry.get('message')}")
             lines.append(f"[用户回答] {entry.get('reply')}")
+        elif kind == 'yield':
+            lines.append(f"[移交外部处理] {json.dumps(entry.get('result'), ensure_ascii=False)}")
         elif kind == 'wait':
             lines.append(f"[等待] {entry.get('seconds')} 秒")
     return '\n'.join(lines) or '（没有任何工具调用或交流）'

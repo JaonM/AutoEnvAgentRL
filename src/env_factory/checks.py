@@ -174,7 +174,7 @@ def check_env(folder):
     for name, data, facts in request_variants(request, perturbed=PERTURBED):
         if name.startswith('perturb') and request.get('lifecycle_schema'):
             try:
-                lifecycle.Lifecycle(request['lifecycle_schema'], request['scenario'],
+                lifecycle.create(request['lifecycle_schema'], request['scenario'],
                                     json.loads(json.dumps(data)), start)
             except (lifecycle.LifecycleError, BusinessError) as exc:
                 # Only caller-owned initial invariants/history may exclude a candidate here.

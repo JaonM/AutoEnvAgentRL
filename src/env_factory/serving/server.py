@@ -4,7 +4,7 @@ POST /reset   {"world": optional name, "seed": optional int, "consent": "token" 
                                                                -> {"episode", "world", "instructions"}
 POST /step    {"episode", "action": {...}}                     -> {"ok", "result" | "error", "now"}
         actions: {"type": "tool", "name", "args"} | {"type": "ask", "key"}
-                 {"type": "confirm", "key", "proposal": {"tool", "args"}} | {"type": "wait", "seconds"}
+                 {"type": "confirm", "key", "proposal": {"tool", "args"}} | {"type": "wait", "seconds"} | {"type": "yield"}
                  {"type": "answer", "answer"}
                  natural user mode: {"type": "chat", "message", "proposal"?} replaces ask/confirm
 POST /reward  {"episode"}                                      -> grade (after the answer)
@@ -88,7 +88,8 @@ class Service:
             'business_rules': request.get('agent_policy') or request['business_rules'], 'tools': tool_specs(tools),
             'user_topics': spec.fact_topics(request), 'answer_schema': schema,
             'time': {'start': request['time']['start'],
-                     'advancing': 'scheduled_events' in request['tables'] or bool(request.get('lifecycle_schema'))},
+                     'advancing': 'scheduled_events' in request['tables'] or request.get('lifecycle_schema', {}).get('version') == 1,
+                     'workflow': request.get('lifecycle_schema', {}).get('version') == 2},
             'protocol': 'Use ask to learn user facts and confirm before every write; '
                         'pass the returned consent token to that exact write; finish with answer.',
             'user_mode': user_mode, 'language': request.get('language', 'zh')}
@@ -204,7 +205,7 @@ class Service:
             return {'ok': False, 'kind': 'invalid', 'error': 'chat needs the natural user mode', 'now': episode.now}
         if record.get('closed'):
             return {'ok': False, 'kind': 'finished', 'error': 'the user has left the conversation', 'now': episode.now}
-        if kind in ('tool', 'wait'):
+        if kind in ('tool', 'wait', 'yield'):
             record['idle'] = 0
         try:
             if kind == 'chat':
@@ -215,6 +216,10 @@ class Service:
                 result = episode.ask(action['key'])
             elif kind == 'confirm':
                 result = episode.confirm(action['key'], action['proposal'])
+            elif kind == 'yield':
+                if set(action) != {'type'}:
+                    raise ValueError('yield takes no arguments')
+                result = episode.yield_control()
             elif kind == 'wait':
                 if not self.instructions['time']['advancing']:
                     return {'ok': False, 'kind': 'invalid', 'error': 'the clock is fixed for this task',
@@ -445,6 +450,9 @@ class HttpAPI:
 
     def confirm(self, key, proposal):
         return self._step({'type': 'confirm', 'key': key, 'proposal': proposal})
+
+    def yield_control(self):
+        return self._step({'type': 'yield'})
 
     def wait(self, seconds):
         return self._step({'type': 'wait', 'seconds': seconds})

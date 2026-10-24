@@ -2,7 +2,7 @@
 function call back to a service action. Training (rl) and the policy gate both use this, so
 the gate measures exactly the interface a trained policy gets.
 
-Platform tools (answer, chat, ask, confirm, wait) and the `consent` argument of writes are
+Platform tools (answer, chat, ask, confirm, wait, yield) and the `consent` argument of writes are
 conventions of this platform, not of the businesses a trained agent will serve. So that a policy
 learns to read its tool list instead of memorising these names, training renames them per
 episode (naming(seed, 'random')); 'heldout' uses names never seen in training, to probe whether
@@ -15,7 +15,7 @@ import json
 import random
 import re
 
-RESERVED = ('v3_ask', 'v3_confirm', 'v3_chat', 'v3_wait', 'v3_answer')
+RESERVED = ('v3_ask', 'v3_confirm', 'v3_chat', 'v3_wait', 'v3_answer', 'v3_yield')
 # Every platform text the agent sees, per task language (request["language"]).
 TEXT = {
     'zh': {
@@ -33,6 +33,8 @@ TEXT = {
         'tell': '确认结果后，用一两句平实的话告诉用户结果和决定结果的原因，回答用户问到的内容，不必复述过程；用户表示没有其他问题时，对话结束。',
         'rules': '业务规则：',
         'clock': '当前时间：{start}（单位与业务规则一致）',
+        'workflow': '需要外部业务方继续处理时，使用 `v3_yield` 移交一次处理；返回后查询业务结果。查询和聊天不推进外部处理。',
+        'yield': '移交一个已激活的外部业务活动，然后恢复交互。不会自动办完整个流程；无可执行活动时返回 blocked。',
         'advancing': '；时间会推进，需要时用 `v3_wait` 等待。',
         'fixed': '；本次对话中时间不变。',
         'chat': ('请用户同意一次具体的写操作：在 `message` 里向用户说明，并在 `proposal` 里附上这次写操作'
@@ -70,6 +72,8 @@ TEXT = {
                  'the user has nothing more to ask.'),
         'rules': 'Policy:',
         'clock': 'Current time: {start} (in the units the policy uses)',
+        'workflow': 'Use `v3_yield` to hand off one external business activity, then query the business result. Queries and chat do not advance external work.',
+        'yield': 'Hand off one activated external activity, then resume interaction. Does not finish the whole workflow; returns blocked if nothing can execute.',
         'advancing': '; time moves on: wait with `v3_wait` when needed.',
         'fixed': '; time does not change during this conversation.',
         'chat': ('Ask the user to approve one exact write: say it in `message` and attach the write (tool and '
@@ -126,6 +130,10 @@ RECORD_TEXTS = ('记录这次请求的处理结果（结束前可以更新）；
                 '保存本次服务的处理结果，之后继续和用户沟通。')
 
 
+ALIASES['v3_yield'] = ('v3_yield', 'handoff_processing', 'resume_business')
+HELDOUT['v3_yield'] = 'continue_external_work'
+
+
 def naming(seed, mode='random', avoid=()):
     """Canonical platform name -> the name this episode uses. mode: fixed (canonical), random (drawn
     per seed from ALIASES) or heldout (names never used in training). `avoid`: business tool and
@@ -137,8 +145,10 @@ def naming(seed, mode='random', avoid=()):
     if mode != 'random':
         raise ValueError(f'unknown tool naming {mode}')
     rng, avoid = random.Random(seed), set(avoid)
-    chosen = {key: rng.choice([n for n in pool if n not in avoid] or [key]) for key, pool in ALIASES.items()}
-    return chosen | {'_text': rng.randrange(len(TEXT['zh']['answer']))}
+    chosen = {key: rng.choice([n for n in pool if n not in avoid] or [key]) for key, pool in ALIASES.items() if key != 'v3_yield'}
+    chosen['_text'] = rng.randrange(len(TEXT['zh']['answer']))
+    chosen['v3_yield'] = rng.choice([n for n in ALIASES['v3_yield'] if n not in avoid] or ['v3_yield'])
+    return chosen
 
 
 def platform_names():
@@ -148,8 +158,8 @@ def platform_names():
 
 
 def _swap(text, names):
-    for key in ('v3_answer', 'v3_chat', 'v3_ask', 'v3_confirm', 'v3_wait'):
-        text = text.replace(key, names[key])
+    for key in ('v3_answer', 'v3_chat', 'v3_ask', 'v3_confirm', 'v3_wait', 'v3_yield'):
+        text = text.replace(key, names.get(key, key))
     return re.sub(r'(?<![A-Za-z0-9_])consent(?![A-Za-z0-9_])', names['consent'], text)
 
 
@@ -222,7 +232,10 @@ def _tools(instructions, category):
 
 
 def with_clock(tools_, instructions):
-    """v3_wait only for tasks whose clock advances (scheduled events)."""
+    """Offer the task's progress operation: handoff for v2, wait for timed tasks."""
+    if instructions.get('time', {}).get('workflow'):
+        handoff = function('v3_yield', TEXT[language(instructions)]['yield'], {})
+        return [*tools_[:-1], handoff, tools_[-1]]
     if not instructions.get('time', {}).get('advancing'):
         return tools_
     text = TEXT[language(instructions)]
@@ -256,6 +269,8 @@ def messages(instructions, names=None, answer_tool=True):
         text, time = TEXT[language(instructions)], instructions['time']
         clock = clock_text(text, time['start'], language(instructions)) + \
             (text['advancing'] if time.get('advancing') else text['fixed'])
+        if time.get('workflow'):
+            clock = (clock_text(text, time['start'], language(instructions)) + '\n' if isinstance(time['start'], str) else '') + text['workflow']
         sep = '' if language(instructions) == 'zh' else ' '
         writes_text = text['writes_plain'] if instructions.get('consent_mode') == 'plain' else text['writes']
         system = sep.join([text['natural']] + ([writes_text] if writes else []) +
@@ -288,6 +303,10 @@ def action(name, params, business_tools, names=None):
         return {'type': 'confirm', 'key': params.get('key'), 'proposal': params.get('proposal')}
     if name == 'v3_chat':
         return {'type': 'chat', 'message': params.get('message'), 'proposal': params.get('proposal')}
+    if name == 'v3_yield':
+        if params:
+            raise ValueError('yield takes no arguments')
+        return {'type': 'yield'}
     if name == 'v3_wait':
         return {'type': 'wait', 'seconds': params.get('seconds')}
     if name == 'v3_answer':

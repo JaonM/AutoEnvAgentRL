@@ -213,10 +213,10 @@ class Episode:
         self.safety_violations, self.tool_errors = 0, 0
         self.lifecycle = None
         if lifecycle_schema is not None:
-            from env_factory.lifecycle import Lifecycle, clock
+            from env_factory.lifecycle import create, clock
             if tick:
-                raise ValueError('lifecycle time advances only through explicit wait')
-            self.lifecycle = Lifecycle(lifecycle_schema, scenario or {}, self.db, start, tools)
+                raise ValueError('lifecycle requires tick=0; v1 uses explicit wait and v2 keeps time fixed')
+            self.lifecycle = create(lifecycle_schema, scenario or {}, self.db, start, tools)
             self.now = clock(self.lifecycle.now, self.lifecycle.calendar)
         self._apply_events()
 
@@ -232,7 +232,25 @@ class Episode:
             self.now += self.tick
         self._apply_events()
 
+    def yield_control(self):
+        """Hand off one external business activity; preserve the business calendar."""
+        self._guard()
+        if self.lifecycle is None or self.lifecycle.schema['version'] != 2:
+            raise ValueError('yield requires a workflow v2 task')
+        candidate, engine = copy.deepcopy(self.db), copy.deepcopy(self.lifecycle)
+        try:
+            result = engine.handoff(candidate)
+        except Exception as exc:
+            self.tool_errors += 1
+            self.trace.append({'kind': 'event_error', 'time': self.now, 'error': str(exc)[:300]})
+            raise ToolError('workflow activity failed: ' + str(exc)) from exc
+        self.db, self.lifecycle = candidate, engine
+        self.trace.append({'kind': 'yield', 'time': self.now, 'result': copy.deepcopy(result)})
+        return result
+
     def wait(self, seconds):
+        if self.lifecycle is not None and self.lifecycle.schema['version'] == 2:
+            raise ValueError('workflow v2 has no scheduling clock; use yield_control')
         if EVENTS not in self.initial and self.lifecycle is None:
             # Same rule as the HTTP service: without a scheduled_events table the clock is fixed.
             raise ValueError('the clock is fixed for this task (no scheduled_events table)')
@@ -294,6 +312,7 @@ class Episode:
                                                 key=key, actor='agent', cause='tool:' + name)
             if duplicate:
                 return copy.deepcopy(receipt['result'])
+            engine.settle(candidate)
             before = canonical(candidate)
             result = jsonable(copy.deepcopy(fn(candidate, self.now, **copy.deepcopy(args))))
             if canonical(candidate) != before:
@@ -304,6 +323,7 @@ class Episode:
             result = jsonable(copy.deepcopy(fn(candidate, self.now, **copy.deepcopy(args))))
             if engine is not None:
                 engine.protected(self.db, candidate)
+                engine.settle(candidate)
         self.db, self.lifecycle = candidate, engine
         return result
 

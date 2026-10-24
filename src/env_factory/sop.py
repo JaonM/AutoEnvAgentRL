@@ -73,6 +73,8 @@ def graph_problems(graph, atoms):
         parents = ancestors(graph)
         nodes = {n['id']: n for n in graph['nodes']}
         for name, node in nodes.items():
+            if 'yield_before' in node and (type(node['yield_before']) is not bool or 'wait_before' in node):
+                raise ValueError(f'{name}: yield_before must be boolean and cannot combine with wait_before')
             if node['atom'] not in atoms:
                 raise ValueError(f'{name}: unknown atom')
             if not node.get('checks') and not node.get('error'):
@@ -170,6 +172,8 @@ def run_graph(env, blueprint, case, *, reverse=False, request=None):
     try:
         for name in order(graph, reverse=reverse):
             node = nodes[name]; atom = atoms[node['atom']]
+            if node.get('yield_before'):
+                api.yield_control()
             if 'wait_before' in node:
                 api.wait(node['wait_before'])
             before = copy.deepcopy(api.db)
@@ -178,7 +182,7 @@ def run_graph(env, blueprint, case, *, reverse=False, request=None):
                 rows.append({'node': name, 'status': 'skipped'}); continue
             if 'now' in node:
                 if api.lifecycle is not None:
-                    raise ValueError('lifecycle SOPs use wait_before, not direct clock assignment')
+                    raise ValueError('lifecycle SOPs use yield_before (v2) or wait_before (v1), not direct clock assignment')
                 api.now = node['now']
             args = expression(node.get('args', {}), context)
             from jsonschema import validate as validate_json
@@ -300,6 +304,9 @@ def trace_report(env, request):
     api = Episode(env.make_tools(), request['tables'], request['user_facts'], start=request['time']['start'], approve=lambda *_: True, **lifecycle.options(request))
     problems = []; counts = {}
     for entry in result['trace']:
+        if entry.get('kind') == 'yield':
+            api.yield_control()
+            continue
         if entry.get('kind') == 'wait':
             api.wait(entry['seconds'])
             continue

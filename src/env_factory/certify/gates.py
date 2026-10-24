@@ -116,6 +116,9 @@ class _Wrapped:
     def wait(self, seconds):
         return self.episode.wait(seconds)
 
+    def yield_control(self):
+        return self.episode.yield_control()
+
     def confirm(self, key, proposal):
         if self.mode == 'no_consent':
             return None

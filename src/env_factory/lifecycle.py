@@ -59,8 +59,9 @@ def validate(schema, scenario, data, tools=None):
     """Fail closed on unsupported versions, unknown scenario knobs and broken bindings."""
     problems = []
     try:
-        if schema.get('version') != 1 or not schema.get('machines') or not schema.get('transitions'):
-            raise LifecycleError('lifecycle_schema needs version 1, machines and transitions')
+        version = schema.get('version')
+        if type(version) is not int or version not in (1, 2) or not schema.get('machines') or not schema.get('transitions'):
+            raise LifecycleError('lifecycle_schema needs version 1 or 2, machines and transitions')
         if set(schema) - {'version', 'machines', 'transitions', 'tools', 'parameters', 'invariants', 'max_events', 'scopes'}:
             raise LifecycleError('unknown lifecycle_schema field')
         if not isinstance(schema['machines'], dict) or not isinstance(schema['transitions'], dict):
@@ -93,7 +94,8 @@ def validate(schema, scenario, data, tools=None):
             if any(r.get(machine['field']) != machine['initial'] for r in data[machine['table']]):
                 raise LifecycleError(f'{name}: base rows must be initial; construct later stages with scenario.history')
         for name, transition in schema['transitions'].items():
-            if set(transition) - {'machine', 'actor', 'from', 'to', 'guard', 'effects', 'emit'}:
+            extra = {'execution', 'requires', 'max_occurrences'} if version == 2 else set()
+            if set(transition) - ({'machine', 'actor', 'from', 'to', 'guard', 'effects', 'emit'} | extra):
                 raise LifecycleError(f'{name}: unknown transition field')
             machine = schema['machines'][transition['machine']]
             if transition['actor'] not in ('agent', 'customer', 'carrier', 'warehouse', 'payment', 'system'):
@@ -101,6 +103,19 @@ def validate(schema, scenario, data, tools=None):
             if (not isinstance(transition['from'], list) or not transition['from']
                     or not set(transition['from']) <= set(machine['states']) or transition['to'] not in machine['states']):
                 raise LifecycleError(f'{name}: invalid source/target states')
+            if version == 2:
+                if transition.get('execution', 'external') not in ('internal', 'external'):
+                    raise LifecycleError(f'{name}: invalid execution mode')
+                if transition.get('execution') == 'internal' and transition['actor'] != 'system':
+                    raise LifecycleError('only system transitions may execute internally')
+                limit = transition.get('max_occurrences', 1000)
+                if type(limit) is not int or not 1 <= limit <= 10000:
+                    raise LifecycleError('max_occurrences must be 1..10000')
+                if not isinstance(transition.get('requires', []), list):
+                    raise LifecycleError(f'{name}: requires must be a list of predecessors')
+                for dependency in transition.get('requires', []):
+                    if set(dependency) != {'transition', 'entity'} or dependency['transition'] not in schema['transitions']:
+                        raise LifecycleError(f'{name}: invalid required predecessor')
             for effect in transition.get('effects', []):
                 if set(effect) != {'table', 'entity', 'set'} or effect['table'] not in tables:
                     raise LifecycleError(f'{name}: effects must update declared machine tables')
@@ -108,13 +123,14 @@ def validate(schema, scenario, data, tools=None):
                 if not isinstance(effect['set'], dict) or {'id', state_field} & set(effect['set']):
                     raise LifecycleError(f'{name}: effects cannot bypass identity/state transitions')
             for event in transition.get('emit', []):
-                if set(event) - {'transition', 'entity', 'delay', 'args', 'when'}:
+                allowed = {'transition', 'entity', 'args', 'when'} | ({'delay'} if version == 1 else {'ready', 'cancel_when'})
+                if set(event) - allowed:
                     raise LifecycleError(f'{name}: unknown emission field')
                 target = schema['transitions'][event['transition']]
                 if target['actor'] == 'agent':
                     raise LifecycleError('events cannot impersonate agent writes/consent')
-                if 'delay' not in event or 'entity' not in event:
-                    raise LifecycleError('emission requires delay and entity')
+                if 'entity' not in event or (version == 1 and 'delay' not in event):
+                    raise LifecycleError('emission requires entity (and delay for version 1)')
         for name, binding in schema.get('tools', {}).items():
             if set(binding) != {'transition', 'entity_arg', 'key_arg'}:
                 raise LifecycleError(f'{name}: binding needs transition, entity_arg and key_arg')
@@ -129,8 +145,14 @@ def validate(schema, scenario, data, tools=None):
                 params = inspect.signature(fn).parameters
                 if binding['entity_arg'] not in params or binding['key_arg'] not in params:
                     raise LifecycleError(f'{name}: missing entity/idempotency argument')
-        if scenario.get('version') != 1 or set(scenario) - {'version', 'parameters', 'history', 'scope'}:
-            raise LifecycleError('scenario requires version 1 and only parameters/history/scope')
+        allowed = {'version', 'parameters', 'history', 'scope'} | ({'dispatch_order'} if version == 2 else set())
+        if type(scenario.get('version')) is not int or scenario['version'] != version or set(scenario) - allowed:
+            raise LifecycleError('scenario version must match lifecycle_schema; unknown scenario field')
+        dispatch = scenario.get('dispatch_order', [])
+        if not isinstance(dispatch, list) or len(set(dispatch)) != len(dispatch) or any(
+                t not in schema['transitions'] or schema['transitions'][t]['actor'] == 'agent'
+                or schema['transitions'][t].get('execution') == 'internal' for t in dispatch):
+            raise LifecycleError('dispatch_order must name unique external transitions')
         if scenario.get('scope') not in schema.get('scopes', []):
             raise LifecycleError('scenario.scope must select a world-declared completion scope')
         definitions = schema.get('parameters', {})
@@ -150,19 +172,25 @@ def validate(schema, scenario, data, tools=None):
         previous = -math.inf
         keys = set()
         for item in history:
-            if set(item) != {'offset', 'transition', 'entity', 'args', 'key'}:
-                raise LifecycleError('history needs offset, transition, entity, args, key')
-            if type(item['offset']) not in (int, float) or not isinstance(item['args'], dict):
-                raise LifecycleError('history needs numeric offset and object args')
+            if version == 2 and item == {'type': 'yield'}:
+                continue
+            fields = {'offset', 'transition', 'entity', 'args', 'key'} if version == 1 else {'type', 'transition', 'entity', 'args', 'key'}
+            if set(item) != fields or not isinstance(item['args'], dict):
+                raise LifecycleError('invalid historical action fields')
             if not isinstance(item['key'], str) or not item['key'] or item['key'] in keys:
                 raise LifecycleError('history action keys must be unique nonempty strings')
             keys.add(item['key'])
-            offset = seconds(item['offset'])
-            if not previous <= offset <= 0:
-                raise LifecycleError('history offsets must be chronological and <= 0')
-            previous = offset
             if item['transition'] not in schema['transitions']:
                 raise LifecycleError('history names unknown transition')
+            if version == 1:
+                if type(item['offset']) not in (int, float):
+                    raise LifecycleError('history needs numeric offset')
+                offset = seconds(item['offset'])
+                if not previous <= offset <= 0:
+                    raise LifecycleError('history offsets must be chronological and <= 0')
+                previous = offset
+            elif item['type'] != 'command' or schema['transitions'][item['transition']]['actor'] != 'agent':
+                raise LifecycleError('v2 history contains agent commands and yields, never injected external events')
     except (KeyError, TypeError, ValueError, AttributeError) as exc:
         problems.append(str(exc))
     return problems
@@ -228,6 +256,13 @@ class Lifecycle:
         source = row[machine['field']]
         if source not in rule['from'] or expr(rule.get('guard', True), context) is not True:
             raise BusinessError(f'{transition}: precondition rejected in state {source}')
+        dependencies = self.dependencies(rule, context)
+        if dependencies is None:
+            raise BusinessError(f'{transition}: required predecessor not completed')
+        if 'max_occurrences' in rule and sum(
+                e.get('kind') == 'transition' and e.get('transition') == transition and e.get('entity') == entity
+                for e in self.log) >= rule['max_occurrences']:
+            raise BusinessError(f'{transition}: occurrence limit reached')
         before = digest(db)
         for effect in rule.get('effects', []):
             target = row_of(db, effect['table'], expr(effect['entity'], context))
@@ -239,8 +274,23 @@ class Lifecycle:
         self.check(db)
         entry = {'kind': 'transition', 'id': key, 'cause': cause, 'transition': transition,
                  'entity': entity, 'actor': actor, 'args': copy.deepcopy(args), 'from': source,
-                 'to': rule['to'], 'time': clock(self.now, self.calendar), 'before': before, 'after': digest(db)}
+                 'to': rule['to'], **self.stamp(), 'before': before, 'after': digest(db), **dependencies}
         self.log.append(entry)
+        self.emit(rule, context, key)
+        receipt = {'signature': signature, 'transition': transition, 'entity': entity, 'state': rule['to']}
+        self.receipts[key] = receipt
+        return copy.deepcopy(receipt), False
+
+    def dependencies(self, rule, context):
+        return {}
+
+    def stamp(self):
+        return {'time': clock(self.now, self.calendar)}
+
+    def settle(self, db):
+        """v1 has no immediate workflow activities."""
+
+    def emit(self, rule, context, key):
         for index, event in enumerate(rule.get('emit', [])):
             if expr(event.get('when', True), context) is not True:
                 continue
@@ -257,9 +307,6 @@ class Lifecycle:
             self.pending.append(item)
             self.log.append({'kind': 'scheduled', **copy.deepcopy(item)})
         self.pending.sort(key=lambda e: (e['at'], e['id']))
-        receipt = {'signature': signature, 'transition': transition, 'entity': entity, 'state': rule['to']}
-        self.receipts[key] = receipt
-        return copy.deepcopy(receipt), False
 
     def advance(self, db, target):
         # Called on an episode transaction clone. Faults discard the whole transaction.
@@ -340,8 +387,9 @@ def qualify(env, verifier, request):
     report = behavior.run(env, contract, request=request)
     # Independent tests must exercise timing, actual transitions and refused operations.
     steps = [s for case in contract['cases'] for s in case.get('steps', [])]
-    if not any('wait' in s for s in steps) or not any(s.get('error') for s in steps):
-        problems.append('lifecycle contracts need explicit waits and expected business rejections')
+    progress = 'yield' if schema['version'] == 2 else 'wait'
+    if not any(progress in s for s in steps) or not any(s.get('error') for s in steps):
+        problems.append('lifecycle contracts need explicit ' + progress + ' and expected business rejections')
     covered = {t for c in report.get('cases', []) if c['passed'] for t in c.get('transitions', [])}
     if set(schema['transitions']) - covered:
         problems.append('lifecycle contract lacks transition coverage: ' + ', '.join(sorted(set(schema['transitions']) - covered)))
@@ -358,3 +406,10 @@ def qualify(env, verifier, request):
         problems.append(f'lifecycle verification failed: {type(exc).__name__}: {exc}')
     return {**report, 'passed': report['passed'] and not problems, 'problems': problems,
             'schema_sha256': digest(schema), 'scenario_sha256': digest(request['scenario'])}
+
+
+def create(schema, scenario, data, start, tools=None):
+    if schema.get('version') == 2:
+        from env_factory.workflow import Workflow
+        return Workflow(schema, scenario, data, start, tools)
+    return Lifecycle(schema, scenario, data, start, tools)

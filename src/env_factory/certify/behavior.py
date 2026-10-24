@@ -84,7 +84,12 @@ def run(env, contract, *, request=None):
                 context = {'initial': case['data'], 'before': before, 'after': api.db, 'outputs': outputs}
                 args = expression(step.get('args', {}), context)
                 try:
-                    result = api.wait(step['wait']) if 'wait' in step else api.call(step['tool'], **args)
+                    if 'yield' in step:
+                        if step['yield'] is not True or 'wait' in step or 'tool' in step:
+                            raise ValueError('yield step must contain yield=true and no tool/wait')
+                        result = api.yield_control()
+                    else:
+                        result = api.wait(step['wait']) if 'wait' in step else api.call(step['tool'], **args)
                 except BusinessError as exc:
                     if not step.get('error') or (step['error'] != '*' and step['error'] not in str(exc)):
                         raise
@@ -95,7 +100,7 @@ def run(env, contract, *, request=None):
                     if step.get('error'):
                         raise ValueError('expected rejection, operation succeeded')
                 outputs.append(result)
-                context.update(result=result, after=api.db)
+                context.update(result=result, after=api.db, lifecycle=api.lifecycle.snapshot() if api.lifecycle else None)
                 checks = step.get('checks', []) + contract.get('invariants', []) + case.get('invariants', [])
                 if not checks and not step.get('error'):
                     raise ValueError('successful step has no independently declared checks')
